@@ -10,6 +10,12 @@ use crate::app::{App, AppMode, CreateStep};
 use crate::project::ProjectStatus;
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    // Viewing mode gets its own full-screen layout
+    if let AppMode::Viewing(view) = &app.mode {
+        draw_pane_view(frame, view, &app.pane_content);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -37,7 +43,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn draw_header(frame: &mut Frame, area: Rect) {
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
-            " Claude Super Vibeless ",
+            " Agent Mainframe ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -156,6 +162,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" n", Style::default().fg(Color::Yellow)),
             Span::raw(" new  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" view  "),
+            Span::styled("s", Style::default().fg(Color::Yellow)),
             Span::raw(" switch  "),
             Span::styled("t", Style::default().fg(Color::Yellow)),
             Span::raw(" terminal  "),
@@ -179,6 +187,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" confirm  "),
             Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
+        ]),
+        AppMode::Viewing(_) => Line::from(vec![
+            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
+            Span::raw(" exit view"),
         ]),
     };
 
@@ -334,4 +346,119 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn draw_pane_view(frame: &mut Frame, view: &crate::app::ViewState, pane_content: &str) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // header
+            Constraint::Min(1),   // pane content
+        ])
+        .split(frame.area());
+
+    // Header bar with project info and escape hint
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(
+            format!(" {} ", view.project_name),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("| {} ", view.window),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "| Ctrl+Q to exit",
+            Style::default().fg(Color::Yellow),
+        ),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(header, chunks[0]);
+
+    // Parse ANSI content through vt100 and render
+    let content_area = chunks[1];
+    let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
+    let paragraph = Paragraph::new(text);
+    frame.render_widget(paragraph, content_area);
+}
+
+fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    // capture-pane uses \n line endings, but vt100 treats LF as cursor-down
+    // only (no carriage return). Convert to \r\n so the parser resets to
+    // column 0 on each new line.
+    let normalized = raw.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    let screen = parser.screen();
+
+    let mut lines = Vec::with_capacity(rows as usize);
+
+    for row in 0..rows {
+        let mut spans: Vec<Span<'a>> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = Style::default();
+
+        for col in 0..cols {
+            let cell = screen.cell(row, col);
+            let cell = match cell {
+                Some(c) => c,
+                None => continue,
+            };
+
+            let style = vt100_cell_to_style(&cell);
+
+            if style != current_style && !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style,
+                ));
+            }
+            current_style = style;
+            current_text.push_str(&cell.contents());
+        }
+
+        if !current_text.is_empty() {
+            spans.push(Span::styled(current_text, current_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+fn vt100_cell_to_style(cell: &vt100::Cell) -> Style {
+    let mut style = Style::default();
+
+    style = style.fg(vt100_color_to_ratatui(cell.fgcolor()));
+    style = style.bg(vt100_color_to_ratatui(cell.bgcolor()));
+
+    if cell.bold() {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if cell.italic() {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if cell.underline() {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    if cell.inverse() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+
+    style
+}
+
+fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
 }

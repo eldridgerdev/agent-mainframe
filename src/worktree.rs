@@ -78,7 +78,7 @@ impl WorktreeManager {
             .map(|o| o.status.success())
             .unwrap_or(false);
 
-        let status = if branch_exists {
+        let output = if branch_exists {
             Command::new("git")
                 .args([
                     "worktree",
@@ -87,7 +87,7 @@ impl WorktreeManager {
                     branch,
                 ])
                 .current_dir(repo)
-                .status()
+                .output()
                 .context("Failed to create worktree")?
         } else {
             // Create new branch
@@ -100,12 +100,13 @@ impl WorktreeManager {
                     &worktree_path.to_string_lossy(),
                 ])
                 .current_dir(repo)
-                .status()
+                .output()
                 .context("Failed to create worktree with new branch")?
         };
 
-        if !status.success() {
-            bail!("git worktree add failed");
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git worktree add failed: {}", stderr.trim());
         }
 
         Ok(worktree_path)
@@ -113,7 +114,7 @@ impl WorktreeManager {
 
     /// Remove a worktree
     pub fn remove(repo: &Path, worktree_path: &Path) -> Result<()> {
-        let status = Command::new("git")
+        let output = Command::new("git")
             .args([
                 "worktree",
                 "remove",
@@ -121,13 +122,15 @@ impl WorktreeManager {
                 &worktree_path.to_string_lossy(),
             ])
             .current_dir(repo)
-            .status()
+            .output()
             .context("Failed to remove worktree")?;
 
-        if !status.success() {
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
             bail!(
-                "git worktree remove failed for {}",
-                worktree_path.display()
+                "git worktree remove failed for {}: {}",
+                worktree_path.display(),
+                stderr.trim()
             );
         }
 

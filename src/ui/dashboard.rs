@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, CreateStep};
+use crate::app::{App, AppMode, Selection, VisibleItem};
 use crate::project::ProjectStatus;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -19,8 +19,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // header
-            Constraint::Min(5),    // main content
+            Constraint::Length(3), // header
+            Constraint::Min(5),   // main content
             Constraint::Length(3), // status bar
         ])
         .split(frame.area());
@@ -29,14 +29,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_project_list(frame, app, chunks[1]);
     draw_status_bar(frame, app, chunks[2]);
 
-    // Draw create dialog overlay if in create mode
-    if let AppMode::Creating(state) = &app.mode {
-        draw_create_dialog(frame, state);
-    }
-
-    // Draw delete confirmation if in delete mode
-    if let AppMode::Deleting(name) = &app.mode {
-        draw_delete_confirm(frame, name);
+    // Draw dialog overlays
+    match &app.mode {
+        AppMode::CreatingProject(state) => {
+            draw_create_project_dialog(frame, state);
+        }
+        AppMode::CreatingFeature(state) => {
+            draw_create_feature_dialog(frame, state);
+        }
+        AppMode::DeletingProject(name) => {
+            draw_delete_project_confirm(frame, name);
+        }
+        AppMode::DeletingFeature(project_name, feature_name) => {
+            draw_delete_feature_confirm(
+                frame,
+                project_name,
+                feature_name,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -62,16 +73,14 @@ fn draw_header(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
-    let projects = app.store.list();
-
-    if projects.is_empty() {
+    if app.store.projects.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
                 "No projects yet. Press ",
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                "n",
+                "N",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -90,56 +99,105 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = projects
+    let visible = app.visible_items();
+
+    let items: Vec<ListItem> = visible
         .iter()
-        .enumerate()
-        .map(|(i, project)| {
-            let status_indicator = match project.status {
-                ProjectStatus::Active => Span::styled(
-                    " ● ",
-                    Style::default().fg(Color::Green),
-                ),
-                ProjectStatus::Idle => Span::styled(
-                    " ○ ",
-                    Style::default().fg(Color::Yellow),
-                ),
-                ProjectStatus::Stopped => Span::styled(
-                    " ■ ",
-                    Style::default().fg(Color::Red),
-                ),
+        .map(|item| {
+            let is_selected = match (&app.selection, item) {
+                (
+                    Selection::Project(a),
+                    VisibleItem::Project(b),
+                ) => a == b,
+                (
+                    Selection::Feature(a1, a2),
+                    VisibleItem::Feature(b1, b2),
+                ) => a1 == b1 && a2 == b2,
+                _ => false,
             };
 
-            let name = Span::styled(
-                &project.name,
-                if i == app.selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                },
-            );
+            let line = match item {
+                VisibleItem::Project(pi) => {
+                    let project = &app.store.projects[*pi];
+                    let collapse_icon = if project.collapsed {
+                        ">"
+                    } else {
+                        "v"
+                    };
 
-            let branch_text = project
-                .branch
-                .as_deref()
-                .unwrap_or("(no branch)");
-            let branch = Span::styled(
-                format!("  {}", branch_text),
-                Style::default().fg(Color::DarkGray),
-            );
+                    let mut spans = vec![
+                        Span::styled(
+                            format!(" {} ", collapse_icon),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            &project.name,
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                "  {}",
+                                project.repo.display()
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ];
 
-            let path = Span::styled(
-                format!("  {}", project.workdir.display()),
-                Style::default().fg(Color::DarkGray),
-            );
+                    if project.features.is_empty() {
+                        spans.push(Span::styled(
+                            "  (press n to add a feature)",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
 
-            let line = Line::from(vec![status_indicator, name, branch, path]);
+                    Line::from(spans)
+                }
+                VisibleItem::Feature(pi, fi) => {
+                    let feature =
+                        &app.store.projects[*pi].features[*fi];
 
-            if i == app.selected {
-                ListItem::new(line).style(
-                    Style::default().bg(Color::DarkGray),
-                )
+                    let status_dot = match feature.status {
+                        ProjectStatus::Active => Span::styled(
+                            "   ● ",
+                            Style::default().fg(Color::Green),
+                        ),
+                        ProjectStatus::Idle => Span::styled(
+                            "   ○ ",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        ProjectStatus::Stopped => Span::styled(
+                            "   ■ ",
+                            Style::default().fg(Color::Red),
+                        ),
+                    };
+
+                    let name_style = if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    Line::from(vec![
+                        status_dot,
+                        Span::styled(&feature.name, name_style),
+                        Span::styled(
+                            format!(
+                                "  {}",
+                                feature.workdir.display()
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])
+                }
+            };
+
+            if is_selected {
+                ListItem::new(line)
+                    .style(Style::default().bg(Color::DarkGray))
             } else {
                 ListItem::new(line)
             }
@@ -158,38 +216,119 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let keybinds = match &app.mode {
-        AppMode::Normal => Line::from(vec![
-            Span::styled(" n", Style::default().fg(Color::Yellow)),
-            Span::raw(" new  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" view  "),
-            Span::styled("s", Style::default().fg(Color::Yellow)),
-            Span::raw(" switch  "),
-            Span::styled("t", Style::default().fg(Color::Yellow)),
-            Span::raw(" terminal  "),
-            Span::styled("x", Style::default().fg(Color::Yellow)),
-            Span::raw(" stop  "),
-            Span::styled("d", Style::default().fg(Color::Yellow)),
-            Span::raw(" delete  "),
-            Span::styled("r", Style::default().fg(Color::Yellow)),
-            Span::raw(" refresh  "),
-            Span::styled("q", Style::default().fg(Color::Yellow)),
-            Span::raw(" quit"),
-        ]),
-        AppMode::Creating(_) => Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        AppMode::Normal => {
+            let on_feature =
+                matches!(app.selection, Selection::Feature(_, _));
+            if on_feature {
+                Line::from(vec![
+                    Span::styled(
+                        " n",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" feature  "),
+                    Span::styled(
+                        "N",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" project  "),
+                    Span::styled(
+                        "Enter",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" view  "),
+                    Span::styled(
+                        "c",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" start  "),
+                    Span::styled(
+                        "x",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" stop  "),
+                    Span::styled(
+                        "s",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" switch  "),
+                    Span::styled(
+                        "d",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" delete  "),
+                    Span::styled(
+                        "q",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" quit"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        " n",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" feature  "),
+                    Span::styled(
+                        "N",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" project  "),
+                    Span::styled(
+                        "Enter",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" expand  "),
+                    Span::styled(
+                        "d",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" delete  "),
+                    Span::styled(
+                        "r",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" refresh  "),
+                    Span::styled(
+                        "q",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" quit"),
+                ])
+            }
+        }
+        AppMode::CreatingProject(_) | AppMode::CreatingFeature(_) => {
+            Line::from(vec![
+                Span::styled(
+                    "Enter",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" confirm  "),
+                Span::styled(
+                    "Esc",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" cancel"),
+            ])
+        }
+        AppMode::DeletingProject(_)
+        | AppMode::DeletingFeature(_, _) => Line::from(vec![
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::raw(" cancel"),
-        ]),
-        AppMode::Deleting(_) => Line::from(vec![
-            Span::styled("y", Style::default().fg(Color::Yellow)),
-            Span::raw(" confirm  "),
-            Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "n/Esc",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" cancel"),
         ]),
         AppMode::Viewing(_) => Line::from(vec![
-            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "Ctrl+Q",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" exit view"),
         ]),
     };
@@ -200,9 +339,21 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Green),
         ))
     } else {
-        let count = app.project_count();
+        let project_count = app.store.projects.len();
+        let feature_count: usize = app
+            .store
+            .projects
+            .iter()
+            .map(|p| p.features.len())
+            .sum();
         Line::from(Span::styled(
-            format!(" {} project{}", count, if count == 1 { "" } else { "s" }),
+            format!(
+                " {} project{}, {} feature{}",
+                project_count,
+                if project_count == 1 { "" } else { "s" },
+                feature_count,
+                if feature_count == 1 { "" } else { "s" },
+            ),
             Style::default().fg(Color::DarkGray),
         ))
     };
@@ -216,8 +367,13 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status, area);
 }
 
-fn draw_create_dialog(frame: &mut Frame, state: &crate::app::CreateState) {
-    let area = centered_rect(60, 40, frame.area());
+fn draw_create_project_dialog(
+    frame: &mut Frame,
+    state: &crate::app::CreateProjectState,
+) {
+    use crate::app::CreateProjectStep;
+
+    let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -233,13 +389,12 @@ fn draw_create_dialog(frame: &mut Frame, state: &crate::app::CreateState) {
         .constraints([
             Constraint::Length(2),
             Constraint::Length(2),
-            Constraint::Length(2),
             Constraint::Min(0),
         ])
         .split(inner);
 
     let name_style = match state.step {
-        CreateStep::Name => Style::default().fg(Color::Cyan),
+        CreateProjectStep::Name => Style::default().fg(Color::Cyan),
         _ => Style::default().fg(Color::DarkGray),
     };
     let name_field = Paragraph::new(Line::from(vec![
@@ -248,12 +403,12 @@ fn draw_create_dialog(frame: &mut Frame, state: &crate::app::CreateState) {
             &state.name,
             Style::default().fg(Color::White),
         ),
-        cursor_span(&state.step, &CreateStep::Name),
+        cursor_span_project(&state.step, &CreateProjectStep::Name),
     ]));
     frame.render_widget(name_field, chunks[0]);
 
     let path_style = match state.step {
-        CreateStep::Path => Style::default().fg(Color::Cyan),
+        CreateProjectStep::Path => Style::default().fg(Color::Cyan),
         _ => Style::default().fg(Color::DarkGray),
     };
     let path_field = Paragraph::new(Line::from(vec![
@@ -262,27 +417,51 @@ fn draw_create_dialog(frame: &mut Frame, state: &crate::app::CreateState) {
             &state.path,
             Style::default().fg(Color::White),
         ),
-        cursor_span(&state.step, &CreateStep::Path),
+        cursor_span_project(&state.step, &CreateProjectStep::Path),
     ]));
     frame.render_widget(path_field, chunks[1]);
+}
 
-    let branch_style = match state.step {
-        CreateStep::Branch => Style::default().fg(Color::Cyan),
-        _ => Style::default().fg(Color::DarkGray),
-    };
+fn draw_create_feature_dialog(
+    frame: &mut Frame,
+    state: &crate::app::CreateFeatureState,
+) {
+    let area = centered_rect(60, 25, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" New Feature ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
     let branch_field = Paragraph::new(Line::from(vec![
-        Span::styled(" Branch (optional): ", branch_style),
+        Span::styled(
+            " Branch: ",
+            Style::default().fg(Color::Cyan),
+        ),
         Span::styled(
             &state.branch,
             Style::default().fg(Color::White),
         ),
-        cursor_span(&state.step, &CreateStep::Branch),
+        Span::styled("█", Style::default().fg(Color::Cyan)),
     ]));
-    frame.render_widget(branch_field, chunks[2]);
+    frame.render_widget(branch_field, chunks[0]);
 }
 
-fn draw_delete_confirm(frame: &mut Frame, name: &str) {
-    let area = centered_rect(50, 20, frame.area());
+fn draw_delete_project_confirm(frame: &mut Frame, name: &str) {
+    let area = centered_rect(50, 25, frame.area());
     frame.render_widget(Clear, area);
 
     let text = Paragraph::new(vec![
@@ -299,9 +478,23 @@ fn draw_delete_confirm(frame: &mut Frame, name: &str) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            " This will kill the tmux session and remove the worktree.",
+            " All features will be destroyed.",
             Style::default().fg(Color::DarkGray),
         )),
+        Line::from(Span::styled(
+            " Tmux sessions will be killed and worktrees removed.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Press "),
+            Span::styled("y", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" to confirm, "),
+            Span::styled("n", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" or "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" to cancel"),
+        ]),
     ])
     .wrap(Wrap { trim: false })
     .block(
@@ -314,12 +507,69 @@ fn draw_delete_confirm(frame: &mut Frame, name: &str) {
     frame.render_widget(text, area);
 }
 
-fn cursor_span<'a>(current: &CreateStep, target: &CreateStep) -> Span<'a> {
+fn draw_delete_feature_confirm(
+    frame: &mut Frame,
+    project_name: &str,
+    feature_name: &str,
+) {
+    let area = centered_rect(50, 25, frame.area());
+    frame.render_widget(Clear, area);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Delete feature "),
+            Span::styled(
+                feature_name,
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" from "),
+            Span::styled(
+                project_name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            " This will kill the tmux session and remove the worktree.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Press "),
+            Span::styled("y", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" to confirm, "),
+            Span::styled("n", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" or "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw(" to cancel"),
+        ]),
+    ])
+    .wrap(Wrap { trim: false })
+    .block(
+        Block::default()
+            .title(" Confirm Delete ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red)),
+    );
+
+    frame.render_widget(text, area);
+}
+
+fn cursor_span_project<'a>(
+    current: &crate::app::CreateProjectStep,
+    target: &crate::app::CreateProjectStep,
+) -> Span<'a> {
+    use crate::app::CreateProjectStep;
     let is_active = matches!(
         (current, target),
-        (CreateStep::Name, CreateStep::Name)
-            | (CreateStep::Path, CreateStep::Path)
-            | (CreateStep::Branch, CreateStep::Branch)
+        (CreateProjectStep::Name, CreateProjectStep::Name)
+            | (CreateProjectStep::Path, CreateProjectStep::Path)
     );
     if is_active {
         Span::styled("█", Style::default().fg(Color::Cyan))
@@ -328,7 +578,11 @@ fn cursor_span<'a>(current: &CreateStep, target: &CreateStep) -> Span<'a> {
     }
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+fn centered_rect(
+    percent_x: u16,
+    percent_y: u16,
+    area: Rect,
+) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -348,7 +602,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn draw_pane_view(frame: &mut Frame, view: &crate::app::ViewState, pane_content: &str) {
+fn draw_pane_view(
+    frame: &mut Frame,
+    view: &crate::app::ViewState,
+    pane_content: &str,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -357,12 +615,18 @@ fn draw_pane_view(frame: &mut Frame, view: &crate::app::ViewState, pane_content:
         ])
         .split(frame.area());
 
-    // Header bar with project info and escape hint
+    // Header bar with project/feature info and escape hint
     let header = Paragraph::new(Line::from(vec![
         Span::styled(
             format!(" {} ", view.project_name),
             Style::default()
                 .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("/ {} ", view.feature_name),
+            Style::default()
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -383,16 +647,21 @@ fn draw_pane_view(frame: &mut Frame, view: &crate::app::ViewState, pane_content:
 
     // Parse ANSI content through vt100 and render
     let content_area = chunks[1];
-    let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
+    let text = ansi_to_ratatui_text(
+        pane_content,
+        content_area.width,
+        content_area.height,
+    );
     let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, content_area);
 }
 
-fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
+fn ansi_to_ratatui_text<'a>(
+    raw: &str,
+    cols: u16,
+    rows: u16,
+) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    // capture-pane uses \n line endings, but vt100 treats LF as cursor-down
-    // only (no carriage return). Convert to \r\n so the parser resets to
-    // column 0 on each new line.
     let normalized = raw.replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();

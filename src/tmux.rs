@@ -110,6 +110,20 @@ impl TmuxManager {
         std::env::var("TMUX").is_ok()
     }
 
+    /// Get the name of the current tmux session (only works inside tmux)
+    pub fn current_session() -> Option<String> {
+        let output = Command::new("tmux")
+            .args(["display-message", "-p", "#{session_name}"])
+            .output()
+            .ok()?;
+        if output.status.success() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if name.is_empty() { None } else { Some(name) }
+        } else {
+            None
+        }
+    }
+
     /// Switch the tmux client to a different session (only works inside tmux)
     pub fn switch_client(session: &str) -> Result<()> {
         let status = Command::new("tmux")
@@ -187,6 +201,52 @@ impl TmuxManager {
             .context("Failed to capture pane")?;
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Capture pane content with ANSI escape sequences preserved
+    pub fn capture_pane_ansi(session: &str, window: &str) -> Result<String> {
+        let target = format!("{}:{}", session, window);
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-t", &target, "-e", "-p"])
+            .output()
+            .context("Failed to capture pane with ANSI")?;
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Resize a tmux pane to match the TUI rendering area
+    pub fn resize_pane(session: &str, window: &str, cols: u16, rows: u16) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t", &target,
+                "-x", &cols.to_string(),
+                "-y", &rows.to_string(),
+            ])
+            .status()
+            .context("Failed to resize tmux pane")?;
+        Ok(())
+    }
+
+    /// Send literal text to a tmux pane (no key name interpretation)
+    pub fn send_literal(session: &str, window: &str, text: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["send-keys", "-t", &target, "-l", text])
+            .status()
+            .context("Failed to send literal text to tmux")?;
+        Ok(())
+    }
+
+    /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
+    pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["send-keys", "-t", &target, key_name])
+            .status()
+            .context("Failed to send key to tmux")?;
+        Ok(())
     }
 
     /// Send keys to a specific window in a session

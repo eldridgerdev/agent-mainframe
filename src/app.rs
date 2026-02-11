@@ -23,10 +23,17 @@ fn detect_branch() -> String {
         .unwrap_or_default()
 }
 
+pub struct ViewState {
+    pub project_name: String,
+    pub session: String,
+    pub window: String,
+}
+
 pub enum AppMode {
     Normal,
     Creating(CreateState),
     Deleting(String),
+    Viewing(ViewState),
 }
 
 pub struct CreateState {
@@ -61,6 +68,7 @@ pub struct App {
     pub message: Option<String>,
     pub should_quit: bool,
     pub should_switch: Option<String>,
+    pub pane_content: String,
 }
 
 impl App {
@@ -74,6 +82,7 @@ impl App {
             message: None,
             should_quit: false,
             should_switch: None,
+            pane_content: String::new(),
         })
     }
 
@@ -257,6 +266,36 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub fn enter_view(&mut self) -> Result<()> {
+        if let Some(project) = self.store.projects.get_mut(self.selected) {
+            // Ensure session exists
+            if !TmuxManager::session_exists(&project.tmux_session) {
+                TmuxManager::create_session(&project.tmux_session, &project.workdir)?;
+                TmuxManager::launch_claude(&project.tmux_session, None)?;
+            }
+
+            project.touch();
+            project.status = ProjectStatus::Active;
+
+            let view = ViewState {
+                project_name: project.name.clone(),
+                session: project.tmux_session.clone(),
+                window: "claude".into(),
+            };
+
+            self.save()?;
+            self.pane_content.clear();
+            self.mode = AppMode::Viewing(view);
+        }
+        Ok(())
+    }
+
+    pub fn exit_view(&mut self) {
+        self.mode = AppMode::Normal;
+        self.pane_content.clear();
+        self.message = Some("Returned to dashboard".into());
     }
 
     pub fn stop_selected(&mut self) -> Result<()> {

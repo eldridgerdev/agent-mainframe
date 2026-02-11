@@ -159,7 +159,7 @@ impl TmuxManager {
         Ok(())
     }
 
-    /// List all csv-* tmux sessions
+    /// List all amf-* tmux sessions
     pub fn list_sessions() -> Result<Vec<String>> {
         let output = Command::new("tmux")
             .args(["list-sessions", "-F", "#{session_name}"])
@@ -169,7 +169,7 @@ impl TmuxManager {
             Ok(o) if o.status.success() => {
                 let sessions: Vec<String> = String::from_utf8_lossy(&o.stdout)
                     .lines()
-                    .filter(|s| s.starts_with("csv-"))
+                    .filter(|s| s.starts_with("amf-"))
                     .map(String::from)
                     .collect();
                 Ok(sessions)

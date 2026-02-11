@@ -104,7 +104,7 @@ impl Project {
         branch: Option<String>,
         is_worktree: bool,
     ) -> Self {
-        let tmux_session = format!("csv-{}", name);
+        let tmux_session = format!("amf-{}", name);
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),

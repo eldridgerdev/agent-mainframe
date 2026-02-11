@@ -1,10 +1,10 @@
 [package]
-name = "claude-super-vibeless"
+name = "agent-mainframe"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "csv"
+name = "amf"
 path = "src/main.rs"
 
 [dependencies]

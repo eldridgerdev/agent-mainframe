@@ -5,6 +5,24 @@ use crate::project::{Project, ProjectStatus, ProjectStore};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
+/// Try to detect the git repo root from cwd, falling back to cwd itself.
+fn detect_repo_path() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    WorktreeManager::repo_root(&cwd)
+        .unwrap_or(cwd)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Try to detect the current git branch from cwd.
+fn detect_branch() -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    WorktreeManager::current_branch(&cwd)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
 pub enum AppMode {
     Normal,
     Creating(CreateState),
@@ -24,13 +42,13 @@ pub enum CreateStep {
     Branch,
 }
 
-impl Default for CreateState {
-    fn default() -> Self {
+impl CreateState {
+    pub fn auto_detect() -> Self {
         Self {
             step: CreateStep::Name,
             name: String::new(),
-            path: String::new(),
-            branch: String::new(),
+            path: detect_repo_path(),
+            branch: detect_branch(),
         }
     }
 }
@@ -102,7 +120,7 @@ impl App {
     }
 
     pub fn start_create(&mut self) {
-        self.mode = AppMode::Creating(CreateState::default());
+        self.mode = AppMode::Creating(CreateState::auto_detect());
         self.message = None;
     }
 
@@ -203,10 +221,25 @@ impl App {
 
     pub fn switch_to_selected(&mut self) -> Result<()> {
         if let Some(project) = self.store.projects.get_mut(self.selected) {
+            // If the session is stopped, recreate it
+            if !TmuxManager::session_exists(&project.tmux_session) {
+                TmuxManager::create_session(&project.tmux_session, &project.workdir)?;
+                TmuxManager::launch_claude(&project.tmux_session, None)?;
+            }
+
             project.touch();
             project.status = ProjectStatus::Active;
-            self.should_switch = Some(project.tmux_session.clone());
+            let session = project.tmux_session.clone();
             self.save()?;
+
+            if TmuxManager::is_inside_tmux() {
+                // Switch client inline — manager TUI stays alive
+                TmuxManager::switch_client(&session)?;
+                self.message = Some("Switched back from project".into());
+            } else {
+                // Not inside tmux — exit and attach
+                self.should_switch = Some(session);
+            }
         }
         Ok(())
     }
@@ -215,9 +248,28 @@ impl App {
         if let Some(project) = self.selected_project() {
             let session = project.tmux_session.clone();
             if TmuxManager::session_exists(&session) {
-                // Switch to the terminal window
-                self.should_switch = Some(session);
+                if TmuxManager::is_inside_tmux() {
+                    TmuxManager::switch_client(&session)?;
+                    self.message = Some("Switched back from terminal".into());
+                } else {
+                    self.should_switch = Some(session);
+                }
             }
+        }
+        Ok(())
+    }
+
+    pub fn stop_selected(&mut self) -> Result<()> {
+        if let Some(project) = self.store.projects.get_mut(self.selected) {
+            if project.status == ProjectStatus::Stopped {
+                self.message = Some(format!("'{}' is already stopped", project.name));
+                return Ok(());
+            }
+            TmuxManager::kill_session(&project.tmux_session)?;
+            project.status = ProjectStatus::Stopped;
+            let name = project.name.clone();
+            self.save()?;
+            self.message = Some(format!("Stopped '{}'", name));
         }
         Ok(())
     }

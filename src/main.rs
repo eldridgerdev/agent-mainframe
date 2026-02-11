@@ -49,11 +49,20 @@ fn main() -> Result<()> {
 }
 
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+    let mut last_sync = std::time::Instant::now();
+
     loop {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.should_quit || app.should_switch.is_some() {
             return Ok(());
+        }
+
+        // Periodic status refresh (every 5 seconds) so returning from a
+        // project session shows up-to-date statuses.
+        if last_sync.elapsed() >= Duration::from_secs(5) {
+            app.sync_statuses();
+            last_sync = std::time::Instant::now();
         }
 
         if event::poll(Duration::from_millis(250))? {
@@ -94,6 +103,9 @@ fn handle_normal_key(app: &mut App, key: KeyCode) -> Result<()> {
         }
         KeyCode::Char('t') => {
             app.open_terminal()?;
+        }
+        KeyCode::Char('x') => {
+            app.stop_selected()?;
         }
         KeyCode::Char('r') => {
             app.sync_statuses();

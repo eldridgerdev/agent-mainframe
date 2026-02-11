@@ -159,6 +159,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" switch  "),
             Span::styled("t", Style::default().fg(Color::Yellow)),
             Span::raw(" terminal  "),
+            Span::styled("x", Style::default().fg(Color::Yellow)),
+            Span::raw(" stop  "),
             Span::styled("d", Style::default().fg(Color::Yellow)),
             Span::raw(" delete  "),
             Span::styled("r", Style::default().fg(Color::Yellow)),
@@ -243,7 +245,7 @@ fn draw_create_dialog(frame: &mut Frame, state: &crate::app::CreateState) {
         _ => Style::default().fg(Color::DarkGray),
     };
     let path_field = Paragraph::new(Line::from(vec![
-        Span::styled(" Path: ", path_style),
+        Span::styled(" Repo path: ", path_style),
         Span::styled(
             &state.path,
             Style::default().fg(Color::White),

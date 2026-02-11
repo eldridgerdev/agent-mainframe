@@ -73,6 +73,15 @@ impl TmuxManager {
             .args(["select-window", "-t", &format!("{}:claude", session)])
             .status()?;
 
+        // Set status bar hint for navigating back
+        Command::new("tmux")
+            .args([
+                "set-option", "-t", session,
+                "status-right",
+                " #[fg=cyan]prefix+s#[default]: sessions ",
+            ])
+            .status()?;
+
         Ok(())
     }
 
@@ -93,6 +102,23 @@ impl TmuxManager {
             .status()
             .context("Failed to send claude command to tmux")?;
 
+        Ok(())
+    }
+
+    /// Check if we're currently running inside a tmux session
+    pub fn is_inside_tmux() -> bool {
+        std::env::var("TMUX").is_ok()
+    }
+
+    /// Switch the tmux client to a different session (only works inside tmux)
+    pub fn switch_client(session: &str) -> Result<()> {
+        let status = Command::new("tmux")
+            .args(["switch-client", "-t", session])
+            .status()
+            .context("Failed to switch tmux client")?;
+        if !status.success() {
+            bail!("tmux switch-client failed");
+        }
         Ok(())
     }
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crate::project::{Feature, Project, ProjectStatus, ProjectStore};
 use crate::tmux::TmuxManager;
@@ -99,6 +100,8 @@ pub struct App {
     pub should_quit: bool,
     pub should_switch: Option<String>,
     pub pane_content: String,
+    pub leader_active: bool,
+    pub leader_activated_at: Option<Instant>,
 }
 
 impl App {
@@ -118,6 +121,8 @@ impl App {
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),
+            leader_active: false,
+            leader_activated_at: None,
         })
     }
 
@@ -659,6 +664,139 @@ impl App {
         } else {
             self.should_switch = Some(session);
         }
+
+        Ok(())
+    }
+
+    // --- Leader key ---
+
+    pub fn activate_leader(&mut self) {
+        self.leader_active = true;
+        self.leader_activated_at = Some(Instant::now());
+    }
+
+    pub fn deactivate_leader(&mut self) {
+        self.leader_active = false;
+        self.leader_activated_at = None;
+    }
+
+    pub fn leader_timed_out(&self) -> bool {
+        self.leader_activated_at
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(2))
+            .unwrap_or(false)
+    }
+
+    /// Cycle to the next feature within the same project while
+    /// staying in Viewing mode.
+    pub fn view_next_feature(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.mode {
+            AppMode::Viewing(view) => {
+                // Find current project/feature indices
+                let pi = self
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.name == view.project_name);
+                let pi = match pi {
+                    Some(pi) => pi,
+                    None => return Ok(()),
+                };
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| f.name == view.feature_name);
+                let fi = match fi {
+                    Some(fi) => fi,
+                    None => return Ok(()),
+                };
+                (pi, fi)
+            }
+            _ => return Ok(()),
+        };
+
+        let project = &self.store.projects[pi];
+        if project.features.len() <= 1 {
+            return Ok(());
+        }
+
+        let next_fi = (fi + 1) % project.features.len();
+        self.switch_view_to_feature(pi, next_fi)
+    }
+
+    /// Cycle to the previous feature within the same project
+    /// while staying in Viewing mode.
+    pub fn view_prev_feature(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.mode {
+            AppMode::Viewing(view) => {
+                let pi = self
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.name == view.project_name);
+                let pi = match pi {
+                    Some(pi) => pi,
+                    None => return Ok(()),
+                };
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| f.name == view.feature_name);
+                let fi = match fi {
+                    Some(fi) => fi,
+                    None => return Ok(()),
+                };
+                (pi, fi)
+            }
+            _ => return Ok(()),
+        };
+
+        let project = &self.store.projects[pi];
+        if project.features.len() <= 1 {
+            return Ok(());
+        }
+
+        let prev_fi = if fi == 0 {
+            project.features.len() - 1
+        } else {
+            fi - 1
+        };
+        self.switch_view_to_feature(pi, prev_fi)
+    }
+
+    /// Switch the current view to a different feature.
+    fn switch_view_to_feature(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<()> {
+        let project = &self.store.projects[pi];
+        let feature = &project.features[fi];
+        let project_name = project.name.clone();
+        let feature_name = feature.name.clone();
+        let tmux_session = feature.tmux_session.clone();
+        let workdir = feature.workdir.clone();
+
+        if !TmuxManager::session_exists(&tmux_session) {
+            TmuxManager::create_session(&tmux_session, &workdir)?;
+            TmuxManager::launch_claude(&tmux_session, None)?;
+        }
+
+        let feature = self.store.projects[pi]
+            .features
+            .get_mut(fi)
+            .unwrap();
+        feature.touch();
+        feature.status = ProjectStatus::Active;
+
+        self.selection = Selection::Feature(pi, fi);
+        self.pane_content.clear();
+        self.mode = AppMode::Viewing(ViewState {
+            project_name,
+            feature_name,
+            session: tmux_session,
+            window: "claude".into(),
+        });
+        self.save()?;
 
         Ok(())
     }

@@ -98,6 +98,11 @@ fn run_loop<B: Backend>(
             return Ok(());
         }
 
+        // Auto-cancel leader if timed out
+        if app.leader_active && app.leader_timed_out() {
+            app.deactivate_leader();
+        }
+
         // Periodic status refresh (every 5 seconds)
         if !is_viewing && last_sync.elapsed() >= Duration::from_secs(5)
         {
@@ -282,11 +287,24 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
 }
 
 fn handle_view_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // If leader is active, dispatch to leader handler
+    if app.leader_active {
+        return handle_leader_key(app, key);
+    }
+
     // Ctrl+Q exits the view
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && key.code == KeyCode::Char('q')
     {
         app.exit_view();
+        return Ok(());
+    }
+
+    // Ctrl+Space activates leader mode
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char(' ')
+    {
+        app.activate_leader();
         return Ok(());
     }
 
@@ -311,6 +329,69 @@ fn handle_view_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 );
             }
         }
+    }
+
+    Ok(())
+}
+
+fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    app.deactivate_leader();
+
+    match key.code {
+        KeyCode::Char('q') => {
+            app.exit_view();
+        }
+        KeyCode::Char('t') => {
+            // Switch tmux window to terminal
+            if let AppMode::Viewing(ref mut view) = app.mode {
+                let new_window = if view.window == "claude" {
+                    "terminal"
+                } else {
+                    "claude"
+                };
+                view.window = new_window.to_string();
+            }
+        }
+        KeyCode::Char('s') => {
+            // Switch/attach to tmux session directly
+            let session = match &app.mode {
+                AppMode::Viewing(view) => view.session.clone(),
+                _ => return Ok(()),
+            };
+            app.exit_view();
+            if TmuxManager::is_inside_tmux() {
+                TmuxManager::switch_client(&session)?;
+            } else {
+                app.should_switch = Some(session);
+            }
+        }
+        KeyCode::Char('n') => {
+            app.view_next_feature()?;
+        }
+        KeyCode::Char('p') => {
+            app.view_prev_feature()?;
+        }
+        KeyCode::Char('r') => {
+            app.sync_statuses();
+            app.message = Some("Refreshed statuses".into());
+        }
+        KeyCode::Char('x') => {
+            // Stop the current session and exit view
+            let session = match &app.mode {
+                AppMode::Viewing(view) => view.session.clone(),
+                _ => return Ok(()),
+            };
+            let _ = TmuxManager::kill_session(&session);
+            app.exit_view();
+            app.sync_statuses();
+            app.message = Some("Stopped session".into());
+        }
+        KeyCode::Char('h') => {
+            app.exit_view();
+            app.mode = AppMode::Help;
+        }
+        // Any unbound key or Esc cancels (already deactivated above)
+        _ => {}
     }
 
     Ok(())

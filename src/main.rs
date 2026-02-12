@@ -30,6 +30,7 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.sync_statuses();
+    app.scan_notifications();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -103,10 +104,12 @@ fn run_loop<B: Backend>(
             app.deactivate_leader();
         }
 
-        // Periodic status refresh (every 5 seconds)
-        if !is_viewing && last_sync.elapsed() >= Duration::from_secs(5)
-        {
-            app.sync_statuses();
+        // Periodic refresh (every 5 seconds)
+        if last_sync.elapsed() >= Duration::from_secs(5) {
+            if !is_viewing {
+                app.sync_statuses();
+            }
+            app.scan_notifications();
             last_sync = std::time::Instant::now();
         }
 
@@ -136,7 +139,7 @@ fn run_loop<B: Backend>(
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match &app.mode {
-        AppMode::Normal => handle_normal_key(app, key.code),
+        AppMode::Normal => handle_normal_key(app, key),
         AppMode::CreatingProject(_) => {
             handle_create_project_key(app, key.code)
         }
@@ -151,10 +154,27 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         AppMode::Viewing(_) => handle_view_key(app, key),
         AppMode::Help => handle_help_key(app, key.code),
+        AppMode::NotificationPicker(_) => {
+            handle_notification_picker_key(app, key.code)
+        }
     }
 }
 
-fn handle_normal_key(app: &mut App, key: KeyCode) -> Result<()> {
+fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // If leader is active in Normal mode, dispatch to normal leader handler
+    if app.leader_active {
+        return handle_normal_leader_key(app, key);
+    }
+
+    // Ctrl+Space activates leader mode in Normal mode
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char(' ')
+    {
+        app.activate_leader();
+        return Ok(());
+    }
+
+    let key = key.code;
     match key {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.should_quit = true;
@@ -229,8 +249,17 @@ fn handle_normal_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('h') => {
             app.mode = AppMode::Help;
         }
+        KeyCode::Char('i') => {
+            if !app.pending_inputs.is_empty() {
+                app.mode = AppMode::NotificationPicker(0);
+            } else {
+                app.message =
+                    Some("No pending input requests".into());
+            }
+        }
         KeyCode::Char('r') => {
             app.sync_statuses();
+            app.scan_notifications();
             app.message = Some("Refreshed statuses".into());
         }
         KeyCode::Down | KeyCode::Char('j') => {
@@ -386,6 +415,15 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.sync_statuses();
             app.message = Some("Stopped session".into());
         }
+        KeyCode::Char('i') => {
+            app.exit_view();
+            if !app.pending_inputs.is_empty() {
+                app.mode = AppMode::NotificationPicker(0);
+            } else {
+                app.message =
+                    Some("No pending input requests".into());
+            }
+        }
         KeyCode::Char('h') => {
             app.exit_view();
             app.mode = AppMode::Help;
@@ -394,6 +432,71 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
 
+    Ok(())
+}
+
+fn handle_normal_leader_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
+    app.deactivate_leader();
+
+    match key.code {
+        KeyCode::Char('i') => {
+            if !app.pending_inputs.is_empty() {
+                app.mode = AppMode::NotificationPicker(0);
+            } else {
+                app.message =
+                    Some("No pending input requests".into());
+            }
+        }
+        KeyCode::Char('h') => {
+            app.mode = AppMode::Help;
+        }
+        KeyCode::Char('r') => {
+            app.sync_statuses();
+            app.scan_notifications();
+            app.message = Some("Refreshed statuses".into());
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn handle_notification_picker_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::NotificationPicker(ref mut idx) =
+                app.mode
+            {
+                let len = app.pending_inputs.len();
+                if len > 0 {
+                    *idx = (*idx + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::NotificationPicker(ref mut idx) =
+                app.mode
+            {
+                let len = app.pending_inputs.len();
+                if len > 0 {
+                    *idx = if *idx == 0 { len - 1 } else { *idx - 1 };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            app.handle_notification_select()?;
+        }
+        _ => {}
+    }
     Ok(())
 }
 

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, Selection, VisibleItem};
+use crate::app::{App, AppMode, PendingInput, Selection, VisibleItem};
 use crate::project::ProjectStatus;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -17,6 +17,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             view,
             &app.pane_content,
             app.leader_active,
+            app.pending_inputs.len(),
         );
         return;
     }
@@ -30,7 +31,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(frame.area());
 
-    draw_header(frame, chunks[0]);
+    draw_header(frame, chunks[0], app.pending_inputs.len());
     draw_project_list(frame, app, chunks[1]);
     draw_status_bar(frame, app, chunks[2]);
 
@@ -59,17 +60,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if matches!(app.mode, AppMode::Help) {
         draw_help(frame);
     }
+
+    // Draw notification picker overlay
+    if let AppMode::NotificationPicker(selected) = &app.mode {
+        draw_notification_picker(
+            frame,
+            &app.pending_inputs,
+            *selected,
+        );
+    }
 }
 
-fn draw_header(frame: &mut Frame, area: Rect) {
+fn draw_header(
+    frame: &mut Frame,
+    area: Rect,
+    pending_count: usize,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Left side: title
-    let title = Paragraph::new(Line::from(vec![
+    // Left side: title + optional notification badge
+    let mut title_spans = vec![
         Span::styled(
             " Agent Mainframe ",
             Style::default()
@@ -80,7 +94,22 @@ fn draw_header(frame: &mut Frame, area: Rect) {
             "| Multi-Project Agent Manager",
             Style::default().fg(Color::DarkGray),
         ),
-    ]));
+    ];
+
+    if pending_count > 0 {
+        title_spans.push(Span::styled(
+            format!(
+                "  [{} input request{}]",
+                pending_count,
+                if pending_count == 1 { "" } else { "s" },
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let title = Paragraph::new(Line::from(title_spans));
     frame.render_widget(title, inner);
 
     // Right side: help hint
@@ -88,7 +117,9 @@ fn draw_header(frame: &mut Frame, area: Rect) {
         Span::styled("h", Style::default().fg(Color::Yellow)),
         Span::styled(" help ", Style::default().fg(Color::DarkGray)),
     ]);
-    let hint_width: u16 = help_hint.spans.iter()
+    let hint_width: u16 = help_hint
+        .spans
+        .iter()
         .map(|s| s.content.len() as u16)
         .sum();
     let hint_area = Rect {
@@ -357,6 +388,23 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc/q/h", Style::default().fg(Color::Yellow)),
             Span::raw(" close help"),
         ]),
+        AppMode::NotificationPicker(_) => Line::from(vec![
+            Span::styled(
+                "j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" view  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" close"),
+        ]),
         AppMode::Viewing(_) => Line::from(vec![
             Span::styled(
                 "Ctrl+Space",
@@ -613,6 +661,7 @@ fn draw_help(frame: &mut Frame) {
         ("d", "Delete project/feature"),
         ("c", "Start feature session"),
         ("x", "Stop feature session"),
+        ("i", "Input requests picker"),
         ("r", "Refresh statuses"),
         ("h", "Toggle this help"),
         ("q / Esc", "Quit"),
@@ -657,7 +706,7 @@ fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t s n p r x h)",
+            "Leader key (then: q t s n p i r x h)",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -689,6 +738,89 @@ fn cursor_span_project<'a>(
     }
 }
 
+fn draw_notification_picker(
+    frame: &mut Frame,
+    pending: &[PendingInput],
+    selected: usize,
+) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Input Requests ({}) ",
+        pending.len()
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if pending.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No pending input requests.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let items: Vec<ListItem> = pending
+        .iter()
+        .enumerate()
+        .map(|(i, input)| {
+            let is_selected = i == selected;
+
+            let proj = input
+                .project_name
+                .as_deref()
+                .unwrap_or("unknown");
+            let feat = input
+                .feature_name
+                .as_deref()
+                .unwrap_or("unknown");
+
+            // Truncate message for preview
+            let msg_preview = if input.message.len() > 50 {
+                format!("{}...", &input.message[..47])
+            } else if input.message.is_empty() {
+                input.notification_type.clone()
+            } else {
+                input.message.clone()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("  {} ", proj),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("/ {} ", feat),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("- {}", msg_preview),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line)
+                    .style(Style::default().bg(Color::DarkGray))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
+}
+
 fn centered_rect(
     percent_x: u16,
     percent_y: u16,
@@ -718,6 +850,7 @@ fn draw_pane_view(
     view: &crate::app::ViewState,
     pane_content: &str,
     leader_active: bool,
+    pending_count: usize,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -756,7 +889,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t:terminal n/p:cycle s:attach x:stop h:help",
+            " q:exit t:terminal n/p:cycle i:inputs s:attach x:stop h:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -771,6 +904,19 @@ fn draw_pane_view(
         header_spans.push(Span::styled(
             " command palette",
             Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if pending_count > 0 {
+        header_spans.push(Span::styled(
+            format!(
+                " | {} input{}",
+                pending_count,
+                if pending_count == 1 { "" } else { "s" },
+            ),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 

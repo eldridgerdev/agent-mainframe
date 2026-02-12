@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -26,6 +27,78 @@ fn ensure_claude_settings(repo: &Path) -> Result<()> {
         std::fs::write(&settings, DEFAULT_CLAUDE_SETTINGS)?;
     }
     Ok(())
+}
+
+/// Ensure `.claude/settings.json` in the given workdir has the
+/// notification hooks configured. Merges with existing settings
+/// rather than overwriting.
+pub fn ensure_notification_hooks(workdir: &Path) {
+    let claude_dir = workdir.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+
+    let notify_script = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless")
+        .join("notify.sh");
+    let clear_script = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless")
+        .join("clear-notify.sh");
+
+    let notify_cmd = notify_script.to_string_lossy().to_string();
+    let clear_cmd = clear_script.to_string_lossy().to_string();
+
+    // Read existing settings or start fresh
+    let mut settings: serde_json::Value =
+        if settings_path.exists() {
+            std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+    // Check if hooks already exist — skip write if so
+    if let Some(hooks) = settings.get("hooks") {
+        if hooks.get("Notification").is_some()
+            && hooks.get("Stop").is_some()
+        {
+            return;
+        }
+    }
+
+    let hooks = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+
+    // Build the hook entries we want
+    let notification_hook = serde_json::json!([{
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": notify_cmd }]
+    }]);
+    let stop_hook = serde_json::json!([{
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": clear_cmd }]
+    }]);
+
+    let hooks_obj = hooks.as_object_mut().unwrap();
+
+    // Only set if not already configured
+    hooks_obj
+        .entry("Notification")
+        .or_insert(notification_hook);
+    hooks_obj.entry("Stop").or_insert(stop_hook);
+
+    // Write back
+    let _ = std::fs::create_dir_all(&claude_dir);
+    let _ = std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings)
+            .unwrap_or_default(),
+    );
 }
 
 /// Try to detect the git repo root from cwd, falling back to cwd itself.
@@ -59,6 +132,28 @@ pub struct ViewState {
     pub window: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingInput {
+    pub session_id: String,
+    pub cwd: String,
+    pub message: String,
+    pub notification_type: String,
+    pub file_path: PathBuf,
+    /// Resolved project name (if matched)
+    pub project_name: Option<String>,
+    /// Resolved feature name (if matched)
+    pub feature_name: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NotificationJson {
+    session_id: Option<String>,
+    cwd: Option<String>,
+    message: Option<String>,
+    #[serde(alias = "type")]
+    notification_type: Option<String>,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -67,6 +162,7 @@ pub enum AppMode {
     DeletingFeature(String, String),
     Viewing(ViewState),
     Help,
+    NotificationPicker(usize),
 }
 
 pub struct CreateProjectState {
@@ -124,6 +220,7 @@ pub struct App {
     pub pane_content: String,
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
+    pub pending_inputs: Vec<PendingInput>,
 }
 
 impl App {
@@ -145,6 +242,7 @@ impl App {
             pane_content: String::new(),
             leader_active: false,
             leader_activated_at: None,
+            pending_inputs: Vec::new(),
         })
     }
 
@@ -505,6 +603,7 @@ impl App {
         }
 
         // Create tmux session + launch claude
+        ensure_notification_hooks(&feature.workdir);
         TmuxManager::create_session(
             &feature.tmux_session,
             &feature.workdir,
@@ -623,6 +722,7 @@ impl App {
 
         // Ensure session exists
         if !TmuxManager::session_exists(&tmux_session) {
+            ensure_notification_hooks(&workdir);
             TmuxManager::create_session(&tmux_session, &workdir)?;
             TmuxManager::launch_claude(&tmux_session, None)?;
         }
@@ -672,6 +772,7 @@ impl App {
         };
 
         if !TmuxManager::session_exists(&feature.tmux_session) {
+            ensure_notification_hooks(&feature.workdir);
             TmuxManager::create_session(
                 &feature.tmux_session,
                 &feature.workdir,
@@ -803,6 +904,7 @@ impl App {
         let workdir = feature.workdir.clone();
 
         if !TmuxManager::session_exists(&tmux_session) {
+            ensure_notification_hooks(&workdir);
             TmuxManager::create_session(&tmux_session, &workdir)?;
             TmuxManager::launch_claude(&tmux_session, None)?;
         }
@@ -824,6 +926,131 @@ impl App {
         });
         self.save()?;
 
+        Ok(())
+    }
+
+    /// Scan the notifications directory for pending input requests
+    /// and match them to known features by cwd.
+    pub fn scan_notifications(&mut self) {
+        let notify_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("claude-super-vibeless")
+            .join("notifications");
+
+        let mut inputs = Vec::new();
+
+        let entries = match std::fs::read_dir(&notify_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json")
+            {
+                continue;
+            }
+
+            let data = match std::fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let notif: NotificationJson =
+                match serde_json::from_str(&data) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
+
+            let session_id =
+                notif.session_id.unwrap_or_default();
+            let cwd = notif.cwd.unwrap_or_default();
+            let message = notif.message.unwrap_or_default();
+            let notification_type =
+                notif.notification_type.unwrap_or_default();
+
+            // Try to match cwd to a known feature
+            let mut project_name = None;
+            let mut feature_name = None;
+            let cwd_path = PathBuf::from(&cwd);
+            for project in &self.store.projects {
+                for feature in &project.features {
+                    if cwd_path.starts_with(&feature.workdir)
+                        || feature.workdir.starts_with(&cwd_path)
+                    {
+                        project_name = Some(project.name.clone());
+                        feature_name = Some(feature.name.clone());
+                        break;
+                    }
+                }
+                if project_name.is_some() {
+                    break;
+                }
+            }
+
+            inputs.push(PendingInput {
+                session_id,
+                cwd,
+                message,
+                notification_type,
+                file_path: path,
+                project_name,
+                feature_name,
+            });
+        }
+
+        self.pending_inputs = inputs;
+    }
+
+    /// Handle selecting a notification from the picker.
+    /// Enters view mode for the matched feature and removes
+    /// the notification file.
+    pub fn handle_notification_select(&mut self) -> Result<()> {
+        let idx = match &self.mode {
+            AppMode::NotificationPicker(i) => *i,
+            _ => return Ok(()),
+        };
+
+        let input = match self.pending_inputs.get(idx) {
+            Some(i) => i.clone(),
+            None => {
+                self.mode = AppMode::Normal;
+                return Ok(());
+            }
+        };
+
+        // Delete the notification file
+        let _ = std::fs::remove_file(&input.file_path);
+
+        // Try to navigate to the matching feature
+        if let (Some(proj_name), Some(feat_name)) =
+            (&input.project_name, &input.feature_name)
+        {
+            // Find indices
+            let pi = self
+                .store
+                .projects
+                .iter()
+                .position(|p| &p.name == proj_name);
+            if let Some(pi) = pi {
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| &f.name == feat_name);
+                if let Some(fi) = fi {
+                    self.selection = Selection::Feature(pi, fi);
+                    // Remove the item from pending_inputs
+                    self.pending_inputs.remove(idx);
+                    return self.enter_view();
+                }
+            }
+        }
+
+        // No match found, just close picker
+        self.pending_inputs.remove(idx);
+        self.mode = AppMode::Normal;
+        self.message =
+            Some("Notification cleared (no matching feature)".into());
         Ok(())
     }
 

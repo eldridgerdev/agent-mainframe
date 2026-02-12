@@ -12,7 +12,12 @@ use crate::project::ProjectStatus;
 pub fn draw(frame: &mut Frame, app: &App) {
     // Viewing mode gets its own full-screen layout
     if let AppMode::Viewing(view) = &app.mode {
-        draw_pane_view(frame, view, &app.pane_content);
+        draw_pane_view(
+            frame,
+            view,
+            &app.pane_content,
+            app.leader_active,
+        );
         return;
     }
 
@@ -354,6 +359,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::Viewing(_) => Line::from(vec![
             Span::styled(
+                "Ctrl+Space",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" commands  "),
+            Span::styled(
                 "Ctrl+Q",
                 Style::default().fg(Color::Yellow),
             ),
@@ -636,6 +646,19 @@ fn draw_help(frame: &mut Frame) {
         Span::raw("  "),
         Span::styled("Exit view", Style::default().fg(Color::White)),
     ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "Ctrl+Space"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Leader key (then: q t s n p r x h)",
+            Style::default().fg(Color::White),
+        ),
+    ]));
 
     let help = Paragraph::new(lines).block(
         Block::default()
@@ -692,6 +715,7 @@ fn draw_pane_view(
     frame: &mut Frame,
     view: &crate::app::ViewState,
     pane_content: &str,
+    leader_active: bool,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -702,7 +726,7 @@ fn draw_pane_view(
         .split(frame.area());
 
     // Header bar with project/feature info and escape hint
-    let header = Paragraph::new(Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             format!(" {} ", view.project_name),
             Style::default()
@@ -719,15 +743,45 @@ fn draw_pane_view(
             format!("| {} ", view.window),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            "| Ctrl+Q to exit",
+    ];
+
+    if leader_active {
+        header_spans.push(Span::styled(
+            "| LEADER ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        header_spans.push(Span::styled(
+            " q:exit t:terminal n/p:cycle s:attach x:stop h:help",
             Style::default().fg(Color::Yellow),
-        ),
-    ]))
-    .block(
+        ));
+    } else {
+        header_spans.push(Span::styled(
+            "| ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        header_spans.push(Span::styled(
+            "Ctrl+Space",
+            Style::default().fg(Color::Yellow),
+        ));
+        header_spans.push(Span::styled(
+            " command palette",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    let border_color = if leader_active {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+
+    let header = Paragraph::new(Line::from(header_spans)).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .border_style(Style::default().fg(border_color)),
     );
     frame.render_widget(header, chunks[0]);
 

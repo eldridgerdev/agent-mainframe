@@ -109,6 +109,18 @@ impl WorktreeManager {
             bail!("git worktree add failed: {}", stderr.trim());
         }
 
+        // Copy .claude/settings.local.json to new worktree
+        let claude_settings =
+            repo.join(".claude").join("settings.local.json");
+        if claude_settings.exists() {
+            let dest_dir = worktree_path.join(".claude");
+            std::fs::create_dir_all(&dest_dir)?;
+            std::fs::copy(
+                &claude_settings,
+                dest_dir.join("settings.local.json"),
+            )?;
+        }
+
         Ok(worktree_path)
     }
 

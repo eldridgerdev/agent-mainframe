@@ -7,6 +7,28 @@ use crate::project::{Feature, Project, ProjectStatus, ProjectStore};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
+/// Default contents for `.claude/settings.local.json` when a repo
+/// does not already have one.  Ensures the diff-review plugin is
+/// enabled for every Claude Code session managed by this tool.
+const DEFAULT_CLAUDE_SETTINGS: &str = r#"{
+  "enabledPlugins": {
+    "diff-review@claude_vibeless": true
+  }
+}
+"#;
+
+/// Ensure `.claude/settings.local.json` exists in `repo`.
+/// If missing, creates it with a minimal default that enables
+/// the diff-review plugin.  Existing files are left untouched.
+fn ensure_claude_settings(repo: &Path) -> Result<()> {
+    let settings = repo.join(".claude").join("settings.local.json");
+    if !settings.exists() {
+        std::fs::create_dir_all(settings.parent().unwrap())?;
+        std::fs::write(&settings, DEFAULT_CLAUDE_SETTINGS)?;
+    }
+    Ok(())
+}
+
 /// Ensure `.claude/settings.json` in the given workdir has the
 /// notification hooks configured. Merges with existing settings
 /// rather than overwriting.
@@ -510,6 +532,10 @@ impl App {
         }
 
         let is_first = project.features.is_empty();
+
+        // Ensure the repo has .claude/settings.local.json so that
+        // worktrees inherit it and the diff-review plugin is enabled.
+        ensure_claude_settings(&project_repo)?;
 
         let (workdir, is_worktree) = if is_first {
             // First feature uses the repo dir directly

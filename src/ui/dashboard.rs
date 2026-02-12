@@ -49,10 +49,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         _ => {}
     }
+
+    // Draw help overlay
+    if matches!(app.mode, AppMode::Help) {
+        draw_help(frame);
+    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect) {
-    let header = Paragraph::new(Line::from(vec![
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Left side: title
+    let title = Paragraph::new(Line::from(vec![
         Span::styled(
             " Agent Mainframe ",
             Style::default()
@@ -63,13 +75,25 @@ fn draw_header(frame: &mut Frame, area: Rect) {
             "| Multi-Project Agent Manager",
             Style::default().fg(Color::DarkGray),
         ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-    frame.render_widget(header, area);
+    ]));
+    frame.render_widget(title, inner);
+
+    // Right side: help hint
+    let help_hint = Line::from(vec![
+        Span::styled("h", Style::default().fg(Color::Yellow)),
+        Span::styled(" help ", Style::default().fg(Color::DarkGray)),
+    ]);
+    let hint_width: u16 = help_hint.spans.iter()
+        .map(|s| s.content.len() as u16)
+        .sum();
+    let hint_area = Rect {
+        x: inner.x + inner.width.saturating_sub(hint_width),
+        y: inner.y,
+        width: hint_width,
+        height: 1,
+    };
+    let hint = Paragraph::new(help_hint);
+    frame.render_widget(hint, hint_area);
 }
 
 fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -324,6 +348,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::raw(" cancel"),
         ]),
+        AppMode::Help => Line::from(vec![
+            Span::styled("Esc/q/h", Style::default().fg(Color::Yellow)),
+            Span::raw(" close help"),
+        ]),
         AppMode::Viewing(_) => Line::from(vec![
             Span::styled(
                 "Ctrl+Q",
@@ -559,6 +587,64 @@ fn draw_delete_feature_confirm(
     );
 
     frame.render_widget(text, area);
+}
+
+fn draw_help(frame: &mut Frame) {
+    let area = centered_rect(50, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let keybinds: Vec<(&str, &str)> = vec![
+        ("j/k / ↑/↓", "Navigate projects"),
+        ("Enter", "View project (embedded tmux)"),
+        ("s", "Switch to project (tmux attach)"),
+        ("t", "Open terminal window"),
+        ("n", "Create new project"),
+        ("d", "Delete project"),
+        ("x", "Stop project session"),
+        ("r", "Refresh statuses"),
+        ("h", "Toggle this help"),
+        ("q / Esc", "Quit"),
+    ];
+
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    for (key, desc) in &keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>12}", key),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(Color::White)),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  While viewing (embedded tmux):",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "Ctrl+Q"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Exit view", Style::default().fg(Color::White)),
+    ]));
+
+    let help = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Keybindings ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(help, area);
 }
 
 fn cursor_span_project<'a>(

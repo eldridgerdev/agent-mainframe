@@ -145,6 +145,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
             handle_delete_feature_key(app, key.code)
         }
         AppMode::Viewing(_) => handle_view_key(app, key),
+        AppMode::Help => handle_help_key(app, key.code),
     }
 }
 
@@ -219,6 +220,9 @@ fn handle_normal_key(app: &mut App, key: KeyCode) -> Result<()> {
             if matches!(app.selection, Selection::Feature(_, _)) {
                 app.open_terminal()?;
             }
+        }
+        KeyCode::Char('h') => {
+            app.mode = AppMode::Help;
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
@@ -392,6 +396,16 @@ fn handle_create_feature_key(
             if let AppMode::CreatingFeature(state) = &mut app.mode {
                 state.branch.push(c);
             }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
+            app.mode = AppMode::Normal;
         }
         _ => {}
     }

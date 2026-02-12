@@ -43,6 +43,7 @@ pub enum AppMode {
     DeletingProject(String),
     DeletingFeature(String, String),
     Viewing(ViewState),
+    Help,
 }
 
 pub struct CreateProjectState {

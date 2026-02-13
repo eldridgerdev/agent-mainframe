@@ -2,6 +2,6 @@
 projects.json
 TODO.md
 IDEAS.md
-/.worktrees
-/.claude
+.worktrees/
+.claude/settings.local.json
 

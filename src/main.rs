@@ -141,7 +141,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::CreatingProject(_) => {
-            handle_create_project_key(app, key.code)
+            handle_create_project_key(app, key)
+        }
+        AppMode::BrowsingPath(_) => {
+            handle_browse_path_key(app, key)
         }
         AppMode::CreatingFeature(_) => {
             handle_create_feature_key(app, key.code)
@@ -500,13 +503,88 @@ fn handle_notification_picker_key(
     Ok(())
 }
 
+fn handle_browse_path_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.cancel_browse_path();
+        }
+        KeyCode::Tab => {
+            // Return to create project dialog on Name step
+            app.cancel_browse_path();
+            if let AppMode::CreatingProject(state) =
+                &mut app.mode
+            {
+                state.step =
+                    app::CreateProjectStep::Name;
+            }
+        }
+        KeyCode::Char(' ') => {
+            app.confirm_browse_path();
+        }
+        KeyCode::Enter => {
+            // If the current entry is a directory, let the
+            // explorer handle it (enters the dir). Otherwise
+            // confirm with the current cwd.
+            let is_dir = match &app.mode {
+                AppMode::BrowsingPath(state) => {
+                    state.explorer.current().is_dir()
+                }
+                _ => false,
+            };
+            if is_dir {
+                if let AppMode::BrowsingPath(state) =
+                    &mut app.mode
+                {
+                    let _ = state.explorer.handle(
+                        &Event::Key(key),
+                    );
+                }
+            } else {
+                app.confirm_browse_path();
+            }
+        }
+        _ => {
+            if let AppMode::BrowsingPath(state) = &mut app.mode
+            {
+                let _ =
+                    state.explorer.handle(&Event::Key(key));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn handle_create_project_key(
     app: &mut App,
-    key: KeyCode,
+    key: KeyEvent,
 ) -> Result<()> {
     use app::CreateProjectStep;
 
-    match key {
+    // Ctrl+B opens file browser on the Path step
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('b')
+    {
+        let is_path_step = matches!(
+            &app.mode,
+            AppMode::CreatingProject(s)
+                if matches!(s.step, CreateProjectStep::Path)
+        );
+        if is_path_step {
+            let browse = std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            );
+            if let AppMode::CreatingProject(state) = browse {
+                app.start_browse_path(state);
+            }
+            return Ok(());
+        }
+    }
+
+    match key.code {
         KeyCode::Esc => {
             app.cancel_create();
         }

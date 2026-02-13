@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ratatui_explorer::FileExplorer;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -163,14 +164,22 @@ pub enum AppMode {
     Viewing(ViewState),
     Help,
     NotificationPicker(usize),
+    BrowsingPath(Box<BrowsePathState>),
 }
 
+pub struct BrowsePathState {
+    pub explorer: FileExplorer,
+    pub create_state: CreateProjectState,
+}
+
+#[derive(Clone)]
 pub struct CreateProjectState {
     pub step: CreateProjectStep,
     pub name: String,
     pub path: String,
 }
 
+#[derive(Clone)]
 pub enum CreateProjectStep {
     Name,
     Path,
@@ -371,6 +380,68 @@ impl App {
 
     pub fn cancel_create(&mut self) {
         self.mode = AppMode::Normal;
+    }
+
+    pub fn start_browse_path(
+        &mut self,
+        create_state: CreateProjectState,
+    ) {
+        let mut explorer = match FileExplorer::new() {
+            Ok(e) => e,
+            Err(_) => {
+                self.message =
+                    Some("Failed to open file browser".into());
+                return;
+            }
+        };
+
+        let start_dir = PathBuf::from(&create_state.path);
+        let start_dir = if start_dir.is_dir() {
+            start_dir
+        } else {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
+        };
+
+        let _ = explorer.set_cwd(start_dir);
+
+        self.mode = AppMode::BrowsingPath(Box::new(
+            BrowsePathState {
+                explorer,
+                create_state,
+            },
+        ));
+        self.message = None;
+    }
+
+    pub fn confirm_browse_path(&mut self) {
+        let path = match &self.mode {
+            AppMode::BrowsingPath(state) => {
+                state.explorer.cwd().to_string_lossy().into_owned()
+            }
+            _ => return,
+        };
+
+        let browse = std::mem::replace(
+            &mut self.mode,
+            AppMode::Normal,
+        );
+        if let AppMode::BrowsingPath(mut state) = browse {
+            state.create_state.path = path;
+            state.create_state.step = CreateProjectStep::Path;
+            self.mode =
+                AppMode::CreatingProject(state.create_state);
+        }
+    }
+
+    pub fn cancel_browse_path(&mut self) {
+        let browse = std::mem::replace(
+            &mut self.mode,
+            AppMode::Normal,
+        );
+        if let AppMode::BrowsingPath(state) = browse {
+            self.mode =
+                AppMode::CreatingProject(state.create_state);
+        }
     }
 
     pub fn create_project(&mut self) -> Result<()> {

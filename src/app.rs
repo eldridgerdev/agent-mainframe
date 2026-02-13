@@ -519,6 +519,20 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    pub fn show_error(&mut self, error: anyhow::Error) {
+        self.message = Some(format!("Error: {}", error));
+        // If we were in a dialog/creation mode, return to
+        // normal so the user isn't stuck
+        match &self.mode {
+            AppMode::Normal
+            | AppMode::Help
+            | AppMode::Viewing(_) => {}
+            _ => {
+                self.mode = AppMode::Normal;
+            }
+        }
+    }
+
     pub fn start_browse_path(
         &mut self,
         create_state: CreateProjectState,
@@ -592,13 +606,13 @@ impl App {
 
         if name.is_empty() {
             self.message =
-                Some("Project name cannot be empty".into());
+                Some("Error: Project name cannot be empty".into());
             return Ok(());
         }
 
         if !path.exists() {
             self.message = Some(format!(
-                "Path does not exist: {}",
+                "Error: Path does not exist: {}",
                 path.display()
             ));
             return Ok(());
@@ -606,14 +620,19 @@ impl App {
 
         if self.store.find_project(&name).is_some() {
             self.message = Some(format!(
-                "Project '{}' already exists",
+                "Error: Project '{}' already exists",
                 name
             ));
             return Ok(());
         }
 
-        let repo_root = WorktreeManager::repo_root(&path)?;
-        let project = Project::new(name.clone(), repo_root);
+        let (project_path, is_git) =
+            match WorktreeManager::repo_root(&path) {
+                Ok(r) => (r, true),
+                Err(_) => (path.clone(), false),
+            };
+        let project =
+            Project::new(name.clone(), project_path, is_git);
 
         self.store.add_project(project);
         self.save()?;
@@ -732,7 +751,7 @@ impl App {
 
         if branch.is_empty() {
             self.message =
-                Some("Branch name cannot be empty".into());
+                Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
 
@@ -741,7 +760,7 @@ impl App {
                 Some(p) => p,
                 None => {
                     self.message = Some(format!(
-                        "Project '{}' not found",
+                        "Error: Project '{}' not found",
                         project_name
                     ));
                     return Ok(());
@@ -751,17 +770,28 @@ impl App {
         // Check for duplicate feature name
         if project.features.iter().any(|f| f.name == branch) {
             self.message = Some(format!(
-                "Feature '{}' already exists in '{}'",
+                "Error: Feature '{}' already exists in '{}'",
                 branch, project_name
             ));
             return Ok(());
         }
 
         let is_first = project.features.is_empty();
+        let is_git = project.is_git;
+
+        if !is_git && !is_first {
+            self.message = Some(
+                "Error: Non-git projects support only one feature"
+                    .into(),
+            );
+            return Ok(());
+        }
 
         // Ensure the repo has .claude/settings.local.json so that
         // worktrees inherit it and the diff-review plugin is enabled.
-        ensure_claude_settings(&project_repo)?;
+        if is_git {
+            ensure_claude_settings(&project_repo)?;
+        }
 
         let (workdir, is_worktree) = if is_first {
             (project_repo.clone(), false)
@@ -896,7 +926,7 @@ impl App {
                 .map(|f| f.name.clone())
             {
                 self.message = Some(format!(
-                    "'{}' is already running",
+                    "Error: '{}' is already running",
                     name
                 ));
             }
@@ -933,7 +963,7 @@ impl App {
 
         if feature.status == ProjectStatus::Stopped {
             self.message = Some(format!(
-                "'{}' is already stopped",
+                "Error: '{}' is already stopped",
                 feature.name
             ));
             return Ok(());
@@ -1019,7 +1049,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());
@@ -1067,7 +1097,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());

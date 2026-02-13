@@ -163,10 +163,16 @@ pub struct Project {
     pub collapsed: bool,
     pub features: Vec<Feature>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub is_git: bool,
 }
 
 impl Project {
-    pub fn new(name: String, repo: PathBuf) -> Self {
+    pub fn new(
+        name: String,
+        repo: PathBuf,
+        is_git: bool,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
@@ -174,6 +180,7 @@ impl Project {
             collapsed: false,
             features: Vec::new(),
             created_at: Utc::now(),
+            is_git,
         }
     }
 }
@@ -414,6 +421,7 @@ impl ProjectStore {
                     collapsed: p.collapsed,
                     features,
                     created_at: p.created_at,
+                    is_git: true,
                 }
             })
             .collect();

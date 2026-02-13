@@ -28,7 +28,7 @@ impl ClaudeLauncher {
         window: &str,
         resume_id: Option<&str>,
     ) -> Result<()> {
-        TmuxManager::launch_claude(session, window, resume_id)
+        TmuxManager::launch_claude(session, window, resume_id, &[])
     }
 
     /// Run a headless Claude command and return the output

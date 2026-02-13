@@ -19,6 +19,8 @@ and interact with them all from one place.
   input, jump straight to the right session
 - **Leader key chords** - vim-style Ctrl+Space leader key
   for quick actions while viewing a session
+- **File browser** - browse and select project paths with
+  an interactive file explorer (Ctrl+B)
 
 ## Prerequisites
 
@@ -55,7 +57,8 @@ cargo build --release
    ```
 
 2. Press `N` to create a new project. Enter a name and
-   the path to a git repository.
+   the path to a git repository (or press `Ctrl+B` to
+   browse for a directory).
 
 3. Press `n` to add a feature. Enter a branch name - a
    git worktree is created automatically (the first
@@ -75,7 +78,9 @@ cargo build --release
 | Key | Action |
 | --- | --- |
 | `j` / `k` / `Up` / `Down` | Navigate project tree |
-| `Enter` | View feature (embedded tmux) / expand project |
+| `h` | Collapse project / go to parent |
+| `l` | Expand project / view feature |
+| `Enter` | Toggle expand / view feature |
 | `s` | Switch to feature (tmux attach) |
 | `t` | Open terminal window |
 | `N` | Create new project |
@@ -85,7 +90,7 @@ cargo build --release
 | `x` | Stop feature session |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
-| `h` | Toggle help |
+| `?` | Toggle help |
 | `q` / `Esc` | Quit |
 
 ### Viewing Mode (Embedded tmux)
@@ -195,6 +200,8 @@ src/
   serialization
 - [chrono](https://github.com/chronotope/chrono) 0.4 -
   timestamps
+- [ratatui-explorer](https://github.com/tatounee/ratatui-explorer)
+  0.2 - file browser widget for path selection
 
 ### Architecture Notes
 
@@ -210,3 +217,7 @@ src/
 - When running inside tmux, switching uses
   `switch-client`; outside tmux, the TUI exits and
   attaches directly
+
+---
+
+*Last updated: 2026-02-12*

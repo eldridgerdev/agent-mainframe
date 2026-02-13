@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::project::{
     Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionKind,
+    ProjectStore, SessionKind, VibeMode,
 };
 
 pub struct SwitcherEntry {
@@ -23,6 +23,7 @@ pub struct SessionSwitcherState {
     pub selected: usize,
     pub return_window: String,
     pub return_label: String,
+    pub vibe_mode: VibeMode,
 }
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -208,6 +209,7 @@ pub struct ViewState {
     pub session: String,
     pub window: String,
     pub session_label: String,
+    pub vibe_mode: VibeMode,
 }
 
 #[derive(Debug, Clone)]
@@ -290,10 +292,19 @@ impl CreateProjectState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateFeatureStep {
+    Branch,
+    Mode,
+}
+
 pub struct CreateFeatureState {
     pub project_name: String,
     pub project_repo: PathBuf,
     pub branch: String,
+    pub step: CreateFeatureStep,
+    pub mode: VibeMode,
+    pub mode_index: usize,
 }
 
 impl CreateFeatureState {
@@ -305,6 +316,9 @@ impl CreateFeatureState {
             project_name,
             project_repo,
             branch: detect_branch(),
+            step: CreateFeatureStep::Branch,
+            mode: VibeMode::default(),
+            mode_index: 0,
         }
     }
 }
@@ -556,6 +570,20 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    pub fn show_error(&mut self, error: anyhow::Error) {
+        self.message = Some(format!("Error: {}", error));
+        // If we were in a dialog/creation mode, return to
+        // normal so the user isn't stuck
+        match &self.mode {
+            AppMode::Normal
+            | AppMode::Help
+            | AppMode::Viewing(_) => {}
+            _ => {
+                self.mode = AppMode::Normal;
+            }
+        }
+    }
+
     pub fn start_browse_path(
         &mut self,
         create_state: CreateProjectState,
@@ -629,13 +657,13 @@ impl App {
 
         if name.is_empty() {
             self.message =
-                Some("Project name cannot be empty".into());
+                Some("Error: Project name cannot be empty".into());
             return Ok(());
         }
 
         if !path.exists() {
             self.message = Some(format!(
-                "Path does not exist: {}",
+                "Error: Path does not exist: {}",
                 path.display()
             ));
             return Ok(());
@@ -643,14 +671,19 @@ impl App {
 
         if self.store.find_project(&name).is_some() {
             self.message = Some(format!(
-                "Project '{}' already exists",
+                "Error: Project '{}' already exists",
                 name
             ));
             return Ok(());
         }
 
-        let repo_root = WorktreeManager::repo_root(&path)?;
-        let project = Project::new(name.clone(), repo_root);
+        let (project_path, is_git) =
+            match WorktreeManager::repo_root(&path) {
+                Ok(r) => (r, true),
+                Err(_) => (path.clone(), false),
+            };
+        let project =
+            Project::new(name.clone(), project_path, is_git);
 
         self.store.add_project(project);
         self.save()?;
@@ -766,35 +799,64 @@ impl App {
         let project_name = state.project_name.clone();
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
+        let mode = state.mode.clone();
 
         if branch.is_empty() {
             self.message =
-                Some("Branch name cannot be empty".into());
+                Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
 
-        let project =
-            match self.store.find_project(&project_name) {
-                Some(p) => p,
-                None => {
-                    self.message = Some(format!(
-                        "Project '{}' not found",
-                        project_name
-                    ));
-                    return Ok(());
-                }
-            };
+        let (is_first, stored_is_git) = {
+            let project =
+                match self.store.find_project(&project_name) {
+                    Some(p) => p,
+                    None => {
+                        self.message = Some(format!(
+                            "Error: Project '{}' not found",
+                            project_name
+                        ));
+                        return Ok(());
+                    }
+                };
 
-        // Check for duplicate feature name
-        if project.features.iter().any(|f| f.name == branch) {
-            self.message = Some(format!(
-                "Feature '{}' already exists in '{}'",
-                branch, project_name
-            ));
-            return Ok(());
+            // Check for duplicate feature name
+            if project
+                .features
+                .iter()
+                .any(|f| f.name == branch)
+            {
+                self.message = Some(format!(
+                    "Error: Feature '{}' already exists in '{}'",
+                    branch, project_name
+                ));
+                return Ok(());
+            }
+
+            (project.features.is_empty(), project.is_git)
+        };
+
+        // Re-check git status if the stored flag says non-git
+        let is_git = stored_is_git
+            || WorktreeManager::repo_root(&project_repo).is_ok();
+
+        // Update stored flag if we detected git after initial creation
+        if is_git && !stored_is_git {
+            if let Some(p) =
+                self.store.find_project_mut(&project_name)
+            {
+                p.is_git = true;
+            }
+            self.save()?;
         }
 
-        let is_first = project.features.is_empty();
+        if !is_git && !is_first {
+            self.message = Some(
+                "Error: Non-git projects support only one feature"
+                    .into(),
+            );
+            return Ok(());
+        }
 
         let (workdir, is_worktree) = if is_first {
             (project_repo.clone(), false)
@@ -812,6 +874,7 @@ impl App {
             branch.clone(),
             workdir,
             is_worktree,
+            mode,
         );
 
         self.store.add_feature(&project_name, feature);
@@ -889,12 +952,14 @@ impl App {
             )?;
         }
 
+        let extra_args = feature.mode.cli_flags();
         for session in &feature.sessions {
             if session.kind == SessionKind::Claude {
                 TmuxManager::launch_claude(
                     &feature.tmux_session,
                     &session.tmux_window,
                     session.claude_session_id.as_deref(),
+                    &extra_args,
                 )?;
             }
         }
@@ -933,7 +998,7 @@ impl App {
                 .map(|f| f.name.clone())
             {
                 self.message = Some(format!(
-                    "'{}' is already running",
+                    "Error: '{}' is already running",
                     name
                 ));
             }
@@ -970,7 +1035,7 @@ impl App {
 
         if feature.status == ProjectStatus::Stopped {
             self.message = Some(format!(
-                "'{}' is already stopped",
+                "Error: '{}' is already stopped",
                 feature.name
             ));
             return Ok(());
@@ -1056,7 +1121,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());
@@ -1107,7 +1172,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());
@@ -1115,6 +1180,12 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
+        let extra_args: Vec<String> = feature
+            .mode
+            .cli_flags()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         ensure_notification_hooks(&workdir, &repo);
         let session =
             feature.add_session(SessionKind::Claude);
@@ -1126,10 +1197,13 @@ impl App {
             &window,
             &workdir,
         )?;
+        let extra_refs: Vec<&str> =
+            extra_args.iter().map(|s| s.as_str()).collect();
         TmuxManager::launch_claude(
             &tmux_session,
             &window,
             None,
+            &extra_refs,
         )?;
 
         feature.collapsed = false;
@@ -1212,6 +1286,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            vibe_mode,
         ) = {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
@@ -1233,6 +1308,7 @@ impl App {
                 feature.tmux_session.clone(),
                 session.tmux_window.clone(),
                 session.label.clone(),
+                feature.mode.clone(),
             )
         };
 
@@ -1250,6 +1326,7 @@ impl App {
             session: tmux_session,
             window: session_window,
             session_label,
+            vibe_mode,
         };
 
         self.save()?;
@@ -1451,6 +1528,7 @@ impl App {
         let project_name = project.name.clone();
         let feature_name = feature.name.clone();
         let tmux_session = feature.tmux_session.clone();
+        let vibe_mode = feature.mode.clone();
 
         // Default to first Claude session
         let si = feature
@@ -1480,6 +1558,7 @@ impl App {
             session: tmux_session,
             window: session_window,
             session_label,
+            vibe_mode,
         });
         self.save()?;
 
@@ -1595,7 +1674,7 @@ impl App {
 
     /// Open the session switcher overlay from Viewing mode.
     pub fn open_session_switcher(&mut self) {
-        let (project_name, feature_name, tmux_session, current_window, current_label, sessions) =
+        let (project_name, feature_name, tmux_session, current_window, current_label, sessions, vibe_mode) =
             match &self.mode {
                 AppMode::Viewing(view) => {
                     let pi = self
@@ -1639,6 +1718,7 @@ impl App {
                         view.window.clone(),
                         view.session_label.clone(),
                         entries,
+                        view.vibe_mode.clone(),
                     )
                 }
                 _ => return,
@@ -1662,6 +1742,7 @@ impl App {
                 selected,
                 return_window: current_window,
                 return_label: current_label,
+                vibe_mode,
             });
     }
 
@@ -1674,6 +1755,7 @@ impl App {
             tmux_session,
             window,
             label,
+            vibe_mode,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => {
                 let entry =
@@ -1688,6 +1770,7 @@ impl App {
                     state.tmux_session.clone(),
                     entry.tmux_window.clone(),
                     entry.label.clone(),
+                    state.vibe_mode.clone(),
                 )
             }
             _ => return,
@@ -1700,6 +1783,7 @@ impl App {
             session: tmux_session,
             window,
             session_label: label,
+            vibe_mode,
         });
     }
 
@@ -1712,6 +1796,7 @@ impl App {
             tmux_session,
             window,
             label,
+            vibe_mode,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => (
                 state.project_name.clone(),
@@ -1719,6 +1804,7 @@ impl App {
                 state.tmux_session.clone(),
                 state.return_window.clone(),
                 state.return_label.clone(),
+                state.vibe_mode.clone(),
             ),
             _ => return,
         };
@@ -1730,6 +1816,7 @@ impl App {
             session: tmux_session,
             window,
             session_label: label,
+            vibe_mode,
         });
     }
 
@@ -2010,6 +2097,7 @@ impl App {
             return_label: switcher_state
                 .return_label
                 .clone(),
+            vibe_mode: switcher_state.vibe_mode.clone(),
         };
 
         self.mode =

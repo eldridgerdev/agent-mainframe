@@ -128,6 +128,7 @@ fn remove_old_diff_review_plugin(repo: &Path) {
 pub fn ensure_notification_hooks(
     workdir: &Path,
     repo: &Path,
+    mode: &VibeMode,
 ) {
     // Remove the old external plugin so it doesn't
     // conflict with the hook we write below.
@@ -154,6 +155,9 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
+    let wants_diff_review =
+        matches!(mode, VibeMode::Vibeless);
+
     // Read existing settings or start fresh
     let mut settings: serde_json::Value =
         if settings_path.exists() {
@@ -165,12 +169,16 @@ pub fn ensure_notification_hooks(
             serde_json::json!({})
         };
 
-    // Check if all hooks and permissions already exist
-    let has_hooks = settings.get("hooks").is_some_and(|h| {
-        h.get("Notification").is_some()
-            && h.get("Stop").is_some()
-            && h.get("PreToolUse").is_some()
-    });
+    // Check whether config already matches desired state
+    let has_notification = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("Notification").is_some());
+    let has_stop = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("Stop").is_some());
+    let has_pre_tool_use = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("PreToolUse").is_some());
     let has_perms = settings
         .get("permissions")
         .and_then(|p| p.get("allow"))
@@ -181,7 +189,15 @@ pub fn ensure_notification_hooks(
                     .iter()
                     .any(|v| v.as_str() == Some("Write"))
         });
-    if has_hooks && has_perms {
+
+    let already_correct = has_notification
+        && has_stop
+        && if wants_diff_review {
+            has_pre_tool_use && has_perms
+        } else {
+            !has_pre_tool_use && !has_perms
+        };
+    if already_correct {
         return;
     }
 
@@ -200,42 +216,63 @@ pub fn ensure_notification_hooks(
         "matcher": "",
         "hooks": [{ "type": "command", "command": clear_cmd }]
     }]);
-    let pre_tool_use_hook = serde_json::json!([{
-        "matcher": "Edit|Write",
-        "hooks": [{
-            "type": "command",
-            "command": diff_review_cmd,
-            "timeout": 600
-        }]
-    }]);
 
     let hooks_obj = hooks.as_object_mut().unwrap();
     hooks_obj
         .entry("Notification")
         .or_insert(notification_hook);
     hooks_obj.entry("Stop").or_insert(stop_hook);
-    hooks_obj
-        .entry("PreToolUse")
-        .or_insert(pre_tool_use_hook);
 
-    // --- Permissions: auto-allow Edit/Write (diff-review
-    //     hook is the review gate) ---
-    let perms = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("permissions")
-        .or_insert_with(|| serde_json::json!({}));
-    let allow = perms
-        .as_object_mut()
-        .unwrap()
-        .entry("allow")
-        .or_insert_with(|| serde_json::json!([]));
-    let arr = allow.as_array_mut().unwrap();
-    if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
-        arr.push(serde_json::json!("Edit"));
+    if wants_diff_review {
+        let pre_tool_use_hook = serde_json::json!([{
+            "matcher": "Edit|Write",
+            "hooks": [{
+                "type": "command",
+                "command": diff_review_cmd,
+                "timeout": 600
+            }]
+        }]);
+        hooks_obj
+            .entry("PreToolUse")
+            .or_insert(pre_tool_use_hook);
+    } else {
+        // Remove diff-review hook for Vibe/SuperVibe
+        hooks_obj.remove("PreToolUse");
     }
-    if !arr.iter().any(|v| v.as_str() == Some("Write")) {
-        arr.push(serde_json::json!("Write"));
+
+    if wants_diff_review {
+        // --- Permissions: auto-allow Edit/Write
+        //     (diff-review hook is the review gate) ---
+        let perms = settings
+            .as_object_mut()
+            .unwrap()
+            .entry("permissions")
+            .or_insert_with(|| serde_json::json!({}));
+        let allow = perms
+            .as_object_mut()
+            .unwrap()
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+        let arr = allow.as_array_mut().unwrap();
+        if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
+            arr.push(serde_json::json!("Edit"));
+        }
+        if !arr.iter().any(|v| v.as_str() == Some("Write"))
+        {
+            arr.push(serde_json::json!("Write"));
+        }
+    } else {
+        // Remove Edit/Write auto-allow for Vibe/SuperVibe
+        // (CLI flags handle permissions instead)
+        if let Some(arr) = settings
+            .pointer_mut("/permissions/allow")
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| {
+                v.as_str() != Some("Edit")
+                    && v.as_str() != Some("Write")
+            });
+        }
     }
 
     let _ = std::fs::create_dir_all(&claude_dir);
@@ -364,6 +401,7 @@ impl CreateProjectState {
 pub enum CreateFeatureStep {
     Branch,
     Mode,
+    ConfirmSuperVibe,
 }
 
 pub struct CreateFeatureState {
@@ -1016,7 +1054,9 @@ impl App {
 
         // Always ensure hooks are up-to-date, even if the
         // tmux session already exists (handles upgrades).
-        ensure_notification_hooks(&feature.workdir, &repo);
+        ensure_notification_hooks(
+            &feature.workdir, &repo, &feature.mode,
+        );
 
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Claude);
@@ -1336,13 +1376,14 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
+        let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature
             .mode
             .cli_flags()
             .iter()
             .map(|s| s.to_string())
             .collect();
-        ensure_notification_hooks(&workdir, &repo);
+        ensure_notification_hooks(&workdir, &repo, &mode);
         let session =
             feature.add_session(SessionKind::Claude);
         let window = session.tmux_window.clone();

@@ -952,7 +952,22 @@ fn handle_create_feature_key(
                 }
             }
             KeyCode::Enter => {
-                app.create_feature()?;
+                let is_supervibe = matches!(
+                    app.mode,
+                    AppMode::CreatingFeature(
+                        ref s
+                    ) if s.mode == VibeMode::SuperVibe
+                );
+                if is_supervibe {
+                    if let AppMode::CreatingFeature(state) =
+                        &mut app.mode
+                    {
+                        state.step =
+                            CreateFeatureStep::ConfirmSuperVibe;
+                    }
+                } else {
+                    app.create_feature()?;
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::CreatingFeature(state) =
@@ -978,6 +993,19 @@ fn handle_create_feature_key(
                     state.mode =
                         VibeMode::ALL[state.mode_index]
                             .clone();
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::ConfirmSuperVibe => match key {
+            KeyCode::Char('y') => {
+                app.create_feature()?;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Mode;
                 }
             }
             _ => {}

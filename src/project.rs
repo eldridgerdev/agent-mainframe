@@ -29,6 +29,7 @@ impl std::fmt::Display for ProjectStatus {
 pub enum SessionKind {
     Claude,
     Terminal,
+    Nvim,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +146,9 @@ impl Feature {
             SessionKind::Terminal => {
                 format!("Terminal {}", count + 1)
             }
+            SessionKind::Nvim => {
+                format!("Nvim {}", count + 1)
+            }
         }
     }
 
@@ -154,6 +158,7 @@ impl Feature {
         let prefix = match kind {
             SessionKind::Claude => "claude",
             SessionKind::Terminal => "terminal",
+            SessionKind::Nvim => "nvim",
         };
         let count = self
             .sessions

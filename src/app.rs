@@ -897,8 +897,24 @@ impl App {
         }
 
         self.mode = AppMode::Normal;
+
+        // Auto-start the feature
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name)
+        {
+            let fi = self.store.projects[pi]
+                .features
+                .len()
+                .saturating_sub(1);
+            self.ensure_feature_running(pi, fi)?;
+            self.save()?;
+        }
+
         self.message = Some(format!(
-            "Created feature '{}' (stopped)",
+            "Created and started feature '{}'",
             branch
         ));
 

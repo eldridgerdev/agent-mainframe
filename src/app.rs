@@ -755,29 +755,48 @@ impl App {
             return Ok(());
         }
 
-        let project =
-            match self.store.find_project(&project_name) {
-                Some(p) => p,
-                None => {
-                    self.message = Some(format!(
-                        "Error: Project '{}' not found",
-                        project_name
-                    ));
-                    return Ok(());
-                }
-            };
+        let (is_first, stored_is_git) = {
+            let project =
+                match self.store.find_project(&project_name) {
+                    Some(p) => p,
+                    None => {
+                        self.message = Some(format!(
+                            "Error: Project '{}' not found",
+                            project_name
+                        ));
+                        return Ok(());
+                    }
+                };
 
-        // Check for duplicate feature name
-        if project.features.iter().any(|f| f.name == branch) {
-            self.message = Some(format!(
-                "Error: Feature '{}' already exists in '{}'",
-                branch, project_name
-            ));
-            return Ok(());
+            // Check for duplicate feature name
+            if project
+                .features
+                .iter()
+                .any(|f| f.name == branch)
+            {
+                self.message = Some(format!(
+                    "Error: Feature '{}' already exists in '{}'",
+                    branch, project_name
+                ));
+                return Ok(());
+            }
+
+            (project.features.is_empty(), project.is_git)
+        };
+
+        // Re-check git status if the stored flag says non-git
+        let is_git = stored_is_git
+            || WorktreeManager::repo_root(&project_repo).is_ok();
+
+        // Update stored flag if we detected git after initial creation
+        if is_git && !stored_is_git {
+            if let Some(p) =
+                self.store.find_project_mut(&project_name)
+            {
+                p.is_git = true;
+            }
+            self.save()?;
         }
-
-        let is_first = project.features.is_empty();
-        let is_git = project.is_git;
 
         if !is_git && !is_first {
             self.message = Some(

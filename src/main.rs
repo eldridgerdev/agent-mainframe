@@ -247,6 +247,42 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('h') => {
+            match &app.selection {
+                Selection::Project(pi) => {
+                    // Collapse the project if expanded
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
+                    {
+                        if !project.collapsed {
+                            app.toggle_collapse();
+                        }
+                    }
+                }
+                Selection::Feature(pi, _) => {
+                    // Move selection to parent project
+                    app.selection = Selection::Project(*pi);
+                }
+            }
+        }
+        KeyCode::Char('l') => {
+            match &app.selection {
+                Selection::Project(pi) => {
+                    // Expand the project if collapsed
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
+                    {
+                        if project.collapsed {
+                            app.toggle_collapse();
+                        }
+                    }
+                }
+                Selection::Feature(_, _) => {
+                    // Enter view on feature
+                    app.enter_view()?;
+                }
+            }
+        }
+        KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
         KeyCode::Char('i') => {
@@ -588,7 +624,7 @@ fn handle_create_feature_key(
 
 fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
             app.mode = AppMode::Normal;
         }
         _ => {}

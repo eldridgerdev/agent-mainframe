@@ -7,25 +7,50 @@ use crate::project::{Feature, Project, ProjectStatus, ProjectStore};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
-/// Default contents for `.claude/settings.local.json` when a repo
-/// does not already have one.  Ensures the diff-review plugin is
-/// enabled for every Claude Code session managed by this tool.
-const DEFAULT_CLAUDE_SETTINGS: &str = r#"{
-  "enabledPlugins": {
-    "diff-review@claude_vibeless": true
-  }
-}
-"#;
-
-/// Ensure `.claude/settings.local.json` exists in `repo`.
-/// If missing, creates it with a minimal default that enables
-/// the diff-review plugin.  Existing files are left untouched.
+/// Ensure `.claude/settings.local.json` in `repo` has the
+/// diff-review plugin enabled.  Merges with existing settings
+/// rather than overwriting.
 fn ensure_claude_settings(repo: &Path) -> Result<()> {
-    let settings = repo.join(".claude").join("settings.local.json");
-    if !settings.exists() {
-        std::fs::create_dir_all(settings.parent().unwrap())?;
-        std::fs::write(&settings, DEFAULT_CLAUDE_SETTINGS)?;
+    let settings_path =
+        repo.join(".claude").join("settings.local.json");
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Check if already enabled
+    if settings
+        .get("enabledPlugins")
+        .and_then(|p| p.get("diff-review@claude_vibeless"))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        return Ok(());
     }
+
+    let plugins = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("enabledPlugins")
+        .or_insert_with(|| serde_json::json!({}));
+    plugins
+        .as_object_mut()
+        .unwrap()
+        .insert(
+            "diff-review@claude_vibeless".into(),
+            serde_json::json!(true),
+        );
+
+    std::fs::create_dir_all(settings_path.parent().unwrap())?;
+    std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings)? + "\n",
+    )?;
     Ok(())
 }
 

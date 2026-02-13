@@ -109,15 +109,54 @@ impl WorktreeManager {
             bail!("git worktree add failed: {}", stderr.trim());
         }
 
-        // Copy .claude/settings.local.json to new worktree
-        let claude_settings =
+        // Merge .claude/settings.local.json into new worktree
+        let src_settings =
             repo.join(".claude").join("settings.local.json");
-        if claude_settings.exists() {
+        if src_settings.exists() {
             let dest_dir = worktree_path.join(".claude");
+            let dest_settings = dest_dir.join("settings.local.json");
             std::fs::create_dir_all(&dest_dir)?;
-            std::fs::copy(
-                &claude_settings,
-                dest_dir.join("settings.local.json"),
+
+            let src: serde_json::Value =
+                serde_json::from_str(
+                    &std::fs::read_to_string(&src_settings)?,
+                )?;
+
+            let mut dest: serde_json::Value =
+                if dest_settings.exists() {
+                    std::fs::read_to_string(&dest_settings)
+                        .ok()
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_else(|| serde_json::json!({}))
+                } else {
+                    serde_json::json!({})
+                };
+
+            // Merge each top-level key from src into dest
+            if let (Some(src_obj), Some(dest_obj)) =
+                (src.as_object(), dest.as_object_mut())
+            {
+                for (key, src_val) in src_obj {
+                    let entry = dest_obj
+                        .entry(key.clone())
+                        .or_insert_with(|| serde_json::json!({}));
+                    // Deep-merge objects, overwrite scalars
+                    if let (Some(sv), Some(ev)) = (
+                        src_val.as_object(),
+                        entry.as_object_mut(),
+                    ) {
+                        for (k, v) in sv {
+                            ev.insert(k.clone(), v.clone());
+                        }
+                    } else {
+                        *entry = src_val.clone();
+                    }
+                }
+            }
+
+            std::fs::write(
+                &dest_settings,
+                serde_json::to_string_pretty(&dest)? + "\n",
             )?;
         }
 

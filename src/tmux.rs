@@ -24,7 +24,10 @@ impl TmuxManager {
     }
 
     /// Create a new tmux session with a Claude Code window and a terminal window
-    pub fn create_session(session: &str, workdir: &Path) -> Result<()> {
+    pub fn create_session(
+        session: &str,
+        workdir: &Path,
+    ) -> Result<()> {
         if Self::session_exists(session) {
             bail!("tmux session '{}' already exists", session);
         }
@@ -70,13 +73,19 @@ impl TmuxManager {
 
         // Select the first window (claude)
         Command::new("tmux")
-            .args(["select-window", "-t", &format!("{}:claude", session)])
+            .args([
+                "select-window",
+                "-t",
+                &format!("{}:claude", session),
+            ])
             .status()?;
 
         // Set status bar hint for navigating back
         Command::new("tmux")
             .args([
-                "set-option", "-t", session,
+                "set-option",
+                "-t",
+                session,
                 "status-right",
                 " #[fg=cyan]prefix+s#[default]: sessions ",
             ])
@@ -85,12 +94,135 @@ impl TmuxManager {
         Ok(())
     }
 
-    /// Launch Claude Code in the claude window of a session
+    /// Create a new tmux session with a single named first
+    /// window.
+    pub fn create_session_with_window(
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        if Self::session_exists(session) {
+            bail!("tmux session '{}' already exists", session);
+        }
+
+        let workdir_str = workdir.to_string_lossy();
+
+        let status = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-n",
+                first_window,
+                "-c",
+                &workdir_str,
+            ])
+            .status()
+            .context("Failed to create tmux session")?;
+
+        if !status.success() {
+            bail!("tmux new-session failed");
+        }
+
+        // Set status bar hint
+        Command::new("tmux")
+            .args([
+                "set-option",
+                "-t",
+                session,
+                "status-right",
+                " #[fg=cyan]prefix+s#[default]: sessions ",
+            ])
+            .status()?;
+
+        Ok(())
+    }
+
+    /// Add a new window to an existing tmux session.
+    pub fn create_window(
+        session: &str,
+        window_name: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        let workdir_str = workdir.to_string_lossy();
+
+        let status = Command::new("tmux")
+            .args([
+                "new-window",
+                "-t",
+                &format!("{}:", session),
+                "-n",
+                window_name,
+                "-c",
+                &workdir_str,
+            ])
+            .status()
+            .context("Failed to create tmux window")?;
+
+        if !status.success() {
+            bail!("tmux new-window failed");
+        }
+
+        Ok(())
+    }
+
+    /// Select a specific window in a tmux session.
+    pub fn select_window(
+        session: &str,
+        window: &str,
+    ) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["select-window", "-t", &target])
+            .status()
+            .context("Failed to select tmux window")?;
+        Ok(())
+    }
+
+    /// Kill a single window in a tmux session.
+    pub fn kill_window(
+        session: &str,
+        window: &str,
+    ) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["kill-window", "-t", &target])
+            .status()
+            .context("Failed to kill tmux window")?;
+        Ok(())
+    }
+
+    /// List window names for a tmux session.
+    pub fn list_windows(session: &str) -> Result<Vec<String>> {
+        let output = Command::new("tmux")
+            .args([
+                "list-windows",
+                "-t",
+                session,
+                "-F",
+                "#{window_name}",
+            ])
+            .output()
+            .context("Failed to list tmux windows")?;
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(String::from)
+            .collect())
+    }
+
+    /// Launch Claude Code in a specific window of a session
     pub fn launch_claude(
         session: &str,
+        window: &str,
         resume_session_id: Option<&str>,
     ) -> Result<()> {
-        let target = format!("{}:claude", session);
+        let target = format!("{}:{}", session, window);
 
         let mut cmd_str = String::from("claude");
         if let Some(sid) = resume_session_id {
@@ -98,7 +230,9 @@ impl TmuxManager {
         }
 
         Command::new("tmux")
-            .args(["send-keys", "-t", &target, &cmd_str, "Enter"])
+            .args([
+                "send-keys", "-t", &target, &cmd_str, "Enter",
+            ])
             .status()
             .context("Failed to send claude command to tmux")?;
 
@@ -117,8 +251,14 @@ impl TmuxManager {
             .output()
             .ok()?;
         if output.status.success() {
-            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if name.is_empty() { None } else { Some(name) }
+            let name = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
         } else {
             None
         }
@@ -139,7 +279,10 @@ impl TmuxManager {
     /// Attach to a session (replaces current terminal)
     pub fn attach_session(session: &str) -> Result<()> {
         if !Self::session_exists(session) {
-            bail!("tmux session '{}' does not exist", session);
+            bail!(
+                "tmux session '{}' does not exist",
+                session
+            );
         }
 
         let status = Command::new("tmux")
@@ -153,7 +296,9 @@ impl TmuxManager {
                 Command::new("tmux")
                     .args(["attach-session", "-t", session])
                     .status()
-                    .context("Failed to attach to tmux session")?;
+                    .context(
+                        "Failed to attach to tmux session",
+                    )?;
                 Ok(())
             }
         }
@@ -181,11 +326,12 @@ impl TmuxManager {
 
         match output {
             Ok(o) if o.status.success() => {
-                let sessions: Vec<String> = String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter(|s| s.starts_with("amf-"))
-                    .map(String::from)
-                    .collect();
+                let sessions: Vec<String> =
+                    String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|s| s.starts_with("amf-"))
+                        .map(String::from)
+                        .collect();
                 Ok(sessions)
             }
             _ => Ok(Vec::new()),
@@ -193,7 +339,10 @@ impl TmuxManager {
     }
 
     /// Capture the current pane content of a session's window
-    pub fn capture_pane(session: &str, window: &str) -> Result<String> {
+    pub fn capture_pane(
+        session: &str,
+        window: &str,
+    ) -> Result<String> {
         let target = format!("{}:{}", session, window);
         let output = Command::new("tmux")
             .args(["capture-pane", "-t", &target, "-p"])
@@ -204,10 +353,19 @@ impl TmuxManager {
     }
 
     /// Capture pane content with ANSI escape sequences preserved
-    pub fn capture_pane_ansi(session: &str, window: &str) -> Result<String> {
+    pub fn capture_pane_ansi(
+        session: &str,
+        window: &str,
+    ) -> Result<String> {
         let target = format!("{}:{}", session, window);
         let output = Command::new("tmux")
-            .args(["capture-pane", "-t", &target, "-e", "-p"])
+            .args([
+                "capture-pane",
+                "-t",
+                &target,
+                "-e",
+                "-p",
+            ])
             .output()
             .context("Failed to capture pane with ANSI")?;
 
@@ -215,14 +373,22 @@ impl TmuxManager {
     }
 
     /// Resize a tmux pane to match the TUI rendering area
-    pub fn resize_pane(session: &str, window: &str, cols: u16, rows: u16) -> Result<()> {
+    pub fn resize_pane(
+        session: &str,
+        window: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         Command::new("tmux")
             .args([
                 "resize-window",
-                "-t", &target,
-                "-x", &cols.to_string(),
-                "-y", &rows.to_string(),
+                "-t",
+                &target,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
             ])
             .status()
             .context("Failed to resize tmux pane")?;
@@ -230,7 +396,11 @@ impl TmuxManager {
     }
 
     /// Send literal text to a tmux pane (no key name interpretation)
-    pub fn send_literal(session: &str, window: &str, text: &str) -> Result<()> {
+    pub fn send_literal(
+        session: &str,
+        window: &str,
+        text: &str,
+    ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         Command::new("tmux")
             .args(["send-keys", "-t", &target, "-l", text])
@@ -240,7 +410,11 @@ impl TmuxManager {
     }
 
     /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
-    pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
+    pub fn send_key_name(
+        session: &str,
+        window: &str,
+        key_name: &str,
+    ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         Command::new("tmux")
             .args(["send-keys", "-t", &target, key_name])
@@ -250,7 +424,11 @@ impl TmuxManager {
     }
 
     /// Send keys to a specific window in a session
-    pub fn send_keys(session: &str, window: &str, keys: &str) -> Result<()> {
+    pub fn send_keys(
+        session: &str,
+        window: &str,
+        keys: &str,
+    ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         Command::new("tmux")
             .args(["send-keys", "-t", &target, keys, "Enter"])

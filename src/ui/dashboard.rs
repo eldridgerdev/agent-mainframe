@@ -2,15 +2,19 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, Paragraph,
+        Wrap,
+    },
     Frame,
 };
 
 use crate::app::{
-    App, AppMode, BrowsePathState, PendingInput, Selection,
-    VisibleItem,
+    App, AppMode, BrowsePathState, PendingInput,
+    RenameReturnTo, RenameSessionState, Selection,
+    SessionSwitcherState, VisibleItem,
 };
-use crate::project::ProjectStatus;
+use crate::project::{ProjectStatus, SessionKind};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Viewing mode gets its own full-screen layout
@@ -22,6 +26,51 @@ pub fn draw(frame: &mut Frame, app: &App) {
             app.leader_active,
             app.pending_inputs.len(),
         );
+        return;
+    }
+
+    // Session switcher overlays on top of pane view
+    if let AppMode::SessionSwitcher(state) = &app.mode {
+        // Draw the pane view underneath (reconstruct a
+        // temporary ViewState from switcher state)
+        let temp_view = crate::app::ViewState {
+            project_name: state.project_name.clone(),
+            feature_name: state.feature_name.clone(),
+            session: state.tmux_session.clone(),
+            window: state.return_window.clone(),
+            session_label: state.return_label.clone(),
+        };
+        draw_pane_view(
+            frame,
+            &temp_view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+        );
+        draw_session_switcher(frame, state);
+        return;
+    }
+
+    // Rename dialog from session switcher overlays on pane
+    if let AppMode::RenamingSession(state) = &app.mode
+        && let RenameReturnTo::SessionSwitcher(ref sw) =
+            state.return_to
+    {
+        let temp_view = crate::app::ViewState {
+            project_name: sw.project_name.clone(),
+            feature_name: sw.feature_name.clone(),
+            session: sw.tmux_session.clone(),
+            window: sw.return_window.clone(),
+            session_label: sw.return_label.clone(),
+        };
+        draw_pane_view(
+            frame,
+            &temp_view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+        );
+        draw_rename_session_dialog(frame, state);
         return;
     }
 
@@ -49,7 +98,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         AppMode::DeletingProject(name) => {
             draw_delete_project_confirm(frame, name);
         }
-        AppMode::DeletingFeature(project_name, feature_name) => {
+        AppMode::DeletingFeature(
+            project_name,
+            feature_name,
+        ) => {
             draw_delete_feature_confirm(
                 frame,
                 project_name,
@@ -62,13 +114,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
         _ => {}
     }
 
+    // Draw rename session dialog overlay
+    if let AppMode::RenamingSession(state) = &app.mode {
+        draw_rename_session_dialog(frame, state);
+    }
+
     // Draw help overlay
     if matches!(app.mode, AppMode::Help) {
         draw_help(frame);
     }
 
     // Draw notification picker overlay
-    if let AppMode::NotificationPicker(selected) = &app.mode {
+    if let AppMode::NotificationPicker(selected) = &app.mode
+    {
         draw_notification_picker(
             frame,
             &app.pending_inputs,
@@ -120,8 +178,14 @@ fn draw_header(
 
     // Right side: help hint
     let help_hint = Line::from(vec![
-        Span::styled("h", Style::default().fg(Color::Yellow)),
-        Span::styled(" help ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "h",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " help ",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     let hint_width: u16 = help_hint
         .spans
@@ -129,7 +193,9 @@ fn draw_header(
         .map(|s| s.content.len() as u16)
         .sum();
     let hint_area = Rect {
-        x: inner.x + inner.width.saturating_sub(hint_width),
+        x: inner
+            .x
+            .saturating_add(inner.width.saturating_sub(hint_width)),
         y: inner.y,
         width: hint_width,
         height: 1,
@@ -138,7 +204,11 @@ fn draw_header(
     frame.render_widget(hint, hint_area);
 }
 
-fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_project_list(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+) {
     if app.store.projects.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -170,73 +240,171 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem> = visible
         .iter()
         .map(|item| {
-            let is_selected = match (&app.selection, item) {
-                (
-                    Selection::Project(a),
-                    VisibleItem::Project(b),
-                ) => a == b,
-                (
-                    Selection::Feature(a1, a2),
-                    VisibleItem::Feature(b1, b2),
-                ) => a1 == b1 && a2 == b2,
-                _ => false,
-            };
+            let is_selected =
+                match (&app.selection, item) {
+                    (
+                        Selection::Project(a),
+                        VisibleItem::Project(b),
+                    ) => a == b,
+                    (
+                        Selection::Feature(a1, a2),
+                        VisibleItem::Feature(b1, b2),
+                    ) => a1 == b1 && a2 == b2,
+                    (
+                        Selection::Session(a1, a2, a3),
+                        VisibleItem::Session(b1, b2, b3),
+                    ) => a1 == b1 && a2 == b2 && a3 == b3,
+                    _ => false,
+                };
 
             let line = match item {
                 VisibleItem::Project(pi) => {
-                    let project = &app.store.projects[*pi];
-                    let collapse_icon = if project.collapsed {
-                        ">"
-                    } else {
-                        "v"
-                    };
+                    let project =
+                        &app.store.projects[*pi];
+                    let collapse_icon =
+                        if project.collapsed {
+                            ">"
+                        } else {
+                            "v"
+                        };
 
                     let mut spans = vec![
                         Span::styled(
-                            format!(" {} ", collapse_icon),
-                            Style::default().fg(Color::DarkGray),
+                            format!(
+                                " {} ",
+                                collapse_icon
+                            ),
+                            Style::default()
+                                .fg(Color::DarkGray),
                         ),
                         Span::styled(
                             &project.name,
                             Style::default()
                                 .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
+                                .add_modifier(
+                                    Modifier::BOLD,
+                                ),
                         ),
                         Span::styled(
                             format!(
                                 "  {}",
                                 project.repo.display()
                             ),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default()
+                                .fg(Color::DarkGray),
                         ),
                     ];
 
                     if project.features.is_empty() {
                         spans.push(Span::styled(
                             "  (press n to add a feature)",
-                            Style::default().fg(Color::DarkGray),
+                            Style::default()
+                                .fg(Color::DarkGray),
                         ));
                     }
 
                     Line::from(spans)
                 }
                 VisibleItem::Feature(pi, fi) => {
-                    let feature =
-                        &app.store.projects[*pi].features[*fi];
+                    let feature = &app.store.projects[*pi]
+                        .features[*fi];
 
                     let status_dot = match feature.status {
-                        ProjectStatus::Active => Span::styled(
-                            "   ● ",
-                            Style::default().fg(Color::Green),
+                        ProjectStatus::Active => {
+                            Span::styled(
+                                "   ● ",
+                                Style::default()
+                                    .fg(Color::Green),
+                            )
+                        }
+                        ProjectStatus::Idle => {
+                            Span::styled(
+                                "   ○ ",
+                                Style::default()
+                                    .fg(Color::Yellow),
+                            )
+                        }
+                        ProjectStatus::Stopped => {
+                            Span::styled(
+                                "   ■ ",
+                                Style::default()
+                                    .fg(Color::Red),
+                            )
+                        }
+                    };
+
+                    let collapse_icon =
+                        if feature.sessions.is_empty() {
+                            " "
+                        } else if feature.collapsed {
+                            ">"
+                        } else {
+                            "v"
+                        };
+
+                    let name_style = if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    let session_count =
+                        feature.sessions.len();
+                    let badge = if session_count > 0 {
+                        format!(" [{}]", session_count)
+                    } else {
+                        String::new()
+                    };
+
+                    Line::from(vec![
+                        status_dot,
+                        Span::styled(
+                            format!("{} ", collapse_icon),
+                            Style::default()
+                                .fg(Color::DarkGray),
                         ),
-                        ProjectStatus::Idle => Span::styled(
-                            "   ○ ",
-                            Style::default().fg(Color::Yellow),
+                        Span::styled(
+                            &feature.name,
+                            name_style,
                         ),
-                        ProjectStatus::Stopped => Span::styled(
-                            "   ■ ",
-                            Style::default().fg(Color::Red),
+                        Span::styled(
+                            badge,
+                            Style::default()
+                                .fg(Color::DarkGray),
                         ),
+                        Span::styled(
+                            format!(
+                                "  {}",
+                                feature.workdir.display()
+                            ),
+                            Style::default()
+                                .fg(Color::DarkGray),
+                        ),
+                    ])
+                }
+                VisibleItem::Session(pi, fi, si) => {
+                    let feature = &app.store.projects[*pi]
+                        .features[*fi];
+                    let session =
+                        &feature.sessions[*si];
+
+                    let kind_icon = match session.kind {
+                        SessionKind::Claude => {
+                            Span::styled(
+                                "       * ",
+                                Style::default()
+                                    .fg(Color::Magenta),
+                            )
+                        }
+                        SessionKind::Terminal => {
+                            Span::styled(
+                                "       > ",
+                                Style::default()
+                                    .fg(Color::Green),
+                            )
+                        }
                     };
 
                     let name_style = if is_selected {
@@ -248,22 +416,19 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
                     };
 
                     Line::from(vec![
-                        status_dot,
-                        Span::styled(&feature.name, name_style),
+                        kind_icon,
                         Span::styled(
-                            format!(
-                                "  {}",
-                                feature.workdir.display()
-                            ),
-                            Style::default().fg(Color::DarkGray),
+                            &session.label,
+                            name_style,
                         ),
                     ])
                 }
             };
 
             if is_selected {
-                ListItem::new(line)
-                    .style(Style::default().bg(Color::DarkGray))
+                ListItem::new(line).style(
+                    Style::default().bg(Color::DarkGray),
+                )
             } else {
                 ListItem::new(line)
             }
@@ -280,12 +445,55 @@ fn draw_project_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_status_bar(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+) {
     let keybinds = match &app.mode {
         AppMode::Normal => {
-            let on_feature =
-                matches!(app.selection, Selection::Feature(_, _));
-            if on_feature {
+            let on_session = matches!(
+                app.selection,
+                Selection::Session(_, _, _)
+            );
+            let on_feature = matches!(
+                app.selection,
+                Selection::Feature(_, _)
+            );
+            if on_session {
+                Line::from(vec![
+                    Span::styled(
+                        " Enter",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" view  "),
+                    Span::styled(
+                        "r",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" rename  "),
+                    Span::styled(
+                        "x",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" remove  "),
+                    Span::styled(
+                        "d",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" delete  "),
+                    Span::styled(
+                        "s",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" switch  "),
+                    Span::styled(
+                        "q",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" quit"),
+                ])
+            } else if on_feature {
                 Line::from(vec![
                     Span::styled(
                         " n",
@@ -293,15 +501,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::raw(" feature  "),
                     Span::styled(
-                        "N",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" project  "),
-                    Span::styled(
                         "Enter",
                         Style::default().fg(Color::Yellow),
                     ),
-                    Span::raw(" view  "),
+                    Span::raw(" expand  "),
                     Span::styled(
                         "c",
                         Style::default().fg(Color::Yellow),
@@ -312,6 +515,16 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" stop  "),
+                    Span::styled(
+                        "t",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" +term  "),
+                    Span::styled(
+                        "a",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" +claude  "),
                     Span::styled(
                         "s",
                         Style::default().fg(Color::Yellow),
@@ -351,7 +564,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     Span::raw(" delete  "),
                     Span::styled(
-                        "r",
+                        "R",
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" refresh  "),
@@ -365,6 +578,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
+        | AppMode::RenamingSession(_)
         | AppMode::BrowsingPath(_) => Line::from(vec![
             Span::styled(
                 "Enter",
@@ -378,23 +592,29 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" cancel"),
         ]),
         AppMode::DeletingProject(_)
-        | AppMode::DeletingFeature(_, _) => Line::from(vec![
-            Span::styled(
-                "y",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" confirm  "),
-            Span::styled(
-                "n/Esc",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" cancel"),
-        ]),
+        | AppMode::DeletingFeature(_, _) => {
+            Line::from(vec![
+                Span::styled(
+                    "y",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" confirm  "),
+                Span::styled(
+                    "n/Esc",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" cancel"),
+            ])
+        }
         AppMode::Help => Line::from(vec![
-            Span::styled("Esc/q/h", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "Esc/q/h",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" close help"),
         ]),
-        AppMode::NotificationPicker(_) => Line::from(vec![
+        AppMode::NotificationPicker(_)
+        | AppMode::SessionSwitcher(_) => Line::from(vec![
             Span::styled(
                 "j/k",
                 Style::default().fg(Color::Yellow),
@@ -404,12 +624,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 "Enter",
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(" view  "),
+            Span::raw(" select  "),
             Span::styled(
                 "Esc",
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(" close"),
+            Span::raw(" cancel"),
         ]),
         AppMode::Viewing(_) => Line::from(vec![
             Span::styled(
@@ -450,11 +670,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ))
     };
 
-    let status = Paragraph::new(vec![message_line, keybinds]).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    let status =
+        Paragraph::new(vec![message_line, keybinds]).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default().fg(Color::DarkGray),
+                ),
+        );
 
     frame.render_widget(status, area);
 }
@@ -487,7 +710,9 @@ fn draw_create_project_dialog(
         .split(inner);
 
     let name_style = match state.step {
-        CreateProjectStep::Name => Style::default().fg(Color::Cyan),
+        CreateProjectStep::Name => {
+            Style::default().fg(Color::Cyan)
+        }
         _ => Style::default().fg(Color::DarkGray),
     };
     let name_field = Paragraph::new(Line::from(vec![
@@ -496,12 +721,17 @@ fn draw_create_project_dialog(
             &state.name,
             Style::default().fg(Color::White),
         ),
-        cursor_span_project(&state.step, &CreateProjectStep::Name),
+        cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Name,
+        ),
     ]));
     frame.render_widget(name_field, chunks[0]);
 
     let path_style = match state.step {
-        CreateProjectStep::Path => Style::default().fg(Color::Cyan),
+        CreateProjectStep::Path => {
+            Style::default().fg(Color::Cyan)
+        }
         _ => Style::default().fg(Color::DarkGray),
     };
     let path_spans = vec![
@@ -510,7 +740,10 @@ fn draw_create_project_dialog(
             &state.path,
             Style::default().fg(Color::White),
         ),
-        cursor_span_project(&state.step, &CreateProjectStep::Path),
+        cursor_span_project(
+            &state.step,
+            &CreateProjectStep::Path,
+        ),
         Span::styled(
             "  (Ctrl+B browse)",
             Style::default().fg(Color::DarkGray),
@@ -552,7 +785,8 @@ fn draw_create_feature_dialog(
     let area = centered_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = format!(" New Feature ({}) ", state.project_name);
+    let title =
+        format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -578,12 +812,58 @@ fn draw_create_feature_dialog(
             &state.branch,
             Style::default().fg(Color::White),
         ),
-        Span::styled("█", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            "\u{2588}",
+            Style::default().fg(Color::Cyan),
+        ),
     ]));
     frame.render_widget(branch_field, chunks[0]);
 }
 
-fn draw_delete_project_confirm(frame: &mut Frame, name: &str) {
+fn draw_rename_session_dialog(
+    frame: &mut Frame,
+    state: &RenameSessionState,
+) {
+    let area = centered_rect(50, 25, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Rename Session ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    let name_field = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Name: ",
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(
+            &state.input,
+            Style::default().fg(Color::White),
+        ),
+        Span::styled(
+            "\u{2588}",
+            Style::default().fg(Color::Cyan),
+        ),
+    ]));
+    frame.render_widget(name_field, chunks[0]);
+}
+
+fn draw_delete_project_confirm(
+    frame: &mut Frame,
+    name: &str,
+) {
     let area = centered_rect(50, 25, frame.area());
     frame.render_widget(Clear, area);
 
@@ -685,23 +965,25 @@ fn draw_delete_feature_confirm(
 }
 
 fn draw_help(frame: &mut Frame) {
-    let area = centered_rect(50, 60, frame.area());
+    let area = centered_rect(55, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let keybinds: Vec<(&str, &str)> = vec![
-        ("j/k / ↑/↓", "Navigate up/down"),
+        ("j/k / \u{2191}/\u{2193}", "Navigate up/down"),
         ("h", "Collapse project / go to parent"),
         ("l", "Expand project / view feature"),
-        ("Enter", "Toggle expand / view feature"),
-        ("s", "Switch to project (tmux attach)"),
-        ("t", "Open terminal window"),
+        ("Enter", "Toggle expand / view session"),
+        ("s", "Switch to tmux session"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
-        ("d", "Delete project/feature"),
-        ("c", "Start feature session"),
-        ("x", "Stop feature session"),
+        ("d", "Delete project/feature/session"),
+        ("c", "Start feature (create tmux)"),
+        ("x", "Stop feature / remove session"),
+        ("r", "Rename session"),
+        ("t", "Add terminal session"),
+        ("a", "Add Claude session"),
         ("i", "Input requests picker"),
-        ("r", "Refresh statuses"),
+        ("R", "Refresh statuses"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
     ];
@@ -716,7 +998,10 @@ fn draw_help(frame: &mut Frame) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(*desc, Style::default().fg(Color::White)),
+            Span::styled(
+                *desc,
+                Style::default().fg(Color::White),
+            ),
         ]));
     }
     lines.push(Line::from(""));
@@ -734,7 +1019,10 @@ fn draw_help(frame: &mut Frame) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Exit view", Style::default().fg(Color::White)),
+        Span::styled(
+            "Exit view",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
@@ -745,7 +1033,33 @@ fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t s n p i r x h)",
+            "Leader key (then: q t T w s n p i r x h)",
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "t / T"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Cycle next/prev session",
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "w"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Session switcher",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -768,10 +1082,16 @@ fn cursor_span_project<'a>(
     let is_active = matches!(
         (current, target),
         (CreateProjectStep::Name, CreateProjectStep::Name)
-            | (CreateProjectStep::Path, CreateProjectStep::Path)
+            | (
+                CreateProjectStep::Path,
+                CreateProjectStep::Path
+            )
     );
     if is_active {
-        Span::styled("█", Style::default().fg(Color::Cyan))
+        Span::styled(
+            "\u{2588}",
+            Style::default().fg(Color::Cyan),
+        )
     } else {
         Span::raw("")
     }
@@ -785,10 +1105,8 @@ fn draw_notification_picker(
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = format!(
-        " Input Requests ({}) ",
-        pending.len()
-    );
+    let title =
+        format!(" Input Requests ({}) ", pending.len());
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -848,8 +1166,9 @@ fn draw_notification_picker(
             ]);
 
             if is_selected {
-                ListItem::new(line)
-                    .style(Style::default().bg(Color::DarkGray))
+                ListItem::new(line).style(
+                    Style::default().bg(Color::DarkGray),
+                )
             } else {
                 ListItem::new(line)
             }
@@ -858,6 +1177,135 @@ fn draw_notification_picker(
 
     let list = List::new(items);
     frame.render_widget(list, inner);
+}
+
+fn draw_session_switcher(
+    frame: &mut Frame,
+    state: &SessionSwitcherState,
+) {
+    let area = centered_rect(40, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " {} / {} ",
+        state.project_name, state.feature_name
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.sessions.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No sessions.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    // Session list area + footer hint
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // session list
+            Constraint::Length(2), // footer hints
+        ])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let is_selected = i == state.selected;
+            let is_current =
+                entry.tmux_window == state.return_window;
+
+            let icon = match entry.kind {
+                SessionKind::Claude => Span::styled(
+                    "  * ",
+                    Style::default().fg(Color::Magenta),
+                ),
+                SessionKind::Terminal => Span::styled(
+                    "  > ",
+                    Style::default().fg(Color::Green),
+                ),
+            };
+
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let mut spans = vec![
+                icon,
+                Span::styled(&entry.label, name_style),
+            ];
+
+            if is_current {
+                spans.push(Span::styled(
+                    " (current)",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            let line = Line::from(spans);
+            if is_selected {
+                ListItem::new(line).style(
+                    Style::default().bg(Color::DarkGray),
+                )
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    // Footer hints
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " select  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "r",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " rename  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " cancel",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }
 
 fn draw_browse_path_dialog(
@@ -888,7 +1336,11 @@ fn draw_browse_path_dialog(
     let cwd_line = Paragraph::new(Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::styled(
-            state.explorer.cwd().to_string_lossy().to_string(),
+            state
+                .explorer
+                .cwd()
+                .to_string_lossy()
+                .to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -902,7 +1354,7 @@ fn draw_browse_path_dialog(
     // Key hints with separator
     let hints = Paragraph::new(vec![
         Line::from(Span::styled(
-            "─".repeat(inner.width as usize),
+            "\u{2500}".repeat(inner.width as usize),
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(vec![
@@ -975,7 +1427,7 @@ fn draw_pane_view(
         ])
         .split(frame.area());
 
-    // Header bar with project/feature info and escape hint
+    // Header bar with project/feature/session info
     let mut header_spans = vec![
         Span::styled(
             format!(" {} ", view.project_name),
@@ -990,7 +1442,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("| {} ", view.window),
+            format!("/ {} ", view.session_label),
             Style::default().fg(Color::DarkGray),
         ),
     ];
@@ -1004,7 +1456,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t:terminal n/p:cycle i:inputs s:attach x:stop h:help",
+            " q:exit t/T:cycle w:switcher n/p:feature i:inputs s:attach x:stop h:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -1041,11 +1493,14 @@ fn draw_pane_view(
         Color::Cyan
     };
 
-    let header = Paragraph::new(Line::from(header_spans)).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color)),
-    );
+    let header =
+        Paragraph::new(Line::from(header_spans)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(
+                    Style::default().fg(border_color),
+                ),
+        );
     frame.render_widget(header, chunks[0]);
 
     // Parse ANSI content through vt100 and render
@@ -1083,9 +1538,11 @@ fn ansi_to_ratatui_text<'a>(
                 None => continue,
             };
 
-            let style = vt100_cell_to_style(&cell);
+            let style = vt100_cell_to_style(cell);
 
-            if style != current_style && !current_text.is_empty() {
+            if style != current_style
+                && !current_text.is_empty()
+            {
                 spans.push(Span::styled(
                     std::mem::take(&mut current_text),
                     current_style,
@@ -1096,7 +1553,10 @@ fn ansi_to_ratatui_text<'a>(
         }
 
         if !current_text.is_empty() {
-            spans.push(Span::styled(current_text, current_style));
+            spans.push(Span::styled(
+                current_text,
+                current_style,
+            ));
         }
 
         lines.push(Line::from(spans));

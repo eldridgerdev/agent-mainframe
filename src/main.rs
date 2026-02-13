@@ -876,28 +876,96 @@ fn handle_create_feature_key(
     app: &mut App,
     key: KeyCode,
 ) -> Result<()> {
-    match key {
-        KeyCode::Esc => {
-            app.cancel_create();
+    use app::CreateFeatureStep;
+    use crate::project::VibeMode;
+
+    let step = match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            state.step.clone()
         }
-        KeyCode::Enter => {
-            app.create_feature()?;
-        }
-        KeyCode::Backspace => {
-            if let AppMode::CreatingFeature(state) =
-                &mut app.mode
-            {
-                state.branch.pop();
+        _ => return Ok(()),
+    };
+
+    match step {
+        CreateFeatureStep::Branch => match key {
+            KeyCode::Esc => {
+                app.cancel_create();
             }
-        }
-        KeyCode::Char(c) => {
-            if let AppMode::CreatingFeature(state) =
-                &mut app.mode
-            {
-                state.branch.push(c);
+            KeyCode::Enter => {
+                // Validate branch then advance to Mode step
+                let empty = match &app.mode {
+                    AppMode::CreatingFeature(s) => {
+                        s.branch.is_empty()
+                    }
+                    _ => return Ok(()),
+                };
+                if empty {
+                    app.message = Some(
+                        "Branch name cannot be empty".into(),
+                    );
+                } else if let AppMode::CreatingFeature(
+                    state,
+                ) = &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Mode;
+                }
             }
-        }
-        _ => {}
+            KeyCode::Backspace => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.branch.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.branch.push(c);
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::Mode => match key {
+            KeyCode::Esc => {
+                // Go back to Branch step
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Branch;
+                }
+            }
+            KeyCode::Enter => {
+                app.create_feature()?;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.mode_index = (state.mode_index + 1)
+                        % VibeMode::ALL.len();
+                    state.mode =
+                        VibeMode::ALL[state.mode_index]
+                            .clone();
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.mode_index =
+                        if state.mode_index == 0 {
+                            VibeMode::ALL.len() - 1
+                        } else {
+                            state.mode_index - 1
+                        };
+                    state.mode =
+                        VibeMode::ALL[state.mode_index]
+                            .clone();
+                }
+            }
+            _ => {}
+        },
     }
     Ok(())
 }

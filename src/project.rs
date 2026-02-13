@@ -41,6 +41,45 @@ pub struct FeatureSession {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum VibeMode {
+    #[default]
+    Vibeless,
+    Vibe,
+    SuperVibe,
+}
+
+impl VibeMode {
+    pub fn display_name(&self) -> &str {
+        match self {
+            VibeMode::Vibeless => "Vibeless",
+            VibeMode::Vibe => "Vibe",
+            VibeMode::SuperVibe => "SuperVibe",
+        }
+    }
+
+    pub fn cli_flags(&self) -> Vec<&str> {
+        match self {
+            VibeMode::Vibeless => vec![],
+            VibeMode::Vibe => {
+                vec!["--permission-mode", "acceptEdits"]
+            }
+            VibeMode::SuperVibe => {
+                vec!["--dangerously-skip-permissions"]
+            }
+        }
+    }
+
+    pub const ALL: [VibeMode; 3] = [
+        VibeMode::Vibeless,
+        VibeMode::Vibe,
+        VibeMode::SuperVibe,
+    ];
+}
+
 fn default_true() -> bool {
     true
 }
@@ -57,6 +96,8 @@ pub struct Feature {
     pub sessions: Vec<FeatureSession>,
     #[serde(default = "default_true")]
     pub collapsed: bool,
+    #[serde(default)]
+    pub mode: VibeMode,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
     pub last_accessed: DateTime<Utc>,
@@ -68,6 +109,7 @@ impl Feature {
         branch: String,
         workdir: PathBuf,
         is_worktree: bool,
+        mode: VibeMode,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
         let now = Utc::now();
@@ -80,6 +122,7 @@ impl Feature {
             tmux_session,
             sessions: Vec::new(),
             collapsed: true,
+            mode,
             status: ProjectStatus::Stopped,
             created_at: now,
             last_accessed: now,
@@ -401,6 +444,7 @@ impl ProjectStore {
                             tmux_session: f.tmux_session,
                             sessions,
                             collapsed: true,
+                            mode: VibeMode::default(),
                             status: f.status,
                             created_at: f.created_at,
                             last_accessed: f.last_accessed,

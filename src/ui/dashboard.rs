@@ -10,11 +10,11 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, AppMode, BrowsePathState, PendingInput,
-    RenameReturnTo, RenameSessionState, Selection,
-    SessionSwitcherState, VisibleItem,
+    App, AppMode, BrowsePathState, CreateFeatureStep,
+    PendingInput, RenameReturnTo, RenameSessionState,
+    Selection, SessionSwitcherState, VisibleItem,
 };
-use crate::project::{ProjectStatus, SessionKind};
+use crate::project::{ProjectStatus, SessionKind, VibeMode};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Viewing mode gets its own full-screen layout
@@ -39,6 +39,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             session: state.tmux_session.clone(),
             window: state.return_window.clone(),
             session_label: state.return_label.clone(),
+            vibe_mode: state.vibe_mode.clone(),
         };
         draw_pane_view(
             frame,
@@ -62,6 +63,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             session: sw.tmux_session.clone(),
             window: sw.return_window.clone(),
             session_label: sw.return_label.clone(),
+            vibe_mode: sw.vibe_mode.clone(),
         };
         draw_pane_view(
             frame,
@@ -358,6 +360,26 @@ fn draw_project_list(
                         String::new()
                     };
 
+                    let mode_badge = match feature.mode {
+                        VibeMode::Vibeless => Span::styled(
+                            " [vibeless]",
+                            Style::default()
+                                .fg(Color::Green),
+                        ),
+                        VibeMode::Vibe => Span::styled(
+                            " [vibe]",
+                            Style::default()
+                                .fg(Color::Yellow),
+                        ),
+                        VibeMode::SuperVibe => {
+                            Span::styled(
+                                " [supervibe]",
+                                Style::default()
+                                    .fg(Color::Red),
+                            )
+                        }
+                    };
+
                     Line::from(vec![
                         status_dot,
                         Span::styled(
@@ -369,6 +391,7 @@ fn draw_project_list(
                             &feature.name,
                             name_style,
                         ),
+                        mode_badge,
                         Span::styled(
                             badge,
                             Style::default()
@@ -782,7 +805,7 @@ fn draw_create_feature_dialog(
     frame: &mut Frame,
     state: &crate::app::CreateFeatureState,
 ) {
-    let area = centered_rect(60, 25, frame.area());
+    let area = centered_rect(60, 35, frame.area());
     frame.render_widget(Clear, area);
 
     let title =
@@ -798,26 +821,110 @@ fn draw_create_feature_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Min(0),
+            Constraint::Length(2), // branch
+            Constraint::Length(1), // spacer
+            Constraint::Length(5), // mode selection
+            Constraint::Min(0),   // fill
+            Constraint::Length(1), // hints
         ])
         .split(inner);
 
-    let branch_field = Paragraph::new(Line::from(vec![
+    let branch_active =
+        state.step == CreateFeatureStep::Branch;
+    let branch_label_style = if branch_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let cursor = if branch_active {
         Span::styled(
-            " Branch: ",
+            "\u{2588}",
             Style::default().fg(Color::Cyan),
-        ),
+        )
+    } else {
+        Span::raw("")
+    };
+
+    let branch_field = Paragraph::new(Line::from(vec![
+        Span::styled(" Branch: ", branch_label_style),
         Span::styled(
             &state.branch,
             Style::default().fg(Color::White),
         ),
-        Span::styled(
-            "\u{2588}",
-            Style::default().fg(Color::Cyan),
-        ),
+        cursor,
     ]));
     frame.render_widget(branch_field, chunks[0]);
+
+    // Mode selection
+    let mode_active =
+        state.step == CreateFeatureStep::Mode;
+    let mode_label_style = if mode_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut mode_lines =
+        vec![Line::from(Span::styled(
+            " Mode:",
+            mode_label_style,
+        ))];
+
+    for (i, m) in VibeMode::ALL.iter().enumerate() {
+        let is_selected = i == state.mode_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if mode_active && is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        mode_lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, m.display_name()),
+            style,
+        )));
+    }
+
+    let mode_widget = Paragraph::new(mode_lines);
+    frame.render_widget(mode_widget, chunks[2]);
+
+    // Hints at bottom
+    let hints = if mode_active {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" select  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" back"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" next  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]))
+    };
+    frame.render_widget(hints, chunks[4]);
 }
 
 fn draw_rename_session_dialog(
@@ -1428,6 +1535,12 @@ fn draw_pane_view(
         .split(frame.area());
 
     // Header bar with project/feature/session info
+    let (mode_label, mode_color) = match view.vibe_mode {
+        VibeMode::Vibeless => ("vibeless", Color::Green),
+        VibeMode::Vibe => ("vibe", Color::Yellow),
+        VibeMode::SuperVibe => ("supervibe", Color::Red),
+    };
+
     let mut header_spans = vec![
         Span::styled(
             format!(" {} ", view.project_name),
@@ -1444,6 +1557,10 @@ fn draw_pane_view(
         Span::styled(
             format!("/ {} ", view.session_label),
             Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("[{}] ", mode_label),
+            Style::default().fg(mode_color),
         ),
     ];
 

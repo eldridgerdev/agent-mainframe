@@ -1,0 +1,17 @@
+{
+  "name": "diff-review",
+  "version": "0.1.0",
+  "description": "Review Claude Code file changes in a vimdiff popup before they're applied",
+  "author": {
+    "name": "eldridger"
+  },
+  "repository": "https://github.com/eldridger/claude-diff-review",
+  "license": "MIT",
+  "keywords": [
+    "review",
+    "diff",
+    "vimdiff",
+    "safety",
+    "hooks"
+  ]
+}

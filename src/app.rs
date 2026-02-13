@@ -27,73 +27,95 @@ pub struct SessionSwitcherState {
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
-/// Ensure `.claude/settings.local.json` in `repo` has the
-/// diff-review plugin enabled.  Merges with existing settings
-/// rather than overwriting.
-fn ensure_claude_settings(repo: &Path) -> Result<()> {
+/// Remove the old external diff-review plugin from
+/// `.claude/settings.local.json` if present.  The hook is now
+/// written directly into each workdir's `settings.json`.
+fn remove_old_diff_review_plugin(repo: &Path) {
     let settings_path =
         repo.join(".claude").join("settings.local.json");
-
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    // Check if already enabled
-    if settings
-        .get("enabledPlugins")
-        .and_then(|p| p.get("diff-review@claude_vibeless"))
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
-        return Ok(());
+    if !settings_path.exists() {
+        return;
     }
 
-    let plugins = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("enabledPlugins")
-        .or_insert_with(|| serde_json::json!({}));
-    plugins
-        .as_object_mut()
-        .unwrap()
-        .insert(
-            "diff-review@claude_vibeless".into(),
-            serde_json::json!(true),
-        );
+    let mut settings: serde_json::Value =
+        match std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(v) => v,
+            None => return,
+        };
 
-    std::fs::create_dir_all(settings_path.parent().unwrap())?;
-    std::fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&settings)? + "\n",
-    )?;
-    Ok(())
+    let changed = settings
+        .get_mut("enabledPlugins")
+        .and_then(|p| p.as_object_mut())
+        .map(|obj| {
+            obj.remove("diff-review@claude_vibeless")
+                .is_some()
+        })
+        .unwrap_or(false);
+
+    if !changed {
+        return;
+    }
+
+    // Remove enabledPlugins key entirely if empty
+    if settings
+        .get("enabledPlugins")
+        .and_then(|p| p.as_object())
+        .is_some_and(|obj| obj.is_empty())
+    {
+        settings
+            .as_object_mut()
+            .unwrap()
+            .remove("enabledPlugins");
+    }
+
+    // Delete file if settings is now empty, otherwise write
+    if settings.as_object().is_some_and(|obj| obj.is_empty())
+    {
+        let _ = std::fs::remove_file(&settings_path);
+    } else {
+        let _ = std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&settings)
+                .unwrap_or_default()
+                + "\n",
+        );
+    }
 }
 
 /// Ensure `.claude/settings.json` in the given workdir has the
 /// notification hooks configured. Merges with existing settings
 /// rather than overwriting.
-pub fn ensure_notification_hooks(workdir: &Path) {
+pub fn ensure_notification_hooks(
+    workdir: &Path,
+    repo: &Path,
+) {
+    // Remove the old external plugin so it doesn't
+    // conflict with the hook we write below.
+    remove_old_diff_review_plugin(repo);
+
     let claude_dir = workdir.join(".claude");
     let settings_path = claude_dir.join("settings.json");
 
-    let notify_script = dirs::config_dir()
+    let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless")
-        .join("notify.sh");
-    let clear_script = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless")
-        .join("clear-notify.sh");
+        .join("claude-super-vibeless");
 
     let notify_cmd =
-        notify_script.to_string_lossy().to_string();
-    let clear_cmd =
-        clear_script.to_string_lossy().to_string();
+        config_dir.join("notify.sh").to_string_lossy().to_string();
+    let clear_cmd = config_dir
+        .join("clear-notify.sh")
+        .to_string_lossy()
+        .to_string();
+    let diff_review_cmd = repo
+        .join("plugins")
+        .join("diff-review")
+        .join("scripts")
+        .join("diff-review.sh")
+        .to_string_lossy()
+        .to_string();
 
     // Read existing settings or start fresh
     let mut settings: serde_json::Value =
@@ -106,10 +128,11 @@ pub fn ensure_notification_hooks(workdir: &Path) {
             serde_json::json!({})
         };
 
-    // Check if hooks already exist - skip write if so
+    // Check if all hooks already exist - skip write if so
     if let Some(hooks) = settings.get("hooks")
         && hooks.get("Notification").is_some()
             && hooks.get("Stop").is_some()
+            && hooks.get("PreToolUse").is_some()
         {
             return;
         }
@@ -128,12 +151,23 @@ pub fn ensure_notification_hooks(workdir: &Path) {
         "matcher": "",
         "hooks": [{ "type": "command", "command": clear_cmd }]
     }]);
+    let pre_tool_use_hook = serde_json::json!([{
+        "matcher": "Edit|Write",
+        "hooks": [{
+            "type": "command",
+            "command": diff_review_cmd,
+            "timeout": 600
+        }]
+    }]);
 
     let hooks_obj = hooks.as_object_mut().unwrap();
     hooks_obj
         .entry("Notification")
         .or_insert(notification_hook);
     hooks_obj.entry("Stop").or_insert(stop_hook);
+    hooks_obj
+        .entry("PreToolUse")
+        .or_insert(pre_tool_use_hook);
 
     let _ = std::fs::create_dir_all(&claude_dir);
     let _ = std::fs::write(
@@ -187,6 +221,8 @@ pub struct PendingInput {
     pub project_name: Option<String>,
     /// Resolved feature name (if matched)
     pub feature_name: Option<String>,
+    /// Path to write to unblock a diff-review hook
+    pub proceed_signal: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +232,7 @@ struct NotificationJson {
     message: Option<String>,
     #[serde(alias = "type")]
     notification_type: Option<String>,
+    proceed_signal: Option<String>,
 }
 
 pub enum RenameReturnTo {
@@ -759,10 +796,6 @@ impl App {
 
         let is_first = project.features.is_empty();
 
-        // Ensure the repo has .claude/settings.local.json so that
-        // worktrees inherit it and the diff-review plugin is enabled.
-        ensure_claude_settings(&project_repo)?;
-
         let (workdir, is_worktree) = if is_first {
             (project_repo.clone(), false)
         } else {
@@ -817,6 +850,8 @@ impl App {
         pi: usize,
         fi: usize,
     ) -> Result<()> {
+        let repo =
+            self.store.projects[pi].repo.clone();
         let feature = match self
             .store
             .projects
@@ -827,6 +862,10 @@ impl App {
             None => return Ok(()),
         };
 
+        // Always ensure hooks are up-to-date, even if the
+        // tmux session already exists (handles upgrades).
+        ensure_notification_hooks(&feature.workdir, &repo);
+
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Claude);
             feature.add_session(SessionKind::Terminal);
@@ -835,8 +874,6 @@ impl App {
         if TmuxManager::session_exists(&feature.tmux_session) {
             return Ok(());
         }
-
-        ensure_notification_hooks(&feature.workdir);
 
         TmuxManager::create_session_with_window(
             &feature.tmux_session,
@@ -1054,6 +1091,9 @@ impl App {
             _ => return Ok(()),
         };
 
+        let repo =
+            self.store.projects[pi].repo.clone();
+
         let feature = match self
             .store
             .projects
@@ -1075,7 +1115,7 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
-        ensure_notification_hooks(&workdir);
+        ensure_notification_hooks(&workdir, &repo);
         let session =
             feature.add_session(SessionKind::Claude);
         let window = session.tmux_window.clone();
@@ -1214,7 +1254,26 @@ impl App {
 
         self.save()?;
         self.pane_content.clear();
+
+        // Unblock any diff-review hooks waiting for this feature
+        let feat_name = view.feature_name.clone();
         self.mode = AppMode::Viewing(view);
+
+        for input in &self.pending_inputs {
+            if input.notification_type == "diff-review"
+                && input.feature_name.as_deref()
+                    == Some(&feat_name)
+                && let Some(signal_path) =
+                    &input.proceed_signal
+            {
+                let path = Path::new(signal_path);
+                if let Some(parent) = path.parent() {
+                    let _ =
+                        std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(path, "");
+            }
+        }
 
         Ok(())
     }
@@ -1714,28 +1773,32 @@ impl App {
             let message = notif.message.unwrap_or_default();
             let notification_type =
                 notif.notification_type.unwrap_or_default();
+            let proceed_signal = notif.proceed_signal;
 
-            // Try to match cwd to a known feature
+            // Match cwd to the most specific feature workdir
             let mut project_name = None;
             let mut feature_name = None;
+            let mut best_len: usize = 0;
             let cwd_path = PathBuf::from(&cwd);
             for project in &self.store.projects {
                 for feature in &project.features {
-                    if cwd_path
+                    let wlen = feature
+                        .workdir
+                        .as_os_str()
+                        .len();
+                    if (cwd_path
                         .starts_with(&feature.workdir)
                         || feature
                             .workdir
-                            .starts_with(&cwd_path)
+                            .starts_with(&cwd_path))
+                        && wlen > best_len
                     {
                         project_name =
                             Some(project.name.clone());
                         feature_name =
                             Some(feature.name.clone());
-                        break;
+                        best_len = wlen;
                     }
-                }
-                if project_name.is_some() {
-                    break;
                 }
             }
 
@@ -1747,10 +1810,32 @@ impl App {
                 file_path: path,
                 project_name,
                 feature_name,
+                proceed_signal,
             });
         }
 
         self.pending_inputs = inputs;
+
+        // If currently viewing a feature, unblock any
+        // diff-review hooks that arrived since enter_view()
+        if let AppMode::Viewing(ref view) = self.mode {
+            let feat_name = view.feature_name.clone();
+            for input in &self.pending_inputs {
+                if input.notification_type == "diff-review"
+                    && input.feature_name.as_deref()
+                        == Some(&feat_name)
+                    && let Some(signal_path) =
+                        &input.proceed_signal
+                {
+                    let path = Path::new(signal_path);
+                    if let Some(parent) = path.parent() {
+                        let _ =
+                            std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(path, "");
+                }
+            }
+        }
     }
 
     /// Handle selecting a notification from the picker.
@@ -1770,8 +1855,11 @@ impl App {
             }
         };
 
-        // Delete the notification file
-        let _ = std::fs::remove_file(&input.file_path);
+        // Delete the notification file (diff-review cleanup
+        // handles its own file removal)
+        if input.notification_type != "diff-review" {
+            let _ = std::fs::remove_file(&input.file_path);
+        }
 
         // Try to navigate to the matching feature
         if let (Some(proj_name), Some(feat_name)) =
@@ -1788,6 +1876,22 @@ impl App {
                     .iter()
                     .position(|f| &f.name == feat_name);
                 if let Some(fi) = fi {
+                    // Fire proceed signal before removing
+                    // the entry (enter_view also checks, but
+                    // the entry will be gone by then)
+                    if input.notification_type == "diff-review"
+                        && let Some(signal_path) =
+                            &input.proceed_signal
+                    {
+                        let p = Path::new(signal_path);
+                        if let Some(parent) = p.parent() {
+                            let _ =
+                                std::fs::create_dir_all(
+                                    parent,
+                                );
+                        }
+                        let _ = std::fs::write(p, "");
+                    }
                     self.selection =
                         Selection::Feature(pi, fi);
                     self.pending_inputs.remove(idx);

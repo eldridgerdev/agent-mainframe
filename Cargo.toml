@@ -18,3 +18,4 @@ dirs = "6"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 vt100 = "0.15"
+ratatui-explorer = "0.2"

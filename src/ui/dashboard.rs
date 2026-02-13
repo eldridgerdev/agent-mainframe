@@ -6,7 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, PendingInput, Selection, VisibleItem};
+use crate::app::{
+    App, AppMode, BrowsePathState, PendingInput, Selection,
+    VisibleItem,
+};
 use crate::project::ProjectStatus;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -52,6 +55,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 project_name,
                 feature_name,
             );
+        }
+        AppMode::BrowsingPath(state) => {
+            draw_browse_path_dialog(frame, state);
         }
         _ => {}
     }
@@ -357,20 +363,20 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ])
             }
         }
-        AppMode::CreatingProject(_) | AppMode::CreatingFeature(_) => {
-            Line::from(vec![
-                Span::styled(
-                    "Enter",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(" confirm  "),
-                Span::styled(
-                    "Esc",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(" cancel"),
-            ])
-        }
+        AppMode::CreatingProject(_)
+        | AppMode::CreatingFeature(_)
+        | AppMode::BrowsingPath(_) => Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
         AppMode::DeletingProject(_)
         | AppMode::DeletingFeature(_, _) => Line::from(vec![
             Span::styled(
@@ -476,6 +482,7 @@ fn draw_create_project_dialog(
             Constraint::Length(2),
             Constraint::Length(2),
             Constraint::Min(0),
+            Constraint::Length(1),
         ])
         .split(inner);
 
@@ -497,15 +504,45 @@ fn draw_create_project_dialog(
         CreateProjectStep::Path => Style::default().fg(Color::Cyan),
         _ => Style::default().fg(Color::DarkGray),
     };
-    let path_field = Paragraph::new(Line::from(vec![
+    let path_spans = vec![
         Span::styled(" Repo path: ", path_style),
         Span::styled(
             &state.path,
             Style::default().fg(Color::White),
         ),
         cursor_span_project(&state.step, &CreateProjectStep::Path),
-    ]));
+        Span::styled(
+            "  (Ctrl+B browse)",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    let path_field = Paragraph::new(Line::from(path_spans));
     frame.render_widget(path_field, chunks[1]);
+
+    // Key hints at bottom of dialog
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Tab",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" switch field  "),
+        Span::styled(
+            "Ctrl+B",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" browse  "),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" confirm  "),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" cancel"),
+    ]));
+    frame.render_widget(hints, chunks[3]);
 }
 
 fn draw_create_feature_dialog(
@@ -821,6 +858,82 @@ fn draw_notification_picker(
 
     let list = List::new(items);
     frame.render_widget(list, inner);
+}
+
+fn draw_browse_path_dialog(
+    frame: &mut Frame,
+    state: &BrowsePathState,
+) {
+    let area = centered_rect(80, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Browse for Directory ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // cwd display
+            Constraint::Min(3),   // explorer widget
+            Constraint::Length(2), // key hints
+        ])
+        .split(inner);
+
+    // Current directory path
+    let cwd_line = Paragraph::new(Line::from(vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            state.explorer.cwd().to_string_lossy().to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(cwd_line, chunks[0]);
+
+    // File explorer widget
+    frame.render_widget(&state.explorer.widget(), chunks[1]);
+
+    // Key hints with separator
+    let hints = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "─".repeat(inner.width as usize),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(vec![
+            Span::styled(
+                " Space",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" select  "),
+            Span::styled(
+                "Enter/l",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" open  "),
+            Span::styled(
+                "h/BS",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" parent  "),
+            Span::styled(
+                "Tab",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" name  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
+    ]);
+    frame.render_widget(hints, chunks[2]);
 }
 
 fn centered_rect(

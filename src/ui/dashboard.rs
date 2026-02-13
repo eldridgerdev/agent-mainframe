@@ -16,6 +16,31 @@ use crate::app::{
 };
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 
+const RAINBOW_COLORS: &[Color] = &[
+    Color::Red,
+    Color::Rgb(255, 127, 0), // orange
+    Color::Yellow,
+    Color::Green,
+    Color::Cyan,
+    Color::Blue,
+    Color::Magenta,
+];
+
+fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+    text.chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let color = RAINBOW_COLORS[i % RAINBOW_COLORS.len()];
+            Span::styled(
+                ch.to_string(),
+                Style::default()
+                    .fg(color)
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
     // Viewing mode gets its own full-screen layout
     if let AppMode::Viewing(view) = &app.mode {
@@ -367,27 +392,26 @@ fn draw_project_list(
                         String::new()
                     };
 
-                    let mode_badge = match feature.mode {
-                        VibeMode::Vibeless => Span::styled(
+                    let mode_badge_spans: Vec<Span> = match feature.mode {
+                        VibeMode::Vibeless => vec![Span::styled(
                             " [vibeless]",
                             Style::default()
                                 .fg(Color::Green),
-                        ),
-                        VibeMode::Vibe => Span::styled(
+                        )],
+                        VibeMode::Vibe => vec![Span::styled(
                             " [vibe]",
                             Style::default()
                                 .fg(Color::Yellow),
-                        ),
+                        )],
                         VibeMode::SuperVibe => {
-                            Span::styled(
-                                " [supervibe]",
-                                Style::default()
-                                    .fg(Color::Red),
-                            )
+                            let mut spans = vec![Span::raw(" [")];
+                            spans.extend(rainbow_spans("supervibe"));
+                            spans.push(Span::raw("]"));
+                            spans
                         }
                     };
 
-                    Line::from(vec![
+                    let mut line_spans = vec![
                         status_dot,
                         Span::styled(
                             format!("{} ", collapse_icon),
@@ -398,21 +422,22 @@ fn draw_project_list(
                             &feature.name,
                             name_style,
                         ),
-                        mode_badge,
-                        Span::styled(
-                            badge,
-                            Style::default()
-                                .fg(Color::DarkGray),
+                    ];
+                    line_spans.extend(mode_badge_spans);
+                    line_spans.push(Span::styled(
+                        badge,
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ));
+                    line_spans.push(Span::styled(
+                        format!(
+                            "  {}",
+                            feature.workdir.display()
                         ),
-                        Span::styled(
-                            format!(
-                                "  {}",
-                                feature.workdir.display()
-                            ),
-                            Style::default()
-                                .fg(Color::DarkGray),
-                        ),
-                    ])
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ));
+                    Line::from(line_spans)
                 }
                 VisibleItem::Session(pi, fi, si) => {
                     let feature = &app.store.projects[*pi]
@@ -1579,12 +1604,6 @@ fn draw_pane_view(
         .split(frame.area());
 
     // Header bar with project/feature/session info
-    let (mode_label, mode_color) = match view.vibe_mode {
-        VibeMode::Vibeless => ("vibeless", Color::Green),
-        VibeMode::Vibe => ("vibe", Color::Yellow),
-        VibeMode::SuperVibe => ("supervibe", Color::Red),
-    };
-
     let mut header_spans = vec![
         Span::styled(
             format!(" {} ", view.project_name),
@@ -1602,11 +1621,22 @@ fn draw_pane_view(
             format!("/ {} ", view.session_label),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            format!("[{}] ", mode_label),
-            Style::default().fg(mode_color),
-        ),
     ];
+    match view.vibe_mode {
+        VibeMode::Vibeless => header_spans.push(Span::styled(
+            "[vibeless] ",
+            Style::default().fg(Color::Green),
+        )),
+        VibeMode::Vibe => header_spans.push(Span::styled(
+            "[vibe] ",
+            Style::default().fg(Color::Yellow),
+        )),
+        VibeMode::SuperVibe => {
+            header_spans.push(Span::raw("["));
+            header_spans.extend(rainbow_spans("supervibe"));
+            header_spans.push(Span::raw("] "));
+        }
+    };
 
     if leader_active {
         header_spans.push(Span::styled(

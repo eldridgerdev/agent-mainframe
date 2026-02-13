@@ -129,15 +129,27 @@ pub fn ensure_notification_hooks(
             serde_json::json!({})
         };
 
-    // Check if all hooks already exist - skip write if so
-    if let Some(hooks) = settings.get("hooks")
-        && hooks.get("Notification").is_some()
-            && hooks.get("Stop").is_some()
-            && hooks.get("PreToolUse").is_some()
-        {
-            return;
-        }
+    // Check if all hooks and permissions already exist
+    let has_hooks = settings.get("hooks").is_some_and(|h| {
+        h.get("Notification").is_some()
+            && h.get("Stop").is_some()
+            && h.get("PreToolUse").is_some()
+    });
+    let has_perms = settings
+        .get("permissions")
+        .and_then(|p| p.get("allow"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|v| v.as_str() == Some("Edit"))
+                && arr
+                    .iter()
+                    .any(|v| v.as_str() == Some("Write"))
+        });
+    if has_hooks && has_perms {
+        return;
+    }
 
+    // --- Hooks ---
     let hooks = settings
         .as_object_mut()
         .unwrap()
@@ -169,6 +181,26 @@ pub fn ensure_notification_hooks(
     hooks_obj
         .entry("PreToolUse")
         .or_insert(pre_tool_use_hook);
+
+    // --- Permissions: auto-allow Edit/Write (diff-review
+    //     hook is the review gate) ---
+    let perms = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    let allow = perms
+        .as_object_mut()
+        .unwrap()
+        .entry("allow")
+        .or_insert_with(|| serde_json::json!([]));
+    let arr = allow.as_array_mut().unwrap();
+    if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
+        arr.push(serde_json::json!("Edit"));
+    }
+    if !arr.iter().any(|v| v.as_str() == Some("Write")) {
+        arr.push(serde_json::json!("Write"));
+    }
 
     let _ = std::fs::create_dir_all(&claude_dir);
     let _ = std::fs::write(

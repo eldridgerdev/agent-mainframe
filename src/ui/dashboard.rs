@@ -1145,7 +1145,7 @@ fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w s n p i r x h)",
+            "Leader key (then: q t T w s n p i r x ?)",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -1578,7 +1578,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature i:inputs s:attach x:stop h:help",
+            " q:exit t/T:cycle w:switcher n/p:feature i:inputs s:attach x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {

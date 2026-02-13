@@ -569,7 +569,7 @@ fn handle_leader_key(
         KeyCode::Char('w') => {
             app.open_session_switcher();
         }
-        KeyCode::Char('h') => {
+        KeyCode::Char('?') => {
             app.exit_view();
             app.mode = AppMode::Help;
         }
@@ -669,7 +669,7 @@ fn handle_normal_leader_key(
                     Some("No pending input requests".into());
             }
         }
-        KeyCode::Char('h') => {
+        KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
         KeyCode::Char('r') => {

@@ -133,7 +133,9 @@ fn run_loop<B: Backend>(
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
-                    handle_key(app, key)?;
+                    if let Err(e) = handle_key(app, key) {
+                        app.show_error(e);
+                    }
                 }
                 Event::Resize(_, _) => {
                     last_size = None;

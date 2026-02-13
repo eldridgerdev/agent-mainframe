@@ -646,9 +646,14 @@ fn draw_status_bar(
     };
 
     let message_line = if let Some(msg) = &app.message {
+        let color = if msg.starts_with("Error:") {
+            Color::Red
+        } else {
+            Color::Green
+        };
         Line::from(Span::styled(
             msg.as_str(),
-            Style::default().fg(Color::Green),
+            Style::default().fg(color),
         ))
     } else {
         let project_count = app.store.projects.len();

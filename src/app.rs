@@ -519,6 +519,20 @@ impl App {
         self.mode = AppMode::Normal;
     }
 
+    pub fn show_error(&mut self, error: anyhow::Error) {
+        self.message = Some(format!("Error: {}", error));
+        // If we were in a dialog/creation mode, return to
+        // normal so the user isn't stuck
+        match &self.mode {
+            AppMode::Normal
+            | AppMode::Help
+            | AppMode::Viewing(_) => {}
+            _ => {
+                self.mode = AppMode::Normal;
+            }
+        }
+    }
+
     pub fn start_browse_path(
         &mut self,
         create_state: CreateProjectState,
@@ -592,13 +606,13 @@ impl App {
 
         if name.is_empty() {
             self.message =
-                Some("Project name cannot be empty".into());
+                Some("Error: Project name cannot be empty".into());
             return Ok(());
         }
 
         if !path.exists() {
             self.message = Some(format!(
-                "Path does not exist: {}",
+                "Error: Path does not exist: {}",
                 path.display()
             ));
             return Ok(());
@@ -606,13 +620,23 @@ impl App {
 
         if self.store.find_project(&name).is_some() {
             self.message = Some(format!(
-                "Project '{}' already exists",
+                "Error: Project '{}' already exists",
                 name
             ));
             return Ok(());
         }
 
-        let repo_root = WorktreeManager::repo_root(&path)?;
+        let repo_root = match WorktreeManager::repo_root(&path)
+        {
+            Ok(r) => r,
+            Err(_) => {
+                self.message = Some(format!(
+                    "Error: Path '{}' is not inside a git repository",
+                    path.display()
+                ));
+                return Ok(());
+            }
+        };
         let project = Project::new(name.clone(), repo_root);
 
         self.store.add_project(project);
@@ -732,7 +756,7 @@ impl App {
 
         if branch.is_empty() {
             self.message =
-                Some("Branch name cannot be empty".into());
+                Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
 
@@ -741,7 +765,7 @@ impl App {
                 Some(p) => p,
                 None => {
                     self.message = Some(format!(
-                        "Project '{}' not found",
+                        "Error: Project '{}' not found",
                         project_name
                     ));
                     return Ok(());
@@ -751,7 +775,7 @@ impl App {
         // Check for duplicate feature name
         if project.features.iter().any(|f| f.name == branch) {
             self.message = Some(format!(
-                "Feature '{}' already exists in '{}'",
+                "Error: Feature '{}' already exists in '{}'",
                 branch, project_name
             ));
             return Ok(());
@@ -896,7 +920,7 @@ impl App {
                 .map(|f| f.name.clone())
             {
                 self.message = Some(format!(
-                    "'{}' is already running",
+                    "Error: '{}' is already running",
                     name
                 ));
             }
@@ -933,7 +957,7 @@ impl App {
 
         if feature.status == ProjectStatus::Stopped {
             self.message = Some(format!(
-                "'{}' is already stopped",
+                "Error: '{}' is already stopped",
                 feature.name
             ));
             return Ok(());
@@ -1019,7 +1043,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());
@@ -1067,7 +1091,7 @@ impl App {
         if !TmuxManager::session_exists(&feature.tmux_session)
         {
             self.message = Some(
-                "Feature must be running to add a session"
+                "Error: Feature must be running to add a session"
                     .into(),
             );
             return Ok(());

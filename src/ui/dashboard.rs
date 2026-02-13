@@ -835,6 +835,11 @@ fn draw_create_feature_dialog(
     frame: &mut Frame,
     state: &crate::app::CreateFeatureState,
 ) {
+    if state.step == CreateFeatureStep::ConfirmSuperVibe {
+        draw_confirm_supervibe_dialog(frame);
+        return;
+    }
+
     let area = centered_rect(60, 35, frame.area());
     frame.render_widget(Clear, area);
 
@@ -955,6 +960,88 @@ fn draw_create_feature_dialog(
         ]))
     };
     frame.render_widget(hints, chunks[4]);
+}
+
+fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" SuperVibe Mode ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // warning header
+            Constraint::Length(1), // spacer
+            Constraint::Min(4),   // description
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // prompt
+            Constraint::Length(1), // hints
+        ])
+        .split(inner);
+
+    let warning = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " WARNING",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(warning, chunks[0]);
+
+    let desc = Paragraph::new(vec![
+        Line::from(Span::styled(
+            " SuperVibe skips ALL permission checks.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " Claude will be able to execute any tool",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " without asking for confirmation, including",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " running arbitrary shell commands.",
+            Style::default().fg(Color::White),
+        )),
+    ])
+    .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(desc, chunks[2]);
+
+    let prompt = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " Continue? ",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            "(y/n)",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    frame.render_widget(prompt, chunks[4]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " y",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" confirm  "),
+        Span::styled(
+            "n/Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[5]);
 }
 
 fn draw_rename_session_dialog(

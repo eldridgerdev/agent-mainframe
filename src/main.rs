@@ -9,11 +9,14 @@ mod worktree;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
-        LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode,
+        EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
 use ratatui::prelude::*;
@@ -62,7 +65,8 @@ fn run_loop<B: Backend>(
     let mut last_size: Option<(u16, u16)> = None;
 
     loop {
-        let is_viewing = matches!(app.mode, AppMode::Viewing(_));
+        let is_viewing =
+            matches!(app.mode, AppMode::Viewing(_));
 
         if is_viewing {
             // Resize tmux pane BEFORE capture so content matches
@@ -72,7 +76,8 @@ fn run_loop<B: Backend>(
             let current_size = (content_cols, content_rows);
 
             if last_size != Some(current_size) {
-                if let AppMode::Viewing(ref view) = app.mode {
+                if let AppMode::Viewing(ref view) = app.mode
+                {
                     let _ = TmuxManager::resize_pane(
                         &view.session,
                         &view.window,
@@ -88,8 +93,10 @@ fn run_loop<B: Backend>(
                 let session = view.session.clone();
                 let window = view.window.clone();
                 app.pane_content =
-                    TmuxManager::capture_pane_ansi(&session, &window)
-                        .unwrap_or_default();
+                    TmuxManager::capture_pane_ansi(
+                        &session, &window,
+                    )
+                    .unwrap_or_default();
             }
         }
 
@@ -137,7 +144,10 @@ fn run_loop<B: Backend>(
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::CreatingProject(_) => {
@@ -160,10 +170,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<()> {
         AppMode::NotificationPicker(_) => {
             handle_notification_picker_key(app, key.code)
         }
+        AppMode::SessionSwitcher(_) => {
+            handle_session_switcher_key(app, key.code)
+        }
+        AppMode::RenamingSession(_) => {
+            handle_rename_session_key(app, key.code)
+        }
     }
 }
 
-fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_normal_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
     // If leader is active in Normal mode, dispatch to normal leader handler
     if app.leader_active {
         return handle_normal_leader_key(app, key);
@@ -198,55 +217,97 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.toggle_collapse();
                 }
                 Selection::Feature(_, _) => {
-                    // Enter view on feature
+                    // Toggle collapse on feature
+                    // (show/hide sessions)
+                    app.toggle_collapse();
+                }
+                Selection::Session(_, _, _) => {
+                    // Enter view on session
                     app.enter_view()?;
                 }
             }
         }
         KeyCode::Char('c') => {
-            // Start claude session (feature only)
-            if matches!(app.selection, Selection::Feature(_, _)) {
-                app.start_feature()?;
+            // Start feature (feature or session context)
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.start_feature()?;
+                }
+                _ => {}
             }
         }
         KeyCode::Char('x') => {
-            // Stop feature (feature only)
-            if matches!(app.selection, Selection::Feature(_, _)) {
-                app.stop_feature()?;
+            match &app.selection {
+                Selection::Session(_, _, _) => {
+                    // Remove individual session
+                    app.remove_session()?;
+                }
+                Selection::Feature(_, _) => {
+                    // Stop feature (kill tmux session)
+                    app.stop_feature()?;
+                }
+                _ => {}
             }
         }
         KeyCode::Char('d') => {
             match &app.selection {
                 Selection::Project(pi) => {
-                    if let Some(project) = app.store.projects.get(*pi)
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
                     {
                         let name = project.name.clone();
-                        app.mode = AppMode::DeletingProject(name);
+                        app.mode =
+                            AppMode::DeletingProject(name);
                     }
                 }
                 Selection::Feature(pi, fi) => {
-                    if let Some(project) = app.store.projects.get(*pi)
-                    {
-                        if let Some(feature) =
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
+                        && let Some(feature) =
                             project.features.get(*fi)
                         {
                             let pn = project.name.clone();
                             let fn_ = feature.name.clone();
                             app.mode =
-                                AppMode::DeletingFeature(pn, fn_);
+                                AppMode::DeletingFeature(
+                                    pn, fn_,
+                                );
                         }
-                    }
+                }
+                Selection::Session(_, _, _) => {
+                    // Remove individual session
+                    app.remove_session()?;
                 }
             }
         }
         KeyCode::Char('s') => {
-            if matches!(app.selection, Selection::Feature(_, _)) {
-                app.switch_to_selected()?;
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.switch_to_selected()?;
+                }
+                _ => {}
             }
         }
         KeyCode::Char('t') => {
-            if matches!(app.selection, Selection::Feature(_, _)) {
-                app.open_terminal()?;
+            // Add terminal session (feature/session context)
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.add_terminal_session()?;
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Char('a') => {
+            // Add Claude session (feature/session context)
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.add_claude_session()?;
+                }
+                _ => {}
             }
         }
         KeyCode::Char('h') => {
@@ -255,13 +316,13 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     // Collapse the project if expanded
                     if let Some(project) =
                         app.store.projects.get(*pi)
+                        && !project.collapsed
                     {
-                        if !project.collapsed {
-                            app.toggle_collapse();
-                        }
+                        app.toggle_collapse();
                     }
                 }
-                Selection::Feature(pi, _) => {
+                Selection::Feature(pi, _)
+                | Selection::Session(pi, _, _) => {
                     // Move selection to parent project
                     app.selection = Selection::Project(*pi);
                 }
@@ -273,14 +334,14 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     // Expand the project if collapsed
                     if let Some(project) =
                         app.store.projects.get(*pi)
+                        && project.collapsed
                     {
-                        if project.collapsed {
-                            app.toggle_collapse();
-                        }
+                        app.toggle_collapse();
                     }
                 }
-                Selection::Feature(_, _) => {
-                    // Enter view on feature
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    // Enter view on feature/session
                     app.enter_view()?;
                 }
             }
@@ -297,9 +358,23 @@ fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('r') => {
+            if matches!(
+                app.selection,
+                Selection::Session(_, _, _)
+            ) {
+                app.start_rename_session();
+            } else {
+                app.sync_statuses();
+                app.scan_notifications();
+                app.message =
+                    Some("Refreshed statuses".into());
+            }
+        }
+        KeyCode::Char('R') => {
             app.sync_statuses();
             app.scan_notifications();
-            app.message = Some("Refreshed statuses".into());
+            app.message =
+                Some("Refreshed statuses".into());
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
@@ -321,40 +396,61 @@ enum TmuxKey {
 }
 
 fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(c) = key.code {
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(c) = key.code {
             return Some(TmuxKey::Named(format!("C-{}", c)));
         }
-    }
 
-    if key.modifiers.contains(KeyModifiers::ALT) {
-        if let KeyCode::Char(c) = key.code {
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && let KeyCode::Char(c) = key.code {
             return Some(TmuxKey::Named(format!("M-{}", c)));
         }
-    }
 
     match key.code {
-        KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),
-        KeyCode::Enter => Some(TmuxKey::Named("Enter".into())),
-        KeyCode::Backspace => Some(TmuxKey::Named("BSpace".into())),
+        KeyCode::Char(c) => {
+            Some(TmuxKey::Literal(c.to_string()))
+        }
+        KeyCode::Enter => {
+            Some(TmuxKey::Named("Enter".into()))
+        }
+        KeyCode::Backspace => {
+            Some(TmuxKey::Named("BSpace".into()))
+        }
         KeyCode::Tab => Some(TmuxKey::Named("Tab".into())),
-        KeyCode::Esc => Some(TmuxKey::Named("Escape".into())),
+        KeyCode::Esc => {
+            Some(TmuxKey::Named("Escape".into()))
+        }
         KeyCode::Up => Some(TmuxKey::Named("Up".into())),
         KeyCode::Down => Some(TmuxKey::Named("Down".into())),
         KeyCode::Left => Some(TmuxKey::Named("Left".into())),
-        KeyCode::Right => Some(TmuxKey::Named("Right".into())),
+        KeyCode::Right => {
+            Some(TmuxKey::Named("Right".into()))
+        }
         KeyCode::Home => Some(TmuxKey::Named("Home".into())),
         KeyCode::End => Some(TmuxKey::Named("End".into())),
-        KeyCode::PageUp => Some(TmuxKey::Named("PPage".into())),
-        KeyCode::PageDown => Some(TmuxKey::Named("NPage".into())),
-        KeyCode::Delete => Some(TmuxKey::Named("DC".into())),
-        KeyCode::Insert => Some(TmuxKey::Named("IC".into())),
-        KeyCode::F(n) => Some(TmuxKey::Named(format!("F{}", n))),
+        KeyCode::PageUp => {
+            Some(TmuxKey::Named("PPage".into()))
+        }
+        KeyCode::PageDown => {
+            Some(TmuxKey::Named("NPage".into()))
+        }
+        KeyCode::Delete => {
+            Some(TmuxKey::Named("DC".into()))
+        }
+        KeyCode::Insert => {
+            Some(TmuxKey::Named("IC".into()))
+        }
+        KeyCode::F(n) => {
+            Some(TmuxKey::Named(format!("F{}", n)))
+        }
         _ => None,
     }
 }
 
-fn handle_view_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_view_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
     // If leader is active, dispatch to leader handler
     if app.leader_active {
         return handle_leader_key(app, key);
@@ -402,7 +498,10 @@ fn handle_view_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
+fn handle_leader_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
     app.deactivate_leader();
 
     match key.code {
@@ -410,20 +509,19 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.exit_view();
         }
         KeyCode::Char('t') => {
-            // Switch tmux window to terminal
-            if let AppMode::Viewing(ref mut view) = app.mode {
-                let new_window = if view.window == "claude" {
-                    "terminal"
-                } else {
-                    "claude"
-                };
-                view.window = new_window.to_string();
-            }
+            // Cycle to next session
+            app.view_next_session();
+        }
+        KeyCode::Char('T') => {
+            // Cycle to previous session
+            app.view_prev_session();
         }
         KeyCode::Char('s') => {
             // Switch/attach to tmux session directly
             let session = match &app.mode {
-                AppMode::Viewing(view) => view.session.clone(),
+                AppMode::Viewing(view) => {
+                    view.session.clone()
+                }
                 _ => return Ok(()),
             };
             app.exit_view();
@@ -441,12 +539,15 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
-            app.message = Some("Refreshed statuses".into());
+            app.message =
+                Some("Refreshed statuses".into());
         }
         KeyCode::Char('x') => {
             // Stop the current session and exit view
             let session = match &app.mode {
-                AppMode::Viewing(view) => view.session.clone(),
+                AppMode::Viewing(view) => {
+                    view.session.clone()
+                }
                 _ => return Ok(()),
             };
             let _ = TmuxManager::kill_session(&session);
@@ -463,6 +564,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     Some("No pending input requests".into());
             }
         }
+        KeyCode::Char('w') => {
+            app.open_session_switcher();
+        }
         KeyCode::Char('h') => {
             app.exit_view();
             app.mode = AppMode::Help;
@@ -471,6 +575,80 @@ fn handle_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
 
+    Ok(())
+}
+
+fn handle_session_switcher_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_session_switcher();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::SessionSwitcher(ref mut state) =
+                app.mode
+            {
+                let len = state.sessions.len();
+                if len > 0 {
+                    state.selected =
+                        (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::SessionSwitcher(ref mut state) =
+                app.mode
+            {
+                let len = state.sessions.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            app.switch_from_switcher();
+        }
+        KeyCode::Char('r') => {
+            app.start_rename_from_switcher();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_rename_session_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc => {
+            app.cancel_rename_session();
+        }
+        KeyCode::Enter => {
+            app.apply_rename_session()?;
+        }
+        KeyCode::Backspace => {
+            if let AppMode::RenamingSession(state) =
+                &mut app.mode
+            {
+                state.input.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::RenamingSession(state) =
+                &mut app.mode
+            {
+                state.input.push(c);
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -495,7 +673,8 @@ fn handle_normal_leader_key(
         KeyCode::Char('r') => {
             app.sync_statuses();
             app.scan_notifications();
-            app.message = Some("Refreshed statuses".into());
+            app.message =
+                Some("Refreshed statuses".into());
         }
         _ => {}
     }
@@ -527,7 +706,8 @@ fn handle_notification_picker_key(
             {
                 let len = app.pending_inputs.len();
                 if len > 0 {
-                    *idx = if *idx == 0 { len - 1 } else { *idx - 1 };
+                    *idx =
+                        if *idx == 0 { len - 1 } else { *idx - 1 };
                 }
             }
         }
@@ -627,13 +807,17 @@ fn handle_create_project_key(
         KeyCode::Enter => {
             let should_advance = match &app.mode {
                 AppMode::CreatingProject(state) => {
-                    matches!(state.step, CreateProjectStep::Name)
+                    matches!(
+                        state.step,
+                        CreateProjectStep::Name
+                    )
                 }
                 _ => false,
             };
 
             if should_advance {
-                if let AppMode::CreatingProject(state) = &mut app.mode
+                if let AppMode::CreatingProject(state) =
+                    &mut app.mode
                 {
                     state.step = CreateProjectStep::Path;
                 }
@@ -642,15 +826,23 @@ fn handle_create_project_key(
             }
         }
         KeyCode::Tab => {
-            if let AppMode::CreatingProject(state) = &mut app.mode {
+            if let AppMode::CreatingProject(state) =
+                &mut app.mode
+            {
                 state.step = match state.step {
-                    CreateProjectStep::Name => CreateProjectStep::Path,
-                    CreateProjectStep::Path => CreateProjectStep::Name,
+                    CreateProjectStep::Name => {
+                        CreateProjectStep::Path
+                    }
+                    CreateProjectStep::Path => {
+                        CreateProjectStep::Name
+                    }
                 };
             }
         }
         KeyCode::Backspace => {
-            if let AppMode::CreatingProject(state) = &mut app.mode {
+            if let AppMode::CreatingProject(state) =
+                &mut app.mode
+            {
                 match state.step {
                     CreateProjectStep::Name => {
                         state.name.pop();
@@ -662,10 +854,16 @@ fn handle_create_project_key(
             }
         }
         KeyCode::Char(c) => {
-            if let AppMode::CreatingProject(state) = &mut app.mode {
+            if let AppMode::CreatingProject(state) =
+                &mut app.mode
+            {
                 match state.step {
-                    CreateProjectStep::Name => state.name.push(c),
-                    CreateProjectStep::Path => state.path.push(c),
+                    CreateProjectStep::Name => {
+                        state.name.push(c)
+                    }
+                    CreateProjectStep::Path => {
+                        state.path.push(c)
+                    }
                 }
             }
         }
@@ -686,12 +884,16 @@ fn handle_create_feature_key(
             app.create_feature()?;
         }
         KeyCode::Backspace => {
-            if let AppMode::CreatingFeature(state) = &mut app.mode {
+            if let AppMode::CreatingFeature(state) =
+                &mut app.mode
+            {
                 state.branch.pop();
             }
         }
         KeyCode::Char(c) => {
-            if let AppMode::CreatingFeature(state) = &mut app.mode {
+            if let AppMode::CreatingFeature(state) =
+                &mut app.mode
+            {
                 state.branch.push(c);
             }
         }
@@ -700,9 +902,15 @@ fn handle_create_feature_key(
     Ok(())
 }
 
-fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
+fn handle_help_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+        KeyCode::Esc
+        | KeyCode::Char('q')
+        | KeyCode::Char('h')
+        | KeyCode::Char('?') => {
             app.mode = AppMode::Normal;
         }
         _ => {}

@@ -568,6 +568,52 @@ impl App {
         };
     }
 
+    pub fn select_next_feature(&mut self) {
+        let items = self.visible_items();
+        if items.is_empty() {
+            return;
+        }
+        let current = self.selection_index().unwrap_or(0);
+        // Search forward (wrapping) for the next Feature item
+        for offset in 1..=items.len() {
+            let idx = (current + offset) % items.len();
+            if matches!(items[idx], VisibleItem::Feature(..)) {
+                self.selection = match items[idx] {
+                    VisibleItem::Feature(pi, fi) => {
+                        Selection::Feature(pi, fi)
+                    }
+                    _ => unreachable!(),
+                };
+                return;
+            }
+        }
+    }
+
+    pub fn select_prev_feature(&mut self) {
+        let items = self.visible_items();
+        if items.is_empty() {
+            return;
+        }
+        let current = self.selection_index().unwrap_or(0);
+        // Search backward (wrapping) for the previous Feature item
+        for offset in 1..=items.len() {
+            let idx = if current >= offset {
+                current - offset
+            } else {
+                items.len() - (offset - current)
+            };
+            if matches!(items[idx], VisibleItem::Feature(..)) {
+                self.selection = match items[idx] {
+                    VisibleItem::Feature(pi, fi) => {
+                        Selection::Feature(pi, fi)
+                    }
+                    _ => unreachable!(),
+                };
+                return;
+            }
+        }
+    }
+
     /// Sync feature statuses with actual tmux session state.
     pub fn sync_statuses(&mut self) {
         let live_sessions =

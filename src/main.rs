@@ -202,6 +202,23 @@ fn handle_normal_key(
         return Ok(());
     }
 
+    // Ctrl+Down/j jumps to next feature, Ctrl+Up/k jumps to previous
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.select_next_feature();
+                app.message = None;
+                return Ok(());
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.select_prev_feature();
+                app.message = None;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     let key = key.code;
     match key {
         KeyCode::Char('q') | KeyCode::Esc => {

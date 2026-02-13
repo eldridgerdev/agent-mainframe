@@ -626,18 +626,13 @@ impl App {
             return Ok(());
         }
 
-        let repo_root = match WorktreeManager::repo_root(&path)
-        {
-            Ok(r) => r,
-            Err(_) => {
-                self.message = Some(format!(
-                    "Error: Path '{}' is not inside a git repository",
-                    path.display()
-                ));
-                return Ok(());
-            }
-        };
-        let project = Project::new(name.clone(), repo_root);
+        let (project_path, is_git) =
+            match WorktreeManager::repo_root(&path) {
+                Ok(r) => (r, true),
+                Err(_) => (path.clone(), false),
+            };
+        let project =
+            Project::new(name.clone(), project_path, is_git);
 
         self.store.add_project(project);
         self.save()?;
@@ -782,10 +777,21 @@ impl App {
         }
 
         let is_first = project.features.is_empty();
+        let is_git = project.is_git;
+
+        if !is_git && !is_first {
+            self.message = Some(
+                "Error: Non-git projects support only one feature"
+                    .into(),
+            );
+            return Ok(());
+        }
 
         // Ensure the repo has .claude/settings.local.json so that
         // worktrees inherit it and the diff-review plugin is enabled.
-        ensure_claude_settings(&project_repo)?;
+        if is_git {
+            ensure_claude_settings(&project_repo)?;
+        }
 
         let (workdir, is_worktree) = if is_first {
             (project_repo.clone(), false)

@@ -652,8 +652,10 @@ fn draw_help(frame: &mut Frame) {
     frame.render_widget(Clear, area);
 
     let keybinds: Vec<(&str, &str)> = vec![
-        ("j/k / ↑/↓", "Navigate projects"),
-        ("Enter", "View/expand (embedded tmux)"),
+        ("j/k / ↑/↓", "Navigate up/down"),
+        ("h", "Collapse project / go to parent"),
+        ("l", "Expand project / view feature"),
+        ("Enter", "Toggle expand / view feature"),
         ("s", "Switch to project (tmux attach)"),
         ("t", "Open terminal window"),
         ("N", "Create new project"),
@@ -663,7 +665,7 @@ fn draw_help(frame: &mut Frame) {
         ("x", "Stop feature session"),
         ("i", "Input requests picker"),
         ("r", "Refresh statuses"),
-        ("h", "Toggle this help"),
+        ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
     ];
 

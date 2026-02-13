@@ -221,12 +221,17 @@ impl TmuxManager {
         session: &str,
         window: &str,
         resume_session_id: Option<&str>,
+        extra_args: &[&str],
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
 
         let mut cmd_str = String::from("claude");
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", sid));
+        }
+        for arg in extra_args {
+            cmd_str.push(' ');
+            cmd_str.push_str(arg);
         }
 
         Command::new("tmux")

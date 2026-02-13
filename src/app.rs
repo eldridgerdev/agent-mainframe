@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::project::{
     Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionKind,
+    ProjectStore, SessionKind, VibeMode,
 };
 
 pub struct SwitcherEntry {
@@ -23,6 +23,7 @@ pub struct SessionSwitcherState {
     pub selected: usize,
     pub return_window: String,
     pub return_label: String,
+    pub vibe_mode: VibeMode,
 }
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -174,6 +175,7 @@ pub struct ViewState {
     pub session: String,
     pub window: String,
     pub session_label: String,
+    pub vibe_mode: VibeMode,
 }
 
 #[derive(Debug, Clone)]
@@ -253,10 +255,19 @@ impl CreateProjectState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateFeatureStep {
+    Branch,
+    Mode,
+}
+
 pub struct CreateFeatureState {
     pub project_name: String,
     pub project_repo: PathBuf,
     pub branch: String,
+    pub step: CreateFeatureStep,
+    pub mode: VibeMode,
+    pub mode_index: usize,
 }
 
 impl CreateFeatureState {
@@ -268,6 +279,9 @@ impl CreateFeatureState {
             project_name,
             project_repo,
             branch: detect_branch(),
+            step: CreateFeatureStep::Branch,
+            mode: VibeMode::default(),
+            mode_index: 0,
         }
     }
 }
@@ -748,6 +762,7 @@ impl App {
         let project_name = state.project_name.clone();
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
+        let mode = state.mode.clone();
 
         if branch.is_empty() {
             self.message =
@@ -828,6 +843,7 @@ impl App {
             branch.clone(),
             workdir,
             is_worktree,
+            mode,
         );
 
         self.store.add_feature(&project_name, feature);
@@ -901,12 +917,14 @@ impl App {
             )?;
         }
 
+        let extra_args = feature.mode.cli_flags();
         for session in &feature.sessions {
             if session.kind == SessionKind::Claude {
                 TmuxManager::launch_claude(
                     &feature.tmux_session,
                     &session.tmux_window,
                     session.claude_session_id.as_deref(),
+                    &extra_args,
                 )?;
             }
         }
@@ -1124,6 +1142,12 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
+        let extra_args: Vec<String> = feature
+            .mode
+            .cli_flags()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         ensure_notification_hooks(&workdir);
         let session =
             feature.add_session(SessionKind::Claude);
@@ -1135,10 +1159,13 @@ impl App {
             &window,
             &workdir,
         )?;
+        let extra_refs: Vec<&str> =
+            extra_args.iter().map(|s| s.as_str()).collect();
         TmuxManager::launch_claude(
             &tmux_session,
             &window,
             None,
+            &extra_refs,
         )?;
 
         feature.collapsed = false;
@@ -1221,6 +1248,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            vibe_mode,
         ) = {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
@@ -1242,6 +1270,7 @@ impl App {
                 feature.tmux_session.clone(),
                 session.tmux_window.clone(),
                 session.label.clone(),
+                feature.mode.clone(),
             )
         };
 
@@ -1259,6 +1288,7 @@ impl App {
             session: tmux_session,
             window: session_window,
             session_label,
+            vibe_mode,
         };
 
         self.save()?;
@@ -1441,6 +1471,7 @@ impl App {
         let project_name = project.name.clone();
         let feature_name = feature.name.clone();
         let tmux_session = feature.tmux_session.clone();
+        let vibe_mode = feature.mode.clone();
 
         // Default to first Claude session
         let si = feature
@@ -1470,6 +1501,7 @@ impl App {
             session: tmux_session,
             window: session_window,
             session_label,
+            vibe_mode,
         });
         self.save()?;
 
@@ -1585,7 +1617,7 @@ impl App {
 
     /// Open the session switcher overlay from Viewing mode.
     pub fn open_session_switcher(&mut self) {
-        let (project_name, feature_name, tmux_session, current_window, current_label, sessions) =
+        let (project_name, feature_name, tmux_session, current_window, current_label, sessions, vibe_mode) =
             match &self.mode {
                 AppMode::Viewing(view) => {
                     let pi = self
@@ -1629,6 +1661,7 @@ impl App {
                         view.window.clone(),
                         view.session_label.clone(),
                         entries,
+                        view.vibe_mode.clone(),
                     )
                 }
                 _ => return,
@@ -1652,6 +1685,7 @@ impl App {
                 selected,
                 return_window: current_window,
                 return_label: current_label,
+                vibe_mode,
             });
     }
 
@@ -1664,6 +1698,7 @@ impl App {
             tmux_session,
             window,
             label,
+            vibe_mode,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => {
                 let entry =
@@ -1678,6 +1713,7 @@ impl App {
                     state.tmux_session.clone(),
                     entry.tmux_window.clone(),
                     entry.label.clone(),
+                    state.vibe_mode.clone(),
                 )
             }
             _ => return,
@@ -1690,6 +1726,7 @@ impl App {
             session: tmux_session,
             window,
             session_label: label,
+            vibe_mode,
         });
     }
 
@@ -1702,6 +1739,7 @@ impl App {
             tmux_session,
             window,
             label,
+            vibe_mode,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => (
                 state.project_name.clone(),
@@ -1709,6 +1747,7 @@ impl App {
                 state.tmux_session.clone(),
                 state.return_window.clone(),
                 state.return_label.clone(),
+                state.vibe_mode.clone(),
             ),
             _ => return,
         };
@@ -1720,6 +1759,7 @@ impl App {
             session: tmux_session,
             window,
             session_label: label,
+            vibe_mode,
         });
     }
 
@@ -1955,6 +1995,7 @@ impl App {
             return_label: switcher_state
                 .return_label
                 .clone(),
+            vibe_mode: switcher_state.vibe_mode.clone(),
         };
 
         self.mode =

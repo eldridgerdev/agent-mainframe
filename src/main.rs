@@ -88,7 +88,7 @@ fn run_loop<B: Backend>(
                 last_size = Some(current_size);
             }
 
-            // Capture pane content after resize
+            // Capture pane content and cursor after resize
             if let AppMode::Viewing(ref view) = app.mode {
                 let session = view.session.clone();
                 let window = view.window.clone();
@@ -97,6 +97,10 @@ fn run_loop<B: Backend>(
                         &session, &window,
                     )
                     .unwrap_or_default();
+                app.pane_cursor =
+                    TmuxManager::cursor_position(
+                        &session, &window,
+                    );
             }
         }
 
@@ -308,6 +312,16 @@ fn handle_normal_key(
                 Selection::Feature(_, _)
                 | Selection::Session(_, _, _) => {
                     app.add_claude_session()?;
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Char('v') => {
+            // Add nvim session (feature/session context)
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.add_nvim_session()?;
                 }
                 _ => {}
             }

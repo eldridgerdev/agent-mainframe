@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             view,
             &app.pane_content,
+            app.pane_cursor,
             app.leader_active,
             app.pending_inputs.len(),
         );
@@ -45,10 +46,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             &temp_view,
             &app.pane_content,
+            app.pane_cursor,
             false,
             app.pending_inputs.len(),
         );
-        draw_session_switcher(frame, state);
+        draw_session_switcher(
+            frame,
+            state,
+            app.config.nerd_font,
+        );
         return;
     }
 
@@ -69,6 +75,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             &temp_view,
             &app.pane_content,
+            app.pane_cursor,
             false,
             app.pending_inputs.len(),
         );
@@ -428,6 +435,19 @@ fn draw_project_list(
                                     .fg(Color::Green),
                             )
                         }
+                        SessionKind::Nvim => {
+                            let icon =
+                                if app.config.nerd_font {
+                                    "       \u{E62B} "
+                                } else {
+                                    "       ~ "
+                                };
+                            Span::styled(
+                                icon,
+                                Style::default()
+                                    .fg(Color::Cyan),
+                            )
+                        }
                     };
 
                     let name_style = if is_selected {
@@ -548,6 +568,11 @@ fn draw_status_bar(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" +claude  "),
+                    Span::styled(
+                        "v",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" +nvim  "),
                     Span::styled(
                         "s",
                         Style::default().fg(Color::Yellow),
@@ -1094,6 +1119,7 @@ fn draw_help(frame: &mut Frame) {
         ("r", "Rename session"),
         ("t", "Add terminal session"),
         ("a", "Add Claude session"),
+        ("v", "Add nvim session"),
         ("i", "Input requests picker"),
         ("R", "Refresh statuses"),
         ("?", "Toggle this help"),
@@ -1294,6 +1320,7 @@ fn draw_notification_picker(
 fn draw_session_switcher(
     frame: &mut Frame,
     state: &SessionSwitcherState,
+    nerd_font: bool,
 ) {
     let area = centered_rect(40, 50, frame.area());
     frame.render_widget(Clear, area);
@@ -1346,6 +1373,17 @@ fn draw_session_switcher(
                     "  > ",
                     Style::default().fg(Color::Green),
                 ),
+                SessionKind::Nvim => {
+                    let icon = if nerd_font {
+                        "  \u{E62B} "
+                    } else {
+                        "  ~ "
+                    };
+                    Span::styled(
+                        icon,
+                        Style::default().fg(Color::Cyan),
+                    )
+                }
             };
 
             let name_style = if is_selected {
@@ -1528,6 +1566,7 @@ fn draw_pane_view(
     frame: &mut Frame,
     view: &crate::app::ViewState,
     pane_content: &str,
+    pane_cursor: Option<(u16, u16)>,
     leader_active: bool,
     pending_count: usize,
 ) {
@@ -1631,6 +1670,7 @@ fn draw_pane_view(
         pane_content,
         content_area.width,
         content_area.height,
+        pane_cursor,
     );
     let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, content_area);
@@ -1640,6 +1680,7 @@ fn ansi_to_ratatui_text<'a>(
     raw: &str,
     cols: u16,
     rows: u16,
+    cursor: Option<(u16, u16)>,
 ) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let normalized = raw.replace('\n', "\r\n");
@@ -1660,7 +1701,14 @@ fn ansi_to_ratatui_text<'a>(
                 None => continue,
             };
 
-            let style = vt100_cell_to_style(cell);
+            let is_cursor = cursor
+                == Some((col, row));
+            let style = if is_cursor {
+                vt100_cell_to_style(cell)
+                    .add_modifier(Modifier::REVERSED)
+            } else {
+                vt100_cell_to_style(cell)
+            };
 
             if style != current_style
                 && !current_text.is_empty()

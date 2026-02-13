@@ -1,6 +1,6 @@
 use anyhow::Result;
 use ratatui_explorer::FileExplorer;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -27,6 +27,42 @@ pub struct SessionSwitcherState {
 }
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppConfig {
+    pub nerd_font: bool,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self { nerd_font: true }
+    }
+}
+
+pub fn load_config() -> AppConfig {
+    let config_path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless")
+        .join("config.json");
+
+    if config_path.exists() {
+        std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    } else {
+        let config = AppConfig::default();
+        let dir = config_path.parent().unwrap();
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config)
+                .unwrap_or_default(),
+        );
+        config
+    }
+}
 
 /// Remove the old external diff-review plugin from
 /// `.claude/settings.local.json` if present.  The hook is now
@@ -366,12 +402,14 @@ pub enum VisibleItem {
 pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
+    pub config: AppConfig,
     pub selection: Selection,
     pub mode: AppMode,
     pub message: Option<String>,
     pub should_quit: bool,
     pub should_switch: Option<String>,
     pub pane_content: String,
+    pub pane_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
@@ -380,15 +418,18 @@ pub struct App {
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
         let store = ProjectStore::load(&store_path)?;
+        let config = load_config();
         Ok(Self {
             store,
             store_path,
+            config,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),
+            pane_cursor: None,
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
@@ -1186,6 +1227,73 @@ impl App {
             &tmux_session,
             &window,
             &workdir,
+        )?;
+
+        feature.collapsed = false;
+        let si = feature.sessions.len() - 1;
+        self.selection = Selection::Session(pi, fi, si);
+        self.save()?;
+        self.message = Some(format!("Added '{}'", label));
+
+        Ok(())
+    }
+
+    pub fn add_nvim_session(&mut self) -> Result<()> {
+        // Check if nvim is available
+        if std::process::Command::new("nvim")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            self.message = Some(
+                "Error: nvim is not installed".into(),
+            );
+            return Ok(());
+        }
+
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        if !TmuxManager::session_exists(&feature.tmux_session)
+        {
+            self.message = Some(
+                "Error: Feature must be running to add a session"
+                    .into(),
+            );
+            return Ok(());
+        }
+
+        let workdir = feature.workdir.clone();
+        let tmux_session = feature.tmux_session.clone();
+        let session =
+            feature.add_session(SessionKind::Nvim);
+        let window = session.tmux_window.clone();
+        let label = session.label.clone();
+
+        TmuxManager::create_window(
+            &tmux_session,
+            &window,
+            &workdir,
+        )?;
+        TmuxManager::send_keys(
+            &tmux_session,
+            &window,
+            "nvim",
         )?;
 
         feature.collapsed = false;

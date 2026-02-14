@@ -182,6 +182,9 @@ fn handle_key(
         AppMode::RenamingSession(_) => {
             handle_rename_session_key(app, key.code)
         }
+        AppMode::CommandPicker(_) => {
+            handle_command_picker_key(app, key.code)
+        }
     }
 }
 
@@ -600,6 +603,19 @@ fn handle_leader_key(
         KeyCode::Char('w') => {
             app.open_session_switcher();
         }
+        KeyCode::Char('/') => {
+            let view_state = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_command_picker(Some(view_state));
+        }
         KeyCode::Char('?') => {
             app.exit_view();
             app.mode = AppMode::Help;
@@ -703,6 +719,9 @@ fn handle_normal_leader_key(
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
+        KeyCode::Char('/') => {
+            app.open_command_picker(None);
+        }
         KeyCode::Char('r') => {
             app.sync_statuses();
             app.scan_notifications();
@@ -712,6 +731,139 @@ fn handle_normal_leader_key(
         _ => {}
     }
 
+    Ok(())
+}
+
+fn handle_command_picker_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let old_mode = std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            );
+            if let AppMode::CommandPicker(state) = old_mode
+                && let Some(view) = state.from_view
+            {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::CommandPicker(ref mut state) =
+                app.mode
+            {
+                let len = state.commands.len();
+                if len > 0 {
+                    state.selected =
+                        (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::CommandPicker(ref mut state) =
+                app.mode
+            {
+                let len = state.commands.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            let old_mode = std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            );
+            if let AppMode::CommandPicker(state) = old_mode {
+                let selected_name = state
+                    .commands
+                    .get(state.selected)
+                    .map(|c| c.name.clone());
+
+                if let Some(name) = selected_name {
+                    let command_text =
+                        format!("/{}", name);
+
+                    // Determine which tmux session to
+                    // send to
+                    let tmux_info =
+                        if let Some(ref view) =
+                            state.from_view
+                        {
+                            Some((
+                                view.session.clone(),
+                                view.window.clone(),
+                            ))
+                        } else if let Some((_, feature)) =
+                            app.selected_feature()
+                        {
+                            let window = feature
+                                .sessions
+                                .iter()
+                                .find(|s| {
+                                    s.kind
+                                        == crate::project
+                                            ::SessionKind
+                                            ::Claude
+                                })
+                                .map(|s| {
+                                    s.tmux_window.clone()
+                                })
+                                .unwrap_or_else(|| {
+                                    "claude".into()
+                                });
+                            Some((
+                                feature
+                                    .tmux_session
+                                    .clone(),
+                                window,
+                            ))
+                        } else {
+                            None
+                        };
+
+                    if let Some((session, window)) =
+                        &tmux_info
+                    {
+                        let _ =
+                            TmuxManager::send_literal(
+                                session,
+                                window,
+                                &command_text,
+                            );
+                        let _ =
+                            TmuxManager::send_key_name(
+                                session,
+                                window,
+                                "Enter",
+                            );
+                        app.message = Some(format!(
+                            "Sent '{}'",
+                            command_text
+                        ));
+                    } else {
+                        app.message = Some(
+                            "No active session to send \
+                             to"
+                            .into(),
+                        );
+                    }
+                }
+
+                // Return to previous mode
+                if let Some(view) = state.from_view {
+                    app.mode = AppMode::Viewing(view);
+                }
+            }
+        }
+        _ => {}
+    }
     Ok(())
 }
 

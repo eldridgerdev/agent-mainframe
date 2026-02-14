@@ -9,6 +9,18 @@ use crate::project::{
     ProjectStore, SessionKind, VibeMode,
 };
 
+pub struct CommandEntry {
+    pub name: String,
+    pub source: String,
+    pub path: PathBuf,
+}
+
+pub struct CommandPickerState {
+    pub commands: Vec<CommandEntry>,
+    pub selected: usize,
+    pub from_view: Option<ViewState>,
+}
+
 pub struct SwitcherEntry {
     pub tmux_window: String,
     pub kind: SessionKind,
@@ -367,6 +379,7 @@ pub enum AppMode {
     SessionSwitcher(SessionSwitcherState),
     RenamingSession(RenameSessionState),
     BrowsingPath(Box<BrowsePathState>),
+    CommandPicker(CommandPickerState),
 }
 
 pub struct BrowsePathState {
@@ -435,6 +448,54 @@ pub enum VisibleItem {
     Project(usize),
     Feature(usize, usize),
     Session(usize, usize, usize),
+}
+
+/// Recursively scan a directory for `.md` command files.
+/// Files in subdirectories get a `subdir:name` prefix.
+fn scan_commands_recursive(
+    base: &Path,
+    dir: &Path,
+    source: &str,
+    out: &mut Vec<CommandEntry>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_commands_recursive(
+                base, &path, source, out,
+            );
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            == Some("md")
+            && let Some(stem) =
+                path.file_stem().and_then(|s| s.to_str())
+        {
+            // Build name with subdir prefix if nested
+            let name = if let Ok(rel) = dir.strip_prefix(base)
+                && !rel.as_os_str().is_empty()
+            {
+                format!(
+                    "{}:{}",
+                    rel.to_string_lossy(),
+                    stem,
+                )
+            } else {
+                stem.to_string()
+            };
+
+            out.push(CommandEntry {
+                name,
+                source: source.into(),
+                path,
+            });
+        }
+    }
 }
 
 pub struct App {
@@ -2443,6 +2504,91 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn open_command_picker(
+        &mut self,
+        from_view: Option<ViewState>,
+    ) {
+        let (repo, workdir) = match &self.selection {
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => {
+                let p = self.store.projects.get(*pi);
+                (
+                    p.map(|p| p.repo.clone()),
+                    p.and_then(|p| {
+                        p.features
+                            .get(*fi)
+                            .map(|f| f.workdir.clone())
+                    }),
+                )
+            }
+            Selection::Project(pi) => {
+                (
+                    self.store
+                        .projects
+                        .get(*pi)
+                        .map(|p| p.repo.clone()),
+                    None,
+                )
+            }
+        };
+
+        let mut commands = Vec::new();
+
+        // Scan global commands first
+        if let Some(home) = dirs::home_dir() {
+            let global_cmd_dir =
+                home.join(".claude").join("commands");
+            scan_commands_recursive(
+                &global_cmd_dir,
+                &global_cmd_dir,
+                "Global",
+                &mut commands,
+            );
+        }
+        commands.sort_by(|a, b| a.name.cmp(&b.name));
+
+        // Then scan project commands: workdir first
+        // (worktree-local), fall back to repo root
+        let mut project_cmds = Vec::new();
+        let mut scanned_repo = false;
+        if let Some(ref wd) = workdir {
+            let workdir_cmd_dir =
+                wd.join(".claude").join("commands");
+            if workdir_cmd_dir.exists() {
+                scan_commands_recursive(
+                    &workdir_cmd_dir,
+                    &workdir_cmd_dir,
+                    "Project",
+                    &mut project_cmds,
+                );
+                scanned_repo = true;
+            }
+        }
+
+        if !scanned_repo {
+            if let Some(ref repo) = repo {
+                let project_cmd_dir =
+                    repo.join(".claude").join("commands");
+                scan_commands_recursive(
+                    &project_cmd_dir,
+                    &project_cmd_dir,
+                    "Project",
+                    &mut project_cmds,
+                );
+            }
+        }
+
+        project_cmds.sort_by(|a, b| a.name.cmp(&b.name));
+        commands.extend(project_cmds);
+
+        self.mode =
+            AppMode::CommandPicker(CommandPickerState {
+                commands,
+                selected: 0,
+                from_view,
+            });
     }
 
     pub fn open_terminal(&mut self) -> Result<()> {

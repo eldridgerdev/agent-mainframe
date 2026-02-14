@@ -10,9 +10,10 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, AppMode, BrowsePathState, CreateFeatureStep,
-    PendingInput, RenameReturnTo, RenameSessionState,
-    Selection, SessionSwitcherState, VisibleItem,
+    App, AppMode, BrowsePathState, CommandPickerState,
+    CreateFeatureStep, PendingInput, RenameReturnTo,
+    RenameSessionState, Selection, SessionSwitcherState,
+    VisibleItem,
 };
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 
@@ -80,6 +81,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
             state,
             app.config.nerd_font,
         );
+        return;
+    }
+
+    // Command picker overlays on top of pane view when
+    // opened from view mode
+    if let AppMode::CommandPicker(state) = &app.mode
+        && state.from_view.is_some()
+    {
+        let view = state.from_view.as_ref().unwrap();
+        draw_pane_view(
+            frame,
+            view,
+            &app.pane_content,
+            app.pane_cursor,
+            false,
+            app.pending_inputs.len(),
+        );
+        draw_command_picker(frame, state);
         return;
     }
 
@@ -166,6 +185,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
             &app.pending_inputs,
             *selected,
         );
+    }
+
+    // Draw command picker overlay
+    if let AppMode::CommandPicker(state) = &app.mode {
+        draw_command_picker(frame, state);
     }
 }
 
@@ -686,7 +710,8 @@ fn draw_status_bar(
             ),
             Span::raw(" close help"),
         ]),
-        AppMode::NotificationPicker(_)
+        AppMode::CommandPicker(_)
+        | AppMode::NotificationPicker(_)
         | AppMode::SessionSwitcher(_) => Line::from(vec![
             Span::styled(
                 "j/k",
@@ -1283,7 +1308,7 @@ fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w s n p i r x ?)",
+            "Leader key (then: q t T w / s n p i r x ?)",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -1310,6 +1335,19 @@ fn draw_help(frame: &mut Frame) {
         Span::raw("  "),
         Span::styled(
             "Session switcher",
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "/"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Custom commands picker",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -1427,6 +1465,121 @@ fn draw_notification_picker(
 
     let list = List::new(items);
     frame.render_widget(list, inner);
+}
+
+fn draw_command_picker(
+    frame: &mut Frame,
+    state: &CommandPickerState,
+) {
+    let area = centered_rect(50, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Custom Commands ({}) ",
+        state.commands.len()
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.commands.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No custom commands found.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // command list
+            Constraint::Length(2), // footer hints
+        ])
+        .split(inner);
+
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut current_source = String::new();
+
+    for (i, cmd) in state.commands.iter().enumerate() {
+        // Add section header when source changes
+        if cmd.source != current_source {
+            if !current_source.is_empty() {
+                items.push(ListItem::new(Line::from("")));
+            }
+            current_source = cmd.source.clone();
+            items.push(ListItem::new(Line::from(
+                Span::styled(
+                    format!("  {} Commands", cmd.source),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            )));
+        }
+
+        let is_selected = i == state.selected;
+        let line = Line::from(vec![
+            Span::styled(
+                "    /",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                &cmd.name,
+                if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+        ]);
+
+        if is_selected {
+            items.push(ListItem::new(line).style(
+                Style::default().bg(Color::DarkGray),
+            ));
+        } else {
+            items.push(ListItem::new(line));
+        }
+    }
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " send  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " cancel",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }
 
 fn draw_session_switcher(
@@ -1734,7 +1887,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature i:inputs s:attach x:stop ?:help",
+            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {

@@ -1765,12 +1765,19 @@ impl App {
         };
 
         let project = &self.store.projects[pi];
-        if project.features.len() <= 1 {
+        let len = project.features.len();
+        if len <= 1 {
             return Ok(());
         }
 
-        let next_fi = (fi + 1) % project.features.len();
-        self.switch_view_to_feature(pi, next_fi)
+        // Skip stopped features when cycling
+        for offset in 1..len {
+            let candidate = (fi + offset) % len;
+            if project.features[candidate].status != ProjectStatus::Stopped {
+                return self.switch_view_to_feature(pi, candidate);
+            }
+        }
+        Ok(())
     }
 
     /// Cycle to the previous feature within the same project
@@ -1805,16 +1812,19 @@ impl App {
         };
 
         let project = &self.store.projects[pi];
-        if project.features.len() <= 1 {
+        let len = project.features.len();
+        if len <= 1 {
             return Ok(());
         }
 
-        let prev_fi = if fi == 0 {
-            project.features.len() - 1
-        } else {
-            fi - 1
-        };
-        self.switch_view_to_feature(pi, prev_fi)
+        // Skip stopped features when cycling
+        for offset in 1..len {
+            let candidate = (fi + len - offset) % len;
+            if project.features[candidate].status != ProjectStatus::Stopped {
+                return self.switch_view_to_feature(pi, candidate);
+            }
+        }
+        Ok(())
     }
 
     /// Switch the current view to a different feature,

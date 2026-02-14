@@ -10,8 +10,8 @@ mod worktree;
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, EnableBracketedPaste,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     },
     execute,
     terminal::{
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -46,7 +46,11 @@ fn main() -> Result<()> {
 
     // Restore terminal
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     // Handle post-exit switch
@@ -138,6 +142,11 @@ fn run_loop<B: Backend>(
                         continue;
                     }
                     if let Err(e) = handle_key(app, key) {
+                        app.show_error(e);
+                    }
+                }
+                Event::Paste(text) => {
+                    if let Err(e) = handle_paste(app, &text) {
                         app.show_error(e);
                     }
                 }
@@ -481,6 +490,53 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
         }
         _ => None,
     }
+}
+
+fn handle_paste(app: &mut App, text: &str) -> Result<()> {
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            let session = view.session.clone();
+            let window = view.window.clone();
+            TmuxManager::paste_text(
+                &session, &window, text,
+            )?;
+        }
+        AppMode::CreatingProject(_) => {
+            if let AppMode::CreatingProject(state) =
+                &mut app.mode
+            {
+                match state.step {
+                    app::CreateProjectStep::Name => {
+                        state.name.push_str(text);
+                    }
+                    app::CreateProjectStep::Path => {
+                        state.path.push_str(text);
+                    }
+                }
+            }
+        }
+        AppMode::CreatingFeature(_) => {
+            if let AppMode::CreatingFeature(state) =
+                &mut app.mode
+            {
+                if matches!(
+                    state.step,
+                    app::CreateFeatureStep::Branch
+                ) {
+                    state.branch.push_str(text);
+                }
+            }
+        }
+        AppMode::RenamingSession(_) => {
+            if let AppMode::RenamingSession(state) =
+                &mut app.mode
+            {
+                state.input.push_str(text);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_view_key(

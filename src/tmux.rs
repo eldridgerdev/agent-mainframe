@@ -438,6 +438,31 @@ impl TmuxManager {
         Ok(())
     }
 
+    /// Paste text into a tmux pane using bracketed paste mode.
+    /// Uses set-buffer + paste-buffer -p so the inner
+    /// application receives proper bracketed paste sequences.
+    pub fn paste_text(
+        session: &str,
+        window: &str,
+        text: &str,
+    ) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+
+        // Load text into a tmux paste buffer
+        Command::new("tmux")
+            .args(["set-buffer", "--", text])
+            .status()
+            .context("Failed to set tmux buffer")?;
+
+        // Paste with -p flag for bracketed paste indicators
+        Command::new("tmux")
+            .args(["paste-buffer", "-t", &target, "-p"])
+            .status()
+            .context("Failed to paste buffer to tmux")?;
+
+        Ok(())
+    }
+
     /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
     pub fn send_key_name(
         session: &str,

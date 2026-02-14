@@ -412,6 +412,8 @@ impl CreateProjectState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateFeatureStep {
+    Source,
+    ExistingWorktree,
     Branch,
     Mode,
     ConfirmSuperVibe,
@@ -424,20 +426,32 @@ pub struct CreateFeatureState {
     pub step: CreateFeatureStep,
     pub mode: VibeMode,
     pub mode_index: usize,
+    pub source_index: usize,
+    pub worktrees: Vec<crate::worktree::WorktreeInfo>,
+    pub worktree_index: usize,
 }
 
 impl CreateFeatureState {
     pub fn new(
         project_name: String,
         project_repo: PathBuf,
+        worktrees: Vec<crate::worktree::WorktreeInfo>,
     ) -> Self {
+        let step = if worktrees.is_empty() {
+            CreateFeatureStep::Branch
+        } else {
+            CreateFeatureStep::Source
+        };
         Self {
             project_name,
             project_repo,
             branch: detect_branch(),
-            step: CreateFeatureStep::Branch,
+            step,
             mode: VibeMode::default(),
             mode_index: 0,
+            source_index: 0,
+            worktrees,
+            worktree_index: 0,
         }
     }
 }
@@ -984,7 +998,7 @@ impl App {
     // --- Feature CRUD ---
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo) =
+        let (project_name, project_repo, used_workdirs) =
             match &self.selection {
                 Selection::Project(pi)
                 | Selection::Feature(pi, _)
@@ -992,17 +1006,35 @@ impl App {
                     if let Some(p) =
                         self.store.projects.get(*pi)
                     {
-                        (p.name.clone(), p.repo.clone())
+                        let used: Vec<PathBuf> = p
+                            .features
+                            .iter()
+                            .map(|f| f.workdir.clone())
+                            .collect();
+                        (p.name.clone(), p.repo.clone(), used)
                     } else {
                         return;
                     }
                 }
             };
 
+        // List existing worktrees, filtering out ones
+        // already used by features in this project and
+        // the main repo directory itself.
+        let worktrees = WorktreeManager::list(&project_repo)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|wt| {
+                wt.path != project_repo
+                    && !used_workdirs.contains(&wt.path)
+            })
+            .collect();
+
         self.mode = AppMode::CreatingFeature(
             CreateFeatureState::new(
                 project_name,
                 project_repo,
+                worktrees,
             ),
         );
         self.message = None;
@@ -1018,6 +1050,13 @@ impl App {
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
         let mode = state.mode.clone();
+        let use_existing_worktree = state.source_index == 1
+            && !state.worktrees.is_empty();
+        let selected_worktree = if use_existing_worktree {
+            state.worktrees.get(state.worktree_index).cloned()
+        } else {
+            None
+        };
 
         if branch.is_empty() {
             self.message =
@@ -1068,7 +1107,7 @@ impl App {
             self.save()?;
         }
 
-        if !is_git && !is_first {
+        if !is_git && !is_first && selected_worktree.is_none() {
             self.message = Some(
                 "Error: Non-git projects support only one feature"
                     .into(),
@@ -1076,16 +1115,19 @@ impl App {
             return Ok(());
         }
 
-        let (workdir, is_worktree) = if is_first {
-            (project_repo.clone(), false)
-        } else {
-            let wt_path = WorktreeManager::create(
-                &project_repo,
-                &branch,
-                &branch,
-            )?;
-            (wt_path, true)
-        };
+        let (workdir, is_worktree) =
+            if let Some(wt) = &selected_worktree {
+                (wt.path.clone(), true)
+            } else if is_first {
+                (project_repo.clone(), false)
+            } else {
+                let wt_path = WorktreeManager::create(
+                    &project_repo,
+                    &branch,
+                    &branch,
+                )?;
+                (wt_path, true)
+            };
 
         let feature = Feature::new(
             branch.clone(),

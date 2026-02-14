@@ -890,6 +890,189 @@ fn draw_create_feature_dialog(
         return;
     }
 
+    match state.step {
+        CreateFeatureStep::Source => {
+            draw_create_feature_source(frame, state);
+        }
+        CreateFeatureStep::ExistingWorktree => {
+            draw_create_feature_worktree_picker(
+                frame, state,
+            );
+        }
+        _ => {
+            draw_create_feature_branch_mode(frame, state);
+        }
+    }
+}
+
+fn draw_create_feature_source(
+    frame: &mut Frame,
+    state: &crate::app::CreateFeatureState,
+) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title =
+        format!(" New Feature ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // label
+            Constraint::Length(2), // options
+            Constraint::Min(0),   // fill
+            Constraint::Length(1), // hints
+        ])
+        .split(inner);
+
+    let label = Paragraph::new(Line::from(Span::styled(
+        " Source:",
+        Style::default().fg(Color::Cyan),
+    )));
+    frame.render_widget(label, chunks[0]);
+
+    let options = ["New branch", "Existing worktree"];
+    let mut lines = Vec::new();
+    for (i, opt) in options.iter().enumerate() {
+        let is_selected = i == state.source_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, opt),
+            style,
+        )));
+    }
+    let options_widget = Paragraph::new(lines);
+    frame.render_widget(options_widget, chunks[1]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" select  "),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" confirm  "),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" cancel"),
+    ]));
+    frame.render_widget(hints, chunks[3]);
+}
+
+fn draw_create_feature_worktree_picker(
+    frame: &mut Frame,
+    state: &crate::app::CreateFeatureState,
+) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title =
+        format!(" Select Worktree ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),   // worktree list
+            Constraint::Length(1), // hints
+        ])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .worktrees
+        .iter()
+        .enumerate()
+        .map(|(i, wt)| {
+            let is_selected = i == state.worktree_index;
+            let branch_label = wt
+                .branch
+                .as_deref()
+                .unwrap_or("(detached)");
+            let path_str = wt.path.display().to_string();
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    branch_label,
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+                Span::styled(
+                    format!("  {}", path_str),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(
+                    Style::default().bg(Color::DarkGray),
+                )
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" navigate  "),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" select  "),
+        Span::styled(
+            "Esc",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+fn draw_create_feature_branch_mode(
+    frame: &mut Frame,
+    state: &crate::app::CreateFeatureState,
+) {
     let area = centered_rect(60, 35, frame.area());
     frame.render_widget(Clear, area);
 

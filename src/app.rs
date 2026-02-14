@@ -412,6 +412,8 @@ impl CreateProjectState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateFeatureStep {
+    Source,
+    ExistingWorktree,
     Branch,
     Worktree,
     Mode,
@@ -425,6 +427,9 @@ pub struct CreateFeatureState {
     pub step: CreateFeatureStep,
     pub mode: VibeMode,
     pub mode_index: usize,
+    pub source_index: usize,
+    pub worktrees: Vec<crate::worktree::WorktreeInfo>,
+    pub worktree_index: usize,
     pub use_worktree: bool,
 }
 
@@ -432,15 +437,24 @@ impl CreateFeatureState {
     pub fn new(
         project_name: String,
         project_repo: PathBuf,
+        worktrees: Vec<crate::worktree::WorktreeInfo>,
         is_first_feature: bool,
     ) -> Self {
+        let step = if worktrees.is_empty() {
+            CreateFeatureStep::Branch
+        } else {
+            CreateFeatureStep::Source
+        };
         Self {
             project_name,
             project_repo,
             branch: detect_branch(),
-            step: CreateFeatureStep::Branch,
+            step,
             mode: VibeMode::default(),
             mode_index: 0,
+            source_index: 0,
+            worktrees,
+            worktree_index: 0,
             use_worktree: !is_first_feature,
         }
     }
@@ -988,7 +1002,7 @@ impl App {
     // --- Feature CRUD ---
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, is_first) =
+        let (project_name, project_repo, is_first, used_workdirs) =
             match &self.selection {
                 Selection::Project(pi)
                 | Selection::Feature(pi, _)
@@ -996,10 +1010,16 @@ impl App {
                     if let Some(p) =
                         self.store.projects.get(*pi)
                     {
+                        let used: Vec<PathBuf> = p
+                            .features
+                            .iter()
+                            .map(|f| f.workdir.clone())
+                            .collect();
                         (
                             p.name.clone(),
                             p.repo.clone(),
                             p.features.is_empty(),
+                            used,
                         )
                     } else {
                         return;
@@ -1007,10 +1027,23 @@ impl App {
                 }
             };
 
+        // List existing worktrees, filtering out ones
+        // already used by features in this project and
+        // the main repo directory itself.
+        let worktrees = WorktreeManager::list(&project_repo)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|wt| {
+                wt.path != project_repo
+                    && !used_workdirs.contains(&wt.path)
+            })
+            .collect();
+
         self.mode = AppMode::CreatingFeature(
             CreateFeatureState::new(
                 project_name,
                 project_repo,
+                worktrees,
                 is_first,
             ),
         );
@@ -1027,6 +1060,13 @@ impl App {
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
         let mode = state.mode.clone();
+        let use_existing_worktree = state.source_index == 1
+            && !state.worktrees.is_empty();
+        let selected_worktree = if use_existing_worktree {
+            state.worktrees.get(state.worktree_index).cloned()
+        } else {
+            None
+        };
         let use_worktree = state.use_worktree;
 
         if branch.is_empty() {
@@ -1063,6 +1103,7 @@ impl App {
 
             // Check that only one non-worktree feature exists
             if !use_worktree
+                && selected_worktree.is_none()
                 && project
                     .features
                     .iter()
@@ -1093,7 +1134,9 @@ impl App {
             self.save()?;
         }
 
-        if use_worktree && !is_git {
+        if (use_worktree || selected_worktree.is_some())
+            && !is_git
+        {
             self.message = Some(
                 "Error: Worktrees require a git repository"
                     .into(),
@@ -1101,16 +1144,19 @@ impl App {
             return Ok(());
         }
 
-        let (workdir, is_worktree) = if use_worktree {
-            let wt_path = WorktreeManager::create(
-                &project_repo,
-                &branch,
-                &branch,
-            )?;
-            (wt_path, true)
-        } else {
-            (project_repo.clone(), false)
-        };
+        let (workdir, is_worktree) =
+            if let Some(wt) = &selected_worktree {
+                (wt.path.clone(), true)
+            } else if use_worktree {
+                let wt_path = WorktreeManager::create(
+                    &project_repo,
+                    &branch,
+                    &branch,
+                )?;
+                (wt_path, true)
+            } else {
+                (project_repo.clone(), false)
+            };
 
         let feature = Feature::new(
             branch.clone(),

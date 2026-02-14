@@ -1128,9 +1128,122 @@ fn handle_create_feature_key(
     };
 
     match step {
-        CreateFeatureStep::Branch => match key {
+        CreateFeatureStep::Source => match key {
             KeyCode::Esc => {
                 app.cancel_create();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.source_index =
+                        (state.source_index + 1) % 2;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.source_index =
+                        if state.source_index == 0 {
+                            1
+                        } else {
+                            0
+                        };
+                }
+            }
+            KeyCode::Enter => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    if state.source_index == 0 {
+                        state.step =
+                            CreateFeatureStep::Branch;
+                    } else {
+                        state.step =
+                            CreateFeatureStep::ExistingWorktree;
+                    }
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::ExistingWorktree => match key {
+            KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Source;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    let len = state.worktrees.len();
+                    if len > 0 {
+                        state.worktree_index =
+                            (state.worktree_index + 1) % len;
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    let len = state.worktrees.len();
+                    if len > 0 {
+                        state.worktree_index =
+                            if state.worktree_index == 0 {
+                                len - 1
+                            } else {
+                                state.worktree_index - 1
+                            };
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    // Auto-fill branch from selected worktree
+                    if let Some(wt) = state
+                        .worktrees
+                        .get(state.worktree_index)
+                    {
+                        state.branch = wt
+                            .branch
+                            .clone()
+                            .unwrap_or_else(|| {
+                                wt.path
+                                    .file_name()
+                                    .map(|n| {
+                                        n.to_string_lossy()
+                                            .into_owned()
+                                    })
+                                    .unwrap_or_default()
+                            });
+                    }
+                    state.step = CreateFeatureStep::Mode;
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::Branch => match key {
+            KeyCode::Esc => {
+                // Go back to Source if worktrees available,
+                // otherwise cancel
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    if state.worktrees.is_empty() {
+                        app.cancel_create();
+                    } else {
+                        state.step =
+                            CreateFeatureStep::Source;
+                    }
+                } else {
+                    app.cancel_create();
+                }
             }
             KeyCode::Enter => {
                 // Validate branch then advance to Worktree step
@@ -1169,11 +1282,19 @@ fn handle_create_feature_key(
         },
         CreateFeatureStep::Worktree => match key {
             KeyCode::Esc => {
-                // Go back to Branch step
+                // Go back to previous step
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.step = CreateFeatureStep::Branch;
+                    if state.source_index == 1
+                        && !state.worktrees.is_empty()
+                    {
+                        state.step =
+                            CreateFeatureStep::ExistingWorktree;
+                    } else {
+                        state.step =
+                            CreateFeatureStep::Branch;
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -1199,11 +1320,19 @@ fn handle_create_feature_key(
         },
         CreateFeatureStep::Mode => match key {
             KeyCode::Esc => {
-                // Go back to Worktree step
+                // Go back to previous step
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.step = CreateFeatureStep::Worktree;
+                    if state.source_index == 1
+                        && !state.worktrees.is_empty()
+                    {
+                        state.step =
+                            CreateFeatureStep::ExistingWorktree;
+                    } else {
+                        state.step =
+                            CreateFeatureStep::Worktree;
+                    }
                 }
             }
             KeyCode::Enter => {

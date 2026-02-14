@@ -252,7 +252,7 @@ impl WorktreeManager {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
     pub branch: Option<String>,

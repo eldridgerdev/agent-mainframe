@@ -413,6 +413,7 @@ impl CreateProjectState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateFeatureStep {
     Branch,
+    Worktree,
     Mode,
     ConfirmSuperVibe,
 }
@@ -424,12 +425,14 @@ pub struct CreateFeatureState {
     pub step: CreateFeatureStep,
     pub mode: VibeMode,
     pub mode_index: usize,
+    pub use_worktree: bool,
 }
 
 impl CreateFeatureState {
     pub fn new(
         project_name: String,
         project_repo: PathBuf,
+        is_first_feature: bool,
     ) -> Self {
         Self {
             project_name,
@@ -438,6 +441,7 @@ impl CreateFeatureState {
             step: CreateFeatureStep::Branch,
             mode: VibeMode::default(),
             mode_index: 0,
+            use_worktree: !is_first_feature,
         }
     }
 }
@@ -984,7 +988,7 @@ impl App {
     // --- Feature CRUD ---
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo) =
+        let (project_name, project_repo, is_first) =
             match &self.selection {
                 Selection::Project(pi)
                 | Selection::Feature(pi, _)
@@ -992,7 +996,11 @@ impl App {
                     if let Some(p) =
                         self.store.projects.get(*pi)
                     {
-                        (p.name.clone(), p.repo.clone())
+                        (
+                            p.name.clone(),
+                            p.repo.clone(),
+                            p.features.is_empty(),
+                        )
                     } else {
                         return;
                     }
@@ -1003,6 +1011,7 @@ impl App {
             CreateFeatureState::new(
                 project_name,
                 project_repo,
+                is_first,
             ),
         );
         self.message = None;
@@ -1018,6 +1027,7 @@ impl App {
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
         let mode = state.mode.clone();
+        let use_worktree = state.use_worktree;
 
         if branch.is_empty() {
             self.message =
@@ -1025,7 +1035,7 @@ impl App {
             return Ok(());
         }
 
-        let (is_first, stored_is_git) = {
+        let stored_is_git = {
             let project =
                 match self.store.find_project(&project_name) {
                     Some(p) => p,
@@ -1051,7 +1061,22 @@ impl App {
                 return Ok(());
             }
 
-            (project.features.is_empty(), project.is_git)
+            // Check that only one non-worktree feature exists
+            if !use_worktree
+                && project
+                    .features
+                    .iter()
+                    .any(|f| !f.is_worktree)
+            {
+                self.message = Some(
+                    "Error: Only one non-worktree feature \
+                     allowed per project"
+                        .into(),
+                );
+                return Ok(());
+            }
+
+            project.is_git
         };
 
         // Re-check git status if the stored flag says non-git
@@ -1068,23 +1093,23 @@ impl App {
             self.save()?;
         }
 
-        if !is_git && !is_first {
+        if use_worktree && !is_git {
             self.message = Some(
-                "Error: Non-git projects support only one feature"
+                "Error: Worktrees require a git repository"
                     .into(),
             );
             return Ok(());
         }
 
-        let (workdir, is_worktree) = if is_first {
-            (project_repo.clone(), false)
-        } else {
+        let (workdir, is_worktree) = if use_worktree {
             let wt_path = WorktreeManager::create(
                 &project_repo,
                 &branch,
                 &branch,
             )?;
             (wt_path, true)
+        } else {
+            (project_repo.clone(), false)
         };
 
         let feature = Feature::new(

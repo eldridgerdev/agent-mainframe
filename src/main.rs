@@ -1246,7 +1246,7 @@ fn handle_create_feature_key(
                 }
             }
             KeyCode::Enter => {
-                // Validate branch then advance to Mode step
+                // Validate branch then advance to Worktree step
                 let empty = match &app.mode {
                     AppMode::CreatingFeature(s) => {
                         s.branch.is_empty()
@@ -1261,7 +1261,7 @@ fn handle_create_feature_key(
                     state,
                 ) = &mut app.mode
                 {
-                    state.step = CreateFeatureStep::Mode;
+                    state.step = CreateFeatureStep::Worktree;
                 }
             }
             KeyCode::Backspace => {
@@ -1280,7 +1280,7 @@ fn handle_create_feature_key(
             }
             _ => {}
         },
-        CreateFeatureStep::Mode => match key {
+        CreateFeatureStep::Worktree => match key {
             KeyCode::Esc => {
                 // Go back to previous step
                 if let AppMode::CreatingFeature(state) =
@@ -1294,6 +1294,44 @@ fn handle_create_feature_key(
                     } else {
                         state.step =
                             CreateFeatureStep::Branch;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // Advance to Mode step
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Mode;
+                }
+            }
+            KeyCode::Down
+            | KeyCode::Up
+            | KeyCode::Char('j')
+            | KeyCode::Char('k') => {
+                // Toggle use_worktree
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.use_worktree = !state.use_worktree;
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::Mode => match key {
+            KeyCode::Esc => {
+                // Go back to previous step
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    if state.source_index == 1
+                        && !state.worktrees.is_empty()
+                    {
+                        state.step =
+                            CreateFeatureStep::ExistingWorktree;
+                    } else {
+                        state.step =
+                            CreateFeatureStep::Worktree;
                     }
                 }
             }

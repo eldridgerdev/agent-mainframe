@@ -1073,7 +1073,7 @@ fn draw_create_feature_branch_mode(
     frame: &mut Frame,
     state: &crate::app::CreateFeatureState,
 ) {
-    let area = centered_rect(60, 35, frame.area());
+    let area = centered_rect(60, 45, frame.area());
     frame.render_widget(Clear, area);
 
     let title =
@@ -1090,6 +1090,8 @@ fn draw_create_feature_branch_mode(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2), // branch
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // worktree toggle
             Constraint::Length(1), // spacer
             Constraint::Length(5), // mode selection
             Constraint::Min(0),   // fill
@@ -1122,6 +1124,56 @@ fn draw_create_feature_branch_mode(
         cursor,
     ]));
     frame.render_widget(branch_field, chunks[0]);
+
+    // Worktree toggle
+    let wt_active =
+        state.step == CreateFeatureStep::Worktree;
+    let wt_label_style = if wt_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let yes_marker =
+        if state.use_worktree { ">" } else { " " };
+    let no_marker =
+        if !state.use_worktree { ">" } else { " " };
+
+    let yes_style = if wt_active && state.use_worktree {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if state.use_worktree {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let no_style = if wt_active && !state.use_worktree {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if !state.use_worktree {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let wt_lines = vec![
+        Line::from(Span::styled(
+            " Worktree:",
+            wt_label_style,
+        )),
+        Line::from(Span::styled(
+            format!("   {} Yes", yes_marker),
+            yes_style,
+        )),
+        Line::from(Span::styled(
+            format!("   {} No (use repo dir)", no_marker),
+            no_style,
+        )),
+    ];
+    let wt_widget = Paragraph::new(wt_lines);
+    frame.render_widget(wt_widget, chunks[2]);
 
     // Mode selection
     let mode_active =
@@ -1157,10 +1209,10 @@ fn draw_create_feature_branch_mode(
     }
 
     let mode_widget = Paragraph::new(mode_lines);
-    frame.render_widget(mode_widget, chunks[2]);
+    frame.render_widget(mode_widget, chunks[4]);
 
     // Hints at bottom
-    let hints = if mode_active {
+    let hints = if mode_active || wt_active {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k",
@@ -1192,7 +1244,7 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[4]);
+    frame.render_widget(hints, chunks[6]);
 }
 
 fn draw_confirm_supervibe_dialog(frame: &mut Frame) {

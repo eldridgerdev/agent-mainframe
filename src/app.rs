@@ -415,6 +415,7 @@ pub enum CreateFeatureStep {
     Source,
     ExistingWorktree,
     Branch,
+    Worktree,
     Mode,
     ConfirmSuperVibe,
 }
@@ -429,6 +430,7 @@ pub struct CreateFeatureState {
     pub source_index: usize,
     pub worktrees: Vec<crate::worktree::WorktreeInfo>,
     pub worktree_index: usize,
+    pub use_worktree: bool,
 }
 
 impl CreateFeatureState {
@@ -436,6 +438,7 @@ impl CreateFeatureState {
         project_name: String,
         project_repo: PathBuf,
         worktrees: Vec<crate::worktree::WorktreeInfo>,
+        is_first_feature: bool,
     ) -> Self {
         let step = if worktrees.is_empty() {
             CreateFeatureStep::Branch
@@ -452,6 +455,7 @@ impl CreateFeatureState {
             source_index: 0,
             worktrees,
             worktree_index: 0,
+            use_worktree: !is_first_feature,
         }
     }
 }
@@ -998,7 +1002,7 @@ impl App {
     // --- Feature CRUD ---
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, used_workdirs) =
+        let (project_name, project_repo, is_first, used_workdirs) =
             match &self.selection {
                 Selection::Project(pi)
                 | Selection::Feature(pi, _)
@@ -1011,7 +1015,12 @@ impl App {
                             .iter()
                             .map(|f| f.workdir.clone())
                             .collect();
-                        (p.name.clone(), p.repo.clone(), used)
+                        (
+                            p.name.clone(),
+                            p.repo.clone(),
+                            p.features.is_empty(),
+                            used,
+                        )
                     } else {
                         return;
                     }
@@ -1035,6 +1044,7 @@ impl App {
                 project_name,
                 project_repo,
                 worktrees,
+                is_first,
             ),
         );
         self.message = None;
@@ -1057,6 +1067,7 @@ impl App {
         } else {
             None
         };
+        let use_worktree = state.use_worktree;
 
         if branch.is_empty() {
             self.message =
@@ -1064,7 +1075,7 @@ impl App {
             return Ok(());
         }
 
-        let (is_first, stored_is_git) = {
+        let stored_is_git = {
             let project =
                 match self.store.find_project(&project_name) {
                     Some(p) => p,
@@ -1090,7 +1101,23 @@ impl App {
                 return Ok(());
             }
 
-            (project.features.is_empty(), project.is_git)
+            // Check that only one non-worktree feature exists
+            if !use_worktree
+                && selected_worktree.is_none()
+                && project
+                    .features
+                    .iter()
+                    .any(|f| !f.is_worktree)
+            {
+                self.message = Some(
+                    "Error: Only one non-worktree feature \
+                     allowed per project"
+                        .into(),
+                );
+                return Ok(());
+            }
+
+            project.is_git
         };
 
         // Re-check git status if the stored flag says non-git
@@ -1107,9 +1134,11 @@ impl App {
             self.save()?;
         }
 
-        if !is_git && !is_first && selected_worktree.is_none() {
+        if (use_worktree || selected_worktree.is_some())
+            && !is_git
+        {
             self.message = Some(
-                "Error: Non-git projects support only one feature"
+                "Error: Worktrees require a git repository"
                     .into(),
             );
             return Ok(());
@@ -1118,15 +1147,15 @@ impl App {
         let (workdir, is_worktree) =
             if let Some(wt) = &selected_worktree {
                 (wt.path.clone(), true)
-            } else if is_first {
-                (project_repo.clone(), false)
-            } else {
+            } else if use_worktree {
                 let wt_path = WorktreeManager::create(
                     &project_repo,
                     &branch,
                     &branch,
                 )?;
                 (wt_path, true)
+            } else {
+                (project_repo.clone(), false)
             };
 
         let feature = Feature::new(
@@ -1807,12 +1836,19 @@ impl App {
         };
 
         let project = &self.store.projects[pi];
-        if project.features.len() <= 1 {
+        let len = project.features.len();
+        if len <= 1 {
             return Ok(());
         }
 
-        let next_fi = (fi + 1) % project.features.len();
-        self.switch_view_to_feature(pi, next_fi)
+        // Skip stopped features when cycling
+        for offset in 1..len {
+            let candidate = (fi + offset) % len;
+            if project.features[candidate].status != ProjectStatus::Stopped {
+                return self.switch_view_to_feature(pi, candidate);
+            }
+        }
+        Ok(())
     }
 
     /// Cycle to the previous feature within the same project
@@ -1847,16 +1883,19 @@ impl App {
         };
 
         let project = &self.store.projects[pi];
-        if project.features.len() <= 1 {
+        let len = project.features.len();
+        if len <= 1 {
             return Ok(());
         }
 
-        let prev_fi = if fi == 0 {
-            project.features.len() - 1
-        } else {
-            fi - 1
-        };
-        self.switch_view_to_feature(pi, prev_fi)
+        // Skip stopped features when cycling
+        for offset in 1..len {
+            let candidate = (fi + len - offset) % len;
+            if project.features[candidate].status != ProjectStatus::Stopped {
+                return self.switch_view_to_feature(pi, candidate);
+            }
+        }
+        Ok(())
     }
 
     /// Switch the current view to a different feature,

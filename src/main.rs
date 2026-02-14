@@ -374,20 +374,13 @@ fn handle_normal_key(
             }
         }
         KeyCode::Char('l') => {
-            match &app.selection {
-                Selection::Project(pi) => {
-                    // Expand the project if collapsed
-                    if let Some(project) =
-                        app.store.projects.get(*pi)
-                        && project.collapsed
-                    {
-                        app.toggle_collapse();
-                    }
-                }
-                Selection::Feature(_, _)
-                | Selection::Session(_, _, _) => {
-                    // Enter view on feature/session
-                    app.enter_view()?;
+            if let Selection::Project(pi) = &app.selection {
+                // Expand the project if collapsed
+                if let Some(project) =
+                    app.store.projects.get(*pi)
+                    && project.collapsed
+                {
+                    app.toggle_collapse();
                 }
             }
         }
@@ -1405,7 +1398,6 @@ fn handle_help_key(
     match key {
         KeyCode::Esc
         | KeyCode::Char('q')
-        | KeyCode::Char('h')
         | KeyCode::Char('?') => {
             app.mode = AppMode::Normal;
         }

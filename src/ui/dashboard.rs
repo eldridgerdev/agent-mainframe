@@ -251,7 +251,7 @@ fn draw_header(
     // Right side: help hint
     let help_hint = Line::from(vec![
         Span::styled(
-            "h",
+            "?",
             Style::default().fg(Color::Yellow),
         ),
         Span::styled(
@@ -759,7 +759,7 @@ fn draw_status_bar(
         }
         AppMode::Help => Line::from(vec![
             Span::styled(
-                "Esc/q/h",
+                "Esc/q/?",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" close help"),

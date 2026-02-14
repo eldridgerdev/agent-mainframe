@@ -9,6 +9,8 @@ use ratatui::{
     Frame,
 };
 
+use std::path::Path;
+
 use crate::app::{
     App, AppMode, BrowsePathState, CommandPickerState,
     CreateFeatureStep, PendingInput, RenameReturnTo,
@@ -41,6 +43,18 @@ fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
         })
         .collect()
 }
+
+fn shorten_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rest.display());
+    }
+    path.display().to_string()
+}
+
+/// Lighter gray readable on DarkGray background.
+const SELECTED_GRAY: Color = Color::Rgb(140, 140, 140);
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Viewing mode gets its own full-screen layout
@@ -315,6 +329,14 @@ fn draw_project_list(
                     _ => false,
                 };
 
+            // Color for secondary/muted text that must
+            // remain readable on DarkGray selection bg.
+            let muted = if is_selected {
+                SELECTED_GRAY
+            } else {
+                Color::DarkGray
+            };
+
             let line = match item {
                 VisibleItem::Project(pi) => {
                     let project =
@@ -332,8 +354,7 @@ fn draw_project_list(
                                 " {} ",
                                 collapse_icon
                             ),
-                            Style::default()
-                                .fg(Color::DarkGray),
+                            Style::default().fg(muted),
                         ),
                         Span::styled(
                             &project.name,
@@ -346,45 +367,52 @@ fn draw_project_list(
                         Span::styled(
                             format!(
                                 "  {}",
-                                project.repo.display()
+                                shorten_path(&project.repo)
                             ),
-                            Style::default()
-                                .fg(Color::DarkGray),
+                            Style::default().fg(muted),
                         ),
                     ];
 
                     if project.features.is_empty() {
                         spans.push(Span::styled(
                             "  (press n to add a feature)",
-                            Style::default()
-                                .fg(Color::DarkGray),
+                            Style::default().fg(muted),
                         ));
                     }
 
                     Line::from(spans)
                 }
                 VisibleItem::Feature(pi, fi) => {
-                    let feature = &app.store.projects[*pi]
-                        .features[*fi];
+                    let project =
+                        &app.store.projects[*pi];
+                    let feature = &project.features[*fi];
+                    let is_last_feature =
+                        *fi == project.features.len() - 1;
+
+                    let connector = if is_last_feature {
+                        "  └─"
+                    } else {
+                        "  ├─"
+                    };
 
                     let status_dot = match feature.status {
                         ProjectStatus::Active => {
                             Span::styled(
-                                "   ● ",
+                                " ● ",
                                 Style::default()
                                     .fg(Color::Green),
                             )
                         }
                         ProjectStatus::Idle => {
                             Span::styled(
-                                "   ○ ",
+                                " ○ ",
                                 Style::default()
                                     .fg(Color::Yellow),
                             )
                         }
                         ProjectStatus::Stopped => {
                             Span::styled(
-                                "   ■ ",
+                                " ■ ",
                                 Style::default()
                                     .fg(Color::Red),
                             )
@@ -436,11 +464,14 @@ fn draw_project_list(
                     };
 
                     let mut line_spans = vec![
+                        Span::styled(
+                            connector,
+                            Style::default().fg(muted),
+                        ),
                         status_dot,
                         Span::styled(
                             format!("{} ", collapse_icon),
-                            Style::default()
-                                .fg(Color::DarkGray),
+                            Style::default().fg(muted),
                         ),
                         Span::styled(
                             &feature.name,
@@ -450,36 +481,51 @@ fn draw_project_list(
                     line_spans.extend(mode_badge_spans);
                     line_spans.push(Span::styled(
                         badge,
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        Style::default().fg(muted),
                     ));
                     line_spans.push(Span::styled(
                         format!(
                             "  {}",
-                            feature.workdir.display()
+                            shorten_path(&feature.workdir)
                         ),
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        Style::default().fg(muted),
                     ));
                     Line::from(line_spans)
                 }
                 VisibleItem::Session(pi, fi, si) => {
-                    let feature = &app.store.projects[*pi]
-                        .features[*fi];
+                    let project =
+                        &app.store.projects[*pi];
+                    let feature = &project.features[*fi];
                     let session =
                         &feature.sessions[*si];
+
+                    let is_last_feature =
+                        *fi == project.features.len() - 1;
+                    let is_last_session =
+                        *si == feature.sessions.len() - 1;
+
+                    let vert = if is_last_feature {
+                        "  "
+                    } else {
+                        "  │"
+                    };
+                    let branch = if is_last_session {
+                        "   └─ "
+                    } else {
+                        "   ├─ "
+                    };
 
                     let kind_icon = match session.kind {
                         SessionKind::Claude => {
                             Span::styled(
-                                "       * ",
+                                "* ",
                                 Style::default()
                                     .fg(Color::Magenta),
                             )
                         }
                         SessionKind::Terminal => {
                             Span::styled(
-                                "       > ",
+                                "> ",
                                 Style::default()
                                     .fg(Color::Green),
                             )
@@ -487,9 +533,9 @@ fn draw_project_list(
                         SessionKind::Nvim => {
                             let icon =
                                 if app.config.nerd_font {
-                                    "       \u{E62B} "
+                                    "\u{E62B} "
                                 } else {
-                                    "       ~ "
+                                    "~ "
                                 };
                             Span::styled(
                                 icon,
@@ -508,6 +554,14 @@ fn draw_project_list(
                     };
 
                     Line::from(vec![
+                        Span::styled(
+                            vert,
+                            Style::default().fg(muted),
+                        ),
+                        Span::styled(
+                            branch,
+                            Style::default().fg(muted),
+                        ),
                         kind_icon,
                         Span::styled(
                             &session.label,
@@ -754,23 +808,139 @@ fn draw_status_bar(
             Style::default().fg(color),
         ))
     } else {
-        let project_count = app.store.projects.len();
-        let feature_count: usize = app
-            .store
-            .projects
-            .iter()
-            .map(|p| p.features.len())
-            .sum();
-        Line::from(Span::styled(
-            format!(
-                " {} project{}, {} feature{}",
-                project_count,
-                if project_count == 1 { "" } else { "s" },
-                feature_count,
-                if feature_count == 1 { "" } else { "s" },
-            ),
-            Style::default().fg(Color::DarkGray),
-        ))
+        match &app.selection {
+            Selection::Project(pi)
+                if *pi < app.store.projects.len() =>
+            {
+                let project = &app.store.projects[*pi];
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}", project.name),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  {}",
+                            shorten_path(&project.repo)
+                        ),
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ),
+                ])
+            }
+            Selection::Feature(pi, fi)
+                if *pi < app.store.projects.len()
+                    && *fi
+                        < app.store.projects[*pi]
+                            .features
+                            .len() =>
+            {
+                let feature =
+                    &app.store.projects[*pi].features[*fi];
+                let branch_info =
+                    if feature.branch.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", feature.branch)
+                    };
+                Line::from(vec![
+                    Span::styled(
+                        format!(" {}", feature.name),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        branch_info,
+                        Style::default()
+                            .fg(Color::Yellow),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  {}",
+                            shorten_path(&feature.workdir)
+                        ),
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ),
+                ])
+            }
+            Selection::Session(pi, fi, si)
+                if *pi < app.store.projects.len()
+                    && *fi
+                        < app.store.projects[*pi]
+                            .features
+                            .len()
+                    && *si
+                        < app.store.projects[*pi]
+                            .features[*fi]
+                            .sessions
+                            .len() =>
+            {
+                let feature =
+                    &app.store.projects[*pi].features[*fi];
+                let session = &feature.sessions[*si];
+                let kind_label = match session.kind {
+                    SessionKind::Claude => "claude",
+                    SessionKind::Terminal => "terminal",
+                    SessionKind::Nvim => "nvim",
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!(
+                            " {} ({})",
+                            session.label, kind_label
+                        ),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {}", feature.name),
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!(
+                            "  {}",
+                            shorten_path(&feature.workdir)
+                        ),
+                        Style::default()
+                            .fg(Color::DarkGray),
+                    ),
+                ])
+            }
+            _ => {
+                let project_count =
+                    app.store.projects.len();
+                let feature_count: usize = app
+                    .store
+                    .projects
+                    .iter()
+                    .map(|p| p.features.len())
+                    .sum();
+                Line::from(Span::styled(
+                    format!(
+                        " {} project{}, {} feature{}",
+                        project_count,
+                        if project_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                        feature_count,
+                        if feature_count == 1 {
+                            ""
+                        } else {
+                            "s"
+                        },
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }
+        }
     };
 
     let status =

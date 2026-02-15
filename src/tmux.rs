@@ -7,9 +7,18 @@ pub struct TmuxManager;
 impl TmuxManager {
     /// Check if tmux is available
     pub fn check_available() -> Result<()> {
-        let output = Command::new("tmux").arg("-V").output()?;
+        let output = Command::new("tmux")
+            .arg("-V")
+            .output()
+            .context(
+                "tmux is not installed. Please install tmux \
+                 and ensure it is in your PATH.",
+            )?;
         if !output.status.success() {
-            bail!("tmux is not installed or not in PATH");
+            bail!(
+                "tmux is not working correctly. Please \
+                 reinstall tmux and ensure it is in your PATH."
+            );
         }
         Ok(())
     }

@@ -1094,6 +1094,8 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(4), // worktree toggle
             Constraint::Length(1), // spacer
             Constraint::Length(5), // mode selection
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // notes toggle
             Constraint::Min(0),   // fill
             Constraint::Length(1), // hints
         ])
@@ -1211,6 +1213,34 @@ fn draw_create_feature_branch_mode(
     let mode_widget = Paragraph::new(mode_lines);
     frame.render_widget(mode_widget, chunks[4]);
 
+    // Notes toggle
+    let notes_check = if state.enable_notes {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let notes_style = if mode_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let notes_lines = vec![Line::from(vec![
+        Span::styled(
+            " Memo: ",
+            if mode_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            format!("{} Create memo", notes_check),
+            notes_style,
+        ),
+    ])];
+    let notes_widget = Paragraph::new(notes_lines);
+    frame.render_widget(notes_widget, chunks[6]);
+
     // Hints at bottom
     let hints = if mode_active || wt_active {
         Paragraph::new(Line::from(vec![
@@ -1219,6 +1249,11 @@ fn draw_create_feature_branch_mode(
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" select  "),
+            Span::styled(
+                "Tab",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" memo  "),
             Span::styled(
                 "Enter",
                 Style::default().fg(Color::Yellow),
@@ -1244,7 +1279,7 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[6]);
+    frame.render_widget(hints, chunks[8]);
 }
 
 fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
@@ -1492,6 +1527,7 @@ fn draw_help(frame: &mut Frame) {
         ("t", "Add terminal session"),
         ("a", "Add Claude session"),
         ("v", "Add nvim session"),
+        ("m", "Create memo (.claude/notes.md)"),
         ("i", "Input requests picker"),
         ("R", "Refresh statuses"),
         ("?", "Toggle this help"),

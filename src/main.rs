@@ -355,6 +355,16 @@ fn handle_normal_key(
                 _ => {}
             }
         }
+        KeyCode::Char('m') => {
+            // Create memo (feature/session context)
+            match &app.selection {
+                Selection::Feature(_, _)
+                | Selection::Session(_, _, _) => {
+                    app.create_memo()?;
+                }
+                _ => {}
+            }
+        }
         KeyCode::Char('h') => {
             match &app.selection {
                 Selection::Project(pi) => {
@@ -1351,6 +1361,13 @@ fn handle_create_feature_key(
                     }
                 } else {
                     app.create_feature()?;
+                }
+            }
+            KeyCode::Tab => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.enable_notes = !state.enable_notes;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {

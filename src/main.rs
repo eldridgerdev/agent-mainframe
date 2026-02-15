@@ -69,7 +69,10 @@ fn run_loop<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
-    let mut last_size: Option<(u16, u16)> = None;
+    // Track (cols, rows, session, window) so we re-resize when
+    // switching to a different tmux session/window.
+    let mut last_resize: Option<(u16, u16, String, String)> =
+        None;
 
     loop {
         let is_viewing =
@@ -80,10 +83,17 @@ fn run_loop<B: Backend>(
             let size = terminal.size()?;
             let content_rows = size.height.saturating_sub(3);
             let content_cols = size.width;
-            let current_size = (content_cols, content_rows);
+            if let AppMode::Viewing(ref view) = app.mode
+            {
+                let current_resize = (
+                    content_cols,
+                    content_rows,
+                    view.session.clone(),
+                    view.window.clone(),
+                );
 
-            if last_size != Some(current_size) {
-                if let AppMode::Viewing(ref view) = app.mode
+                if last_resize.as_ref()
+                    != Some(&current_resize)
                 {
                     let _ = TmuxManager::resize_pane(
                         &view.session,
@@ -91,8 +101,8 @@ fn run_loop<B: Backend>(
                         content_cols,
                         content_rows,
                     );
+                    last_resize = Some(current_resize);
                 }
-                last_size = Some(current_size);
             }
 
             // Capture pane content and cursor after resize
@@ -154,7 +164,7 @@ fn run_loop<B: Backend>(
                     }
                 }
                 Event::Resize(_, _) => {
-                    last_size = None;
+                    last_resize = None;
                 }
                 _ => {}
             }

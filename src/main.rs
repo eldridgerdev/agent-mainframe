@@ -28,7 +28,10 @@ use tmux::TmuxManager;
 
 fn main() -> Result<()> {
     // Preflight checks
-    TmuxManager::check_available()?;
+    if let Err(e) = TmuxManager::check_available() {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
 
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;

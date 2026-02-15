@@ -38,6 +38,7 @@ pub struct SessionSwitcherState {
     pub vibe_mode: VibeMode,
 }
 use crate::tmux::TmuxManager;
+use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,6 +531,7 @@ pub struct App {
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
+    pub usage: UsageManager,
 }
 
 impl App {
@@ -550,6 +552,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
+            usage: UsageManager::new(),
         })
     }
 

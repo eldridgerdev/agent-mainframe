@@ -17,6 +17,7 @@ use crate::app::{
 };
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 
+
 const RAINBOW_COLORS: &[Color] = &[
     Color::Red,
     Color::Rgb(255, 127, 0), // orange
@@ -190,6 +191,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Draw command picker overlay
     if let AppMode::CommandPicker(state) = &app.mode {
         draw_command_picker(frame, state);
+    }
+}
+
+fn utilization_color(pct: f64) -> Color {
+    if pct >= 80.0 {
+        Color::Red
+    } else if pct >= 50.0 {
+        Color::Yellow
+    } else {
+        Color::Green
     }
 }
 
@@ -773,16 +784,84 @@ fn draw_status_bar(
         ))
     };
 
-    let status =
-        Paragraph::new(vec![message_line, keybinds]).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(
-                    Style::default().fg(Color::DarkGray),
-                ),
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default().fg(Color::DarkGray),
         );
+    let inner = block.inner(area);
 
+    let status =
+        Paragraph::new(vec![message_line, keybinds])
+            .block(block);
     frame.render_widget(status, area);
+
+    // Usage stats on the right side of the top line
+    let usage = app.usage.get_data();
+    let mut right_spans: Vec<Span> = Vec::new();
+
+    if let Some(pct5) = usage.five_hour_pct {
+        right_spans.push(Span::styled(
+            "5h: ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        right_spans.push(Span::styled(
+            format!("{:.0}%", pct5),
+            Style::default()
+                .fg(utilization_color(pct5))
+                .add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::styled(
+            " | ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    if let Some(pct7) = usage.seven_day_pct {
+        right_spans.push(Span::styled(
+            "7d: ",
+            Style::default().fg(Color::DarkGray),
+        ));
+        right_spans.push(Span::styled(
+            format!("{:.0}%", pct7),
+            Style::default()
+                .fg(utilization_color(pct7))
+                .add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::styled(
+            " | ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else if let Some(ref err) = usage.last_error {
+        right_spans.push(Span::styled(
+            format!("{} ", err),
+            Style::default().fg(Color::Red),
+        ));
+        right_spans.push(Span::styled(
+            "| ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    right_spans.push(Span::styled(
+        format!("{} msgs today ", usage.today_messages),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let right_width: u16 = right_spans
+        .iter()
+        .map(|s| s.content.len() as u16)
+        .sum();
+    let right_area = Rect {
+        x: inner
+            .x
+            .saturating_add(inner.width.saturating_sub(right_width)),
+        y: inner.y,
+        width: right_width,
+        height: 1,
+    };
+    let right = Paragraph::new(Line::from(right_spans));
+    frame.render_widget(right, right_area);
 }
 
 fn draw_create_project_dialog(

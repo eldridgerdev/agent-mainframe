@@ -5,6 +5,7 @@ mod claude;
 mod project;
 mod tmux;
 mod ui;
+mod usage;
 mod worktree;
 
 use anyhow::Result;
@@ -34,6 +35,7 @@ fn main() -> Result<()> {
     let mut app = App::new(store_path)?;
     app.sync_statuses();
     app.scan_notifications();
+    app.usage.refresh();
 
     // Setup terminal
     enable_raw_mode()?;
@@ -125,6 +127,7 @@ fn run_loop<B: Backend>(
                 app.sync_statuses();
             }
             app.scan_notifications();
+            app.usage.refresh();
             last_sync = std::time::Instant::now();
         }
 

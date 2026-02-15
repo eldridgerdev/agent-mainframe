@@ -99,6 +99,8 @@ pub struct Feature {
     pub collapsed: bool,
     #[serde(default)]
     pub mode: VibeMode,
+    #[serde(default)]
+    pub has_notes: bool,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
     pub last_accessed: DateTime<Utc>,
@@ -111,6 +113,7 @@ impl Feature {
         workdir: PathBuf,
         is_worktree: bool,
         mode: VibeMode,
+        has_notes: bool,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
         let now = Utc::now();
@@ -124,6 +127,7 @@ impl Feature {
             sessions: Vec::new(),
             collapsed: true,
             mode,
+            has_notes,
             status: ProjectStatus::Stopped,
             created_at: now,
             last_accessed: now,
@@ -187,7 +191,7 @@ impl Feature {
     pub fn add_session(
         &mut self,
         kind: SessionKind,
-    ) -> &FeatureSession {
+    ) -> &mut FeatureSession {
         let label = self.next_label(&kind);
         let window = self.next_window_name(&kind);
         let session = FeatureSession {
@@ -199,7 +203,7 @@ impl Feature {
             created_at: Utc::now(),
         };
         self.sessions.push(session);
-        self.sessions.last().unwrap()
+        self.sessions.last_mut().unwrap()
     }
 }
 
@@ -457,6 +461,7 @@ impl ProjectStore {
                             sessions,
                             collapsed: true,
                             mode: VibeMode::default(),
+                            has_notes: false,
                             status: f.status,
                             created_at: f.created_at,
                             last_accessed: f.last_accessed,

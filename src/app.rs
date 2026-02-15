@@ -431,6 +431,7 @@ pub struct CreateFeatureState {
     pub worktrees: Vec<crate::worktree::WorktreeInfo>,
     pub worktree_index: usize,
     pub use_worktree: bool,
+    pub enable_notes: bool,
 }
 
 impl CreateFeatureState {
@@ -456,6 +457,7 @@ impl CreateFeatureState {
             worktrees,
             worktree_index: 0,
             use_worktree: !is_first_feature,
+            enable_notes: true,
         }
     }
 }
@@ -1068,6 +1070,7 @@ impl App {
             None
         };
         let use_worktree = state.use_worktree;
+        let enable_notes = state.enable_notes;
 
         if branch.is_empty() {
             self.message =
@@ -1158,12 +1161,28 @@ impl App {
                 (project_repo.clone(), false)
             };
 
+        // Create .claude/notes.md if notes are enabled
+        if enable_notes {
+            let claude_dir = workdir.join(".claude");
+            if !claude_dir.exists() {
+                let _ = std::fs::create_dir_all(&claude_dir);
+            }
+            let notes_path = claude_dir.join("notes.md");
+            if !notes_path.exists() {
+                let _ = std::fs::write(
+                    &notes_path,
+                    "# Notes\n\nWrite instructions for Claude here.\n",
+                );
+            }
+        }
+
         let feature = Feature::new(
             branch.clone(),
             branch.clone(),
             workdir,
             is_worktree,
             mode,
+            enable_notes,
         );
 
         self.store.add_feature(&project_name, feature);
@@ -1239,6 +1258,10 @@ impl App {
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Claude);
             feature.add_session(SessionKind::Terminal);
+            if feature.has_notes {
+                let s = feature.add_session(SessionKind::Nvim);
+                s.label = "Memo".into();
+            }
         }
 
         if TmuxManager::session_exists(&feature.tmux_session) {
@@ -1261,13 +1284,31 @@ impl App {
 
         let extra_args = feature.mode.cli_flags();
         for session in &feature.sessions {
-            if session.kind == SessionKind::Claude {
-                TmuxManager::launch_claude(
-                    &feature.tmux_session,
-                    &session.tmux_window,
-                    session.claude_session_id.as_deref(),
-                    &extra_args,
-                )?;
+            match session.kind {
+                SessionKind::Claude => {
+                    TmuxManager::launch_claude(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        session.claude_session_id.as_deref(),
+                        &extra_args,
+                    )?;
+                }
+                SessionKind::Nvim => {
+                    if feature.has_notes {
+                        TmuxManager::send_keys(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            "nvim .claude/notes.md",
+                        )?;
+                    } else {
+                        TmuxManager::send_keys(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            "nvim",
+                        )?;
+                    }
+                }
+                SessionKind::Terminal => {}
             }
         }
 
@@ -1519,6 +1560,76 @@ impl App {
         self.selection = Selection::Session(pi, fi, si);
         self.save()?;
         self.message = Some(format!("Added '{}'", label));
+
+        Ok(())
+    }
+
+    pub fn create_memo(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        if feature.has_notes {
+            self.message =
+                Some("Memo already exists".into());
+            return Ok(());
+        }
+
+        // Create .claude/notes.md
+        let claude_dir = feature.workdir.join(".claude");
+        if !claude_dir.exists() {
+            let _ = std::fs::create_dir_all(&claude_dir);
+        }
+        let notes_path = claude_dir.join("notes.md");
+        if !notes_path.exists() {
+            let _ = std::fs::write(
+                &notes_path,
+                "# Notes\n\nWrite instructions for Claude here.\n",
+            );
+        }
+
+        feature.has_notes = true;
+
+        // If feature is running, add an nvim session for the memo
+        if TmuxManager::session_exists(
+            &feature.tmux_session,
+        ) {
+            let workdir = feature.workdir.clone();
+            let tmux_session =
+                feature.tmux_session.clone();
+            let session =
+                feature.add_session(SessionKind::Nvim);
+            session.label = "Memo".into();
+            let window = session.tmux_window.clone();
+
+            TmuxManager::create_window(
+                &tmux_session,
+                &window,
+                &workdir,
+            )?;
+            TmuxManager::send_keys(
+                &tmux_session,
+                &window,
+                "nvim .claude/notes.md",
+            )?;
+
+            feature.collapsed = false;
+        }
+
+        self.save()?;
+        self.message = Some("Created memo".into());
 
         Ok(())
     }

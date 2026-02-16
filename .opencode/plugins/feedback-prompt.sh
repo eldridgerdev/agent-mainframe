@@ -11,7 +11,7 @@ FEEDBACK_FILE="${1:?Usage: feedback-prompt.sh <feedback_file>}"
 
 echo ""
 echo "  ╭──────────────────────────────────────────────────────────────╮"
-echo "  │              What should the agent do differently?           │"
+echo "  │              What should Claude do differently?              │"
 echo "  ╰──────────────────────────────────────────────────────────────╯"
 echo ""
 read -p "  → " feedback

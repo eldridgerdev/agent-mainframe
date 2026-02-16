@@ -21,7 +21,7 @@ const RAINBOW_COLORS: &[Color] = &[
     Color::Magenta,
 ];
 
-fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+pub fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
     text.chars()
         .enumerate()
         .map(|(i, ch)| {

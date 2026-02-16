@@ -1,9 +1,14 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::project::VibeMode;
+use crate::ui::list::rainbow_spans;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     if let AppMode::Viewing(view) = &app.mode {

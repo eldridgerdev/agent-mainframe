@@ -151,25 +151,39 @@ fn run_loop<B: Backend>(
         };
 
         if event::poll(poll_duration)? {
-            let ev = event::read()?;
-            match ev {
-                Event::Key(key) => {
-                    if key.kind != KeyEventKind::Press {
-                        continue;
-                    }
-                    if let Err(e) = handle_key(app, key) {
-                        app.show_error(e);
-                    }
+            let mut events = vec![event::read()?];
+
+            // In viewing mode, drain all queued events so
+            // rapid keystrokes are forwarded without waiting
+            // for a pane capture between each one.
+            if is_viewing {
+                while event::poll(Duration::ZERO)? {
+                    events.push(event::read()?);
                 }
-                Event::Paste(text) => {
-                    if let Err(e) = handle_paste(app, &text) {
-                        app.show_error(e);
+            }
+
+            for ev in events {
+                match ev {
+                    Event::Key(key) => {
+                        if key.kind == KeyEventKind::Release {
+                            continue;
+                        }
+                        if let Err(e) = handle_key(app, key) {
+                            app.show_error(e);
+                        }
                     }
+                    Event::Paste(text) => {
+                        if let Err(e) =
+                            handle_paste(app, &text)
+                        {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        last_resize = None;
+                    }
+                    _ => {}
                 }
-                Event::Resize(_, _) => {
-                    last_resize = None;
-                }
-                _ => {}
             }
         }
     }
@@ -592,17 +606,20 @@ fn handle_view_key(
     };
 
     if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
-        match tmux_key {
+        let result = match tmux_key {
             TmuxKey::Literal(text) => {
-                let _ = TmuxManager::send_literal(
+                TmuxManager::send_literal(
                     &session, &window, &text,
-                );
+                )
             }
             TmuxKey::Named(name) => {
-                let _ = TmuxManager::send_key_name(
+                TmuxManager::send_key_name(
                     &session, &window, &name,
-                );
+                )
             }
+        };
+        if let Err(e) = result {
+            app.show_error(e);
         }
     }
 

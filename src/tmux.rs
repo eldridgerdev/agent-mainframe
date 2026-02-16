@@ -226,11 +226,13 @@ impl TmuxManager {
     }
 
     /// Launch opencode in a specific window of a session
+    /// Sets OPENCODE_THEME=catppuccin-frappe for consistent theming
     pub fn launch_opencode(session: &str, window: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
+        let cmd = "export OPENCODE_THEME=catppuccin-frappe && opencode";
 
         Command::new("tmux")
-            .args(["send-keys", "-t", &target, "opencode", "Enter"])
+            .args(["send-keys", "-t", &target, cmd, "Enter"])
             .status()
             .context("Failed to send opencode command to tmux")?;
 

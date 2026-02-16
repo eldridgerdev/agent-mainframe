@@ -1,0 +1,201 @@
+use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::app::AppMode;
+use crate::app::App;
+use crate::tmux::TmuxManager;
+
+enum TmuxKey {
+    Literal(String),
+    Named(String),
+}
+
+fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(c) = key.code {
+            return Some(TmuxKey::Named(format!("C-{}", c)));
+        }
+
+    if key.modifiers.contains(KeyModifiers::ALT)
+        && let KeyCode::Char(c) = key.code {
+            return Some(TmuxKey::Named(format!("M-{}", c)));
+        }
+
+    match key.code {
+        KeyCode::Char(c) => {
+            Some(TmuxKey::Literal(c.to_string()))
+        }
+        KeyCode::Enter => {
+            Some(TmuxKey::Named("Enter".into()))
+        }
+        KeyCode::Backspace => {
+            Some(TmuxKey::Named("BSpace".into()))
+        }
+        KeyCode::Tab => Some(TmuxKey::Named("Tab".into())),
+        KeyCode::Esc => {
+            Some(TmuxKey::Named("Escape".into()))
+        }
+        KeyCode::Up => Some(TmuxKey::Named("Up".into())),
+        KeyCode::Down => Some(TmuxKey::Named("Down".into())),
+        KeyCode::Left => Some(TmuxKey::Named("Left".into())),
+        KeyCode::Right => {
+            Some(TmuxKey::Named("Right".into()))
+        }
+        KeyCode::Home => Some(TmuxKey::Named("Home".into())),
+        KeyCode::End => Some(TmuxKey::Named("End".into())),
+        KeyCode::PageUp => {
+            Some(TmuxKey::Named("PPage".into()))
+        }
+        KeyCode::PageDown => {
+            Some(TmuxKey::Named("NPage".into()))
+        }
+        KeyCode::Delete => {
+            Some(TmuxKey::Named("DC".into()))
+        }
+        KeyCode::Insert => {
+            Some(TmuxKey::Named("IC".into()))
+        }
+        KeyCode::F(n) => {
+            Some(TmuxKey::Named(format!("F{}", n)))
+        }
+        _ => None,
+    }
+}
+
+pub fn handle_view_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
+    if app.leader_active {
+        return handle_leader_key(app, key);
+    }
+
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('q')
+    {
+        app.exit_view();
+        return Ok(());
+    }
+
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char(' ')
+    {
+        app.activate_leader();
+        return Ok(());
+    }
+
+    let (session, window) = match &app.mode {
+        AppMode::Viewing(view) => {
+            (view.session.clone(), view.window.clone())
+        }
+        _ => return Ok(()),
+    };
+
+    if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
+        let result = match tmux_key {
+            TmuxKey::Literal(text) => {
+                TmuxManager::send_literal(
+                    &session, &window, &text,
+                )
+            }
+            TmuxKey::Named(name) => {
+                TmuxManager::send_key_name(
+                    &session, &window, &name,
+                )
+            }
+        };
+        if let Err(e) = result {
+            app.show_error(e);
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_leader_key(
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<()> {
+    app.deactivate_leader();
+
+    match key.code {
+        KeyCode::Char('q') => {
+            app.exit_view();
+        }
+        KeyCode::Char('t') => {
+            app.view_next_session();
+        }
+        KeyCode::Char('T') => {
+            app.view_prev_session();
+        }
+        KeyCode::Char('s') => {
+            let session = match &app.mode {
+                AppMode::Viewing(view) => {
+                    view.session.clone()
+                }
+                _ => return Ok(()),
+            };
+            app.exit_view();
+            if TmuxManager::is_inside_tmux() {
+                TmuxManager::switch_client(&session)?;
+            } else {
+                app.should_switch = Some(session);
+            }
+        }
+        KeyCode::Char('n') => {
+            app.view_next_feature()?;
+        }
+        KeyCode::Char('p') => {
+            app.view_prev_feature()?;
+        }
+        KeyCode::Char('r') => {
+            app.sync_statuses();
+            app.message =
+                Some("Refreshed statuses".into());
+        }
+        KeyCode::Char('x') => {
+            let session = match &app.mode {
+                AppMode::Viewing(view) => {
+                    view.session.clone()
+                }
+                _ => return Ok(()),
+            };
+            let _ = TmuxManager::kill_session(&session);
+            app.exit_view();
+            app.sync_statuses();
+            app.message = Some("Stopped session".into());
+        }
+        KeyCode::Char('i') => {
+            app.exit_view();
+            if !app.pending_inputs.is_empty() {
+                app.mode = AppMode::NotificationPicker(0);
+            } else {
+                app.message =
+                    Some("No pending input requests".into());
+            }
+        }
+        KeyCode::Char('w') => {
+            app.open_session_switcher();
+        }
+        KeyCode::Char('/') => {
+            let view_state = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_command_picker(Some(view_state));
+        }
+        KeyCode::Char('?') => {
+            app.exit_view();
+            app.mode = AppMode::Help;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}

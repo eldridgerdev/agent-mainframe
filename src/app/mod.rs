@@ -1,15 +1,20 @@
+mod state;
+
 use anyhow::Result;
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-// Test comment for diff-review
-
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
 };
+use crate::tmux::TmuxManager;
+use crate::usage::UsageManager;
+use crate::worktree::WorktreeManager;
+
+pub use state::*;
 
 pub struct CommandEntry {
     pub name: String,
@@ -39,9 +44,6 @@ pub struct SessionSwitcherState {
     pub return_label: String,
     pub vibe_mode: VibeMode,
 }
-use crate::tmux::TmuxManager;
-use crate::usage::UsageManager;
-use crate::worktree::WorktreeManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -79,9 +81,6 @@ pub fn load_config() -> AppConfig {
     }
 }
 
-/// Remove the old external diff-review plugin from
-/// `.claude/settings.local.json` if present.  The hook is now
-/// written directly into each workdir's `settings.json`.
 fn remove_old_diff_review_plugin(repo: &Path) {
     let settings_path =
         repo.join(".claude").join("settings.local.json");
@@ -111,7 +110,6 @@ fn remove_old_diff_review_plugin(repo: &Path) {
         return;
     }
 
-    // Remove enabledPlugins key entirely if empty
     if settings
         .get("enabledPlugins")
         .and_then(|p| p.as_object())
@@ -123,7 +121,6 @@ fn remove_old_diff_review_plugin(repo: &Path) {
             .remove("enabledPlugins");
     }
 
-    // Delete file if settings is now empty, otherwise write
     if settings.as_object().is_some_and(|obj| obj.is_empty())
     {
         let _ = std::fs::remove_file(&settings_path);
@@ -137,176 +134,6 @@ fn remove_old_diff_review_plugin(repo: &Path) {
     }
 }
 
-/// Ensure `.claude/settings.json` in the given workdir has the
-/// notification hooks configured. Merges with existing settings
-/// rather than overwriting.
-pub fn ensure_notification_hooks(
-    workdir: &Path,
-    repo: &Path,
-    mode: &VibeMode,
-    agent: &AgentKind,
-) {
-    // Remove the old external plugin so it doesn't
-    // conflict with the hook we write below.
-    remove_old_diff_review_plugin(repo);
-
-    // For opencode, install plugins instead of hooks
-    if matches!(agent, AgentKind::Opencode) {
-        ensure_opencode_plugins(workdir, repo, mode);
-        return;
-    }
-
-    let claude_dir = workdir.join(".claude");
-    let settings_path = claude_dir.join("settings.json");
-
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
-
-    let notify_cmd =
-        config_dir.join("notify.sh").to_string_lossy().to_string();
-    let clear_cmd = config_dir
-        .join("clear-notify.sh")
-        .to_string_lossy()
-        .to_string();
-    let diff_review_cmd = repo
-        .join("plugins")
-        .join("diff-review")
-        .join("scripts")
-        .join("diff-review.sh")
-        .to_string_lossy()
-        .to_string();
-
-    let wants_diff_review =
-        matches!(mode, VibeMode::Vibeless);
-
-    // Read existing settings or start fresh
-    let mut settings: serde_json::Value =
-        if settings_path.exists() {
-            std::fs::read_to_string(&settings_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
-
-    // Check whether config already matches desired state
-    let has_notification = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("Notification").is_some());
-    let has_stop = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("Stop").is_some());
-    let has_pre_tool_use = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("PreToolUse").is_some());
-    let has_perms = settings
-        .get("permissions")
-        .and_then(|p| p.get("allow"))
-        .and_then(|a| a.as_array())
-        .is_some_and(|arr| {
-            arr.iter().any(|v| v.as_str() == Some("Edit"))
-                && arr
-                    .iter()
-                    .any(|v| v.as_str() == Some("Write"))
-        });
-
-    let already_correct = has_notification
-        && has_stop
-        && if wants_diff_review {
-            has_pre_tool_use && has_perms
-        } else {
-            !has_pre_tool_use && !has_perms
-        };
-    if already_correct {
-        return;
-    }
-
-    // --- Hooks ---
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-
-    let notification_hook = serde_json::json!([{
-        "matcher": "",
-        "hooks": [{ "type": "command", "command": notify_cmd }]
-    }]);
-    let stop_hook = serde_json::json!([{
-        "matcher": "",
-        "hooks": [{ "type": "command", "command": clear_cmd }]
-    }]);
-
-    let hooks_obj = hooks.as_object_mut().unwrap();
-    hooks_obj
-        .entry("Notification")
-        .or_insert(notification_hook);
-    hooks_obj.entry("Stop").or_insert(stop_hook);
-
-    if wants_diff_review {
-        let pre_tool_use_hook = serde_json::json!([{
-            "matcher": "Edit|Write",
-            "hooks": [{
-                "type": "command",
-                "command": diff_review_cmd,
-                "timeout": 600
-            }]
-        }]);
-        hooks_obj
-            .entry("PreToolUse")
-            .or_insert(pre_tool_use_hook);
-    } else {
-        // Remove diff-review hook for Vibe/SuperVibe
-        hooks_obj.remove("PreToolUse");
-    }
-
-    if wants_diff_review {
-        // --- Permissions: auto-allow Edit/Write
-        //     (diff-review hook is the review gate) ---
-        let perms = settings
-            .as_object_mut()
-            .unwrap()
-            .entry("permissions")
-            .or_insert_with(|| serde_json::json!({}));
-        let allow = perms
-            .as_object_mut()
-            .unwrap()
-            .entry("allow")
-            .or_insert_with(|| serde_json::json!([]));
-        let arr = allow.as_array_mut().unwrap();
-        if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
-            arr.push(serde_json::json!("Edit"));
-        }
-        if !arr.iter().any(|v| v.as_str() == Some("Write"))
-        {
-            arr.push(serde_json::json!("Write"));
-        }
-    } else {
-        // Remove Edit/Write auto-allow for Vibe/SuperVibe
-        // (CLI flags handle permissions instead)
-        if let Some(arr) = settings
-            .pointer_mut("/permissions/allow")
-            .and_then(|v| v.as_array_mut())
-        {
-            arr.retain(|v| {
-                v.as_str() != Some("Edit")
-                    && v.as_str() != Some("Write")
-            });
-        }
-    }
-
-    let _ = std::fs::create_dir_all(&claude_dir);
-    let _ = std::fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&settings)
-            .unwrap_or_default(),
-    );
-}
-
-/// Ensure opencode plugins are installed in the worktree's
-/// `.opencode/plugins/` directory.
 fn ensure_opencode_plugins(
     workdir: &Path,
     repo: &Path,
@@ -315,7 +142,6 @@ fn ensure_opencode_plugins(
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
-    // Copy input-request plugin (for notification support)
     let src_input_request = repo
         .join(".opencode")
         .join("plugins")
@@ -326,7 +152,6 @@ fn ensure_opencode_plugins(
         let _ = std::fs::copy(&src_input_request, &dst_input_request);
     }
 
-    // Copy diff-review plugin if in vibeless mode
     if matches!(mode, VibeMode::Vibeless) {
         let src_diff_review = repo
             .join(".opencode")
@@ -370,7 +195,164 @@ fn ensure_opencode_plugins(
     }
 }
 
-/// Try to detect the git repo root from cwd, falling back to cwd itself.
+pub fn ensure_notification_hooks(
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+    agent: &AgentKind,
+) {
+    remove_old_diff_review_plugin(repo);
+
+    if matches!(agent, AgentKind::Opencode) {
+        ensure_opencode_plugins(workdir, repo, mode);
+        return;
+    }
+
+    let config_subdir = match agent {
+        AgentKind::Claude => ".claude",
+        AgentKind::Opencode => ".opencode",
+    };
+    let claude_dir = workdir.join(config_subdir);
+    let settings_path = claude_dir.join("settings.json");
+
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless");
+
+    let notify_cmd =
+        config_dir.join("notify.sh").to_string_lossy().to_string();
+    let clear_cmd = config_dir
+        .join("clear-notify.sh")
+        .to_string_lossy()
+        .to_string();
+    let diff_review_cmd = repo
+        .join("plugins")
+        .join("diff-review")
+        .join("scripts")
+        .join("diff-review.sh")
+        .to_string_lossy()
+        .to_string();
+
+    let wants_diff_review =
+        matches!(mode, VibeMode::Vibeless);
+
+    let mut settings: serde_json::Value =
+        if settings_path.exists() {
+            std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+    let has_notification = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("Notification").is_some());
+    let has_stop = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("Stop").is_some());
+    let has_pre_tool_use = settings
+        .get("hooks")
+        .is_some_and(|h| h.get("PreToolUse").is_some());
+    let has_perms = settings
+        .get("permissions")
+        .and_then(|p| p.get("allow"))
+        .and_then(|a| a.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|v| v.as_str() == Some("Edit"))
+                && arr
+                    .iter()
+                    .any(|v| v.as_str() == Some("Write"))
+        });
+
+    let already_correct = has_notification
+        && has_stop
+        && if wants_diff_review {
+            has_pre_tool_use && has_perms
+        } else {
+            !has_pre_tool_use && !has_perms
+        };
+    if already_correct {
+        return;
+    }
+
+    let hooks = settings
+        .as_object_mut()
+        .unwrap()
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+
+    let notification_hook = serde_json::json!([{
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": notify_cmd }]
+    }]);
+    let stop_hook = serde_json::json!([{
+        "matcher": "",
+        "hooks": [{ "type": "command", "command": clear_cmd }]
+    }]);
+
+    let hooks_obj = hooks.as_object_mut().unwrap();
+    hooks_obj
+        .entry("Notification")
+        .or_insert(notification_hook);
+    hooks_obj.entry("Stop").or_insert(stop_hook);
+
+    if wants_diff_review {
+        let pre_tool_use_hook = serde_json::json!([{
+            "matcher": "Edit|Write",
+            "hooks": [{
+                "type": "command",
+                "command": diff_review_cmd,
+                "timeout": 600
+            }]
+        }]);
+        hooks_obj
+            .entry("PreToolUse")
+            .or_insert(pre_tool_use_hook);
+    } else {
+        hooks_obj.remove("PreToolUse");
+    }
+
+    if wants_diff_review {
+        let perms = settings
+            .as_object_mut()
+            .unwrap()
+            .entry("permissions")
+            .or_insert_with(|| serde_json::json!({}));
+        let allow = perms
+            .as_object_mut()
+            .unwrap()
+            .entry("allow")
+            .or_insert_with(|| serde_json::json!([]));
+        let arr = allow.as_array_mut().unwrap();
+        if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
+            arr.push(serde_json::json!("Edit"));
+        }
+        if !arr.iter().any(|v| v.as_str() == Some("Write"))
+        {
+            arr.push(serde_json::json!("Write"));
+        }
+    } else {
+        if let Some(arr) = settings
+            .pointer_mut("/permissions/allow")
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| {
+                v.as_str() != Some("Edit")
+                    && v.as_str() != Some("Write")
+            });
+        }
+    }
+
+    let _ = std::fs::create_dir_all(&claude_dir);
+    let _ = std::fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings)
+            .unwrap_or_default(),
+    );
+}
+
 fn detect_repo_path() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     WorktreeManager::repo_root(&cwd)
@@ -379,224 +361,12 @@ fn detect_repo_path() -> String {
         .into_owned()
 }
 
-/// Try to detect the current git branch from cwd.
 fn detect_branch() -> String {
     let cwd = std::env::current_dir().unwrap_or_default();
     WorktreeManager::current_branch(&cwd)
         .ok()
         .flatten()
         .unwrap_or_default()
-}
-
-#[derive(Debug, Clone)]
-pub enum Selection {
-    Project(usize),
-    Feature(usize, usize),
-    Session(usize, usize, usize),
-}
-
-pub struct ViewState {
-    pub project_name: String,
-    pub feature_name: String,
-    pub session: String,
-    pub window: String,
-    pub session_label: String,
-    pub vibe_mode: VibeMode,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingInput {
-    pub session_id: String,
-    pub cwd: String,
-    pub message: String,
-    pub notification_type: String,
-    pub file_path: PathBuf,
-    /// Resolved project name (if matched)
-    pub project_name: Option<String>,
-    /// Resolved feature name (if matched)
-    pub feature_name: Option<String>,
-    /// Path to write to unblock a diff-review hook
-    pub proceed_signal: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct NotificationJson {
-    session_id: Option<String>,
-    cwd: Option<String>,
-    message: Option<String>,
-    #[serde(alias = "type")]
-    notification_type: Option<String>,
-    proceed_signal: Option<String>,
-}
-
-pub enum RenameReturnTo {
-    Dashboard,
-    SessionSwitcher(SessionSwitcherState),
-}
-
-pub struct RenameSessionState {
-    pub project_idx: usize,
-    pub feature_idx: usize,
-    pub session_idx: usize,
-    pub input: String,
-    pub return_to: RenameReturnTo,
-}
-
-pub enum AppMode {
-    Normal,
-    CreatingProject(CreateProjectState),
-    CreatingFeature(CreateFeatureState),
-    DeletingProject(String),
-    DeletingFeature(String, String),
-    Viewing(ViewState),
-    Help,
-    NotificationPicker(usize),
-    SessionSwitcher(SessionSwitcherState),
-    RenamingSession(RenameSessionState),
-    BrowsingPath(Box<BrowsePathState>),
-    CommandPicker(CommandPickerState),
-}
-
-pub struct BrowsePathState {
-    pub explorer: FileExplorer,
-    pub create_state: CreateProjectState,
-}
-
-#[derive(Clone)]
-pub struct CreateProjectState {
-    pub step: CreateProjectStep,
-    pub name: String,
-    pub path: String,
-}
-
-#[derive(Clone)]
-pub enum CreateProjectStep {
-    Name,
-    Path,
-}
-
-impl CreateProjectState {
-    pub fn auto_detect() -> Self {
-        Self {
-            step: CreateProjectStep::Name,
-            name: String::new(),
-            path: detect_repo_path(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CreateFeatureStep {
-    Source,
-    ExistingWorktree,
-    Branch,
-    Worktree,
-    Mode,
-    ConfirmSuperVibe,
-}
-
-pub struct CreateFeatureState {
-    pub project_name: String,
-    pub project_repo: PathBuf,
-    pub branch: String,
-    pub step: CreateFeatureStep,
-    pub agent: AgentKind,
-    pub agent_index: usize,
-    pub mode: VibeMode,
-    pub mode_index: usize,
-    pub mode_focus: usize, // 0=agent, 1=mode, 2=notes
-    pub source_index: usize,
-    pub worktrees: Vec<crate::worktree::WorktreeInfo>,
-    pub worktree_index: usize,
-    pub use_worktree: bool,
-    pub enable_notes: bool,
-}
-
-impl CreateFeatureState {
-    pub fn new(
-        project_name: String,
-        project_repo: PathBuf,
-        worktrees: Vec<crate::worktree::WorktreeInfo>,
-        is_first_feature: bool,
-    ) -> Self {
-        let step = if worktrees.is_empty() {
-            CreateFeatureStep::Branch
-        } else {
-            CreateFeatureStep::Source
-        };
-        Self {
-            project_name,
-            project_repo,
-            branch: detect_branch(),
-            step,
-            agent: AgentKind::default(),
-            agent_index: 0,
-            mode: VibeMode::default(),
-            mode_index: 0,
-            mode_focus: 0,
-            source_index: 0,
-            worktrees,
-            worktree_index: 0,
-            use_worktree: !is_first_feature,
-            enable_notes: true,
-        }
-    }
-}
-
-/// A visible item in the flattened tree view.
-#[derive(Debug, Clone)]
-pub enum VisibleItem {
-    Project(usize),
-    Feature(usize, usize),
-    Session(usize, usize, usize),
-}
-
-/// Recursively scan a directory for `.md` command files.
-/// Files in subdirectories get a `subdir:name` prefix.
-fn scan_commands_recursive(
-    base: &Path,
-    dir: &Path,
-    source: &str,
-    out: &mut Vec<CommandEntry>,
-) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            scan_commands_recursive(
-                base, &path, source, out,
-            );
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            == Some("md")
-            && let Some(stem) =
-                path.file_stem().and_then(|s| s.to_str())
-        {
-            // Build name with subdir prefix if nested
-            let name = if let Ok(rel) = dir.strip_prefix(base)
-                && !rel.as_os_str().is_empty()
-            {
-                format!(
-                    "{}:{}",
-                    rel.to_string_lossy(),
-                    stem,
-                )
-            } else {
-                stem.to_string()
-            };
-
-            out.push(CommandEntry {
-                name,
-                source: source.into(),
-                path,
-            });
-        }
-    }
 }
 
 pub struct App {
@@ -640,8 +410,6 @@ impl App {
         self.store.save(&self.store_path)
     }
 
-    /// Compute the flattened list of visible items respecting
-    /// collapse state at both project and feature levels.
     pub fn visible_items(&self) -> Vec<VisibleItem> {
         let mut items = Vec::new();
         for (pi, project) in
@@ -668,8 +436,6 @@ impl App {
         items
     }
 
-    /// Find the index of the current selection in the visible
-    /// items list.
     fn selection_index(&self) -> Option<usize> {
         let items = self.visible_items();
         items.iter().position(|item| match (&self.selection, item)
@@ -736,7 +502,6 @@ impl App {
             return;
         }
         let current = self.selection_index().unwrap_or(0);
-        // Search forward (wrapping) for the next Feature item
         for offset in 1..=items.len() {
             let idx = (current + offset) % items.len();
             if matches!(items[idx], VisibleItem::Feature(..)) {
@@ -757,7 +522,6 @@ impl App {
             return;
         }
         let current = self.selection_index().unwrap_or(0);
-        // Search backward (wrapping) for the previous Feature item
         for offset in 1..=items.len() {
             let idx = if current >= offset {
                 current - offset
@@ -776,7 +540,6 @@ impl App {
         }
     }
 
-    /// Sync feature statuses with actual tmux session state.
     pub fn sync_statuses(&mut self) {
         let live_sessions =
             TmuxManager::list_sessions().unwrap_or_default();
@@ -796,7 +559,6 @@ impl App {
         }
     }
 
-    /// Get the currently selected project.
     pub fn selected_project(&self) -> Option<&Project> {
         match &self.selection {
             Selection::Project(pi)
@@ -807,7 +569,6 @@ impl App {
         }
     }
 
-    /// Get the currently selected feature.
     pub fn selected_feature(
         &self,
     ) -> Option<(&Project, &Feature)> {
@@ -822,7 +583,6 @@ impl App {
         }
     }
 
-    /// Get the currently selected session.
     pub fn selected_session(
         &self,
     ) -> Option<(&Project, &Feature, &FeatureSession)> {
@@ -837,7 +597,6 @@ impl App {
         }
     }
 
-    /// Toggle collapse on the currently selected item.
     pub fn toggle_collapse(&mut self) {
         match &self.selection {
             Selection::Project(pi) => {
@@ -876,8 +635,6 @@ impl App {
         }
     }
 
-    // --- Project CRUD ---
-
     pub fn start_create_project(&mut self) {
         self.mode = AppMode::CreatingProject(
             CreateProjectState::auto_detect(),
@@ -891,8 +648,6 @@ impl App {
 
     pub fn show_error(&mut self, error: anyhow::Error) {
         self.message = Some(format!("Error: {}", error));
-        // If we were in a dialog/creation mode, return to
-        // normal so the user isn't stuck
         match &self.mode {
             AppMode::Normal
             | AppMode::Help
@@ -1023,7 +778,6 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Stop all features first
         if let Some(project) =
             self.store.find_project(&project_name)
         {
@@ -1052,7 +806,6 @@ impl App {
         self.store.remove_project(&project_name);
         self.save()?;
 
-        // Fix selection
         let items = self.visible_items();
         if items.is_empty() {
             self.selection = Selection::Project(0);
@@ -1082,8 +835,6 @@ impl App {
         Ok(())
     }
 
-    // --- Feature CRUD ---
-
     pub fn start_create_feature(&mut self) {
         let (project_name, project_repo, is_first, used_workdirs) =
             match &self.selection {
@@ -1110,9 +861,6 @@ impl App {
                 }
             };
 
-        // List existing worktrees, filtering out ones
-        // already used by features in this project and
-        // the main repo directory itself.
         let worktrees = WorktreeManager::list(&project_repo)
             .unwrap_or_default()
             .into_iter()
@@ -1172,7 +920,6 @@ impl App {
                     }
                 };
 
-            // Check for duplicate feature name
             if project
                 .features
                 .iter()
@@ -1185,7 +932,6 @@ impl App {
                 return Ok(());
             }
 
-            // Check that only one non-worktree feature exists
             if !use_worktree
                 && selected_worktree.is_none()
                 && project
@@ -1204,11 +950,9 @@ impl App {
             project.is_git
         };
 
-        // Re-check git status if the stored flag says non-git
         let is_git = stored_is_git
             || WorktreeManager::repo_root(&project_repo).is_ok();
 
-        // Update stored flag if we detected git after initial creation
         if is_git && !stored_is_git {
             if let Some(p) =
                 self.store.find_project_mut(&project_name)
@@ -1242,7 +986,6 @@ impl App {
                 (project_repo.clone(), false)
             };
 
-        // Create .claude/notes.md if notes are enabled
         if enable_notes {
             let claude_dir = workdir.join(".claude");
             if !claude_dir.exists() {
@@ -1270,7 +1013,6 @@ impl App {
         self.store.add_feature(&project_name, feature);
         self.save()?;
 
-        // Select the newly created feature
         if let Some(pi) = self
             .store
             .projects
@@ -1281,14 +1023,12 @@ impl App {
                 .features
                 .len()
                 .saturating_sub(1);
-            // Ensure parent is expanded
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
 
         self.mode = AppMode::Normal;
 
-        // Auto-start the feature
         if let Some(pi) = self
             .store
             .projects
@@ -1311,9 +1051,6 @@ impl App {
         Ok(())
     }
 
-    /// Ensure a feature's tmux session is running with all its
-    /// windows. Auto-creates Claude + Terminal sessions if
-    /// the feature has none.
     fn ensure_feature_running(
         &mut self,
         pi: usize,
@@ -1331,8 +1068,6 @@ impl App {
             None => return Ok(()),
         };
 
-        // Always ensure hooks are up-to-date, even if the
-        // tmux session already exists (handles upgrades).
         ensure_notification_hooks(
             &feature.workdir,
             &repo,
@@ -1501,7 +1236,6 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Get info before removing
         if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project
@@ -1524,7 +1258,6 @@ impl App {
             .remove_feature(&project_name, &feature_name);
         self.save()?;
 
-        // Move selection to parent project
         if let Some(pi) = self
             .store
             .projects
@@ -1541,8 +1274,6 @@ impl App {
         ));
         Ok(())
     }
-
-    // --- Session CRUD ---
 
     pub fn add_terminal_session(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
@@ -1593,7 +1324,6 @@ impl App {
     }
 
     pub fn add_nvim_session(&mut self) -> Result<()> {
-        // Check if nvim is available
         if std::process::Command::new("nvim")
             .arg("--version")
             .stdout(std::process::Stdio::null())
@@ -1682,7 +1412,6 @@ impl App {
             return Ok(());
         }
 
-        // Create .claude/notes.md
         let claude_dir = feature.workdir.join(".claude");
         if !claude_dir.exists() {
             let _ = std::fs::create_dir_all(&claude_dir);
@@ -1697,7 +1426,6 @@ impl App {
 
         feature.has_notes = true;
 
-        // If feature is running, add an nvim session for the memo
         if TmuxManager::session_exists(
             &feature.tmux_session,
         ) {
@@ -1836,7 +1564,6 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        // Kill the tmux window
         if TmuxManager::session_exists(&tmux_session) {
             let _ = TmuxManager::kill_window(
                 &tmux_session,
@@ -1846,21 +1573,17 @@ impl App {
 
         feature.sessions.remove(si);
 
-        // If no sessions left, kill the tmux session
         if feature.sessions.is_empty() {
             let _ = TmuxManager::kill_session(&tmux_session);
             feature.status = ProjectStatus::Stopped;
         }
 
-        // Move selection to parent feature
         self.selection = Selection::Feature(pi, fi);
         self.save()?;
         self.message = Some(format!("Removed '{}'", label));
 
         Ok(())
     }
-
-    // --- View / Switch ---
 
     pub fn enter_view(&mut self) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
@@ -1871,10 +1594,8 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Ensure the feature is running
         self.ensure_feature_running(pi, fi)?;
 
-        // Pick the session to view
         let (
             project_name,
             feature_name,
@@ -1907,7 +1628,6 @@ impl App {
             )
         };
 
-        // Update status
         let feature = self.store.projects[pi]
             .features
             .get_mut(fi)
@@ -1927,7 +1647,6 @@ impl App {
         self.save()?;
         self.pane_content.clear();
 
-        // Unblock any diff-review hooks waiting for this feature
         let feat_name = view.feature_name.clone();
         self.mode = AppMode::Viewing(view);
 
@@ -1963,7 +1682,6 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Get window for the session if on a session
         let window = match &self.selection {
             Selection::Session(_, _, si) => self
                 .store
@@ -1986,7 +1704,6 @@ impl App {
         let session = feature.tmux_session.clone();
         self.save()?;
 
-        // Select the specific window if on a session
         if let Some(window) = &window {
             let _ =
                 TmuxManager::select_window(&session, window);
@@ -2002,8 +1719,6 @@ impl App {
 
         Ok(())
     }
-
-    // --- Leader key ---
 
     pub fn activate_leader(&mut self) {
         self.leader_active = true;
@@ -2024,8 +1739,6 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Cycle to the next feature within the same project while
-    /// staying in Viewing mode.
     pub fn view_next_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.mode {
             AppMode::Viewing(view) => {
@@ -2061,7 +1774,6 @@ impl App {
             return Ok(());
         }
 
-        // Skip stopped features when cycling
         for offset in 1..len {
             let candidate = (fi + offset) % len;
             if project.features[candidate].status != ProjectStatus::Stopped {
@@ -2071,8 +1783,6 @@ impl App {
         Ok(())
     }
 
-    /// Cycle to the previous feature within the same project
-    /// while staying in Viewing mode.
     pub fn view_prev_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.mode {
             AppMode::Viewing(view) => {
@@ -2108,7 +1818,6 @@ impl App {
             return Ok(());
         }
 
-        // Skip stopped features when cycling
         for offset in 1..len {
             let candidate = (fi + len - offset) % len;
             if project.features[candidate].status != ProjectStatus::Stopped {
@@ -2118,14 +1827,11 @@ impl App {
         Ok(())
     }
 
-    /// Switch the current view to a different feature,
-    /// defaulting to its first Claude session.
     fn switch_view_to_feature(
         &mut self,
         pi: usize,
         fi: usize,
     ) -> Result<()> {
-        // Ensure the target feature is running
         self.ensure_feature_running(pi, fi)?;
 
         let project = &self.store.projects[pi];
@@ -2135,7 +1841,6 @@ impl App {
         let tmux_session = feature.tmux_session.clone();
         let vibe_mode = feature.mode.clone();
 
-        // Default to first Claude session
         let si = feature
             .sessions
             .iter()
@@ -2170,8 +1875,6 @@ impl App {
         Ok(())
     }
 
-    /// Cycle to the next session within the current feature
-    /// while staying in Viewing mode.
     pub fn view_next_session(&mut self) {
         let (pi, fi, current_window) = match &self.mode {
             AppMode::Viewing(view) => {
@@ -2222,8 +1925,6 @@ impl App {
         self.pane_content.clear();
     }
 
-    /// Cycle to the previous session within the current
-    /// feature while staying in Viewing mode.
     pub fn view_prev_session(&mut self) {
         let (pi, fi, current_window) = match &self.mode {
             AppMode::Viewing(view) => {
@@ -2277,7 +1978,6 @@ impl App {
         self.pane_content.clear();
     }
 
-    /// Open the session switcher overlay from Viewing mode.
     pub fn open_session_switcher(&mut self) {
         let (project_name, feature_name, tmux_session, current_window, current_label, sessions, vibe_mode) =
             match &self.mode {
@@ -2351,8 +2051,6 @@ impl App {
             });
     }
 
-    /// Switch to the selected session from the switcher and
-    /// return to Viewing mode.
     pub fn switch_from_switcher(&mut self) {
         let (
             project_name,
@@ -2392,8 +2090,6 @@ impl App {
         });
     }
 
-    /// Cancel the session switcher and return to the original
-    /// session in Viewing mode.
     pub fn cancel_session_switcher(&mut self) {
         let (
             project_name,
@@ -2425,8 +2121,6 @@ impl App {
         });
     }
 
-    /// Scan the notifications directory for pending input
-    /// requests and match them to known features by cwd.
     pub fn scan_notifications(&mut self) {
         let notify_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -2453,6 +2147,16 @@ impl App {
                 Err(_) => continue,
             };
 
+            #[derive(Deserialize)]
+            struct NotificationJson {
+                session_id: Option<String>,
+                cwd: Option<String>,
+                message: Option<String>,
+                #[serde(alias = "type")]
+                notification_type: Option<String>,
+                proceed_signal: Option<String>,
+            }
+
             let notif: NotificationJson =
                 match serde_json::from_str(&data) {
                     Ok(n) => n,
@@ -2467,7 +2171,6 @@ impl App {
                 notif.notification_type.unwrap_or_default();
             let proceed_signal = notif.proceed_signal;
 
-            // Match cwd to the most specific feature workdir
             let mut project_name = None;
             let mut feature_name = None;
             let mut best_len: usize = 0;
@@ -2508,8 +2211,6 @@ impl App {
 
         self.pending_inputs = inputs;
 
-        // If currently viewing a feature, unblock any
-        // diff-review hooks that arrived since enter_view()
         if let AppMode::Viewing(ref view) = self.mode {
             let feat_name = view.feature_name.clone();
             for input in &self.pending_inputs {
@@ -2530,7 +2231,6 @@ impl App {
         }
     }
 
-    /// Handle selecting a notification from the picker.
     pub fn handle_notification_select(
         &mut self,
     ) -> Result<()> {
@@ -2547,13 +2247,10 @@ impl App {
             }
         };
 
-        // Delete the notification file (diff-review cleanup
-        // handles its own file removal)
         if input.notification_type != "diff-review" {
             let _ = std::fs::remove_file(&input.file_path);
         }
 
-        // Try to navigate to the matching feature
         if let (Some(proj_name), Some(feat_name)) =
             (&input.project_name, &input.feature_name)
         {
@@ -2568,9 +2265,6 @@ impl App {
                     .iter()
                     .position(|f| &f.name == feat_name);
                 if let Some(fi) = fi {
-                    // Fire proceed signal before removing
-                    // the entry (enter_view also checks, but
-                    // the entry will be gone by then)
                     if input.notification_type == "diff-review"
                         && let Some(signal_path) =
                             &input.proceed_signal
@@ -2592,7 +2286,6 @@ impl App {
             }
         }
 
-        // No match found, just close picker
         self.pending_inputs.remove(idx);
         self.mode = AppMode::Normal;
         self.message = Some(
@@ -2601,8 +2294,6 @@ impl App {
         );
         Ok(())
     }
-
-    // --- Rename Session ---
 
     pub fn start_rename_session(&mut self) {
         let (pi, fi, si) = match &self.selection {
@@ -2675,7 +2366,6 @@ impl App {
             None => return,
         };
 
-        // Save the current switcher state to return to
         let saved_switcher = SessionSwitcherState {
             project_name: switcher_state
                 .project_name
@@ -2718,7 +2408,6 @@ impl App {
     }
 
     pub fn apply_rename_session(&mut self) -> Result<()> {
-        // Validate input before taking ownership
         let (pi, fi, si, input) = match &self.mode {
             AppMode::RenamingSession(state) => (
                 state.project_idx,
@@ -2735,7 +2424,6 @@ impl App {
             return Ok(());
         }
 
-        // Update the label in the store
         if let Some(session) = self
             .store
             .projects
@@ -2747,7 +2435,6 @@ impl App {
         }
         self.save()?;
 
-        // Take ownership of mode to extract return_to
         let old_mode = std::mem::replace(
             &mut self.mode,
             AppMode::Normal,
@@ -2762,7 +2449,6 @@ impl App {
                 RenameReturnTo::SessionSwitcher(
                     mut switcher,
                 ) => {
-                    // Rebuild entries with updated labels
                     let feature = &self.store.projects[pi]
                         .features[fi];
                     switcher.sessions = feature
@@ -2837,7 +2523,6 @@ impl App {
 
         let mut commands = Vec::new();
 
-        // Scan global commands first
         if let Some(home) = dirs::home_dir() {
             let global_cmd_dir =
                 home.join(".claude").join("commands");
@@ -2850,8 +2535,6 @@ impl App {
         }
         commands.sort_by(|a, b| a.name.cmp(&b.name));
 
-        // Then scan project commands: workdir first
-        // (worktree-local), fall back to repo root
         let mut project_cmds = Vec::new();
         let mut scanned_repo = false;
         if let Some(ref wd) = workdir {
@@ -2911,7 +2594,6 @@ impl App {
 
         let session = feature.tmux_session.clone();
         if TmuxManager::session_exists(&session) {
-            // Select a terminal window if possible
             if let Some(terminal_session) = feature
                 .sessions
                 .iter()
@@ -2933,5 +2615,50 @@ impl App {
         }
 
         Ok(())
+    }
+}
+
+fn scan_commands_recursive(
+    base: &Path,
+    dir: &Path,
+    source: &str,
+    out: &mut Vec<CommandEntry>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            scan_commands_recursive(
+                base, &path, source, out,
+            );
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            == Some("md")
+            && let Some(stem) =
+                path.file_stem().and_then(|s| s.to_str())
+        {
+            let name = if let Ok(rel) = dir.strip_prefix(base)
+                && !rel.as_os_str().is_empty()
+            {
+                format!(
+                    "{}:{}",
+                    rel.to_string_lossy(),
+                    stem,
+                )
+            } else {
+                stem.to_string()
+            };
+
+            out.push(CommandEntry {
+                name,
+                source: source.into(),
+                path,
+            });
+        }
     }
 }

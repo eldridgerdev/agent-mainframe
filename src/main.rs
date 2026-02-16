@@ -25,6 +25,7 @@ use std::io;
 use std::time::Duration;
 
 use app::{App, AppMode, Selection};
+use project::AgentKind;
 use tmux::TmuxManager;
 
 fn main() -> Result<()> {
@@ -1376,33 +1377,79 @@ fn handle_create_feature_key(
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.enable_notes = !state.enable_notes;
+                    state.mode_focus = (state.mode_focus + 1) % 3;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.mode_index = (state.mode_index + 1)
-                        % VibeMode::ALL.len();
-                    state.mode =
-                        VibeMode::ALL[state.mode_index]
-                            .clone();
+                    match state.mode_focus {
+                        0 => {
+                            // Agent selection
+                            state.agent_index =
+                                (state.agent_index + 1)
+                                    % AgentKind::ALL.len();
+                            state.agent =
+                                AgentKind::ALL[state.agent_index]
+                                    .clone();
+                        }
+                        1 => {
+                            // Mode selection
+                            state.mode_index = (state.mode_index
+                                + 1)
+                                % VibeMode::ALL.len();
+                            state.mode =
+                                VibeMode::ALL[state.mode_index]
+                                    .clone();
+                        }
+                        2 => {
+                            // Notes toggle
+                            state.enable_notes =
+                                !state.enable_notes;
+                        }
+                        _ => {}
+                    }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.mode_index =
-                        if state.mode_index == 0 {
-                            VibeMode::ALL.len() - 1
-                        } else {
-                            state.mode_index - 1
-                        };
-                    state.mode =
-                        VibeMode::ALL[state.mode_index]
-                            .clone();
+                    match state.mode_focus {
+                        0 => {
+                            // Agent selection
+                            state.agent_index = if state.agent_index
+                                == 0
+                            {
+                                AgentKind::ALL.len() - 1
+                            } else {
+                                state.agent_index - 1
+                            };
+                            state.agent =
+                                AgentKind::ALL[state.agent_index]
+                                    .clone();
+                        }
+                        1 => {
+                            // Mode selection
+                            state.mode_index = if state.mode_index
+                                == 0
+                            {
+                                VibeMode::ALL.len() - 1
+                            } else {
+                                state.mode_index - 1
+                            };
+                            state.mode =
+                                VibeMode::ALL[state.mode_index]
+                                    .clone();
+                        }
+                        2 => {
+                            // Notes toggle
+                            state.enable_notes =
+                                !state.enable_notes;
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}

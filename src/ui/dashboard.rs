@@ -64,7 +64,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             view,
             &app.pane_content,
-            app.pane_cursor,
             app.leader_active,
             app.pending_inputs.len(),
         );
@@ -87,7 +86,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             &temp_view,
             &app.pane_content,
-            app.pane_cursor,
             false,
             app.pending_inputs.len(),
         );
@@ -109,7 +107,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             view,
             &app.pane_content,
-            app.pane_cursor,
             false,
             app.pending_inputs.len(),
         );
@@ -134,7 +131,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             &temp_view,
             &app.pane_content,
-            app.pane_cursor,
             false,
             app.pending_inputs.len(),
         );
@@ -2403,7 +2399,6 @@ fn draw_pane_view(
     frame: &mut Frame,
     view: &crate::app::ViewState,
     pane_content: &str,
-    pane_cursor: Option<(u16, u16)>,
     leader_active: bool,
     pending_count: usize,
 ) {
@@ -2508,13 +2503,16 @@ fn draw_pane_view(
 
     // Parse ANSI content through vt100 and render
     let content_area = chunks[1];
+    let bg_color = Color::Rgb(30, 30, 30);
     let text = ansi_to_ratatui_text(
         pane_content,
         content_area.width,
         content_area.height,
-        pane_cursor,
+        bg_color,
     );
-    let paragraph = Paragraph::new(text);
+    let paragraph = Paragraph::new(text).block(
+        Block::default().style(Style::default().bg(bg_color)),
+    );
     frame.render_widget(paragraph, content_area);
 }
 
@@ -2522,10 +2520,10 @@ fn ansi_to_ratatui_text<'a>(
     raw: &str,
     cols: u16,
     rows: u16,
-    cursor: Option<(u16, u16)>,
+    bg_color: Color,
 ) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    let normalized = raw.replace('\n', "\r\n");
+    let normalized = raw.replace("\r\n", "\n").replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
 
@@ -2534,7 +2532,7 @@ fn ansi_to_ratatui_text<'a>(
     for row in 0..rows {
         let mut spans: Vec<Span<'a>> = Vec::new();
         let mut current_text = String::new();
-        let mut current_style = Style::default();
+        let mut current_style = Style::default().bg(bg_color);
 
         for col in 0..cols {
             let cell = screen.cell(row, col);
@@ -2543,14 +2541,7 @@ fn ansi_to_ratatui_text<'a>(
                 None => continue,
             };
 
-            let is_cursor = cursor
-                == Some((col, row));
-            let style = if is_cursor {
-                vt100_cell_to_style(cell)
-                    .add_modifier(Modifier::REVERSED)
-            } else {
-                vt100_cell_to_style(cell)
-            };
+            let style = vt100_cell_to_style(cell, bg_color);
 
             if style != current_style
                 && !current_text.is_empty()
@@ -2577,11 +2568,12 @@ fn ansi_to_ratatui_text<'a>(
     lines
 }
 
-fn vt100_cell_to_style(cell: &vt100::Cell) -> Style {
-    let mut style = Style::default();
+fn vt100_cell_to_style(cell: &vt100::Cell, bg_color: Color) -> Style {
+    let mut style = Style::default().bg(bg_color);
 
-    style = style.fg(vt100_color_to_ratatui(cell.fgcolor()));
-    style = style.bg(vt100_color_to_ratatui(cell.bgcolor()));
+    if cell.fgcolor() != vt100::Color::Default {
+        style = style.fg(vt100_color_to_ratatui(cell.fgcolor()));
+    }
 
     if cell.bold() {
         style = style.add_modifier(Modifier::BOLD);

@@ -108,7 +108,7 @@ fn run_loop<B: Backend>(
                 }
             }
 
-            // Capture pane content and cursor after resize
+            // Capture pane content after resize
             if let AppMode::Viewing(ref view) = app.mode {
                 let session = view.session.clone();
                 let window = view.window.clone();
@@ -117,10 +117,6 @@ fn run_loop<B: Backend>(
                         &session, &window,
                     )
                     .unwrap_or_default();
-                app.pane_cursor =
-                    TmuxManager::cursor_position(
-                        &session, &window,
-                    );
             }
         }
 

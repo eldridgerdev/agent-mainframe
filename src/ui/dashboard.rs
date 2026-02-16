@@ -218,6 +218,38 @@ fn utilization_color(pct: f64) -> Color {
     }
 }
 
+fn usage_bar_spans<'a>(
+    label: &'a str,
+    pct: f64,
+    bar_width: usize,
+) -> Vec<Span<'a>> {
+    let color = utilization_color(pct);
+    let filled =
+        ((pct / 100.0) * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    vec![
+        Span::styled(
+            format!("{} ", label),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "┃".repeat(filled),
+            Style::default().fg(color),
+        ),
+        Span::styled(
+            "░".repeat(empty),
+            Style::default().fg(Color::Rgb(60, 60, 60)),
+        ),
+        Span::styled(
+            format!(" {:.0}%", pct),
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]
+}
+
 fn draw_header(
     frame: &mut Frame,
     area: Rect,
@@ -971,56 +1003,29 @@ fn draw_status_bar(
     let mut right_spans: Vec<Span> = Vec::new();
 
     if let Some(pct5) = usage.five_hour_pct {
-        right_spans.push(Span::styled(
-            "5h: ",
-            Style::default().fg(Color::DarkGray),
-        ));
-        right_spans.push(Span::styled(
-            format!("{:.0}%", pct5),
-            Style::default()
-                .fg(utilization_color(pct5))
-                .add_modifier(Modifier::BOLD),
-        ));
-        right_spans.push(Span::styled(
-            " | ",
-            Style::default().fg(Color::DarkGray),
-        ));
+        right_spans.extend(usage_bar_spans("5h", pct5, 15));
+        right_spans.push(Span::raw(" "));
     }
 
     if let Some(pct7) = usage.seven_day_pct {
-        right_spans.push(Span::styled(
-            "7d: ",
-            Style::default().fg(Color::DarkGray),
-        ));
-        right_spans.push(Span::styled(
-            format!("{:.0}%", pct7),
-            Style::default()
-                .fg(utilization_color(pct7))
-                .add_modifier(Modifier::BOLD),
-        ));
-        right_spans.push(Span::styled(
-            " | ",
-            Style::default().fg(Color::DarkGray),
-        ));
+        right_spans.extend(usage_bar_spans("7d", pct7, 15));
+        right_spans.push(Span::raw(" "));
     } else if let Some(ref err) = usage.last_error {
         right_spans.push(Span::styled(
             format!("{} ", err),
             Style::default().fg(Color::Red),
         ));
-        right_spans.push(Span::styled(
-            "| ",
-            Style::default().fg(Color::DarkGray),
-        ));
+        right_spans.push(Span::raw(" "));
     }
 
     right_spans.push(Span::styled(
-        format!("{} msgs today ", usage.today_messages),
+        format!("{} msgs ", usage.today_messages),
         Style::default().fg(Color::DarkGray),
     ));
 
     let right_width: u16 = right_spans
         .iter()
-        .map(|s| s.content.len() as u16)
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16)
         .sum();
     let right_area = Rect {
         x: inner

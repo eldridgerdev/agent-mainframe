@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+// Test comment for diff-review
+
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
@@ -148,11 +150,13 @@ pub fn ensure_notification_hooks(
     // conflict with the hook we write below.
     remove_old_diff_review_plugin(repo);
 
-    let config_subdir = match agent {
-        AgentKind::Claude => ".claude",
-        AgentKind::Opencode => ".opencode",
-    };
-    let claude_dir = workdir.join(config_subdir);
+    // For opencode, install plugins instead of hooks
+    if matches!(agent, AgentKind::Opencode) {
+        ensure_opencode_plugins(workdir, repo, mode);
+        return;
+    }
+
+    let claude_dir = workdir.join(".claude");
     let settings_path = claude_dir.join("settings.json");
 
     let config_dir = dirs::config_dir()
@@ -299,6 +303,71 @@ pub fn ensure_notification_hooks(
         serde_json::to_string_pretty(&settings)
             .unwrap_or_default(),
     );
+}
+
+/// Ensure opencode plugins are installed in the worktree's
+/// `.opencode/plugins/` directory.
+fn ensure_opencode_plugins(
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+) {
+    let plugins_dir = workdir.join(".opencode").join("plugins");
+    let _ = std::fs::create_dir_all(&plugins_dir);
+
+    // Copy input-request plugin (for notification support)
+    let src_input_request = repo
+        .join(".opencode")
+        .join("plugins")
+        .join("input-request.js");
+    let dst_input_request = plugins_dir.join("input-request.js");
+
+    if src_input_request.exists() {
+        let _ = std::fs::copy(&src_input_request, &dst_input_request);
+    }
+
+    // Copy diff-review plugin if in vibeless mode
+    if matches!(mode, VibeMode::Vibeless) {
+        let src_diff_review = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("diff-review.js");
+        let dst_diff_review = plugins_dir.join("diff-review.js");
+
+        if src_diff_review.exists() {
+            let _ = std::fs::copy(&src_diff_review, &dst_diff_review);
+        }
+
+        let src_diff_review_sh = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("diff-review.sh");
+        let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
+
+        if src_diff_review_sh.exists() {
+            let _ = std::fs::copy(&src_diff_review_sh, &dst_diff_review_sh);
+        }
+
+        let src_feedback_prompt = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("feedback-prompt.sh");
+        let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
+
+        if src_feedback_prompt.exists() {
+            let _ = std::fs::copy(&src_feedback_prompt, &dst_feedback_prompt);
+        }
+
+        let src_explain = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("explain.sh");
+        let dst_explain = plugins_dir.join("explain.sh");
+
+        if src_explain.exists() {
+            let _ = std::fs::copy(&src_explain, &dst_explain);
+        }
+    }
 }
 
 /// Try to detect the git repo root from cwd, falling back to cwd itself.

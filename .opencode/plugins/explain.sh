@@ -28,6 +28,7 @@ trap 'kill $SPIN_PID 2>/dev/null; tput cnorm' EXIT
 
 CLAUDE_CMD="${CLAUDE_CMD:-claude}"
 if ! command -v "$CLAUDE_CMD" &>/dev/null; then
+    # Try common install locations
     for candidate in "$HOME/.local/bin/claude" "$HOME/.claude/local/claude" /usr/local/bin/claude; do
         if [[ -x "$candidate" ]]; then
             CLAUDE_CMD="$candidate"

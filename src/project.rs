@@ -28,8 +28,31 @@ impl std::fmt::Display for ProjectStatus {
 #[serde(rename_all = "lowercase")]
 pub enum SessionKind {
     Claude,
+    Opencode,
     Terminal,
     Nvim,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Default,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentKind {
+    #[default]
+    Claude,
+    Opencode,
+}
+
+impl AgentKind {
+    pub fn display_name(&self) -> &str {
+        match self {
+            AgentKind::Claude => "Claude",
+            AgentKind::Opencode => "Opencode",
+        }
+    }
+
+    pub const ALL: [AgentKind; 2] =
+        [AgentKind::Claude, AgentKind::Opencode];
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +123,8 @@ pub struct Feature {
     #[serde(default)]
     pub mode: VibeMode,
     #[serde(default)]
+    pub agent: AgentKind,
+    #[serde(default)]
     pub has_notes: bool,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
@@ -113,6 +138,7 @@ impl Feature {
         workdir: PathBuf,
         is_worktree: bool,
         mode: VibeMode,
+        agent: AgentKind,
         has_notes: bool,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
@@ -127,6 +153,7 @@ impl Feature {
             sessions: Vec::new(),
             collapsed: true,
             mode,
+            agent,
             has_notes,
             status: ProjectStatus::Stopped,
             created_at: now,
@@ -147,6 +174,9 @@ impl Feature {
             .count();
         match kind {
             SessionKind::Claude => format!("Claude {}", count + 1),
+            SessionKind::Opencode => {
+                format!("Opencode {}", count + 1)
+            }
             SessionKind::Terminal => {
                 format!("Terminal {}", count + 1)
             }
@@ -161,6 +191,7 @@ impl Feature {
     pub fn next_window_name(&self, kind: &SessionKind) -> String {
         let prefix = match kind {
             SessionKind::Claude => "claude",
+            SessionKind::Opencode => "opencode",
             SessionKind::Terminal => "terminal",
             SessionKind::Nvim => "nvim",
         };
@@ -461,6 +492,7 @@ impl ProjectStore {
                             sessions,
                             collapsed: true,
                             mode: VibeMode::default(),
+                            agent: AgentKind::default(),
                             has_notes: false,
                             status: f.status,
                             created_at: f.created_at,

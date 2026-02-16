@@ -17,7 +17,7 @@ use crate::app::{
     RenameSessionState, Selection, SessionSwitcherState,
     VisibleItem,
 };
-use crate::project::{ProjectStatus, SessionKind, VibeMode};
+use crate::project::{AgentKind, ProjectStatus, SessionKind, VibeMode};
 
 
 const RAINBOW_COLORS: &[Color] = &[
@@ -566,6 +566,13 @@ fn draw_project_list(
                                     .fg(Color::Magenta),
                             )
                         }
+                        SessionKind::Opencode => {
+                            Span::styled(
+                                "* ",
+                                Style::default()
+                                    .fg(Color::Cyan),
+                            )
+                        }
                         SessionKind::Terminal => {
                             Span::styled(
                                 "> ",
@@ -927,6 +934,7 @@ fn draw_status_bar(
                 let session = &feature.sessions[*si];
                 let kind_label = match session.kind {
                     SessionKind::Claude => "claude",
+                    SessionKind::Opencode => "opencode",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
                 };
@@ -1327,7 +1335,7 @@ fn draw_create_feature_branch_mode(
     frame: &mut Frame,
     state: &crate::app::CreateFeatureState,
 ) {
-    let area = centered_rect(60, 45, frame.area());
+    let area = centered_rect(60, 55, frame.area());
     frame.render_widget(Clear, area);
 
     let title =
@@ -1346,6 +1354,8 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(2), // branch
             Constraint::Length(1), // spacer
             Constraint::Length(4), // worktree toggle
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // agent selection
             Constraint::Length(1), // spacer
             Constraint::Length(5), // mode selection
             Constraint::Length(1), // spacer
@@ -1431,9 +1441,45 @@ fn draw_create_feature_branch_mode(
     let wt_widget = Paragraph::new(wt_lines);
     frame.render_widget(wt_widget, chunks[2]);
 
+    // Agent selection
+    let agent_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == 0;
+    let agent_label_style = if agent_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut agent_lines =
+        vec![Line::from(Span::styled(
+            " Agent:",
+            agent_label_style,
+        ))];
+
+    for (i, agent) in AgentKind::ALL.iter().enumerate() {
+        let is_selected = i == state.agent_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if agent_active && is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        agent_lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, agent.display_name()),
+            style,
+        )));
+    }
+
+    let agent_widget = Paragraph::new(agent_lines);
+    frame.render_widget(agent_widget, chunks[4]);
+
     // Mode selection
-    let mode_active =
-        state.step == CreateFeatureStep::Mode;
+    let mode_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == 1;
     let mode_label_style = if mode_active {
         Style::default().fg(Color::Cyan)
     } else {
@@ -1465,15 +1511,17 @@ fn draw_create_feature_branch_mode(
     }
 
     let mode_widget = Paragraph::new(mode_lines);
-    frame.render_widget(mode_widget, chunks[4]);
+    frame.render_widget(mode_widget, chunks[6]);
 
     // Notes toggle
+    let notes_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == 2;
     let notes_check = if state.enable_notes {
         "[x]"
     } else {
         "[ ]"
     };
-    let notes_style = if mode_active {
+    let notes_style = if notes_active {
         Style::default().fg(Color::White)
     } else {
         Style::default().fg(Color::DarkGray)
@@ -1481,7 +1529,7 @@ fn draw_create_feature_branch_mode(
     let notes_lines = vec![Line::from(vec![
         Span::styled(
             " Memo: ",
-            if mode_active {
+            if notes_active {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -1493,10 +1541,10 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let notes_widget = Paragraph::new(notes_lines);
-    frame.render_widget(notes_widget, chunks[6]);
+    frame.render_widget(notes_widget, chunks[8]);
 
     // Hints at bottom
-    let hints = if mode_active || wt_active {
+    let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k",
@@ -1504,15 +1552,10 @@ fn draw_create_feature_branch_mode(
             ),
             Span::raw(" select  "),
             Span::styled(
-                "Tab",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" memo  "),
-            Span::styled(
                 "Enter",
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(" confirm  "),
+            Span::raw(" next  "),
             Span::styled(
                 "Esc",
                 Style::default().fg(Color::Yellow),
@@ -1533,7 +1576,7 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[8]);
+    frame.render_widget(hints, chunks[10]);
 }
 
 fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
@@ -2158,6 +2201,10 @@ fn draw_session_switcher(
                 SessionKind::Claude => Span::styled(
                     "  * ",
                     Style::default().fg(Color::Magenta),
+                ),
+                SessionKind::Opencode => Span::styled(
+                    "  * ",
+                    Style::default().fg(Color::Cyan),
                 ),
                 SessionKind::Terminal => Span::styled(
                     "  > ",

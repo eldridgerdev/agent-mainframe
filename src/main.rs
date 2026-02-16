@@ -25,6 +25,7 @@ use std::io;
 use std::time::Duration;
 
 use app::{App, AppMode, Selection};
+use project::AgentKind;
 use tmux::TmuxManager;
 
 fn main() -> Result<()> {
@@ -1372,54 +1373,96 @@ fn handle_create_feature_key(
                 }
             }
             KeyCode::Enter => {
-                let is_supervibe = matches!(
-                    app.mode,
-                    AppMode::CreatingFeature(
-                        ref s
-                    ) if s.mode == VibeMode::SuperVibe
-                );
-                if is_supervibe {
-                    if let AppMode::CreatingFeature(state) =
-                        &mut app.mode
-                    {
-                        state.step =
-                            CreateFeatureStep::ConfirmSuperVibe;
-                    }
-                } else {
-                    app.create_feature()?;
-                }
-            }
-            KeyCode::Tab => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.enable_notes = !state.enable_notes;
+                    // Move to next section or create feature
+                    if state.mode_focus < 2 {
+                        state.mode_focus += 1;
+                    } else {
+                        let is_supervibe = matches!(
+                            state.mode,
+                            VibeMode::SuperVibe
+                        );
+                        if is_supervibe {
+                            state.step =
+                                CreateFeatureStep::ConfirmSuperVibe;
+                        } else {
+                            app.create_feature()?;
+                        }
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.mode_index = (state.mode_index + 1)
-                        % VibeMode::ALL.len();
-                    state.mode =
-                        VibeMode::ALL[state.mode_index]
-                            .clone();
+                    match state.mode_focus {
+                        0 => {
+                            // Agent selection
+                            state.agent_index =
+                                (state.agent_index + 1)
+                                    % AgentKind::ALL.len();
+                            state.agent =
+                                AgentKind::ALL[state.agent_index]
+                                    .clone();
+                        }
+                        1 => {
+                            // Mode selection
+                            state.mode_index = (state.mode_index
+                                + 1)
+                                % VibeMode::ALL.len();
+                            state.mode =
+                                VibeMode::ALL[state.mode_index]
+                                    .clone();
+                        }
+                        2 => {
+                            // Notes toggle
+                            state.enable_notes =
+                                !state.enable_notes;
+                        }
+                        _ => {}
+                    }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
-                    state.mode_index =
-                        if state.mode_index == 0 {
-                            VibeMode::ALL.len() - 1
-                        } else {
-                            state.mode_index - 1
-                        };
-                    state.mode =
-                        VibeMode::ALL[state.mode_index]
-                            .clone();
+                    match state.mode_focus {
+                        0 => {
+                            // Agent selection
+                            state.agent_index = if state.agent_index
+                                == 0
+                            {
+                                AgentKind::ALL.len() - 1
+                            } else {
+                                state.agent_index - 1
+                            };
+                            state.agent =
+                                AgentKind::ALL[state.agent_index]
+                                    .clone();
+                        }
+                        1 => {
+                            // Mode selection
+                            state.mode_index = if state.mode_index
+                                == 0
+                            {
+                                VibeMode::ALL.len() - 1
+                            } else {
+                                state.mode_index - 1
+                            };
+                            state.mode =
+                                VibeMode::ALL[state.mode_index]
+                                    .clone();
+                        }
+                        2 => {
+                            // Notes toggle
+                            state.enable_notes =
+                                !state.enable_notes;
+                        }
+                        _ => {}
+                    }
                 }
             }
             _ => {}

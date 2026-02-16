@@ -253,6 +253,25 @@ impl TmuxManager {
         Ok(())
     }
 
+    /// Launch opencode in a specific window of a session
+    pub fn launch_opencode(
+        session: &str,
+        window: &str,
+    ) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+
+        Command::new("tmux")
+            .args([
+                "send-keys", "-t", &target, "opencode", "Enter",
+            ])
+            .status()
+            .context(
+                "Failed to send opencode command to tmux",
+            )?;
+
+        Ok(())
+    }
+
     /// Check if we're currently running inside a tmux session
     pub fn is_inside_tmux() -> bool {
         std::env::var("TMUX").is_ok()

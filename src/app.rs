@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::project::{
-    Feature, FeatureSession, Project, ProjectStatus,
+    AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
 };
 
@@ -142,12 +142,17 @@ pub fn ensure_notification_hooks(
     workdir: &Path,
     repo: &Path,
     mode: &VibeMode,
+    agent: &AgentKind,
 ) {
     // Remove the old external plugin so it doesn't
     // conflict with the hook we write below.
     remove_old_diff_review_plugin(repo);
 
-    let claude_dir = workdir.join(".claude");
+    let config_subdir = match agent {
+        AgentKind::Claude => ".claude",
+        AgentKind::Opencode => ".opencode",
+    };
+    let claude_dir = workdir.join(config_subdir);
     let settings_path = claude_dir.join("settings.json");
 
     let config_dir = dirs::config_dir()
@@ -426,8 +431,11 @@ pub struct CreateFeatureState {
     pub project_repo: PathBuf,
     pub branch: String,
     pub step: CreateFeatureStep,
+    pub agent: AgentKind,
+    pub agent_index: usize,
     pub mode: VibeMode,
     pub mode_index: usize,
+    pub mode_focus: usize, // 0=agent, 1=mode, 2=notes
     pub source_index: usize,
     pub worktrees: Vec<crate::worktree::WorktreeInfo>,
     pub worktree_index: usize,
@@ -452,8 +460,11 @@ impl CreateFeatureState {
             project_repo,
             branch: detect_branch(),
             step,
+            agent: AgentKind::default(),
+            agent_index: 0,
             mode: VibeMode::default(),
             mode_index: 0,
+            mode_focus: 0,
             source_index: 0,
             worktrees,
             worktree_index: 0,
@@ -1185,6 +1196,7 @@ impl App {
             workdir,
             is_worktree,
             mode,
+            state.agent.clone(),
             enable_notes,
         );
 
@@ -1255,11 +1267,18 @@ impl App {
         // Always ensure hooks are up-to-date, even if the
         // tmux session already exists (handles upgrades).
         ensure_notification_hooks(
-            &feature.workdir, &repo, &feature.mode,
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
         );
 
         if feature.sessions.is_empty() {
-            feature.add_session(SessionKind::Claude);
+            let session_kind = match feature.agent {
+                AgentKind::Claude => SessionKind::Claude,
+                AgentKind::Opencode => SessionKind::Opencode,
+            };
+            feature.add_session(session_kind);
             feature.add_session(SessionKind::Terminal);
             if feature.has_notes {
                 let s = feature.add_session(SessionKind::Nvim);
@@ -1294,6 +1313,12 @@ impl App {
                         &session.tmux_window,
                         session.claude_session_id.as_deref(),
                         &extra_args,
+                    )?;
+                }
+                SessionKind::Opencode => {
+                    TmuxManager::launch_opencode(
+                        &feature.tmux_session,
+                        &session.tmux_window,
                     )?;
                 }
                 SessionKind::Nvim => {
@@ -1675,9 +1700,13 @@ impl App {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        ensure_notification_hooks(&workdir, &repo, &mode);
-        let session =
-            feature.add_session(SessionKind::Claude);
+        let agent = feature.agent.clone();
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
+        let session_kind = match feature.agent {
+            AgentKind::Claude => SessionKind::Claude,
+            AgentKind::Opencode => SessionKind::Opencode,
+        };
+        let session = feature.add_session(session_kind);
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
@@ -1688,12 +1717,22 @@ impl App {
         )?;
         let extra_refs: Vec<&str> =
             extra_args.iter().map(|s| s.as_str()).collect();
-        TmuxManager::launch_claude(
-            &tmux_session,
-            &window,
-            None,
-            &extra_refs,
-        )?;
+        match feature.agent {
+            AgentKind::Claude => {
+                TmuxManager::launch_claude(
+                    &tmux_session,
+                    &window,
+                    None,
+                    &extra_refs,
+                )?;
+            }
+            AgentKind::Opencode => {
+                TmuxManager::launch_opencode(
+                    &tmux_session,
+                    &window,
+                )?;
+            }
+        }
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;

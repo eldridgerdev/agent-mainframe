@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+// Test comment for plugin testing
 
 mod app;
 mod claude;

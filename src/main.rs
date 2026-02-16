@@ -1373,14 +1373,25 @@ fn handle_create_feature_key(
                     app.create_feature()?;
                 }
             }
-            KeyCode::Tab => {
+            KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
                     state.mode_focus = (state.mode_focus + 1) % 3;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.mode_focus = if state.mode_focus == 0 {
+                        2
+                    } else {
+                        state.mode_focus - 1
+                    };
+                }
+            }
+            KeyCode::Char(' ') => {
                 if let AppMode::CreatingFeature(state) =
                     &mut app.mode
                 {
@@ -1399,46 +1410,6 @@ fn handle_create_feature_key(
                             state.mode_index = (state.mode_index
                                 + 1)
                                 % VibeMode::ALL.len();
-                            state.mode =
-                                VibeMode::ALL[state.mode_index]
-                                    .clone();
-                        }
-                        2 => {
-                            // Notes toggle
-                            state.enable_notes =
-                                !state.enable_notes;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let AppMode::CreatingFeature(state) =
-                    &mut app.mode
-                {
-                    match state.mode_focus {
-                        0 => {
-                            // Agent selection
-                            state.agent_index = if state.agent_index
-                                == 0
-                            {
-                                AgentKind::ALL.len() - 1
-                            } else {
-                                state.agent_index - 1
-                            };
-                            state.agent =
-                                AgentKind::ALL[state.agent_index]
-                                    .clone();
-                        }
-                        1 => {
-                            // Mode selection
-                            state.mode_index = if state.mode_index
-                                == 0
-                            {
-                                VibeMode::ALL.len() - 1
-                            } else {
-                                state.mode_index - 1
-                            };
                             state.mode =
                                 VibeMode::ALL[state.mode_index]
                                     .clone();

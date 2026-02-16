@@ -1550,12 +1550,12 @@ fn draw_create_feature_branch_mode(
                 " j/k",
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(" select  "),
+            Span::raw(" move  "),
             Span::styled(
-                "Tab",
+                "Space",
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(" next  "),
+            Span::raw(" select  "),
             Span::styled(
                 "Enter",
                 Style::default().fg(Color::Yellow),

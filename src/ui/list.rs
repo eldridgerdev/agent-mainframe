@@ -21,7 +21,7 @@ const RAINBOW_COLORS: &[Color] = &[
     Color::Magenta,
 ];
 
-fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+pub fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
     text.chars()
         .enumerate()
         .map(|(i, ch)| {
@@ -49,9 +49,12 @@ const SELECTED_GRAY: Color = Color::Rgb(140, 140, 140);
 
 pub fn draw(
     frame: &mut Frame,
-    app: &App,
+    app: &mut App,
     area: Rect,
 ) {
+    let visible_height = area.height.saturating_sub(2) as usize;
+    app.ensure_selection_visible(visible_height);
+
     if app.store.projects.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
@@ -80,7 +83,11 @@ pub fn draw(
 
     let visible = app.visible_items();
 
-    let items: Vec<ListItem> = visible
+    let start = app.scroll_offset;
+    let end = (start + visible_height).min(visible.len());
+    let visible_slice = &visible[start..end];
+
+    let items: Vec<ListItem> = visible_slice
         .iter()
         .map(|item| {
             let is_selected =

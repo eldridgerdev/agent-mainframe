@@ -3,6 +3,7 @@ mod view;
 mod dialog;
 mod picker;
 mod input;
+mod search;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -28,6 +29,7 @@ pub use picker::{
     handle_opencode_session_confirm_key,
 };
 pub use input::handle_paste;
+pub use search::handle_search_key;
 
 pub fn handle_key(
     app: &mut App,
@@ -65,6 +67,9 @@ pub fn handle_key(
         }
         AppMode::CommandPicker(_) => {
             handle_command_picker_key(app, key.code)
+        }
+        AppMode::Searching(_) => {
+            handle_search_key(app, key.code)
         }
         AppMode::OpencodeSessionPicker(_) => {
             handle_opencode_session_picker_key(app, key.code)

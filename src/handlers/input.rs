@@ -34,6 +34,12 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 state.input.push_str(text);
             }
         }
+        AppMode::Searching(_) => {
+            if let AppMode::Searching(state) = &mut app.mode {
+                state.query.push_str(text);
+                app.perform_search();
+            }
+        }
         _ => {}
     }
     Ok(())

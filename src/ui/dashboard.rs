@@ -148,6 +148,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_command_picker(frame, state);
     }
 
+    if let AppMode::Searching(state) = &app.mode {
+        super::dialogs::draw_search_dialog(frame, state);
+    }
+
     if let AppMode::OpencodeSessionPicker(state) = &app.mode {
         super::picker::draw_opencode_session_picker(frame, state);
     }

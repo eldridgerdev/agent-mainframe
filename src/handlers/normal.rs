@@ -187,6 +187,9 @@ pub fn handle_normal_key(
         KeyCode::Char('?') => {
             app.mode = AppMode::Help;
         }
+        KeyCode::Char('/') => {
+            app.start_search();
+        }
         KeyCode::Char('i') => {
             if !app.pending_inputs.is_empty() {
                 app.mode = AppMode::NotificationPicker(0);

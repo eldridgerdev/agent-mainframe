@@ -287,6 +287,7 @@ pub fn draw(
         AppMode::CommandPicker(_)
         | AppMode::NotificationPicker(_)
         | AppMode::SessionSwitcher(_)
+        | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k",

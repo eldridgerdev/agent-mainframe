@@ -10,6 +10,6 @@ use ratatui::Frame;
 
 use crate::app::App;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     dashboard::draw(frame, app);
 }

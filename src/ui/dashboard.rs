@@ -10,7 +10,7 @@ use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::VibeMode;
 use crate::ui::list::rainbow_spans;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Viewing(view) = &app.mode {
         super::pane::draw(
             frame,

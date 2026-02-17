@@ -93,7 +93,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    super::header::draw(frame, chunks[0], app.pending_inputs.len());
+    super::header::draw(frame, chunks[0], &std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), app.pending_inputs.len());
     super::list::draw(frame, app, chunks[1]);
     super::status::draw(frame, app, chunks[2]);
 

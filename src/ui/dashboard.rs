@@ -147,6 +147,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::CommandPicker(state) = &app.mode {
         super::picker::draw_command_picker(frame, state);
     }
+
+    if let AppMode::Searching(state) = &app.mode {
+        super::dialogs::draw_search_dialog(frame, state);
+    }
 }
 
 pub fn centered_rect(

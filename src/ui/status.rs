@@ -236,7 +236,8 @@ pub fn draw(
         ]),
         AppMode::CommandPicker(_)
         | AppMode::NotificationPicker(_)
-        | AppMode::SessionSwitcher(_) => Line::from(vec![
+        | AppMode::SessionSwitcher(_)
+        | AppMode::Searching(_) => Line::from(vec![
             Span::styled(
                 "j/k",
                 Style::default().fg(Color::Yellow),

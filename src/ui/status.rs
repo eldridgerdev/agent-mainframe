@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, Selection};
 use crate::project::SessionKind;
+use crate::usage::Provider;
 
 fn utilization_color(pct: f64) -> Color {
     if pct >= 80.0 {
@@ -428,26 +429,81 @@ pub fn draw(
     let usage = app.usage.get_data();
     let mut right_spans: Vec<Span> = Vec::new();
 
-    if let Some(pct5) = usage.five_hour_pct {
-        right_spans.extend(usage_bar_spans("5h", pct5, 15));
-        right_spans.push(Span::raw(" "));
-    }
+    let provider_label = Span::styled(
+        format!("[{}] ", usage.visible_provider.label()),
+        Style::default()
+            .fg(Color::Magenta)
+            .add_modifier(Modifier::BOLD),
+    );
+    right_spans.push(provider_label);
 
-    if let Some(pct7) = usage.seven_day_pct {
-        right_spans.extend(usage_bar_spans("7d", pct7, 15));
-        right_spans.push(Span::raw(" "));
-    } else if let Some(ref err) = usage.last_error {
-        right_spans.push(Span::styled(
-            format!("{} ", err),
-            Style::default().fg(Color::Red),
-        ));
-        right_spans.push(Span::raw(" "));
-    }
+    match usage.visible_provider {
+        Provider::Claude => {
+            if let Some(pct5) = usage.claude.five_hour_pct {
+                right_spans.extend(usage_bar_spans("5h", pct5, 15));
+                right_spans.push(Span::raw(" "));
+            }
 
-    right_spans.push(Span::styled(
-        format!("{} msgs ", usage.today_messages),
-        Style::default().fg(Color::DarkGray),
-    ));
+            if let Some(pct7) = usage.claude.seven_day_pct {
+                right_spans.extend(usage_bar_spans("7d", pct7, 15));
+                right_spans.push(Span::raw(" "));
+            } else if let Some(ref err) = usage.claude.last_error {
+                right_spans.push(Span::styled(
+                    format!("{} ", err),
+                    Style::default().fg(Color::Red),
+                ));
+                right_spans.push(Span::raw(" "));
+            }
+
+            right_spans.push(Span::styled(
+                format!("{} msgs ", usage.claude.today_messages),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Provider::Opencode => {
+            let format_tokens = |n: u64| {
+                if n >= 1_000_000 {
+                    format!("{:.1}M", n as f64 / 1_000_000.0)
+                } else if n >= 1_000 {
+                    format!("{:.1}K", n as f64 / 1_000.0)
+                } else {
+                    n.to_string()
+                }
+            };
+
+            if let Some(pct) = usage.opencode.five_hour_usage_pct {
+                right_spans.extend(usage_bar_spans("5h", pct, 15));
+                right_spans.push(Span::raw(" "));
+            }
+
+            if let Some(pct) = usage.opencode.weekly_usage_pct {
+                right_spans.extend(usage_bar_spans("7d", pct, 15));
+                right_spans.push(Span::raw(" "));
+            } else if usage.opencode.zai_today_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!(
+                        "zai:{} ",
+                        format_tokens(usage.opencode.zai_today_tokens)
+                    ),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+
+            right_spans.push(Span::styled(
+                format!(
+                    "in:{} out:{} ",
+                    format_tokens(usage.opencode.today_input_tokens),
+                    format_tokens(usage.opencode.today_output_tokens)
+                ),
+                Style::default().fg(Color::DarkGray),
+            ));
+
+            right_spans.push(Span::styled(
+                format!("{} msgs ", usage.opencode.today_messages),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
 
     let right_width: u16 = right_spans
         .iter()

@@ -47,20 +47,73 @@ pub struct SessionSwitcherState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ZaiPlanConfig {
+    pub plan: String,
+    pub monthly_token_limit: Option<u64>,
+    pub weekly_token_limit: Option<u64>,
+    pub five_hour_token_limit: Option<u64>,
+}
+
+impl Default for ZaiPlanConfig {
+    fn default() -> Self {
+        Self {
+            plan: "free".to_string(),
+            monthly_token_limit: None,
+            weekly_token_limit: None,
+            five_hour_token_limit: None,
+        }
+    }
+}
+
+impl ZaiPlanConfig {
+    pub fn get_monthly_limit(&self) -> Option<u64> {
+        self.monthly_token_limit.or_else(|| match self.plan.as_str() {
+            "free" => Some(10_000_000),
+            "coding-plan" => Some(500_000_000),
+            "unlimited" => None,
+            _ => None,
+        })
+    }
+
+    pub fn get_weekly_limit(&self) -> Option<u64> {
+        self.weekly_token_limit.or_else(|| match self.plan.as_str() {
+            "free" => Some(2_500_000),
+            "coding-plan" => Some(125_000_000),
+            "unlimited" => None,
+            _ => None,
+        })
+    }
+
+    pub fn get_five_hour_limit(&self) -> Option<u64> {
+        self.five_hour_token_limit.or_else(|| match self.plan.as_str() {
+            "free" => Some(500_000),
+            "coding-plan" => Some(25_000_000),
+            "unlimited" => None,
+            _ => None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub nerd_font: bool,
+    pub zai: ZaiPlanConfig,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
-        Self { nerd_font: true }
+        Self {
+            nerd_font: true,
+            zai: ZaiPlanConfig::default(),
+        }
     }
 }
 
 pub fn load_config() -> AppConfig {
     let config_path = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless")
+        .join("amf")
         .join("config.json");
 
     if config_path.exists() {
@@ -389,6 +442,9 @@ impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
+        let zai_monthly = config.zai.get_monthly_limit();
+        let zai_weekly = config.zai.get_weekly_limit();
+        let zai_five_hour = config.zai.get_five_hour_limit();
         Ok(Self {
             store,
             store_path,
@@ -402,7 +458,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
-            usage: UsageManager::new(),
+            usage: UsageManager::new(zai_monthly, zai_weekly, zai_five_hour),
         })
     }
 

@@ -4,27 +4,27 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Provider {
+pub enum Model {
     Claude,
-    Opencode,
+    Zai,
 }
 
-impl Provider {
+impl Model {
     pub fn label(&self) -> &'static str {
         match self {
-            Provider::Claude => "claude",
-            Provider::Opencode => "opencode",
+            Model::Claude => "claude",
+            Model::Zai => "zai",
         }
     }
 
-    pub fn all() -> &'static [Provider] {
-        &[Provider::Claude, Provider::Opencode]
+    pub fn all() -> &'static [Model] {
+        &[Model::Claude, Model::Zai]
     }
 
-    pub fn next(&self) -> Provider {
+    pub fn next(&self) -> Model {
         match self {
-            Provider::Claude => Provider::Opencode,
-            Provider::Opencode => Provider::Claude,
+            Model::Claude => Model::Zai,
+            Model::Zai => Model::Claude,
         }
     }
 }
@@ -43,16 +43,12 @@ pub struct ClaudeUsageData {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct OpencodeUsageData {
-    pub today_messages: u64,
-    pub today_input_tokens: u64,
-    pub today_output_tokens: u64,
-    pub today_cache_read: u64,
-    pub zai_today_tokens: u64,
-    pub zai_today_calls: u64,
-    pub zai_monthly_tokens: u64,
-    pub zai_weekly_tokens: u64,
-    pub zai_five_hour_tokens: u64,
+pub struct ZaiUsageData {
+    pub today_tokens: u64,
+    pub today_calls: u64,
+    pub monthly_tokens: u64,
+    pub weekly_tokens: u64,
+    pub five_hour_tokens: u64,
     pub monthly_token_limit: Option<u64>,
     pub monthly_usage_pct: Option<f64>,
     pub weekly_token_limit: Option<u64>,
@@ -64,17 +60,17 @@ pub struct OpencodeUsageData {
 
 #[derive(Debug, Clone)]
 pub struct UsageData {
-    pub visible_provider: Provider,
+    pub visible_model: Model,
     pub claude: ClaudeUsageData,
-    pub opencode: OpencodeUsageData,
+    pub zai: ZaiUsageData,
 }
 
 impl Default for UsageData {
     fn default() -> Self {
         Self {
-            visible_provider: Provider::Claude,
+            visible_model: Model::Claude,
             claude: ClaudeUsageData::default(),
-            opencode: OpencodeUsageData::default(),
+            zai: ZaiUsageData::default(),
         }
     }
 }
@@ -166,11 +162,11 @@ struct ZaiApiKey {
 
 #[derive(Debug, Deserialize)]
 struct ZaiUsageResponse {
-    data: ZaiUsageData,
+    data: ZaiApiResponseData,
 }
 
 #[derive(Debug, Deserialize)]
-struct ZaiUsageData {
+struct ZaiApiResponseData {
     #[serde(rename = "totalUsage")]
     total_usage: ZaiTotalUsage,
 }
@@ -201,9 +197,9 @@ impl UsageManager {
         zai_five_hour_limit: Option<u64>,
     ) -> Self {
         let mut data = UsageData::default();
-        data.opencode.monthly_token_limit = zai_monthly_limit;
-        data.opencode.weekly_token_limit = zai_weekly_limit;
-        data.opencode.five_hour_token_limit = zai_five_hour_limit;
+        data.zai.monthly_token_limit = zai_monthly_limit;
+        data.zai.weekly_token_limit = zai_weekly_limit;
+        data.zai.five_hour_token_limit = zai_five_hour_limit;
         Self {
             data: Arc::new(Mutex::new(data)),
             last_stats_refresh: None,
@@ -220,9 +216,9 @@ impl UsageManager {
         self.data.lock().unwrap().clone()
     }
 
-    pub fn cycle_visible_provider(&mut self) {
+    pub fn cycle_visible_model(&mut self) {
         let mut data = self.data.lock().unwrap();
-        data.visible_provider = data.visible_provider.next();
+        data.visible_model = data.visible_model.next();
     }
 
     pub fn should_cycle(&self) -> bool {
@@ -233,7 +229,7 @@ impl UsageManager {
         let now = Instant::now();
 
         if self.should_cycle() {
-            self.cycle_visible_provider();
+            self.cycle_visible_model();
             self.last_cycle = now;
         }
 
@@ -244,7 +240,6 @@ impl UsageManager {
 
         if should_refresh_stats {
             self.refresh_claude_stats();
-            self.refresh_opencode_stats();
             self.last_stats_refresh = Some(now);
         }
 
@@ -294,119 +289,6 @@ impl UsageManager {
             data.claude.today_sessions = 0;
             data.claude.today_tool_calls = 0;
         }
-    }
-
-    fn refresh_opencode_stats(&self) {
-        let Some(data_dir) = dirs::data_dir().map(|d| d.join("opencode")) else {
-            return;
-        };
-
-        let storage_path = data_dir.join("storage");
-        let message_path = storage_path.join("message");
-        let part_path = storage_path.join("part");
-
-        if !message_path.exists() {
-            return;
-        }
-
-        let today_start = chrono::Local::now()
-            .with_hour(0)
-            .and_then(|d| d.with_minute(0))
-            .and_then(|d| d.with_second(0))
-            .and_then(|d| d.with_nanosecond(0))
-            .map(|d| d.timestamp_millis())
-            .unwrap_or(0);
-
-        let mut today_messages: u64 = 0;
-        let mut today_input: u64 = 0;
-        let mut today_output: u64 = 0;
-        let mut today_cache_read: u64 = 0;
-
-        let Ok(session_dirs) = std::fs::read_dir(&message_path) else {
-            return;
-        };
-
-        for session_entry in session_dirs.flatten() {
-            if !session_entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false)
-            {
-                continue;
-            }
-
-            let session_path = session_entry.path();
-            let Ok(message_files) = std::fs::read_dir(&session_path) else {
-                continue;
-            };
-
-            for msg_entry in message_files.flatten() {
-                let msg_path = msg_entry.path();
-                if msg_path.extension().map(|e| e != "json").unwrap_or(true) {
-                    continue;
-                }
-
-                let Ok(contents) = std::fs::read_to_string(&msg_path) else {
-                    continue;
-                };
-
-                let Ok(msg) = serde_json::from_str::<OpencodeMessage>(&contents) else {
-                    continue;
-                };
-
-                let Some(time) = msg.time else {
-                    continue;
-                };
-
-                if time.created < today_start {
-                    continue;
-                }
-
-                today_messages += 1;
-
-                let msg_id = msg_path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-
-                let part_dir = part_path.join(msg_id);
-                if !part_dir.exists() {
-                    continue;
-                }
-
-                let Ok(part_files) = std::fs::read_dir(&part_dir) else {
-                    continue;
-                };
-
-                for part_entry in part_files.flatten() {
-                    let part_file = part_entry.path();
-                    if part_file.extension().map(|e| e != "json").unwrap_or(true) {
-                        continue;
-                    }
-
-                    let Ok(part_contents) = std::fs::read_to_string(&part_file) else {
-                        continue;
-                    };
-
-                    let Ok(part) = serde_json::from_str::<OpencodePart>(&part_contents) else {
-                        continue;
-                    };
-
-                    if part.part_type == "step-finish" {
-                        if let Some(tokens) = part.tokens {
-                            today_input += tokens.input;
-                            today_output += tokens.output;
-                            if let Some(cache) = tokens.cache {
-                                today_cache_read += cache.read;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut data = self.data.lock().unwrap();
-        data.opencode.today_messages = today_messages;
-        data.opencode.today_input_tokens = today_input;
-        data.opencode.today_output_tokens = today_output;
-        data.opencode.today_cache_read = today_cache_read;
     }
 }
 
@@ -549,45 +431,45 @@ fn fetch_zai_usage(
 
     if let Some(today) = today_usage {
         let mut d = data.lock().unwrap();
-        d.opencode.zai_today_tokens = today.total_tokens_usage;
-        d.opencode.zai_today_calls = today.total_model_call_count;
+        d.zai.today_tokens = today.total_tokens_usage;
+        d.zai.today_calls = today.total_model_call_count;
 
         let five_hour_tokens = calculate_five_hour_usage(&d);
-        d.opencode.zai_five_hour_tokens = five_hour_tokens;
+        d.zai.five_hour_tokens = five_hour_tokens;
 
         if let Some(week) = week_usage {
-            d.opencode.zai_weekly_tokens = week.total_tokens_usage;
+            d.zai.weekly_tokens = week.total_tokens_usage;
         }
 
-        d.opencode.monthly_token_limit = monthly_limit;
-        d.opencode.weekly_token_limit = weekly_limit;
-        d.opencode.five_hour_token_limit = five_hour_limit;
+        d.zai.monthly_token_limit = monthly_limit;
+        d.zai.weekly_token_limit = weekly_limit;
+        d.zai.five_hour_token_limit = five_hour_limit;
 
-        d.opencode.monthly_usage_pct = monthly_limit.and_then(|limit| {
+        d.zai.monthly_usage_pct = monthly_limit.and_then(|limit| {
             if limit > 0 {
-                Some((d.opencode.zai_monthly_tokens as f64 / limit as f64) * 100.0)
+                Some((d.zai.monthly_tokens as f64 / limit as f64) * 100.0)
             } else {
                 None
             }
         });
 
-        d.opencode.weekly_usage_pct = weekly_limit.and_then(|limit| {
+        d.zai.weekly_usage_pct = weekly_limit.and_then(|limit| {
             if limit > 0 {
-                Some((d.opencode.zai_weekly_tokens as f64 / limit as f64) * 100.0)
+                Some((d.zai.weekly_tokens as f64 / limit as f64) * 100.0)
             } else {
                 None
             }
         });
 
-        d.opencode.five_hour_usage_pct = five_hour_limit.and_then(|limit| {
+        d.zai.five_hour_usage_pct = five_hour_limit.and_then(|limit| {
             if limit > 0 {
-                Some((d.opencode.zai_five_hour_tokens as f64 / limit as f64) * 100.0)
+                Some((d.zai.five_hour_tokens as f64 / limit as f64) * 100.0)
             } else {
                 None
             }
         });
 
-        d.opencode.last_error = None;
+        d.zai.last_error = None;
     }
 }
 

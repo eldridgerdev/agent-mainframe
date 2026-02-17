@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, Selection};
 use crate::project::SessionKind;
-use crate::usage::Provider;
+use crate::usage::Model;
 
 fn utilization_color(pct: f64) -> Color {
     if pct >= 80.0 {
@@ -104,6 +104,11 @@ pub fn draw(
                     ),
                     Span::raw(" switch  "),
                     Span::styled(
+                        "S",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" opencode  "),
+                    Span::styled(
                         "q",
                         Style::default().fg(Color::Yellow),
                     ),
@@ -151,6 +156,11 @@ pub fn draw(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" switch  "),
+                    Span::styled(
+                        "S",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" opencode  "),
                     Span::styled(
                         "d",
                         Style::default().fg(Color::Yellow),
@@ -237,7 +247,8 @@ pub fn draw(
         AppMode::CommandPicker(_)
         | AppMode::NotificationPicker(_)
         | AppMode::SessionSwitcher(_)
-        | AppMode::Searching(_) => Line::from(vec![
+        | AppMode::Searching(_)
+        | AppMode::OpencodeSessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k",
                 Style::default().fg(Color::Yellow),
@@ -250,6 +261,18 @@ pub fn draw(
             Span::raw(" select  "),
             Span::styled(
                 "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ConfirmingOpencodeSession { .. } => Line::from(vec![
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" restart  "),
+            Span::styled(
+                "n/Esc",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" cancel"),
@@ -430,16 +453,16 @@ pub fn draw(
     let usage = app.usage.get_data();
     let mut right_spans: Vec<Span> = Vec::new();
 
-    let provider_label = Span::styled(
-        format!("[{}] ", usage.visible_provider.label()),
+    let model_label = Span::styled(
+        format!("[{}] ", usage.visible_model.label()),
         Style::default()
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD),
     );
-    right_spans.push(provider_label);
+    right_spans.push(model_label);
 
-    match usage.visible_provider {
-        Provider::Claude => {
+    match usage.visible_model {
+        Model::Claude => {
             if let Some(pct5) = usage.claude.five_hour_pct {
                 right_spans.extend(usage_bar_spans("5h", pct5, 15));
                 right_spans.push(Span::raw(" "));
@@ -461,7 +484,7 @@ pub fn draw(
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        Provider::Opencode => {
+        Model::Zai => {
             let format_tokens = |n: u64| {
                 if n >= 1_000_000 {
                     format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -472,35 +495,23 @@ pub fn draw(
                 }
             };
 
-            if let Some(pct) = usage.opencode.five_hour_usage_pct {
+            if let Some(pct) = usage.zai.five_hour_usage_pct {
                 right_spans.extend(usage_bar_spans("5h", pct, 15));
                 right_spans.push(Span::raw(" "));
             }
 
-            if let Some(pct) = usage.opencode.weekly_usage_pct {
+            if let Some(pct) = usage.zai.weekly_usage_pct {
                 right_spans.extend(usage_bar_spans("7d", pct, 15));
                 right_spans.push(Span::raw(" "));
-            } else if usage.opencode.zai_today_tokens > 0 {
+            } else if usage.zai.today_tokens > 0 {
                 right_spans.push(Span::styled(
-                    format!(
-                        "zai:{} ",
-                        format_tokens(usage.opencode.zai_today_tokens)
-                    ),
+                    format!("{} ", format_tokens(usage.zai.today_tokens)),
                     Style::default().fg(Color::Cyan),
                 ));
             }
 
             right_spans.push(Span::styled(
-                format!(
-                    "in:{} out:{} ",
-                    format_tokens(usage.opencode.today_input_tokens),
-                    format_tokens(usage.opencode.today_output_tokens)
-                ),
-                Style::default().fg(Color::DarkGray),
-            ));
-
-            right_spans.push(Span::styled(
-                format!("{} msgs ", usage.opencode.today_messages),
+                format!("{} calls ", usage.zai.today_calls),
                 Style::default().fg(Color::DarkGray),
             ));
         }

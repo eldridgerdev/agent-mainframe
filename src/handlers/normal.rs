@@ -119,6 +119,9 @@ pub fn handle_normal_key(
                 _ => {}
             }
         }
+        KeyCode::Char('S') => {
+            app.pick_session();
+        }
         KeyCode::Char('t') => {
             match &app.selection {
                 Selection::Feature(_, _)

@@ -118,6 +118,11 @@ create_proposed_file() {
     fi
 }
 
+has_changes() {
+    [[ "$TOOL_NAME" == "Write" ]] && return 0
+    ! diff -q "$ORIGINAL_FILE" "$PROPOSED_FILE" > /dev/null 2>&1
+}
+
 # ── Vimdiff popup ──────────────────────────────────────────────
 
 open_review() {
@@ -353,10 +358,51 @@ cleanup() {
 
 # ── Main ───────────────────────────────────────────────────────
 
+show_no_changes_popup() {
+    local vim_script="$TEMP_DIR/no_changes.vim"
+    local signal_file="$TEMP_DIR/no_changes_signal"
+    rm -f "$signal_file"
+    cat > "$vim_script" << VIMSCRIPT
+let g:signal_file = '${signal_file}'
+nnoremap <buffer> <CR> :call writefile(['approve'], g:signal_file) \| qa!<CR>
+nnoremap <buffer> q :call writefile(['cancel'], g:signal_file) \| qa!<CR>
+echohl WarningMsg
+echo "No changes detected!"
+echohl None
+echo ""
+echo "The old_string was not found in the file."
+echo "This can happen if:"
+echo "  - The file was already modified"
+echo "  - The old_string doesn't match exactly"
+echo ""
+echo "Press Enter to approve (no-op), q to cancel"
+VIMSCRIPT
+    tmux display-popup -E -w 60% -h 30% \
+        nvim -n -R -S "$vim_script" 2>/dev/null || return 1
+    
+    if [[ -f "$signal_file" ]]; then
+        local decision
+        decision=$(cat "$signal_file")
+        case "$decision" in
+            approve) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    return 1
+}
+
 main() {
     check_requirements || exit 0
     capture_original_file
     create_proposed_file
+
+    if ! has_changes; then
+        show_no_changes_popup
+        case $? in
+            0) exit 0 ;;
+            *) echo "User cancelled edit with no changes." >&2; exit 2 ;;
+        esac
+    fi
 
     acquire_lock
     trap cleanup EXIT

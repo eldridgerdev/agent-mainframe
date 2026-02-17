@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, AppMode, Selection};
+use crate::app::{App, AppMode, Selection, SessionFilter};
 use crate::project::SessionKind;
 use crate::usage::Model;
 
@@ -66,6 +66,25 @@ pub fn draw(
     app: &App,
     area: Rect,
 ) {
+    let filter_spans = if app.session_filter != SessionFilter::All {
+        vec![
+            Span::styled(
+                " [",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                app.session_filter.display_name(),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                "] ",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]
+    } else {
+        vec![]
+    };
+
     let keybinds = match &app.mode {
         AppMode::Normal => {
             let on_session = matches!(
@@ -77,7 +96,8 @@ pub fn draw(
                 Selection::Feature(_, _)
             );
             if on_session {
-                Line::from(vec![
+                let mut spans = filter_spans;
+                spans.extend(vec![
                     Span::styled(
                         " Enter",
                         Style::default().fg(Color::Yellow),
@@ -109,13 +129,20 @@ pub fn draw(
                     ),
                     Span::raw(" opencode  "),
                     Span::styled(
+                        "f",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" filter  "),
+                    Span::styled(
                         "q",
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" quit"),
-                ])
+                ]);
+                Line::from(spans)
             } else if on_feature {
-                Line::from(vec![
+                let mut spans = filter_spans;
+                spans.extend(vec![
                     Span::styled(
                         " n",
                         Style::default().fg(Color::Yellow),
@@ -152,6 +179,11 @@ pub fn draw(
                     ),
                     Span::raw(" +nvim  "),
                     Span::styled(
+                        "f",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" filter  "),
+                    Span::styled(
                         "s",
                         Style::default().fg(Color::Yellow),
                     ),
@@ -171,9 +203,11 @@ pub fn draw(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" quit"),
-                ])
+                ]);
+                Line::from(spans)
             } else {
-                Line::from(vec![
+                let mut spans = filter_spans;
+                spans.extend(vec![
                     Span::styled(
                         " n",
                         Style::default().fg(Color::Yellow),
@@ -190,6 +224,11 @@ pub fn draw(
                     ),
                     Span::raw(" expand  "),
                     Span::styled(
+                        "f",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" filter  "),
+                    Span::styled(
                         "d",
                         Style::default().fg(Color::Yellow),
                     ),
@@ -204,7 +243,8 @@ pub fn draw(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" quit"),
-                ])
+                ]);
+                Line::from(spans)
             }
         }
         AppMode::CreatingProject(_)

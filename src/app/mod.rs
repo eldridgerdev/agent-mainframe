@@ -446,6 +446,7 @@ pub struct App {
     pub pending_inputs: Vec<PendingInput>,
     pub usage: UsageManager,
     pub scroll_offset: usize,
+    pub session_filter: SessionFilter,
 }
 
 impl App {
@@ -470,6 +471,7 @@ impl App {
             pending_inputs: Vec::new(),
             usage: UsageManager::new(zai_monthly, zai_weekly, zai_five_hour),
             scroll_offset: 0,
+            session_filter: SessionFilter::default(),
         })
     }
 
@@ -489,18 +491,36 @@ impl App {
                 {
                     items.push(VisibleItem::Feature(pi, fi));
                     if !feature.collapsed {
-                        for (si, _session) in
+                        for (si, session) in
                             feature.sessions.iter().enumerate()
                         {
-                            items.push(VisibleItem::Session(
-                                pi, fi, si,
-                            ));
+                            if self.session_matches_filter(session) {
+                                items.push(VisibleItem::Session(
+                                    pi, fi, si,
+                                ));
+                            }
                         }
                     }
                 }
             }
         }
         items
+    }
+
+    fn session_matches_filter(&self, session: &FeatureSession) -> bool {
+        use crate::project::SessionKind;
+        match &self.session_filter {
+            SessionFilter::All => true,
+            SessionFilter::Claude => session.kind == SessionKind::Claude,
+            SessionFilter::Opencode => session.kind == SessionKind::Opencode,
+            SessionFilter::Terminal => session.kind == SessionKind::Terminal,
+            SessionFilter::Nvim => {
+                session.kind == SessionKind::Nvim && session.label != "Memo"
+            }
+            SessionFilter::Memo => {
+                session.kind == SessionKind::Nvim && session.label == "Memo"
+            }
+        }
     }
 
     fn selection_index(&self) -> Option<usize> {

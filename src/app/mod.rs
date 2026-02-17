@@ -383,6 +383,7 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub usage: UsageManager,
+    pub scroll_offset: usize,
 }
 
 impl App {
@@ -403,6 +404,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             usage: UsageManager::new(),
+            scroll_offset: 0,
         })
     }
 
@@ -494,6 +496,19 @@ impl App {
                 Selection::Session(pi, fi, si)
             }
         };
+    }
+
+    pub fn ensure_selection_visible(&mut self, visible_height: usize) {
+        let items = self.visible_items();
+        if items.is_empty() || visible_height == 0 {
+            return;
+        }
+        let current = self.selection_index().unwrap_or(0);
+        if current < self.scroll_offset {
+            self.scroll_offset = current;
+        } else if current >= self.scroll_offset + visible_height {
+            self.scroll_offset = current - visible_height + 1;
+        }
     }
 
     pub fn select_next_feature(&mut self) {

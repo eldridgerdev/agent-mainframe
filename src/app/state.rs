@@ -72,6 +72,7 @@ pub enum AppMode {
     RenamingSession(RenameSessionState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
+    Searching(SearchState),
     OpencodeSessionPicker(OpencodeSessionPickerState),
     ConfirmingOpencodeSession {
         session_id: String,
@@ -174,6 +175,19 @@ impl CreateFeatureState {
             enable_notes: true,
         }
     }
+}
+
+pub struct SearchState {
+    pub query: String,
+    pub matches: Vec<SearchMatch>,
+    pub selected_match: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchMatch {
+    pub item: VisibleItem,
+    pub label: String,
+    pub context: String,
 }
 
 #[derive(Debug, Clone)]

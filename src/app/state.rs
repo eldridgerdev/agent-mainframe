@@ -176,6 +176,45 @@ impl CreateFeatureState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SessionFilter {
+    #[default]
+    All,
+    Claude,
+    Opencode,
+    Terminal,
+    Nvim,
+    Memo,
+}
+
+impl SessionFilter {
+    pub const ALL: [SessionFilter; 6] = [
+        SessionFilter::All,
+        SessionFilter::Claude,
+        SessionFilter::Opencode,
+        SessionFilter::Terminal,
+        SessionFilter::Nvim,
+        SessionFilter::Memo,
+    ];
+
+    pub fn display_name(&self) -> &str {
+        match self {
+            SessionFilter::All => "all",
+            SessionFilter::Claude => "claude",
+            SessionFilter::Opencode => "opencode",
+            SessionFilter::Terminal => "terminal",
+            SessionFilter::Nvim => "nvim",
+            SessionFilter::Memo => "memo",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        let variants = Self::ALL.as_slice();
+        let idx = variants.iter().position(|v| v == self).unwrap_or(0);
+        variants[(idx + 1) % variants.len()].clone()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum VisibleItem {
     Project(usize),

@@ -222,6 +222,13 @@ pub fn handle_normal_key(
             app.select_prev();
             app.message = None;
         }
+        KeyCode::Char('f') => {
+            app.session_filter = app.session_filter.next();
+            app.message = Some(format!(
+                "Filter: {}",
+                app.session_filter.display_name()
+            ));
+        }
         _ => {}
     }
     Ok(())

@@ -60,7 +60,7 @@ impl Default for AppConfig {
 pub fn load_config() -> AppConfig {
     let config_path = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless")
+        .join("amf")
         .join("config.json");
 
     if config_path.exists() {

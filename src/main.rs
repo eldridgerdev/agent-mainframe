@@ -109,6 +109,9 @@ fn run_loop<B: Backend>(
                         &session, &window,
                     )
                     .unwrap_or_default();
+                app.tmux_cursor =
+                    TmuxManager::cursor_position(&session, &window)
+                        .ok();
             }
         }
 

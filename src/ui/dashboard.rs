@@ -147,6 +147,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::CommandPicker(state) = &app.mode {
         super::picker::draw_command_picker(frame, state);
     }
+
+    if let AppMode::OpencodeSessionPicker(state) = &app.mode {
+        super::picker::draw_opencode_session_picker(frame, state);
+    }
+
+    if matches!(app.mode, AppMode::ConfirmingOpencodeSession { .. }) {
+        super::picker::draw_opencode_session_confirm(frame);
+    }
 }
 
 pub fn centered_rect(

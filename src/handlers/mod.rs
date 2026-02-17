@@ -24,6 +24,8 @@ pub use picker::{
     handle_command_picker_key,
     handle_notification_picker_key,
     handle_session_switcher_key,
+    handle_opencode_session_picker_key,
+    handle_opencode_session_confirm_key,
 };
 pub use input::handle_paste;
 
@@ -63,6 +65,12 @@ pub fn handle_key(
         }
         AppMode::CommandPicker(_) => {
             handle_command_picker_key(app, key.code)
+        }
+        AppMode::OpencodeSessionPicker(_) => {
+            handle_opencode_session_picker_key(app, key.code)
+        }
+        AppMode::ConfirmingOpencodeSession { .. } => {
+            handle_opencode_session_confirm_key(app, key.code)
         }
     }
 }

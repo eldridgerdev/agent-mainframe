@@ -104,6 +104,11 @@ pub fn draw(
                     ),
                     Span::raw(" switch  "),
                     Span::styled(
+                        "S",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" opencode  "),
+                    Span::styled(
                         "q",
                         Style::default().fg(Color::Yellow),
                     ),
@@ -151,6 +156,11 @@ pub fn draw(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" switch  "),
+                    Span::styled(
+                        "S",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" opencode  "),
                     Span::styled(
                         "d",
                         Style::default().fg(Color::Yellow),
@@ -236,7 +246,8 @@ pub fn draw(
         ]),
         AppMode::CommandPicker(_)
         | AppMode::NotificationPicker(_)
-        | AppMode::SessionSwitcher(_) => Line::from(vec![
+        | AppMode::SessionSwitcher(_)
+        | AppMode::OpencodeSessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k",
                 Style::default().fg(Color::Yellow),
@@ -249,6 +260,18 @@ pub fn draw(
             Span::raw(" select  "),
             Span::styled(
                 "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ConfirmingOpencodeSession { .. } => Line::from(vec![
+            Span::styled(
+                "y",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" restart  "),
+            Span::styled(
+                "n/Esc",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" cancel"),

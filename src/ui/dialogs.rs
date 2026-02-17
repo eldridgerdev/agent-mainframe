@@ -644,6 +644,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("l", "Expand project / view feature"),
         ("Enter", "Toggle expand / view session"),
         ("s", "Switch to tmux session"),
+        ("S", "Pick opencode session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
         ("d", "Delete project/feature/session"),

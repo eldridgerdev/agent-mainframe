@@ -45,6 +45,20 @@ pub struct RenameSessionState {
     pub return_to: RenameReturnTo,
 }
 
+#[derive(Debug, Clone)]
+pub struct OpencodeSessionInfo {
+    pub id: String,
+    pub title: String,
+    pub updated: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpencodeSessionPickerState {
+    pub sessions: Vec<OpencodeSessionInfo>,
+    pub selected: usize,
+    pub workdir: PathBuf,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -58,6 +72,11 @@ pub enum AppMode {
     RenamingSession(RenameSessionState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
+    OpencodeSessionPicker(OpencodeSessionPickerState),
+    ConfirmingOpencodeSession {
+        session_id: String,
+        workdir: PathBuf,
+    },
 }
 
 pub struct BrowsePathState {

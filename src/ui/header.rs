@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(frame: &mut Frame, area: Rect, pending_count: usize) {
+pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -20,10 +20,8 @@ pub fn draw(frame: &mut Frame, area: Rect, pending_count: usize) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "| Multi-Project Agent Manager",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("| ", Style::default().fg(Color::DarkGray)),
+        Span::styled(cwd, Style::default().fg(Color::White)),
     ];
 
     if pending_count > 0 {

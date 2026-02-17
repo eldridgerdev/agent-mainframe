@@ -18,6 +18,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             app.leader_active,
             app.pending_inputs.len(),
+            app.tmux_cursor,
         );
         return;
     }
@@ -37,6 +38,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
+            app.tmux_cursor,
         );
         super::picker::draw_session_switcher(
             frame,
@@ -56,6 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
+            app.tmux_cursor,
         );
         super::picker::draw_command_picker(frame, state);
         return;
@@ -79,6 +82,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
+            app.tmux_cursor,
         );
         super::dialogs::draw_rename_session_dialog(frame, state);
         return;

@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -38,6 +38,7 @@ pub fn draw(
     pane_content: &str,
     leader_active: bool,
     pending_count: usize,
+    tmux_cursor: Option<(u16, u16)>,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -129,6 +130,12 @@ pub fn draw(
     let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
     let paragraph = Paragraph::new(text);
     frame.render_widget(paragraph, content_area);
+
+    if let Some((cursor_x, cursor_y)) = tmux_cursor {
+        let abs_x = content_area.x + cursor_x;
+        let abs_y = content_area.y + cursor_y.saturating_sub(1);
+        frame.set_cursor_position(Position::new(abs_x, abs_y));
+    }
 }
 
 fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {

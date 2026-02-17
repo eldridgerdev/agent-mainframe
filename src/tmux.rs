@@ -367,6 +367,31 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Get the cursor position in a tmux pane (x, y)
+    pub fn cursor_position(session: &str, window: &str) -> Result<(u16, u16)> {
+        let target = format!("{}:{}", session, window);
+        let output = Command::new("tmux")
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{cursor_x} #{cursor_y}",
+            ])
+            .output()
+            .context("Failed to get cursor position")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+        if parts.len() == 2 {
+            let x: u16 = parts[0].parse().unwrap_or(0);
+            let y: u16 = parts[1].parse().unwrap_or(0);
+            Ok((x, y))
+        } else {
+            Ok((0, 0))
+        }
+    }
+
     /// Resize a tmux pane to match the TUI rendering area
     pub fn resize_pane(session: &str, window: &str, cols: u16, rows: u16) -> Result<()> {
         let target = format!("{}:{}", session, window);

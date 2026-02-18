@@ -87,17 +87,21 @@ impl VibeMode {
         }
     }
 
-    pub fn cli_flags(&self) -> Vec<&str> {
-        match self {
+    pub fn cli_flags(&self, enable_chrome: bool) -> Vec<String> {
+        let mut flags = match self {
             VibeMode::Vibeless => vec![],
             VibeMode::Vibe => {
-                vec!["--permission-mode", "acceptEdits"]
+                vec!["--permission-mode".into(), "acceptEdits".into()]
             }
             VibeMode::SuperVibe => {
-                vec!["--dangerously-skip-permissions"]
+                vec!["--dangerously-skip-permissions".into()]
             }
             VibeMode::Review => vec![],
+        };
+        if enable_chrome {
+            flags.push("--chrome".into());
         }
+        flags
     }
 
     pub const ALL: [VibeMode; 4] = [
@@ -129,6 +133,8 @@ pub struct Feature {
     #[serde(default)]
     pub agent: AgentKind,
     #[serde(default)]
+    pub enable_chrome: bool,
+    #[serde(default)]
     pub has_notes: bool,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
@@ -143,6 +149,7 @@ impl Feature {
         is_worktree: bool,
         mode: VibeMode,
         agent: AgentKind,
+        enable_chrome: bool,
         has_notes: bool,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
@@ -158,6 +165,7 @@ impl Feature {
             collapsed: true,
             mode,
             agent,
+            enable_chrome,
             has_notes,
             status: ProjectStatus::Stopped,
             created_at: now,
@@ -497,6 +505,7 @@ impl ProjectStore {
                             collapsed: true,
                             mode: VibeMode::default(),
                             agent: AgentKind::default(),
+                            enable_chrome: false,
                             has_notes: false,
                             status: f.status,
                             created_at: f.created_at,

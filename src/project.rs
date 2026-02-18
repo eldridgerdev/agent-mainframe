@@ -101,10 +101,10 @@ impl VibeMode {
     }
 
     pub const ALL: [VibeMode; 4] = [
+        VibeMode::Review,
         VibeMode::Vibeless,
         VibeMode::Vibe,
         VibeMode::SuperVibe,
-        VibeMode::Review,
     ];
 }
 

@@ -200,7 +200,7 @@ impl CreateFeatureState {
             worktrees,
             worktree_index: 0,
             use_worktree: !is_first_feature,
-            enable_notes: true,
+            enable_notes: false,
         }
     }
 }

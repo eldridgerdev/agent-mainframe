@@ -25,19 +25,20 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.cancel_create();
         }
         KeyCode::Enter => {
-            let should_advance = match &app.mode {
-                AppMode::CreatingProject(state) => {
-                    matches!(state.step, CreateProjectStep::Name)
-                }
-                _ => false,
+            let step = match &app.mode {
+                AppMode::CreatingProject(state) => state.step.clone(),
+                _ => return Ok(()),
             };
 
-            if should_advance {
-                if let AppMode::CreatingProject(state) = &mut app.mode {
-                    state.step = CreateProjectStep::Path;
+            match step {
+                CreateProjectStep::Name => {
+                    if let AppMode::CreatingProject(state) = &mut app.mode {
+                        state.step = CreateProjectStep::Path;
+                    }
                 }
-            } else {
-                app.create_project()?;
+                CreateProjectStep::Path => {
+                    app.create_project()?;
+                }
             }
         }
         KeyCode::Tab => {
@@ -344,6 +345,37 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
 }
 
 pub fn handle_browse_path_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let creating_folder = match &app.mode {
+        AppMode::BrowsingPath(state) => state.creating_folder,
+        _ => false,
+    };
+
+    if creating_folder {
+        match key.code {
+            KeyCode::Esc => {
+                if let AppMode::BrowsingPath(state) = &mut app.mode {
+                    state.creating_folder = false;
+                    state.new_folder_name.clear();
+                }
+            }
+            KeyCode::Enter => {
+                app.create_folder_in_browse()?;
+            }
+            KeyCode::Backspace => {
+                if let AppMode::BrowsingPath(state) = &mut app.mode {
+                    state.new_folder_name.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::BrowsingPath(state) = &mut app.mode {
+                    state.new_folder_name.push(c);
+                }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.cancel_browse_path();
@@ -356,6 +388,11 @@ pub fn handle_browse_path_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char(' ') => {
             app.confirm_browse_path();
+        }
+        KeyCode::Char('c') => {
+            if let AppMode::BrowsingPath(state) = &mut app.mode {
+                state.creating_folder = true;
+            }
         }
         KeyCode::Enter => {
             let is_dir = match &app.mode {

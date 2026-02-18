@@ -34,6 +34,7 @@ pub use search::handle_search_key;
 pub fn handle_key(
     app: &mut App,
     key: KeyEvent,
+    visible_rows: u16,
 ) -> Result<()> {
     use crate::app::AppMode;
     
@@ -54,7 +55,7 @@ pub fn handle_key(
         AppMode::DeletingFeature(_, _) => {
             handle_delete_feature_key(app, key.code)
         }
-        AppMode::Viewing(_) => handle_view_key(app, key),
+        AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
         AppMode::Help => handle_help_key(app, key.code),
         AppMode::NotificationPicker(_) => {
             handle_notification_picker_key(app, key.code)

@@ -75,9 +75,11 @@ fn run_loop<B: Backend>(
         let is_viewing =
             matches!(app.mode, app::AppMode::Viewing(_));
 
+        let size = terminal.size()?;
+        let visible_rows = size.height.saturating_sub(3);
+
         if is_viewing {
-            let size = terminal.size()?;
-            let content_rows = size.height.saturating_sub(3);
+            let content_rows = visible_rows;
             let content_cols = size.width;
             if let app::AppMode::Viewing(ref view) = app.mode
             {
@@ -152,7 +154,7 @@ fn run_loop<B: Backend>(
             for ev in events {
                 match ev {
                     Event::Key(key) => {
-                        if let Err(e) = handlers::handle_key(app, key) {
+                        if let Err(e) = handlers::handle_key(app, key, visible_rows) {
                             app.show_error(e);
                         }
                     }

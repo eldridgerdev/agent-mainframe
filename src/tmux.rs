@@ -367,6 +367,25 @@ impl TmuxManager {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Capture pane content with ANSI sequences, including scrollback history
+    /// Returns the raw content and the number of lines captured
+    pub fn capture_pane_with_history(
+        session: &str,
+        window: &str,
+        history_lines: i32,
+    ) -> Result<(String, usize)> {
+        let target = format!("{}:{}", session, window);
+        let start = format!("-{}", history_lines);
+        let output = Command::new("tmux")
+            .args(["capture-pane", "-t", &target, "-e", "-p", "-S", &start])
+            .output()
+            .context("Failed to capture pane with history")?;
+
+        let content = String::from_utf8_lossy(&output.stdout).to_string();
+        let lines = content.lines().count();
+        Ok((content, lines))
+    }
+
     /// Get the cursor position in a tmux pane (x, y)
     pub fn cursor_position(session: &str, window: &str) -> Result<(u16, u16)> {
         let target = format!("{}:{}", session, window);

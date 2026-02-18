@@ -1737,14 +1737,14 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
 
-        let view = ViewState {
+        let view = ViewState::new(
             project_name,
             feature_name,
-            session: tmux_session,
-            window: session_window,
+            tmux_session,
+            session_window,
             session_label,
             vibe_mode,
-        };
+        );
 
         self.save()?;
         self.pane_content.clear();
@@ -1839,6 +1839,56 @@ impl App {
                     >= std::time::Duration::from_secs(2)
             })
             .unwrap_or(false)
+    }
+
+    pub fn toggle_scroll_mode(&mut self) {
+        if let AppMode::Viewing(ref mut view) = self.mode {
+            view.scroll_mode = !view.scroll_mode;
+            if view.scroll_mode {
+                let (content, lines) = TmuxManager::capture_pane_with_history(
+                    &view.session,
+                    &view.window,
+                    10000,
+                )
+                .unwrap_or((String::new(), 0));
+                view.scroll_content = content;
+                view.scroll_total_lines = lines;
+                view.scroll_offset = 0;
+            } else {
+                view.scroll_content.clear();
+                view.scroll_offset = 0;
+            }
+        }
+    }
+
+    pub fn scroll_up(&mut self, amount: usize) {
+        if let AppMode::Viewing(ref mut view) = self.mode
+            && view.scroll_mode
+        {
+            view.scroll_offset = view.scroll_offset.saturating_sub(amount);
+        }
+    }
+
+    pub fn scroll_down(&mut self, amount: usize, visible_rows: u16) {
+        if let AppMode::Viewing(ref mut view) = self.mode
+            && view.scroll_mode
+        {
+            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            view.scroll_offset = (view.scroll_offset + amount).min(max_offset);
+        }
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        if let AppMode::Viewing(ref mut view) = self.mode {
+            view.scroll_offset = 0;
+        }
+    }
+
+    pub fn scroll_to_bottom(&mut self, visible_rows: u16) {
+        if let AppMode::Viewing(ref mut view) = self.mode {
+            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            view.scroll_offset = max_offset;
+        }
     }
 
     pub fn view_next_feature(&mut self) -> Result<()> {
@@ -1964,14 +2014,14 @@ impl App {
 
         self.selection = Selection::Feature(pi, fi);
         self.pane_content.clear();
-        self.mode = AppMode::Viewing(ViewState {
+        self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
-            session: tmux_session,
-            window: session_window,
+            tmux_session,
+            session_window,
             session_label,
             vibe_mode,
-        });
+        ));
         self.save()?;
 
         Ok(())
@@ -2182,14 +2232,14 @@ impl App {
         };
 
         self.pane_content.clear();
-        self.mode = AppMode::Viewing(ViewState {
+        self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
-            session: tmux_session,
+            tmux_session,
             window,
-            session_label: label,
+            label,
             vibe_mode,
-        });
+        ));
     }
 
     pub fn cancel_session_switcher(&mut self) {
@@ -2213,14 +2263,14 @@ impl App {
         };
 
         self.pane_content.clear();
-        self.mode = AppMode::Viewing(ViewState {
+        self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
-            session: tmux_session,
+            tmux_session,
             window,
-            session_label: label,
+            label,
             vibe_mode,
-        });
+        ));
     }
 
     pub fn scan_notifications(&mut self) {
@@ -2949,14 +2999,14 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
 
-        let view = ViewState {
+        let view = ViewState::new(
             project_name,
             feature_name,
-            session: tmux_session,
-            window: session_window,
+            tmux_session,
+            session_window,
             session_label,
             vibe_mode,
-        };
+        );
 
         self.save()?;
         self.pane_content.clear();

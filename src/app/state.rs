@@ -111,6 +111,8 @@ pub enum AppMode {
 pub struct BrowsePathState {
     pub explorer: FileExplorer,
     pub create_state: CreateProjectState,
+    pub new_folder_name: String,
+    pub creating_folder: bool,
 }
 
 #[derive(Clone)]
@@ -120,7 +122,7 @@ pub struct CreateProjectState {
     pub path: String,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,

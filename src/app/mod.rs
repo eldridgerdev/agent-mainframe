@@ -786,6 +786,8 @@ impl App {
             BrowsePathState {
                 explorer,
                 create_state,
+                new_folder_name: String::new(),
+                creating_folder: false,
             },
         ));
         self.message = None;
@@ -822,9 +824,41 @@ impl App {
         }
     }
 
+    pub fn create_folder_in_browse(&mut self) -> Result<()> {
+        let (cwd, folder_name) = match &self.mode {
+            AppMode::BrowsingPath(state) => {
+                (state.explorer.cwd().to_path_buf(), state.new_folder_name.clone())
+            }
+            _ => return Ok(()),
+        };
+
+        if folder_name.is_empty() {
+            self.message = Some("Folder name cannot be empty".into());
+            return Ok(());
+        }
+
+        let new_path = cwd.join(&folder_name);
+        if let Err(e) = std::fs::create_dir_all(&new_path) {
+            self.message = Some(format!(
+                "Error: Failed to create folder: {}",
+                e
+            ));
+            return Ok(());
+        }
+
+        if let AppMode::BrowsingPath(state) = &mut self.mode {
+            state.creating_folder = false;
+            state.new_folder_name.clear();
+            let _ = state.explorer.set_cwd(new_path);
+            state.create_state.path = state.explorer.cwd().to_string_lossy().into_owned();
+        }
+
+        Ok(())
+    }
+
     pub fn create_project(&mut self) -> Result<()> {
         let state = match &self.mode {
-            AppMode::CreatingProject(s) => s,
+            AppMode::CreatingProject(s) => s.clone(),
             _ => return Ok(()),
         };
 
@@ -839,7 +873,7 @@ impl App {
 
         if !path.exists() {
             self.message = Some(format!(
-                "Error: Path does not exist: {}",
+                "Error: Path does not exist: {} (press Ctrl+B to browse and create folder)",
                 path.display()
             ));
             return Ok(());

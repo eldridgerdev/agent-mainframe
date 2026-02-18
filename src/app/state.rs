@@ -165,6 +165,7 @@ pub struct CreateFeatureState {
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
     pub use_worktree: bool,
+    pub enable_chrome: bool,
     pub enable_notes: bool,
 }
 
@@ -200,6 +201,7 @@ impl CreateFeatureState {
             worktrees,
             worktree_index: 0,
             use_worktree: !is_first_feature,
+            enable_chrome: false,
             enable_notes: false,
         }
     }

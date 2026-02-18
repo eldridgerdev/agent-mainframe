@@ -1001,6 +1001,7 @@ impl App {
             None
         };
         let use_worktree = state.use_worktree;
+        let enable_chrome = state.enable_chrome;
         let enable_notes = state.enable_notes;
 
         if branch.is_empty() {
@@ -1109,6 +1110,7 @@ impl App {
             is_worktree,
             mode,
             state.agent.clone(),
+            enable_chrome,
             enable_notes,
         );
 
@@ -1208,7 +1210,8 @@ impl App {
             )?;
         }
 
-        let extra_args = feature.mode.cli_flags();
+        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
+        let extra_args_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
         for session in &feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
@@ -1216,7 +1219,7 @@ impl App {
                         &feature.tmux_session,
                         &session.tmux_window,
                         session.claude_session_id.as_deref(),
-                        &extra_args,
+                        &extra_args_refs,
                     )?;
                 }
                 SessionKind::Opencode => {
@@ -1591,12 +1594,7 @@ impl App {
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
         let mode = feature.mode.clone();
-        let extra_args: Vec<String> = feature
-            .mode
-            .cli_flags()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
         ensure_notification_hooks(&workdir, &repo, &mode, &agent);
         let session_kind = match feature.agent {
@@ -3077,12 +3075,13 @@ impl App {
                     )?;
                 }
                 SessionKind::Claude => {
-                    let extra_args = feature.mode.cli_flags();
+                    let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
+                    let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
                     TmuxManager::launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
                         session.claude_session_id.as_deref(),
-                        &extra_args,
+                        &extra_refs,
                     )?;
                 }
                 SessionKind::Nvim => {

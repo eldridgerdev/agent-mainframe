@@ -214,22 +214,28 @@ fn ensure_opencode_plugins(
         let _ = std::fs::copy(&src_input_request, &dst_input_request);
     }
 
+    let dst_diff_review = plugins_dir.join("diff-review.ts");
+    let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
+    let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
+    let dst_explain = plugins_dir.join("explain.sh");
+    let _ = std::fs::remove_file(&dst_diff_review);
+    let _ = std::fs::remove_file(&dst_diff_review_sh);
+    let _ = std::fs::remove_file(&dst_feedback_prompt);
+    let _ = std::fs::remove_file(&dst_explain);
+
     if matches!(mode, VibeMode::Vibeless) {
         let src_diff_review = repo
             .join(".opencode")
             .join("plugins")
-            .join("diff-review.js");
-        let dst_diff_review = plugins_dir.join("diff-review.js");
-
-        if src_diff_review.exists() {
-            let _ = std::fs::copy(&src_diff_review, &dst_diff_review);
-        }
-
+            .join("diff-review.ts");
         let src_diff_review_sh = repo
             .join(".opencode")
             .join("plugins")
             .join("diff-review.sh");
-        let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
+
+        if src_diff_review.exists() {
+            let _ = std::fs::copy(&src_diff_review, &dst_diff_review);
+        }
 
         if src_diff_review_sh.exists() {
             let _ = std::fs::copy(&src_diff_review_sh, &dst_diff_review_sh);
@@ -239,7 +245,6 @@ fn ensure_opencode_plugins(
             .join(".opencode")
             .join("plugins")
             .join("feedback-prompt.sh");
-        let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
 
         if src_feedback_prompt.exists() {
             let _ = std::fs::copy(&src_feedback_prompt, &dst_feedback_prompt);
@@ -249,7 +254,6 @@ fn ensure_opencode_plugins(
             .join(".opencode")
             .join("plugins")
             .join("explain.sh");
-        let dst_explain = plugins_dir.join("explain.sh");
 
         if src_explain.exists() {
             let _ = std::fs::copy(&src_explain, &dst_explain);

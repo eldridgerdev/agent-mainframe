@@ -108,6 +108,7 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub zai: ZaiPlanConfig,
+    pub opencode_theme: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -115,6 +116,7 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             zai: ZaiPlanConfig::default(),
+            opencode_theme: Some("catppuccin-frappe".to_string()),
         }
     }
 }
@@ -125,7 +127,7 @@ pub fn load_config() -> AppConfig {
         .join("amf")
         .join("config.json");
 
-    if config_path.exists() {
+    let config = if config_path.exists() {
         std::fs::read_to_string(&config_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -140,7 +142,44 @@ pub fn load_config() -> AppConfig {
                 .unwrap_or_default(),
         );
         config
+    };
+
+    if let Some(ref theme) = config.opencode_theme {
+        let _ = update_opencode_theme(theme);
     }
+
+    config
+}
+
+fn update_opencode_theme(theme: &str) -> anyhow::Result<()> {
+    let opencode_config_path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("opencode")
+        .join("opencode.json");
+
+    let mut config: serde_json::Value = if opencode_config_path.exists() {
+        std::fs::read_to_string(&opencode_config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("theme".to_string(), serde_json::json!(theme));
+    }
+
+    if let Some(parent) = opencode_config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    std::fs::write(
+        &opencode_config_path,
+        serde_json::to_string_pretty(&config)?,
+    )?;
+
+    Ok(())
 }
 
 fn remove_old_diff_review_plugin(repo: &Path) {

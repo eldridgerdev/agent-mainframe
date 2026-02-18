@@ -226,7 +226,6 @@ impl TmuxManager {
     }
 
     /// Launch opencode in a specific window of a session
-    /// Sets OPENCODE_THEME=catppuccin-frappe for consistent theming
     pub fn launch_opencode(session: &str, window: &str) -> Result<()> {
         Self::launch_opencode_with_session(session, window, None)
     }
@@ -239,11 +238,8 @@ impl TmuxManager {
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
-            Some(id) => format!(
-                "export OPENCODE_THEME=catppuccin-frappe && opencode -s {}",
-                id
-            ),
-            None => "export OPENCODE_THEME=catppuccin-frappe && opencode".into(),
+            Some(id) => format!("opencode -s {}", id),
+            None => "opencode".into(),
         };
 
         Command::new("tmux")

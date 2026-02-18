@@ -3,6 +3,7 @@ mod view;
 mod dialog;
 mod picker;
 mod input;
+mod change_reason;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -26,6 +27,7 @@ pub use picker::{
     handle_session_switcher_key,
 };
 pub use input::handle_paste;
+pub use change_reason::handle_change_reason_key;
 
 pub fn handle_key(
     app: &mut App,
@@ -63,6 +65,9 @@ pub fn handle_key(
         }
         AppMode::CommandPicker(_) => {
             handle_command_picker_key(app, key.code)
+        }
+        AppMode::ChangeReasonPrompt(_) => {
+            handle_change_reason_key(app, key)
         }
     }
 }

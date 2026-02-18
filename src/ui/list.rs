@@ -230,6 +230,10 @@ pub fn draw(
                             spans.push(Span::raw("]"));
                             spans
                         }
+                        VibeMode::Review => vec![Span::styled(
+                            " [review]",
+                            Style::default().fg(Color::Magenta),
+                        )],
                     };
 
                     let mut line_spans = vec![

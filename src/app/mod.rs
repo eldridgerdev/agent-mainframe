@@ -448,6 +448,8 @@ pub struct App {
     pub usage: UsageManager,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
+    pub throbber_state: throbber_widgets_tui::ThrobberState,
+    pub thinking_features: std::collections::HashSet<String>,
 }
 
 impl App {
@@ -474,6 +476,8 @@ impl App {
             usage: UsageManager::new(zai_monthly, zai_weekly, zai_five_hour),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
+            thinking_features: std::collections::HashSet::new(),
         })
     }
 
@@ -659,6 +663,44 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn sync_thinking_status(&mut self) {
+        self.thinking_features.clear();
+        for project in &self.store.projects {
+            for feature in &project.features {
+                if feature.status == ProjectStatus::Stopped {
+                    continue;
+                }
+                let agent_session = feature.sessions.iter().find(|s| {
+                    matches!(
+                        s.kind,
+                        SessionKind::Claude | SessionKind::Opencode
+                    )
+                });
+                let Some(session) = agent_session else {
+                    continue;
+                };
+                if let Ok(content) = TmuxManager::capture_pane(
+                    &feature.tmux_session,
+                    &session.tmux_window,
+                ) {
+                    if Self::is_agent_thinking(&content) {
+                        self.thinking_features
+                            .insert(feature.tmux_session.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_agent_thinking(content: &str) -> bool {
+        let lower = content.to_lowercase();
+        lower.contains("esc interrupt")
+    }
+
+    pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {
+        self.thinking_features.contains(tmux_session)
     }
 
     pub fn selected_project(&self) -> Option<&Project> {

@@ -117,6 +117,8 @@ fn run_loop<B: Backend>(
             }
         }
 
+        app.throbber_state.calc_next();
+
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.should_quit || app.should_switch.is_some() {
@@ -130,6 +132,7 @@ fn run_loop<B: Backend>(
         if last_sync.elapsed() >= Duration::from_secs(5) {
             if !is_viewing {
                 app.sync_statuses();
+                app.sync_thinking_status();
             }
             app.scan_notifications();
             app.usage.refresh();

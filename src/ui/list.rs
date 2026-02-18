@@ -171,27 +171,43 @@ pub fn draw(
                         "  ├─"
                     };
 
-                    let status_dot = match feature.status {
-                        ProjectStatus::Active => {
-                            Span::styled(
-                                " ● ",
+                    let is_thinking =
+                        app.is_feature_thinking(&feature.tmux_session);
+                    let status_dot = if is_thinking {
+                        let throbber = throbber_widgets_tui::Throbber::default()
+                            .throbber_style(
                                 Style::default()
-                                    .fg(Color::Green),
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
                             )
-                        }
-                        ProjectStatus::Idle => {
-                            Span::styled(
-                                " ○ ",
-                                Style::default()
-                                    .fg(Color::Yellow),
-                            )
-                        }
-                        ProjectStatus::Stopped => {
-                            Span::styled(
-                                " ■ ",
-                                Style::default()
-                                    .fg(Color::Red),
-                            )
+                            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+                            .use_type(throbber_widgets_tui::WhichUse::Spin);
+                        let mut span = throbber.to_symbol_span(&app.throbber_state);
+                        span.content = format!(" {} ", span.content).into();
+                        span
+                    } else {
+                        match feature.status {
+                            ProjectStatus::Active => {
+                                Span::styled(
+                                    " ● ",
+                                    Style::default()
+                                        .fg(Color::Green),
+                                )
+                            }
+                            ProjectStatus::Idle => {
+                                Span::styled(
+                                    " ○ ",
+                                    Style::default()
+                                        .fg(Color::Yellow),
+                                )
+                            }
+                            ProjectStatus::Stopped => {
+                                Span::styled(
+                                    " ■ ",
+                                    Style::default()
+                                        .fg(Color::Red),
+                                )
+                            }
                         }
                     };
 

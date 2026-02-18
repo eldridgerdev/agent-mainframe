@@ -237,6 +237,10 @@ fn draw_pane_view(
             header_spans.extend(rainbow_spans("supervibe"));
             header_spans.push(Span::raw("] "));
         }
+        VibeMode::Review => header_spans.push(Span::styled(
+            "[review] ",
+            Style::default().fg(Color::Cyan),
+        )),
     };
 
     if leader_active {

@@ -18,6 +18,34 @@ pub struct ViewState {
     pub window: String,
     pub session_label: String,
     pub vibe_mode: VibeMode,
+    pub scroll_offset: usize,
+    pub scroll_content: String,
+    pub scroll_mode: bool,
+    pub scroll_total_lines: usize,
+}
+
+impl ViewState {
+    pub fn new(
+        project_name: String,
+        feature_name: String,
+        session: String,
+        window: String,
+        session_label: String,
+        vibe_mode: VibeMode,
+    ) -> Self {
+        Self {
+            project_name,
+            feature_name,
+            session,
+            window,
+            session_label,
+            vibe_mode,
+            scroll_offset: 0,
+            scroll_content: String::new(),
+            scroll_mode: false,
+            scroll_total_lines: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

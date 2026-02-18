@@ -62,12 +62,15 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 }
 
+const SCROLL_HISTORY_LINES: i32 = 10000;
+
 pub fn handle_view_key(
     app: &mut App,
     key: KeyEvent,
+    visible_rows: u16,
 ) -> Result<()> {
     if app.leader_active {
-        return handle_leader_key(app, key);
+        return handle_leader_key(app, key, visible_rows);
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL)
@@ -82,6 +85,15 @@ pub fn handle_view_key(
     {
         app.activate_leader();
         return Ok(());
+    }
+
+    let scroll_mode = match &app.mode {
+        AppMode::Viewing(view) => view.scroll_mode,
+        _ => false,
+    };
+
+    if scroll_mode {
+        return handle_scroll_key(app, key, visible_rows);
     }
 
     let (session, window) = match &app.mode {
@@ -112,9 +124,42 @@ pub fn handle_view_key(
     Ok(())
 }
 
+fn handle_scroll_key(
+    app: &mut App,
+    key: KeyEvent,
+    visible_rows: u16,
+) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.toggle_scroll_mode();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.scroll_up(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.scroll_down(1, visible_rows);
+        }
+        KeyCode::PageUp => {
+            app.scroll_up(visible_rows as usize);
+        }
+        KeyCode::PageDown => {
+            app.scroll_down(visible_rows as usize, visible_rows);
+        }
+        KeyCode::Home => {
+            app.scroll_to_top();
+        }
+        KeyCode::End => {
+            app.scroll_to_bottom(visible_rows);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_leader_key(
     app: &mut App,
     key: KeyEvent,
+    _visible_rows: u16,
 ) -> Result<()> {
     app.deactivate_leader();
 
@@ -193,6 +238,9 @@ fn handle_leader_key(
         KeyCode::Char('?') => {
             app.exit_view();
             app.mode = AppMode::Help;
+        }
+        KeyCode::Char('S') => {
+            app.toggle_scroll_mode();
         }
         _ => {}
     }

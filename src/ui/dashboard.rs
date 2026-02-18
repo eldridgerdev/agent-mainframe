@@ -24,14 +24,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::SessionSwitcher(state) = &app.mode {
-        let temp_view = crate::app::ViewState {
-            project_name: state.project_name.clone(),
-            feature_name: state.feature_name.clone(),
-            session: state.tmux_session.clone(),
-            window: state.return_window.clone(),
-            session_label: state.return_label.clone(),
-            vibe_mode: state.vibe_mode.clone(),
-        };
+        let temp_view = crate::app::ViewState::new(
+            state.project_name.clone(),
+            state.feature_name.clone(),
+            state.tmux_session.clone(),
+            state.return_window.clone(),
+            state.return_label.clone(),
+            state.vibe_mode.clone(),
+        );
         super::pane::draw(
             frame,
             &temp_view,
@@ -68,14 +68,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && let RenameReturnTo::SessionSwitcher(ref sw) =
             state.return_to
     {
-        let temp_view = crate::app::ViewState {
-            project_name: sw.project_name.clone(),
-            feature_name: sw.feature_name.clone(),
-            session: sw.tmux_session.clone(),
-            window: sw.return_window.clone(),
-            session_label: sw.return_label.clone(),
-            vibe_mode: sw.vibe_mode.clone(),
-        };
+        let temp_view = crate::app::ViewState::new(
+            sw.project_name.clone(),
+            sw.feature_name.clone(),
+            sw.tmux_session.clone(),
+            sw.return_window.clone(),
+            sw.return_label.clone(),
+            sw.vibe_mode.clone(),
+        );
         super::pane::draw(
             frame,
             &temp_view,

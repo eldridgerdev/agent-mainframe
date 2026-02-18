@@ -78,7 +78,24 @@ pub fn draw(
         }
     };
 
-    if leader_active {
+    if view.scroll_mode {
+        let scroll_pct = if view.scroll_total_lines > 0 {
+            (view.scroll_offset as f64 / view.scroll_total_lines as f64 * 100.0) as u8
+        } else {
+            0
+        };
+        header_spans.push(Span::styled(
+            format!("| SCROLL {}% ", scroll_pct),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+        header_spans.push(Span::styled(
+            "j/k:scroll PgUp/Dn:page Home/End:top/bot Esc:exit",
+            Style::default().fg(Color::Magenta),
+        ));
+    } else if leader_active {
         header_spans.push(Span::styled(
             "| LEADER ",
             Style::default()
@@ -87,7 +104,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach x:stop ?:help",
+            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach S:scroll x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -102,7 +119,7 @@ pub fn draw(
         ));
     }
 
-    if pending_count > 0 {
+    if pending_count > 0 && !view.scroll_mode {
         header_spans.push(Span::styled(
             format!(
                 " | {} input{}",
@@ -113,7 +130,9 @@ pub fn draw(
         ));
     }
 
-    let border_color = if leader_active {
+    let border_color = if view.scroll_mode {
+        Color::Magenta
+    } else if leader_active {
         Color::Yellow
     } else {
         Color::Cyan
@@ -127,15 +146,83 @@ pub fn draw(
     frame.render_widget(header, chunks[0]);
 
     let content_area = chunks[1];
-    let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
-    let paragraph = Paragraph::new(text);
-    frame.render_widget(paragraph, content_area);
 
-    if let Some((cursor_x, cursor_y)) = tmux_cursor {
-        let abs_x = content_area.x + cursor_x;
-        let abs_y = content_area.y + cursor_y.saturating_sub(1);
-        frame.set_cursor_position(Position::new(abs_x, abs_y));
+    if view.scroll_mode {
+        let text = scroll_content_to_lines(
+            &view.scroll_content,
+            view.scroll_offset,
+            content_area.width,
+            content_area.height,
+        );
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, content_area);
+    } else {
+        let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
+        let paragraph = Paragraph::new(text);
+        frame.render_widget(paragraph, content_area);
+
+        if let Some((cursor_x, cursor_y)) = tmux_cursor {
+            let abs_x = content_area.x + cursor_x;
+            let abs_y = content_area.y + cursor_y.saturating_sub(1);
+            frame.set_cursor_position(Position::new(abs_x, abs_y));
+        }
     }
+}
+
+fn scroll_content_to_lines<'a>(
+    content: &str,
+    offset: usize,
+    _cols: u16,
+    rows: u16,
+) -> Vec<Line<'a>> {
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_lines = all_lines.len();
+
+    let start = offset.min(total_lines);
+    let end = (start + rows as usize).min(total_lines);
+
+    let mut lines = Vec::with_capacity(rows as usize);
+
+    for i in start..end {
+        let line_text = all_lines.get(i).unwrap_or(&"");
+        let line = Line::styled(
+            strip_ansi_codes(line_text),
+            Style::default().fg(Color::Reset),
+        );
+        lines.push(line);
+    }
+
+    while lines.len() < rows as usize {
+        lines.push(Line::raw(""));
+    }
+
+    lines
+}
+
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if let Some(&next) = chars.peek() {
+                if next == '[' {
+                    chars.next();
+                    while let Some(&c) = chars.peek() {
+                        chars.next();
+                        if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
 
 fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {

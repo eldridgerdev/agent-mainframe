@@ -740,8 +740,10 @@ impl App {
     fn is_agent_thinking(content: &str) -> bool {
         let lower = content.to_lowercase();
         // opencode shows "esc interrupt"
-        // claude shows "· Sublimating… (1m 16s · ↓ 2.9k tokens)"
+        // claude shows "+ Blanching… (thinking)" or
+        //   "· Sublimating… (1m 16s · ↓ 2.9k tokens)"
         lower.contains("esc interrupt")
+            || lower.contains("(thinking)")
             || (content.contains('\u{2193}') && lower.contains("tokens"))
     }
 

@@ -739,7 +739,10 @@ impl App {
 
     fn is_agent_thinking(content: &str) -> bool {
         let lower = content.to_lowercase();
+        // opencode shows "esc interrupt"
+        // claude shows "· Sublimating… (1m 16s · ↓ 2.9k tokens)"
         lower.contains("esc interrupt")
+            || (content.contains('\u{2193}') && lower.contains("tokens"))
     }
 
     pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {

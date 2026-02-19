@@ -1841,19 +1841,29 @@ impl App {
             .unwrap_or(false)
     }
 
-    pub fn toggle_scroll_mode(&mut self) {
+    pub fn toggle_scroll_mode(&mut self, visible_rows: u16) {
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.scroll_mode = !view.scroll_mode;
             if view.scroll_mode {
-                let (content, lines) = TmuxManager::capture_pane_with_history(
-                    &view.session,
-                    &view.window,
-                    10000,
-                )
-                .unwrap_or((String::new(), 0));
-                view.scroll_content = content;
-                view.scroll_total_lines = lines;
-                view.scroll_offset = 0;
+                let is_alternate = TmuxManager::is_alternate_screen(&view.session, &view.window);
+                view.scroll_passthrough = is_alternate;
+                
+                if !is_alternate {
+                    let (content, lines) = TmuxManager::capture_pane_with_history(
+                        &view.session,
+                        &view.window,
+                        10000,
+                    )
+                    .unwrap_or((String::new(), 0));
+                    view.scroll_content = content;
+                    view.scroll_total_lines = lines;
+                    let max_offset = lines.saturating_sub(visible_rows as usize);
+                    view.scroll_offset = max_offset;
+                } else {
+                    view.scroll_content.clear();
+                    view.scroll_total_lines = 0;
+                    view.scroll_offset = 0;
+                }
             } else {
                 view.scroll_content.clear();
                 view.scroll_offset = 0;
@@ -1864,6 +1874,7 @@ impl App {
     pub fn scroll_up(&mut self, amount: usize) {
         if let AppMode::Viewing(ref mut view) = self.mode
             && view.scroll_mode
+            && !view.scroll_passthrough
         {
             view.scroll_offset = view.scroll_offset.saturating_sub(amount);
         }
@@ -1872,6 +1883,7 @@ impl App {
     pub fn scroll_down(&mut self, amount: usize, visible_rows: u16) {
         if let AppMode::Viewing(ref mut view) = self.mode
             && view.scroll_mode
+            && !view.scroll_passthrough
         {
             let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
             view.scroll_offset = (view.scroll_offset + amount).min(max_offset);
@@ -1879,13 +1891,19 @@ impl App {
     }
 
     pub fn scroll_to_top(&mut self) {
-        if let AppMode::Viewing(ref mut view) = self.mode {
+        if let AppMode::Viewing(ref mut view) = self.mode
+            && view.scroll_mode
+            && !view.scroll_passthrough
+        {
             view.scroll_offset = 0;
         }
     }
 
     pub fn scroll_to_bottom(&mut self, visible_rows: u16) {
-        if let AppMode::Viewing(ref mut view) = self.mode {
+        if let AppMode::Viewing(ref mut view) = self.mode
+            && view.scroll_mode
+            && !view.scroll_passthrough
+        {
             let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
             view.scroll_offset = max_offset;
         }

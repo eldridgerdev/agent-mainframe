@@ -178,60 +178,75 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let items: Vec<ListItem> = state
-        .worktrees
-        .iter()
-        .enumerate()
-        .map(|(i, wt)| {
-            let is_selected = i == state.worktree_index;
-            let branch_label = wt.branch.as_deref().unwrap_or("(detached)");
-            let path_str = wt.path.display().to_string();
+    if state.worktrees.is_empty() {
+        let empty_msg = Paragraph::new(Line::from(Span::styled(
+            "  No available worktrees",
+            Style::default().fg(Color::Yellow),
+        )));
+        frame.render_widget(empty_msg, chunks[0]);
+    } else {
+        let items: Vec<ListItem> = state
+            .worktrees
+            .iter()
+            .enumerate()
+            .map(|(i, wt)| {
+                let is_selected = i == state.worktree_index;
+                let branch_label = wt.branch.as_deref().unwrap_or("(detached)");
+                let path_str = wt.path.display().to_string();
 
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    branch_label,
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-                Span::styled(
-                    format!("  {}", path_str),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
+                let line = Line::from(vec![
+                    Span::styled(
+                        if is_selected { "  > " } else { "    " },
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        branch_label,
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                    Span::styled(
+                        format!("  {}", path_str),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
 
-            if is_selected {
-                ListItem::new(line).style(Style::default().bg(Color::DarkGray))
-            } else {
-                ListItem::new(line)
-            }
-        })
-        .collect();
+                if is_selected {
+                    ListItem::new(line).style(Style::default().bg(Color::DarkGray))
+                } else {
+                    ListItem::new(line)
+                }
+            })
+            .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+        let list = List::new(items);
+        frame.render_widget(list, chunks[0]);
+    }
 
-    let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
-        Span::raw(" navigate  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
-        Span::raw(" select  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
-        Span::raw(" back"),
-    ]));
+    let hints = if state.worktrees.is_empty() {
+        Paragraph::new(Line::from(vec![
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" select  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ]))
+    };
     frame.render_widget(hints, chunks[1]);
 }
 
 fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState) {
-    let area = centered_rect(60, 55, frame.area());
+    let area = centered_rect(60, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let title = format!(" New Feature ({}) ", state.project_name);
@@ -252,7 +267,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
             Constraint::Length(1),
             Constraint::Length(4),
             Constraint::Length(1),
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(1),
@@ -444,6 +459,15 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         Paragraph::new(Line::from(vec![
             Span::styled(" j/k", Style::default().fg(Color::Yellow)),
             Span::raw(" select  "),
+            Span::styled("h/l", Style::default().fg(Color::Yellow)),
+            Span::raw(" prev/next field  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" confirm"),
+        ]))
+    } else if state.step == CreateFeatureStep::Worktree {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" toggle  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" next  "),
             Span::styled("Esc", Style::default().fg(Color::Yellow)),

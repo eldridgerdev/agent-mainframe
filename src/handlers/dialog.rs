@@ -134,15 +134,17 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    if let Some(wt) = state.worktrees.get(state.worktree_index) {
+                    if state.worktrees.is_empty() {
+                        app.message = Some("No available worktrees".into());
+                    } else if let Some(wt) = state.worktrees.get(state.worktree_index) {
                         state.branch = wt.branch.clone().unwrap_or_else(|| {
                             wt.path
                                 .file_name()
                                 .map(|n: &std::ffi::OsStr| n.to_string_lossy().into_owned())
                                 .unwrap_or_default()
                         });
+                        state.step = CreateFeatureStep::Mode;
                     }
-                    state.step = CreateFeatureStep::Mode;
                 }
             }
             _ => {}
@@ -185,14 +187,10 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         CreateFeatureStep::Worktree => match key {
             KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    if state.source_index == 1 && !state.worktrees.is_empty() {
-                        state.step = CreateFeatureStep::ExistingWorktree;
-                    } else {
-                        state.step = CreateFeatureStep::Branch;
-                    }
+                    state.step = CreateFeatureStep::Branch;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Tab | KeyCode::Enter | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.step = CreateFeatureStep::Mode;
                 }
@@ -207,10 +205,31 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         CreateFeatureStep::Mode => match key {
             KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    if state.source_index == 1 && !state.worktrees.is_empty() {
+                    if state.mode_focus > 0 {
+                        state.mode_focus -= 1;
+                    } else if state.source_index == 1 && !state.worktrees.is_empty() {
                         state.step = CreateFeatureStep::ExistingWorktree;
                     } else {
                         state.step = CreateFeatureStep::Worktree;
+                    }
+                }
+            }
+            KeyCode::Tab | KeyCode::Char('l') => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    let max_focus = if state.agent == AgentKind::Claude {
+                        3
+                    } else {
+                        2
+                    };
+                    if state.mode_focus < max_focus {
+                        state.mode_focus += 1;
+                    }
+                }
+            }
+            KeyCode::BackTab | KeyCode::Char('h') => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    if state.mode_focus > 0 {
+                        state.mode_focus -= 1;
                     }
                 }
             }

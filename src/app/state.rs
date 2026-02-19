@@ -22,6 +22,7 @@ pub struct ViewState {
     pub scroll_content: String,
     pub scroll_mode: bool,
     pub scroll_total_lines: usize,
+    pub scroll_passthrough: bool,
 }
 
 impl ViewState {
@@ -44,6 +45,7 @@ impl ViewState {
             scroll_content: String::new(),
             scroll_mode: false,
             scroll_total_lines: 0,
+            scroll_passthrough: false,
         }
     }
 }

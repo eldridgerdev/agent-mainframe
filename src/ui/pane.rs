@@ -82,22 +82,29 @@ pub fn draw(
     };
 
     if view.scroll_mode {
-        let scroll_pct = if view.scroll_total_lines > 0 {
+        let scroll_pct = if view.scroll_total_lines > 0 && !view.scroll_passthrough {
             (view.scroll_offset as f64 / view.scroll_total_lines as f64 * 100.0) as u8
         } else {
             0
         };
+        let mode_label = if view.scroll_passthrough {
+            "APP"
+        } else {
+            &format!("{}%", scroll_pct)
+        };
         header_spans.push(Span::styled(
-            format!("| SCROLL {}% ", scroll_pct),
+            format!("| SCROLL {} ", mode_label),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ));
-        header_spans.push(Span::styled(
-            "j/k:scroll PgUp/Dn:page Home/End:top/bot Esc:exit",
-            Style::default().fg(Color::Magenta),
-        ));
+        let help = if view.scroll_passthrough {
+            "j/k:PgUp/Dn - q/Esc:exit"
+        } else {
+            "j/k:scroll PgUp/Dn:page - q/Esc:exit"
+        };
+        header_spans.push(Span::styled(help, Style::default().fg(Color::Magenta)));
     } else if leader_active {
         header_spans.push(Span::styled(
             "| LEADER ",
@@ -107,7 +114,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach S:scroll x:stop ?:help",
+            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach o:scroll x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -117,7 +124,7 @@ pub fn draw(
             Style::default().fg(Color::Yellow),
         ));
         header_spans.push(Span::styled(
-            " command palette",
+            " commands",
             Style::default().fg(Color::DarkGray),
         ));
     }
@@ -150,11 +157,10 @@ pub fn draw(
 
     let content_area = chunks[1];
 
-    if view.scroll_mode {
+    if view.scroll_mode && !view.scroll_passthrough {
         let text = scroll_content_to_lines(
             &view.scroll_content,
             view.scroll_offset,
-            content_area.width,
             content_area.height,
         );
         let paragraph = Paragraph::new(text);
@@ -164,48 +170,39 @@ pub fn draw(
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
 
-        if let Some((cursor_x, cursor_y)) = tmux_cursor {
-            let abs_x = content_area.x + cursor_x;
-            let abs_y = content_area.y + cursor_y.saturating_sub(1);
-            frame.set_cursor_position(Position::new(abs_x, abs_y));
+        if !view.scroll_mode {
+            if let Some((cursor_x, cursor_y)) = tmux_cursor {
+                let abs_x = content_area.x + cursor_x;
+                let abs_y = content_area.y + cursor_y.saturating_sub(1);
+                frame.set_cursor_position(Position::new(abs_x, abs_y));
+            }
         }
     }
 }
 
-fn scroll_content_to_lines<'a>(
-    content: &str,
-    offset: usize,
-    _cols: u16,
-    rows: u16,
-) -> Vec<Line<'a>> {
+fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<'static>> {
     let all_lines: Vec<&str> = content.lines().collect();
     let total_lines = all_lines.len();
-
     let start = offset.min(total_lines);
     let end = (start + rows as usize).min(total_lines);
 
     let mut lines = Vec::with_capacity(rows as usize);
-
     for i in start..end {
         let line_text = all_lines.get(i).unwrap_or(&"");
-        let line = Line::styled(
+        lines.push(Line::styled(
             strip_ansi_codes(line_text),
             Style::default().fg(Color::Reset),
-        );
-        lines.push(line);
+        ));
     }
-
     while lines.len() < rows as usize {
         lines.push(Line::raw(""));
     }
-
     lines
 }
 
 fn strip_ansi_codes(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
-
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
             if let Some(&next) = chars.peek() {
@@ -224,7 +221,6 @@ fn strip_ansi_codes(s: &str) -> String {
             result.push(ch);
         }
     }
-
     result
 }
 

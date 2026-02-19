@@ -382,6 +382,19 @@ impl TmuxManager {
         Ok((content, lines))
     }
 
+    /// Check if the pane is using alternate screen mode (like vim/opencode)
+    pub fn is_alternate_screen(session: &str, window: &str) -> bool {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["display-message", "-t", &target, "-p", "#{alternate_on}"])
+            .output()
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                s == "1"
+            })
+            .unwrap_or(false)
+    }
+
     /// Get the cursor position in a tmux pane (x, y)
     pub fn cursor_position(session: &str, window: &str) -> Result<(u16, u16)> {
         let target = format!("{}:{}", session, window);
@@ -473,6 +486,26 @@ impl TmuxManager {
             .args(["send-keys", "-t", &target, keys, "Enter"])
             .status()
             .context("Failed to send keys to tmux")?;
+        Ok(())
+    }
+
+    /// Enter tmux copy mode for a pane
+    pub fn enter_copy_mode(session: &str, window: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["copy-mode", "-t", &target])
+            .status()
+            .context("Failed to enter tmux copy mode")?;
+        Ok(())
+    }
+
+    /// Exit tmux copy mode for a pane (send q to exit)
+    pub fn exit_copy_mode(session: &str, window: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Command::new("tmux")
+            .args(["send-keys", "-t", &target, "-X", "cancel"])
+            .status()
+            .context("Failed to exit tmux copy mode")?;
         Ok(())
     }
 }

@@ -62,8 +62,6 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 }
 
-const SCROLL_HISTORY_LINES: i32 = 10000;
-
 pub fn handle_view_key(
     app: &mut App,
     key: KeyEvent,
@@ -129,29 +127,73 @@ fn handle_scroll_key(
     key: KeyEvent,
     visible_rows: u16,
 ) -> Result<()> {
+    let (session, window, passthrough) = match &app.mode {
+        AppMode::Viewing(view) => {
+            (view.session.clone(), view.window.clone(), view.scroll_passthrough)
+        }
+        _ => return Ok(()),
+    };
+
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.toggle_scroll_mode();
+            app.toggle_scroll_mode(visible_rows);
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.scroll_up(1);
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "PPage")?;
+            } else {
+                app.scroll_up(1);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.scroll_down(1, visible_rows);
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "NPage")?;
+            } else {
+                app.scroll_down(1, visible_rows);
+            }
         }
         KeyCode::PageUp => {
-            app.scroll_up(visible_rows as usize);
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "PPage")?;
+            } else {
+                app.scroll_up(visible_rows as usize);
+            }
         }
         KeyCode::PageDown => {
-            app.scroll_down(visible_rows as usize, visible_rows);
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "NPage")?;
+            } else {
+                app.scroll_down(visible_rows as usize, visible_rows);
+            }
         }
         KeyCode::Home => {
-            app.scroll_to_top();
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "Home")?;
+            } else {
+                app.scroll_to_top();
+            }
         }
         KeyCode::End => {
-            app.scroll_to_bottom(visible_rows);
+            if passthrough {
+                TmuxManager::send_key_name(&session, &window, "End")?;
+            } else {
+                app.scroll_to_bottom(visible_rows);
+            }
         }
-        _ => {}
+        _ => {
+            if passthrough {
+                if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
+                    let _ = match tmux_key {
+                        TmuxKey::Literal(text) => {
+                            TmuxManager::send_literal(&session, &window, &text)
+                        }
+                        TmuxKey::Named(name) => {
+                            TmuxManager::send_key_name(&session, &window, &name)
+                        }
+                    };
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -159,7 +201,7 @@ fn handle_scroll_key(
 fn handle_leader_key(
     app: &mut App,
     key: KeyEvent,
-    _visible_rows: u16,
+    visible_rows: u16,
 ) -> Result<()> {
     app.deactivate_leader();
 
@@ -239,8 +281,8 @@ fn handle_leader_key(
             app.exit_view();
             app.mode = AppMode::Help;
         }
-        KeyCode::Char('S') => {
-            app.toggle_scroll_mode();
+        KeyCode::Char('o') | KeyCode::Char('S') => {
+            app.toggle_scroll_mode(visible_rows);
         }
         _ => {}
     }

@@ -48,6 +48,7 @@ SIGNAL_FILE="$TEMP_DIR/signal"
 ORIGINAL_FILE="$TEMP_DIR/original.$FILE_EXT"
 PROPOSED_FILE="$TEMP_DIR/proposed.$FILE_EXT"
 LOCK_DIR="/tmp/claude-review/popup.lock"
+LOCK_ACQUIRED=false
 
 # ── Notification / proceed signal ─────────────────────────────
 
@@ -346,12 +347,15 @@ acquire_lock() {
         sleep 0.2
     done
     echo $$ > "$LOCK_DIR/pid" 2>/dev/null
+    LOCK_ACQUIRED=true
 }
 
 # ── Cleanup ────────────────────────────────────────────────────
 
 cleanup() {
-    rm -rf "$LOCK_DIR" 2>/dev/null
+    if [[ "${LOCK_ACQUIRED:-false}" == "true" ]]; then
+        rm -rf "$LOCK_DIR" 2>/dev/null
+    fi
     rm -f "$NOTIFICATION_FILE" 2>/dev/null
     rm -rf "$TEMP_DIR"
 }
@@ -404,15 +408,17 @@ main() {
         esac
     fi
 
-    acquire_lock
     trap cleanup EXIT
 
-    # When managed by the TUI, wait for the user to view this
-    # feature before opening the popup
+    # When managed by the TUI, write the notification immediately so
+    # the TUI always shows the pending review. Wait for the user to
+    # open this feature, then acquire the lock to serialize popups.
     if [[ "$AMF_MANAGED" == "true" ]]; then
         write_notification
         wait_for_proceed
     fi
+
+    acquire_lock
 
     while true; do
         rm -f "$SIGNAL_FILE"

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -27,8 +28,14 @@ function sleep(ms: number) {
 
 function isAmfManaged(): boolean {
   if (!process.env.TMUX) return false
-  const sessionName = process.env.TMUX_SESSION_NAME || ""
-  return sessionName.startsWith("amf-")
+  try {
+    const sessionName = execFileSync("tmux", ["display-message", "-p", "#S"], {
+      encoding: "utf8",
+    }).trim()
+    return sessionName.startsWith("amf-")
+  } catch {
+    return false
+  }
 }
 
 export const DiffReview: Plugin = async ({ $, directory }) => {

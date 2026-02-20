@@ -34,6 +34,8 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    setup_thinking_hooks();
+
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.sync_statuses();
@@ -61,6 +63,97 @@ fn main() -> Result<()> {
     }
 
     result
+}
+
+/// Merges AMF thinking-detection hooks into ~/.claude/settings.json.
+///
+/// Uses Claude Code's PreToolUse / Stop hooks to touch / remove a
+/// sentinel file at /tmp/amf-thinking/<AMF_SESSION> so the dashboard
+/// can show a throbber without polling tmux pane content.
+///
+/// The function is idempotent: it only appends entries when they are
+/// not already present, and silently skips on any I/O error.
+fn setup_thinking_hooks() {
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::path::PathBuf;
+
+    let pre_tool_cmd =
+        "[ -n \"$AMF_SESSION\" ] \
+         && mkdir -p /tmp/amf-thinking \
+         && touch \"/tmp/amf-thinking/$AMF_SESSION\" \
+         || true";
+    let stop_cmd =
+        "[ -n \"$AMF_SESSION\" ] \
+         && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" \
+         || true";
+
+    let settings_path: PathBuf = match std::env::var("HOME") {
+        Ok(h) => {
+            PathBuf::from(h).join(".claude").join("settings.json")
+        }
+        Err(_) => return,
+    };
+
+    let mut root: Value = if settings_path.exists() {
+        match fs::read_to_string(&settings_path) {
+            Ok(s) => {
+                serde_json::from_str(&s).unwrap_or(json!({}))
+            }
+            Err(_) => return,
+        }
+    } else {
+        json!({})
+    };
+
+    let Some(root_obj) = root.as_object_mut() else {
+        return;
+    };
+    let hooks = root_obj
+        .entry("hooks")
+        .or_insert(json!({}));
+    let Some(hooks_obj) = hooks.as_object_mut() else {
+        return;
+    };
+
+    for (event, cmd) in
+        [("PreToolUse", pre_tool_cmd), ("Stop", stop_cmd)]
+    {
+        let event_arr =
+            hooks_obj.entry(event).or_insert(json!([]));
+        let already_present = event_arr
+            .as_array()
+            .map(|arr| {
+                arr.iter().any(|entry| {
+                    entry["hooks"]
+                        .as_array()
+                        .map(|hs| {
+                            hs.iter()
+                                .any(|h| h["command"] == cmd)
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if !already_present {
+            if let Some(arr) = event_arr.as_array_mut() {
+                arr.push(json!({
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": cmd}
+                    ]
+                }));
+            }
+        }
+    }
+
+    if let Ok(serialized) = serde_json::to_string_pretty(&root)
+    {
+        let _ = fs::write(
+            &settings_path,
+            serialized + "\n",
+        );
+    }
 }
 
 fn run_loop<B: Backend>(

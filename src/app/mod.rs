@@ -1871,24 +1871,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
 
-        let feat_name = view.feature_name.clone();
         self.mode = AppMode::Viewing(view);
-
-        for input in &self.pending_inputs {
-            if input.notification_type == "diff-review"
-                && input.feature_name.as_deref()
-                    == Some(&feat_name)
-                && let Some(signal_path) =
-                    &input.proceed_signal
-            {
-                let path = Path::new(signal_path);
-                if let Some(parent) = path.parent() {
-                    let _ =
-                        std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(path, "");
-            }
-        }
 
         Ok(())
     }
@@ -2502,25 +2485,6 @@ impl App {
         }
 
         self.pending_inputs = inputs;
-
-        if let AppMode::Viewing(ref view) = self.mode {
-            let feat_name = view.feature_name.clone();
-            for input in &self.pending_inputs {
-                if input.notification_type == "diff-review"
-                    && input.feature_name.as_deref()
-                        == Some(&feat_name)
-                    && let Some(signal_path) =
-                        &input.proceed_signal
-                {
-                    let path = Path::new(signal_path);
-                    if let Some(parent) = path.parent() {
-                        let _ =
-                            std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::write(path, "");
-                }
-            }
-        }
     }
 
     pub fn handle_notification_select(

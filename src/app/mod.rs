@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+const NOTIFY_SH: &str =
+    include_str!("../../scripts/notify.sh");
+const CLEAR_NOTIFY_SH: &str =
+    include_str!("../../scripts/clear-notify.sh");
+
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
@@ -495,8 +500,40 @@ pub struct App {
     pub thinking_features: std::collections::HashSet<String>,
 }
 
+fn ensure_notify_scripts() {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let notify_path = config_dir.join("notify.sh");
+    let clear_path = config_dir.join("clear-notify.sh");
+    if !notify_path.exists() {
+        let _ = std::fs::write(&notify_path, NOTIFY_SH);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &notify_path,
+                std::fs::Permissions::from_mode(0o755),
+            );
+        }
+    }
+    if !clear_path.exists() {
+        let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &clear_path,
+                std::fs::Permissions::from_mode(0o755),
+            );
+        }
+    }
+}
+
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
+        ensure_notify_scripts();
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
         let zai_monthly = config.zai.get_monthly_limit();

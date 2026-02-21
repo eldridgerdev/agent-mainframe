@@ -461,6 +461,23 @@ pub fn ensure_notification_hooks(
         serde_json::to_string_pretty(&settings)
             .unwrap_or_default(),
     );
+
+    // Ensure notifications/ is gitignored within .claude/
+    let claude_gitignore = claude_dir.join(".gitignore");
+    let gitignore_entry = "notifications/\n";
+    let needs_entry = std::fs::read_to_string(&claude_gitignore)
+        .map(|s| !s.contains("notifications/"))
+        .unwrap_or(true);
+    if needs_entry {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&claude_gitignore);
+        if let Ok(ref mut file) = f {
+            use std::io::Write;
+            let _ = file.write_all(gitignore_entry.as_bytes());
+        }
+    }
 }
 
 fn detect_repo_path() -> String {
@@ -507,27 +524,23 @@ fn ensure_notify_scripts() {
     let _ = std::fs::create_dir_all(&config_dir);
     let notify_path = config_dir.join("notify.sh");
     let clear_path = config_dir.join("clear-notify.sh");
-    if !notify_path.exists() {
-        let _ = std::fs::write(&notify_path, NOTIFY_SH);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &notify_path,
-                std::fs::Permissions::from_mode(0o755),
-            );
-        }
+    let _ = std::fs::write(&notify_path, NOTIFY_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &notify_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
     }
-    if !clear_path.exists() {
-        let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &clear_path,
-                std::fs::Permissions::from_mode(0o755),
-            );
-        }
+    let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &clear_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
     }
 }
 
@@ -2434,91 +2447,76 @@ impl App {
     }
 
     pub fn scan_notifications(&mut self) {
-        let notify_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("claude-super-vibeless")
-            .join("notifications");
+        #[derive(Deserialize)]
+        struct NotificationJson {
+            session_id: Option<String>,
+            cwd: Option<String>,
+            message: Option<String>,
+            #[serde(alias = "type")]
+            notification_type: Option<String>,
+            proceed_signal: Option<String>,
+        }
 
         let mut inputs = Vec::new();
 
-        let entries = match std::fs::read_dir(&notify_dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
+        for project in &self.store.projects {
+            for feature in &project.features {
+                let notify_dir = feature
+                    .workdir
+                    .join(".claude")
+                    .join("notifications");
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str())
-                != Some("json")
-            {
-                continue;
-            }
+                let entries =
+                    match std::fs::read_dir(&notify_dir) {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
 
-            let data = match std::fs::read_to_string(&path) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            #[derive(Deserialize)]
-            struct NotificationJson {
-                session_id: Option<String>,
-                cwd: Option<String>,
-                message: Option<String>,
-                #[serde(alias = "type")]
-                notification_type: Option<String>,
-                proceed_signal: Option<String>,
-            }
-
-            let notif: NotificationJson =
-                match serde_json::from_str(&data) {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-
-            let session_id =
-                notif.session_id.unwrap_or_default();
-            let cwd = notif.cwd.unwrap_or_default();
-            let message = notif.message.unwrap_or_default();
-            let notification_type =
-                notif.notification_type.unwrap_or_default();
-            let proceed_signal = notif.proceed_signal;
-
-            let mut project_name = None;
-            let mut feature_name = None;
-            let mut best_len: usize = 0;
-            let cwd_path = PathBuf::from(&cwd);
-            for project in &self.store.projects {
-                for feature in &project.features {
-                    let wlen = feature
-                        .workdir
-                        .as_os_str()
-                        .len();
-                    if (cwd_path
-                        .starts_with(&feature.workdir)
-                        || feature
-                            .workdir
-                            .starts_with(&cwd_path))
-                        && wlen > best_len
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        != Some("json")
                     {
-                        project_name =
-                            Some(project.name.clone());
-                        feature_name =
-                            Some(feature.name.clone());
-                        best_len = wlen;
+                        continue;
                     }
+
+                    let data =
+                        match std::fs::read_to_string(&path)
+                        {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+
+                    let notif: NotificationJson =
+                        match serde_json::from_str(&data) {
+                            Ok(n) => n,
+                            Err(_) => continue,
+                        };
+
+                    inputs.push(PendingInput {
+                        session_id: notif
+                            .session_id
+                            .unwrap_or_default(),
+                        cwd: notif.cwd.unwrap_or_default(),
+                        message: notif
+                            .message
+                            .unwrap_or_default(),
+                        notification_type: notif
+                            .notification_type
+                            .unwrap_or_default(),
+                        file_path: path,
+                        project_name: Some(
+                            project.name.clone(),
+                        ),
+                        feature_name: Some(
+                            feature.name.clone(),
+                        ),
+                        proceed_signal: notif.proceed_signal,
+                    });
                 }
             }
-
-            inputs.push(PendingInput {
-                session_id,
-                cwd,
-                message,
-                notification_type,
-                file_path: path,
-                project_name,
-                feature_name,
-                proceed_signal,
-            });
         }
 
         self.pending_inputs = inputs;

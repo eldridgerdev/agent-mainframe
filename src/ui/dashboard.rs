@@ -163,6 +163,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if matches!(app.mode, AppMode::ConfirmingOpencodeSession { .. }) {
         super::picker::draw_opencode_session_confirm(frame);
     }
+
+    if let AppMode::ChangeReasonPrompt(state) = &app.mode {
+        super::dialogs::draw_change_reason_dialog(frame, state);
+    }
 }
 
 pub fn centered_rect(
@@ -237,6 +241,10 @@ fn draw_pane_view(
             header_spans.extend(rainbow_spans("supervibe"));
             header_spans.push(Span::raw("] "));
         }
+        VibeMode::Review => header_spans.push(Span::styled(
+            "[review] ",
+            Style::default().fg(Color::Magenta),
+        )),
     };
 
     if leader_active {

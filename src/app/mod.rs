@@ -214,7 +214,17 @@ fn ensure_opencode_plugins(
         let _ = std::fs::copy(&src_input_request, &dst_input_request);
     }
 
-    if matches!(mode, VibeMode::Vibeless) {
+    if matches!(mode, VibeMode::Review) {
+        let src_change_tracker = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("change-tracker.js");
+        let dst_change_tracker = plugins_dir.join("change-tracker.js");
+
+        if src_change_tracker.exists() {
+            let _ = std::fs::copy(&src_change_tracker, &dst_change_tracker);
+        }
+
         let src_diff_review = repo
             .join(".opencode")
             .join("plugins")
@@ -295,8 +305,7 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
-    let wants_diff_review =
-        matches!(mode, VibeMode::Vibeless);
+    let wants_diff_review = matches!(mode, VibeMode::Review);
 
     let mut settings: serde_json::Value =
         if settings_path.exists() {
@@ -2307,6 +2316,15 @@ impl App {
                 #[serde(alias = "type")]
                 notification_type: Option<String>,
                 proceed_signal: Option<String>,
+                file_path: Option<String>,
+                relative_path: Option<String>,
+                tool: Option<String>,
+                change_id: Option<String>,
+                old_snippet: Option<String>,
+                new_snippet: Option<String>,
+                content_preview: Option<String>,
+                response_file: Option<String>,
+                reason: Option<String>,
             }
 
             let notif: NotificationJson =
@@ -2322,6 +2340,57 @@ impl App {
             let notification_type =
                 notif.notification_type.unwrap_or_default();
             let proceed_signal = notif.proceed_signal;
+
+            if notification_type == "change-reason"
+                && let AppMode::Viewing(ref view) = self.mode
+            {
+                let mut feature_name = None;
+                let cwd_path = PathBuf::from(&cwd);
+                for project in &self.store.projects {
+                    for feature in &project.features {
+                        if cwd_path.starts_with(&feature.workdir)
+                            || feature.workdir.starts_with(&cwd_path)
+                        {
+                            feature_name = Some(feature.name.clone());
+                        }
+                    }
+                }
+
+                if feature_name.as_deref() == Some(&view.feature_name) {
+                    let response_file = notif
+                        .response_file
+                        .unwrap_or_default();
+                    let proceed_signal = proceed_signal
+                        .unwrap_or_default();
+                    
+                    self.mode = AppMode::ChangeReasonPrompt(
+                        ChangeReasonState {
+                            session_id,
+                            file_path: notif
+                                .file_path
+                                .unwrap_or_default(),
+                            relative_path: notif
+                                .relative_path
+                                .unwrap_or_default(),
+                            change_id: notif
+                                .change_id
+                                .unwrap_or_default(),
+                            tool: notif.tool.unwrap_or_default(),
+                            old_snippet: notif
+                                .old_snippet
+                                .unwrap_or_default(),
+                            new_snippet: notif
+                                .new_snippet
+                                .unwrap_or_default(),
+                            reason: notif.reason.unwrap_or_default(),
+                            response_file: PathBuf::from(response_file),
+                            proceed_signal: PathBuf::from(proceed_signal),
+                        },
+                    );
+                    let _ = std::fs::remove_file(&path);
+                    return;
+                }
+            }
 
             let mut project_name = None;
             let mut feature_name = None;

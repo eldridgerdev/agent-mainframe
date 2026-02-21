@@ -12,6 +12,14 @@ function ensureDir(dir) {
   }
 }
 
+function safeUnlink(path) {
+  try {
+    if (existsSync(path)) {
+      unlinkSync(path)
+    }
+  } catch {}
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -29,7 +37,7 @@ export const DiffReview = async ({ $, directory }) => {
       if (!filePath) return
 
       const sessionId = input.sessionID || "opencode"
-      const signalFile = join(SIGNAL_DIR, `${sessionId}.proceed`)
+      const signalFile = join(SIGNAL_DIR, sessionId + ".proceed")
       const jsonPayload = JSON.stringify({
         tool,
         file_path: filePath,
@@ -42,34 +50,30 @@ export const DiffReview = async ({ $, directory }) => {
       ensureDir(NOTIFY_DIR)
       ensureDir(SIGNAL_DIR)
 
-      // Write notification for TUI to pick up
-      const notificationFile = join(NOTIFY_DIR, `${sessionId}.json`)
+      const notificationFile = join(NOTIFY_DIR, sessionId + ".json")
       const notification = {
         session_id: sessionId,
         cwd: directory,
-        message: `Diff review: ${filePath}`,
+        message: "Diff review: " + filePath,
         type: "diff-review",
         proceed_signal: signalFile,
       }
       writeFileSync(notificationFile, JSON.stringify(notification, null, 2))
 
-      // Wait for TUI to signal user is viewing (with timeout)
-      const timeout = 300000 // 5 minutes
+      const timeout = 300000
       const startTime = Date.now()
       while (!existsSync(signalFile)) {
         if (Date.now() - startTime > timeout) {
-          unlinkSync(notificationFile)
+          safeUnlink(notificationFile)
           throw new Error("Diff review timed out waiting for user")
         }
         await sleep(500)
       }
 
-      // User is viewing, remove signal and notification
-      unlinkSync(signalFile)
-      unlinkSync(notificationFile)
+      safeUnlink(signalFile)
+      safeUnlink(notificationFile)
 
-      // Now run the actual diff review popup
-      const tmpFile = `/tmp/opencode-review-input-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      const tmpFile = "/tmp/opencode-review-input-" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".json"
 
       try {
         await Bun.write(tmpFile, jsonPayload)

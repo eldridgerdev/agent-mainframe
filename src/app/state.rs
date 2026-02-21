@@ -106,6 +106,20 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    ChangeReasonPrompt(ChangeReasonState),
+}
+
+pub struct ChangeReasonState {
+    pub session_id: String,
+    pub file_path: String,
+    pub relative_path: String,
+    pub change_id: String,
+    pub tool: String,
+    pub old_snippet: String,
+    pub new_snippet: String,
+    pub reason: String,
+    pub response_file: PathBuf,
+    pub proceed_signal: PathBuf,
 }
 
 pub struct BrowsePathState {

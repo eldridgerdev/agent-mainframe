@@ -4,6 +4,7 @@ mod dialog;
 mod picker;
 mod input;
 mod search;
+mod change_reason;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -30,6 +31,7 @@ pub use picker::{
 };
 pub use input::handle_paste;
 pub use search::handle_search_key;
+pub use change_reason::handle_change_reason_key;
 
 pub fn handle_key(
     app: &mut App,
@@ -77,6 +79,9 @@ pub fn handle_key(
         }
         AppMode::ConfirmingOpencodeSession { .. } => {
             handle_opencode_session_confirm_key(app, key.code)
+        }
+        AppMode::ChangeReasonPrompt(_) => {
+            handle_change_reason_key(app, key)
         }
     }
 }

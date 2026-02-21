@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "repo_root": "/home/eldridger/code/claude_super_vibeless/.worktrees/review-command",
+  "sessions": [],
+  "changes": [
+    {
+      "id": "f948d069-2075-434b-a1da-48c4b0184fef",
+      "timestamp": "2026-02-17T20:04:46.745Z",
+      "file": "src/project.rs",
+      "tool": "write",
+      "old_snippet": "",
+      "new_snippet": "",
+      "reason": null,
+      "session_id": "ses_3974863b3ffeOv3tJOA02K5S16"
+    }
+  ],
+  "change_sets": [
+    {
+      "id": "6614c928-0c77-4d03-9d25-b5a7d86d49c8",
+      "change_ids": [
+        "f948d069-2075-434b-a1da-48c4b0184fef"
+      ],
+      "file": "src/project.rs",
+      "summary": null,
+      "created_at": "2026-02-17T20:04:46.745Z",
+      "finalized_at": null
+    }
+  ]
+}

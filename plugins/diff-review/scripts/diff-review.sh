@@ -52,7 +52,7 @@ LOCK_ACQUIRED=false
 
 # ── Notification / proceed signal ─────────────────────────────
 
-NOTIFY_DIR="${HOME}/.config/claude-super-vibeless/notifications"
+NOTIFY_DIR="${CWD}/.claude/notifications"
 NOTIFICATION_FILE="$NOTIFY_DIR/${SESSION_ID}-diff-${INVOCATION_ID}.json"
 PROCEED_SIGNAL="$TEMP_DIR/proceed"
 TMUX_SESSION_NAME="$(tmux display-message -p '#S' 2>/dev/null || true)"

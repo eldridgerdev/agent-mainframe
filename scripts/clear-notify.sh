@@ -3,18 +3,15 @@
 # Reads JSON from stdin and removes the notification file
 # for the Agent Mainframe dashboard.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NOTIFY_DIR="$SCRIPT_DIR/notifications"
-
-# Read JSON from stdin
 INPUT=$(cat)
 
-# Extract session_id from the JSON
-SESSION_ID=$(echo "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 
-if [ -z "$SESSION_ID" ]; then
+if [ -z "$SESSION_ID" ] || [ -z "$CWD" ]; then
     exit 0
 fi
 
-# Remove the notification file if it exists
+NOTIFY_DIR="$CWD/.claude/notifications"
+
 rm -f "$NOTIFY_DIR/${SESSION_ID}.json"

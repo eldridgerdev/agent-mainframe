@@ -208,7 +208,11 @@ impl TmuxManager {
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
 
-        let mut cmd_str = String::from("claude");
+        // Use `env` to set AMF_SESSION so PreToolUse/Stop hooks
+        // can identify the session. `env VAR=val cmd` works in
+        // all shells including fish (unlike `VAR=val cmd`).
+        let mut cmd_str =
+            format!("env AMF_SESSION={} claude", session);
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", sid));
         }

@@ -752,36 +752,49 @@ impl App {
                 if feature.status == ProjectStatus::Stopped {
                     continue;
                 }
-                let agent_session = feature.sessions.iter().find(|s| {
-                    matches!(
-                        s.kind,
-                        SessionKind::Claude | SessionKind::Opencode
-                    )
-                });
-                let Some(session) = agent_session else {
-                    continue;
-                };
-                if let Ok(content) = TmuxManager::capture_pane(
-                    &feature.tmux_session,
-                    &session.tmux_window,
-                ) {
-                    if Self::is_agent_thinking(&content) {
-                        self.thinking_features
-                            .insert(feature.tmux_session.clone());
+                let thinking = match feature.agent {
+                    // Claude: file written by PreToolUse hook
+                    AgentKind::Claude => {
+                        Self::is_claude_thinking(
+                            &feature.tmux_session,
+                        )
                     }
+                    // Opencode: no hook support, fall back to
+                    // pane text scan
+                    AgentKind::Opencode => {
+                        let session = feature.sessions.iter().find(
+                            |s| s.kind == SessionKind::Opencode,
+                        );
+                        session
+                            .and_then(|s| {
+                                TmuxManager::capture_pane(
+                                    &feature.tmux_session,
+                                    &s.tmux_window,
+                                )
+                                .ok()
+                            })
+                            .map(|content| {
+                                let lower =
+                                    content.to_lowercase();
+                                lower.contains("esc interrupt")
+                            })
+                            .unwrap_or(false)
+                    }
+                };
+                if thinking {
+                    self.thinking_features
+                        .insert(feature.tmux_session.clone());
                 }
             }
         }
     }
 
-    fn is_agent_thinking(content: &str) -> bool {
-        let lower = content.to_lowercase();
-        // opencode shows "esc interrupt"
-        // claude shows "+ Blanching… (thinking)" or
-        //   "· Sublimating… (1m 16s · ↓ 2.9k tokens)"
-        lower.contains("esc interrupt")
-            || lower.contains("(thinking)")
-            || (content.contains('\u{2193}') && lower.contains("tokens"))
+    fn is_claude_thinking(tmux_session: &str) -> bool {
+        std::path::Path::new(&format!(
+            "/tmp/amf-thinking/{}",
+            tmux_session
+        ))
+        .exists()
     }
 
     pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {
@@ -1361,6 +1374,11 @@ impl App {
             &feature.tmux_session,
             &feature.sessions[0].tmux_window,
             &feature.workdir,
+        )?;
+        TmuxManager::set_session_env(
+            &feature.tmux_session,
+            "AMF_SESSION",
+            &feature.tmux_session,
         )?;
 
         for session in &feature.sessions[1..] {
@@ -3198,6 +3216,11 @@ impl App {
             &feature.tmux_session,
             &feature.sessions[0].tmux_window,
             &feature.workdir,
+        )?;
+        TmuxManager::set_session_env(
+            &feature.tmux_session,
+            "AMF_SESSION",
+            &feature.tmux_session,
         )?;
 
         for session in &feature.sessions[1..] {

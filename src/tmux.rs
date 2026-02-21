@@ -308,6 +308,16 @@ impl TmuxManager {
         }
     }
 
+    /// Set an environment variable in a tmux session so it is
+    /// inherited by all processes started in that session.
+    pub fn set_session_env(session: &str, key: &str, value: &str) -> Result<()> {
+        Command::new("tmux")
+            .args(["set-environment", "-t", session, key, value])
+            .status()
+            .context("Failed to set tmux session environment")?;
+        Ok(())
+    }
+
     /// Kill a tmux session
     pub fn kill_session(session: &str) -> Result<()> {
         if !Self::session_exists(session) {

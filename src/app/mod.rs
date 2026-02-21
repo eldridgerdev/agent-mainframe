@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+const NOTIFY_SH: &str =
+    include_str!("../../scripts/notify.sh");
+const CLEAR_NOTIFY_SH: &str =
+    include_str!("../../scripts/clear-notify.sh");
+
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
@@ -495,8 +500,40 @@ pub struct App {
     pub thinking_features: std::collections::HashSet<String>,
 }
 
+fn ensure_notify_scripts() {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless");
+    let _ = std::fs::create_dir_all(&config_dir);
+    let notify_path = config_dir.join("notify.sh");
+    let clear_path = config_dir.join("clear-notify.sh");
+    if !notify_path.exists() {
+        let _ = std::fs::write(&notify_path, NOTIFY_SH);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &notify_path,
+                std::fs::Permissions::from_mode(0o755),
+            );
+        }
+    }
+    if !clear_path.exists() {
+        let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &clear_path,
+                std::fs::Permissions::from_mode(0o755),
+            );
+        }
+    }
+}
+
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
+        ensure_notify_scripts();
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
         let zai_monthly = config.zai.get_monthly_limit();
@@ -715,7 +752,36 @@ impl App {
                 if feature.status == ProjectStatus::Stopped {
                     continue;
                 }
-                if Self::is_agent_thinking(&feature.tmux_session) {
+                let thinking = match feature.agent {
+                    // Claude: file written by PreToolUse hook
+                    AgentKind::Claude => {
+                        Self::is_claude_thinking(
+                            &feature.tmux_session,
+                        )
+                    }
+                    // Opencode: no hook support, fall back to
+                    // pane text scan
+                    AgentKind::Opencode => {
+                        let session = feature.sessions.iter().find(
+                            |s| s.kind == SessionKind::Opencode,
+                        );
+                        session
+                            .and_then(|s| {
+                                TmuxManager::capture_pane(
+                                    &feature.tmux_session,
+                                    &s.tmux_window,
+                                )
+                                .ok()
+                            })
+                            .map(|content| {
+                                let lower =
+                                    content.to_lowercase();
+                                lower.contains("esc interrupt")
+                            })
+                            .unwrap_or(false)
+                    }
+                };
+                if thinking {
                     self.thinking_features
                         .insert(feature.tmux_session.clone());
                 }
@@ -723,7 +789,7 @@ impl App {
         }
     }
 
-    fn is_agent_thinking(tmux_session: &str) -> bool {
+    fn is_claude_thinking(tmux_session: &str) -> bool {
         std::path::Path::new(&format!(
             "/tmp/amf-thinking/{}",
             tmux_session
@@ -1860,24 +1926,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
 
-        let feat_name = view.feature_name.clone();
         self.mode = AppMode::Viewing(view);
-
-        for input in &self.pending_inputs {
-            if input.notification_type == "diff-review"
-                && input.feature_name.as_deref()
-                    == Some(&feat_name)
-                && let Some(signal_path) =
-                    &input.proceed_signal
-            {
-                let path = Path::new(signal_path);
-                if let Some(parent) = path.parent() {
-                    let _ =
-                        std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(path, "");
-            }
-        }
 
         Ok(())
     }
@@ -2491,25 +2540,6 @@ impl App {
         }
 
         self.pending_inputs = inputs;
-
-        if let AppMode::Viewing(ref view) = self.mode {
-            let feat_name = view.feature_name.clone();
-            for input in &self.pending_inputs {
-                if input.notification_type == "diff-review"
-                    && input.feature_name.as_deref()
-                        == Some(&feat_name)
-                    && let Some(signal_path) =
-                        &input.proceed_signal
-                {
-                    let path = Path::new(signal_path);
-                    if let Some(parent) = path.parent() {
-                        let _ =
-                            std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::write(path, "");
-                }
-            }
-        }
     }
 
     pub fn handle_notification_select(

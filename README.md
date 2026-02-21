@@ -6,6 +6,8 @@ agent sessions. Each session runs in its own tmux session,
 and the dashboard lets you create, monitor, switch between,
 and interact with them all from one place.
 
+NOTE: Opencode is supported but a little buggy (mostly visual)
+
 ## Features
 
 - **Project / Feature hierarchy** - organize work by

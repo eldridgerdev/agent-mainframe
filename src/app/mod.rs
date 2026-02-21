@@ -2519,6 +2519,40 @@ impl App {
             }
         }
 
+        // If we're already viewing the feature that requested the
+        // diff, auto-proceed immediately — no picker needed.
+        let viewing = if let AppMode::Viewing(ref view) = self.mode {
+            Some((
+                view.project_name.clone(),
+                view.feature_name.clone(),
+            ))
+        } else {
+            None
+        };
+
+        if let Some((proj, feat)) = viewing {
+            inputs.retain(|input| {
+                if input.notification_type == "diff-review"
+                    && input.project_name.as_deref()
+                        == Some(&proj)
+                    && input.feature_name.as_deref()
+                        == Some(&feat)
+                {
+                    if let Some(ref sig) = input.proceed_signal {
+                        let p = Path::new(sig);
+                        if let Some(parent) = p.parent() {
+                            let _ =
+                                std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(p, "");
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
         self.pending_inputs = inputs;
     }
 

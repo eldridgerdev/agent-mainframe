@@ -79,6 +79,8 @@ cargo build --release
    viewing a session.
 
 ## Keybindings
+NOTE: hotkeys are a bit of a mess, I put 0 thought into them and just went with AI suggestions.
+I plan on cleaning them up and making them configurable
 
 ### Dashboard (Normal Mode)
 

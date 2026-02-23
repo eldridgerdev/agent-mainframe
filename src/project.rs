@@ -65,16 +65,27 @@ pub struct FeatureSession {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, PartialEq, Default,
-)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum VibeMode {
     #[default]
     Vibeless,
     Vibe,
     SuperVibe,
-    Review,
+}
+
+impl<'de> Deserialize<'de> for VibeMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "vibe" => VibeMode::Vibe,
+            "supervibe" => VibeMode::SuperVibe,
+            _ => VibeMode::Vibeless,
+        })
+    }
 }
 
 impl VibeMode {
@@ -83,7 +94,6 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
-            VibeMode::Review => "Review",
         }
     }
 
@@ -96,7 +106,6 @@ impl VibeMode {
             VibeMode::SuperVibe => {
                 vec!["--dangerously-skip-permissions".into()]
             }
-            VibeMode::Review => vec![],
         };
         if enable_chrome {
             flags.push("--chrome".into());
@@ -104,12 +113,8 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 4] = [
-        VibeMode::Review,
-        VibeMode::Vibeless,
-        VibeMode::Vibe,
-        VibeMode::SuperVibe,
-    ];
+    pub const ALL: [VibeMode; 3] =
+        [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
 }
 
 fn default_true() -> bool {
@@ -131,6 +136,8 @@ pub struct Feature {
     #[serde(default)]
     pub mode: VibeMode,
     #[serde(default)]
+    pub review: bool,
+    #[serde(default)]
     pub agent: AgentKind,
     #[serde(default)]
     pub enable_chrome: bool,
@@ -148,6 +155,7 @@ impl Feature {
         workdir: PathBuf,
         is_worktree: bool,
         mode: VibeMode,
+        review: bool,
         agent: AgentKind,
         enable_chrome: bool,
         has_notes: bool,
@@ -164,6 +172,7 @@ impl Feature {
             sessions: Vec::new(),
             collapsed: true,
             mode,
+            review,
             agent,
             enable_chrome,
             has_notes,
@@ -504,6 +513,7 @@ impl ProjectStore {
                             sessions,
                             collapsed: true,
                             mode: VibeMode::default(),
+                            review: false,
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,

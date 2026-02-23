@@ -31,6 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             state.return_window.clone(),
             state.return_label.clone(),
             state.vibe_mode.clone(),
+            state.review,
         );
         super::pane::draw(
             frame,
@@ -75,6 +76,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             sw.return_window.clone(),
             sw.return_label.clone(),
             sw.vibe_mode.clone(),
+            sw.review,
         );
         super::pane::draw(
             frame,
@@ -237,11 +239,13 @@ fn draw_pane_view(
             header_spans.extend(rainbow_spans("supervibe"));
             header_spans.push(Span::raw("] "));
         }
-        VibeMode::Review => header_spans.push(Span::styled(
+    };
+    if view.review {
+        header_spans.push(Span::styled(
             "[review] ",
             Style::default().fg(Color::Cyan),
-        )),
-    };
+        ));
+    }
 
     if leader_active {
         header_spans.push(Span::styled(

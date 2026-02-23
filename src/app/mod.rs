@@ -57,6 +57,7 @@ pub struct SessionSwitcherState {
     pub return_window: String,
     pub return_label: String,
     pub vibe_mode: VibeMode,
+    pub review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,6 +311,7 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
+    review: bool,
 ) {
     remove_old_diff_review_plugin(repo);
 
@@ -343,8 +345,7 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
-    let wants_diff_review =
-        matches!(mode, VibeMode::Vibeless);
+    let wants_diff_review = review;
 
     let mut settings: serde_json::Value =
         if settings_path.exists() {
@@ -476,6 +477,97 @@ pub fn ensure_notification_hooks(
         if let Ok(ref mut file) = f {
             use std::io::Write;
             let _ = file.write_all(gitignore_entry.as_bytes());
+        }
+    }
+
+    // Ensure review-notes.md is gitignored within .claude/
+    let needs_review_entry =
+        std::fs::read_to_string(&claude_gitignore)
+            .map(|s| !s.contains("review-notes.md"))
+            .unwrap_or(true);
+    if needs_review_entry {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&claude_gitignore)
+        {
+            use std::io::Write as _;
+            let _ = f.write_all(b"review-notes.md\n");
+        }
+    }
+}
+
+fn strip_between_markers(s: &str, begin: &str, end: &str) -> String {
+    if let (Some(bi), Some(ei)) = (s.find(begin), s.find(end)) {
+        let end_pos = ei + end.len();
+        // eat trailing newline after end marker
+        let end_pos = if s.as_bytes().get(end_pos) == Some(&b'\n') {
+            end_pos + 1
+        } else {
+            end_pos
+        };
+        // eat leading blank line before begin marker
+        let begin_pos = if bi >= 2 && &s[bi - 2..bi] == "\n\n" {
+            bi - 1
+        } else {
+            bi
+        };
+        format!("{}{}", &s[..begin_pos], &s[end_pos..])
+    } else {
+        s.to_string()
+    }
+}
+
+fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
+    const BEGIN: &str = "<!-- AMF:review-instructions:begin -->";
+    const END: &str = "<!-- AMF:review-instructions:end -->";
+    const BLOCK: &str = concat!(
+        "<!-- AMF:review-instructions:begin -->\n\n",
+        "## Review Mode\n\n",
+        "You are in **REVIEW MODE**. Before making any file ",
+        "change (Edit or Write), append a note to ",
+        "`.claude/review-notes.md` explaining:\n\n",
+        "- The relative path of the file you are changing\n",
+        "- What you are changing and why\n",
+        "- How it fits the overall approach\n\n",
+        "Use this exact format:\n\n",
+        "```\n",
+        "## <relative-file-path> — <brief title>\n\n",
+        "<your explanation>\n\n",
+        "---\n",
+        "```\n\n",
+        "Write the note BEFORE the edit so the reviewer can\n",
+        "see your reasoning when the diff appears.\n\n",
+        "<!-- AMF:review-instructions:end -->\n",
+    );
+
+    let claude_dir = workdir.join(".claude");
+    let md_path = claude_dir.join("CLAUDE.md");
+    let current =
+        std::fs::read_to_string(&md_path).unwrap_or_default();
+    let has_block = current.contains(BEGIN);
+
+    if enabled {
+        if has_block {
+            return; // already injected
+        }
+        let _ = std::fs::create_dir_all(&claude_dir);
+        let content = if current.is_empty() {
+            BLOCK.to_string()
+        } else {
+            format!("{}\n{}", current.trim_end(), BLOCK)
+        };
+        let _ = std::fs::write(&md_path, content);
+    } else if has_block {
+        let stripped =
+            strip_between_markers(&current, BEGIN, END);
+        if stripped.trim().is_empty() {
+            let _ = std::fs::remove_file(&md_path);
+        } else {
+            let _ = std::fs::write(
+                &md_path,
+                format!("{}\n", stripped.trim_end()),
+            );
         }
     }
 }
@@ -1180,6 +1272,7 @@ impl App {
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
         let mode = state.mode.clone();
+        let review = state.review;
         let use_existing_worktree = state.source_index == 1
             && !state.worktrees.is_empty();
         let selected_worktree = if use_existing_worktree {
@@ -1296,6 +1389,7 @@ impl App {
             workdir,
             is_worktree,
             mode,
+            review,
             state.agent.clone(),
             enable_chrome,
             enable_notes,
@@ -1364,7 +1458,9 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
+            feature.review,
         );
+        ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
@@ -1788,7 +1884,14 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
+        ensure_notification_hooks(
+            &workdir,
+            &repo,
+            &mode,
+            &agent,
+            feature.review,
+        );
+        ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
@@ -1895,6 +1998,7 @@ impl App {
             session_window,
             session_label,
             vibe_mode,
+            review,
         ) = {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
@@ -1917,6 +2021,7 @@ impl App {
                 session.tmux_window.clone(),
                 session.label.clone(),
                 feature.mode.clone(),
+                feature.review,
             )
         };
 
@@ -1934,6 +2039,7 @@ impl App {
             session_window,
             session_label,
             vibe_mode,
+            review,
         );
 
         self.save()?;
@@ -2183,6 +2289,7 @@ impl App {
         let feature_name = feature.name.clone();
         let tmux_session = feature.tmux_session.clone();
         let vibe_mode = feature.mode.clone();
+        let review = feature.review;
 
         let si = feature
             .sessions
@@ -2212,6 +2319,7 @@ impl App {
             session_window,
             session_label,
             vibe_mode,
+            review,
         ));
         self.save()?;
 
@@ -2322,7 +2430,7 @@ impl App {
     }
 
     pub fn open_session_switcher(&mut self) {
-        let (project_name, feature_name, tmux_session, current_window, current_label, sessions, vibe_mode) =
+        let (project_name, feature_name, tmux_session, current_window, current_label, sessions, vibe_mode, review) =
             match &self.mode {
                 AppMode::Viewing(view) => {
                     let pi = self
@@ -2367,6 +2475,7 @@ impl App {
                         view.session_label.clone(),
                         entries,
                         view.vibe_mode.clone(),
+                        view.review,
                     )
                 }
                 _ => return,
@@ -2391,6 +2500,7 @@ impl App {
                 return_window: current_window,
                 return_label: current_label,
                 vibe_mode,
+                review,
             });
     }
 
@@ -2402,6 +2512,7 @@ impl App {
             window,
             label,
             vibe_mode,
+            review,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => {
                 let entry =
@@ -2417,6 +2528,7 @@ impl App {
                     entry.tmux_window.clone(),
                     entry.label.clone(),
                     state.vibe_mode.clone(),
+                    state.review,
                 )
             }
             _ => return,
@@ -2430,6 +2542,7 @@ impl App {
             window,
             label,
             vibe_mode,
+            review,
         ));
     }
 
@@ -2441,6 +2554,7 @@ impl App {
             window,
             label,
             vibe_mode,
+            review,
         ) = match &self.mode {
             AppMode::SessionSwitcher(state) => (
                 state.project_name.clone(),
@@ -2449,6 +2563,7 @@ impl App {
                 state.return_window.clone(),
                 state.return_label.clone(),
                 state.vibe_mode.clone(),
+                state.review,
             ),
             _ => return,
         };
@@ -2461,6 +2576,7 @@ impl App {
             window,
             label,
             vibe_mode,
+            review,
         ));
     }
 
@@ -2736,6 +2852,7 @@ impl App {
                 .return_label
                 .clone(),
             vibe_mode: switcher_state.vibe_mode.clone(),
+            review: switcher_state.review,
         };
 
         self.mode =
@@ -3161,6 +3278,7 @@ impl App {
             session_window,
             session_label,
             vibe_mode,
+            review,
         ) = {
             let project = &self.store.projects[pi];
             let feature = &project.features[fi];
@@ -3180,6 +3298,7 @@ impl App {
                 session.tmux_window.clone(),
                 session.label.clone(),
                 feature.mode.clone(),
+                feature.review,
             )
         };
 
@@ -3197,6 +3316,7 @@ impl App {
             session_window,
             session_label,
             vibe_mode,
+            review,
         );
 
         self.save()?;
@@ -3229,7 +3349,9 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
+            feature.review,
         );
+        ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Opencode);
@@ -3349,6 +3471,121 @@ impl App {
             } else {
                 self.should_switch = Some(session);
             }
+        }
+
+        Ok(())
+    }
+
+    pub fn trigger_final_review(&mut self) -> Result<()> {
+        // Extract everything we need before mutating self.
+        let (workdir, repo, session) = match &self.mode {
+            AppMode::Viewing(view) => {
+                let pi = self
+                    .store
+                    .projects
+                    .iter()
+                    .position(|p| p.name == view.project_name);
+                let pi = match pi {
+                    Some(pi) => pi,
+                    None => {
+                        return Ok(());
+                    }
+                };
+                let fi = self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| f.name == view.feature_name);
+                let fi = match fi {
+                    Some(fi) => fi,
+                    None => {
+                        return Ok(());
+                    }
+                };
+                let feature =
+                    &self.store.projects[pi].features[fi];
+                let repo =
+                    self.store.projects[pi].repo.clone();
+                (
+                    feature.workdir.clone(),
+                    repo,
+                    view.session.clone(),
+                )
+            }
+            _ => return Ok(()),
+        };
+
+        // Exit view now so any error messages are visible in list mode.
+        self.exit_view();
+
+        // Look in workdir (feature worktree), then repo root, then
+        // the directory of the running AMF binary (handles the case
+        // where final-review.sh hasn't been committed yet but exists
+        // in the worktree AMF was built from).
+        let script_suffix = ["plugins", "diff-review", "scripts", "final-review.sh"];
+        let amf_root = std::env::current_exe().ok().and_then(|exe| {
+            // exe is at <root>/target/{debug,release}/amf — go up 3
+            exe.parent()?.parent()?.parent().map(PathBuf::from)
+        });
+        let script_path = [
+            Some(workdir.clone()),
+            Some(repo.clone()),
+            amf_root,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
+        .find(|p| p.exists());
+
+        let script = match script_path {
+            Some(p) => p,
+            None => {
+                self.message = Some(format!(
+                    "final-review.sh not found in {}, {}, or AMF binary dir",
+                    workdir.display(),
+                    repo.display(),
+                ));
+                return Ok(());
+            }
+        };
+
+        // Run the script directly in the feature's terminal pane.
+        // Wrapping in display-popup would cause nested-popup failures
+        // since final-review.sh opens its own popups for vimdiff/notes.
+        // After the script exits, switch back to the AMF session so the
+        // user doesn't get stranded in the feature's terminal.
+        let amf_session = TmuxManager::current_session()
+            .unwrap_or_default();
+        let switch_back = if amf_session.is_empty() {
+            String::new()
+        } else {
+            format!("; tmux switch-client -t '{}'", amf_session)
+        };
+        let cmd = format!(
+            "bash '{}' '{}'{}",
+            script.to_string_lossy(),
+            workdir.to_string_lossy(),
+            switch_back,
+        );
+        if let Err(e) =
+            TmuxManager::send_literal(&session, "terminal", &cmd)
+        {
+            self.message =
+                Some(format!("Failed to send review command: {e}"));
+            return Ok(());
+        }
+        if let Err(e) =
+            TmuxManager::send_key_name(&session, "terminal", "Enter")
+        {
+            self.message =
+                Some(format!("Failed to start review: {e}"));
+            return Ok(());
+        }
+
+        // Switch to the session so the popup is visible.
+        if TmuxManager::is_inside_tmux() {
+            TmuxManager::switch_client(&session)?;
+        } else {
+            self.should_switch = Some(session);
         }
 
         Ok(())

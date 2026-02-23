@@ -302,7 +302,7 @@ show_explanation() {
         "$ORIGINAL_FILE" "$PROPOSED_FILE" > "$diff_file" || true
 
     tmux display-popup -E -w 80% -h 80% \
-        bash "$SCRIPT_DIR/explain.sh" "$diff_file" "$DISPLAY_PATH"
+        bash "$SCRIPT_DIR/explain.sh" "$diff_file" "$DISPLAY_PATH" "$CWD"
 }
 
 # ── Notification for TUI ───────────────────────────────────────

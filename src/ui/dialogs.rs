@@ -261,20 +261,22 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Length(4),
-            Constraint::Length(1),
-            Constraint::Length(4),
-            Constraint::Length(1),
-            Constraint::Length(5),
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Length(2),
+            Constraint::Length(2),  // branch
+            Constraint::Length(1),  // spacer
+            Constraint::Length(4),  // worktree
+            Constraint::Length(1),  // spacer
+            Constraint::Length(4),  // agent
+            Constraint::Length(1),  // spacer
+            Constraint::Length(4),  // mode (3 variants)
+            Constraint::Length(1),  // spacer
+            Constraint::Length(2),  // review checkbox
+            Constraint::Length(1),  // spacer
+            Constraint::Length(2),  // chrome checkbox
+            Constraint::Length(1),  // spacer
+            Constraint::Length(2),  // notes checkbox
+            Constraint::Length(2),  // extra space
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(1),  // hints
         ])
         .split(inner);
 
@@ -397,8 +399,35 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let mode_widget = Paragraph::new(mode_lines);
     frame.render_widget(mode_widget, chunks[6]);
 
+    // Review checkbox (chunks[8])
+    let review_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == 2;
+    let review_check = if state.review { "[x]" } else { "[ ]" };
+    let review_style = if review_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let review_lines = vec![Line::from(vec![
+        Span::styled(
+            " Review: ",
+            if review_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            format!("{} Approve each edit before apply", review_check),
+            review_style,
+        ),
+    ])];
+    let review_widget = Paragraph::new(review_lines);
+    frame.render_widget(review_widget, chunks[8]);
+
+    // Chrome checkbox (chunks[10])
     let chrome_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 2
+        && state.mode_focus == 3
         && state.agent == AgentKind::Claude;
     let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
     let chrome_style = if chrome_active {
@@ -408,7 +437,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     };
     let chrome_label_style =
         if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
-            if state.mode_focus == 2 {
+            if state.mode_focus == 3 {
                 Style::default().fg(Color::Cyan)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -426,15 +455,17 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[8]);
+        frame.render_widget(chrome_widget, chunks[10]);
     }
 
+    // Notes checkbox (chunks[12])
     let memo_focus = if state.agent == AgentKind::Claude {
-        3
+        4
     } else {
-        2
+        3
     };
-    let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
+    let notes_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == memo_focus;
     let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
     let notes_style = if notes_active {
         Style::default().fg(Color::White)
@@ -453,7 +484,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         Span::styled(format!("{} Create memo", notes_check), notes_style),
     ])];
     let notes_widget = Paragraph::new(notes_lines);
-    frame.render_widget(notes_widget, chunks[10]);
+    frame.render_widget(notes_widget, chunks[12]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
@@ -481,7 +512,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[13]);
+    frame.render_widget(hints, chunks[15]);
 }
 
 pub fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
@@ -765,7 +796,7 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / s n p i r x ?)",
+            "Leader key (then: q t T w / s n p i r x f ?)",
             Style::default().fg(Color::White),
         ),
     ]));

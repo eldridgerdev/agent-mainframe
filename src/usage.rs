@@ -34,6 +34,7 @@ pub struct ClaudeUsageData {
     pub today_messages: u64,
     pub today_sessions: u64,
     pub today_tool_calls: u64,
+    pub today_tokens: u64,
     pub five_hour_pct: Option<f64>,
     pub seven_day_pct: Option<f64>,
     pub five_hour_resets: Option<String>,
@@ -88,6 +89,29 @@ struct DailyActivity {
     message_count: u64,
     session_count: u64,
     tool_call_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConversationEntry {
+    timestamp: Option<String>,
+    message: Option<ConversationMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConversationMessage {
+    usage: Option<ConversationUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConversationUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +303,8 @@ impl UsageManager {
 
         let today_stats = cache.daily_activity.iter().find(|d| d.date == today);
 
+        let today_tokens = calculate_claude_today_tokens(&today);
+
         let mut data = self.data.lock().unwrap();
         if let Some(stats) = today_stats {
             data.claude.today_messages = stats.message_count;
@@ -289,6 +315,7 @@ impl UsageManager {
             data.claude.today_sessions = 0;
             data.claude.today_tool_calls = 0;
         }
+        data.claude.today_tokens = today_tokens;
     }
 }
 
@@ -471,6 +498,79 @@ fn fetch_zai_usage(
 
         d.zai.last_error = None;
     }
+}
+
+fn calculate_claude_today_tokens(today: &str) -> u64 {
+    let Some(projects_dir) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) else {
+        return 0;
+    };
+    if !projects_dir.exists() {
+        return 0;
+    }
+
+    let Ok(proj_entries) = std::fs::read_dir(&projects_dir) else {
+        return 0;
+    };
+
+    let mut total: u64 = 0;
+
+    for proj_entry in proj_entries.flatten() {
+        let proj_path = proj_entry.path();
+        if !proj_path.is_dir() {
+            continue;
+        }
+
+        let Ok(files) = std::fs::read_dir(&proj_path) else {
+            continue;
+        };
+
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+            if file_path.extension().map(|e| e != "jsonl").unwrap_or(true) {
+                continue;
+            }
+
+            // Only read files modified today as a quick filter
+            let Ok(meta) = file_entry.metadata() else {
+                continue;
+            };
+            let Ok(mtime) = meta.modified() else {
+                continue;
+            };
+            let mdate = chrono::DateTime::<chrono::Local>::from(mtime)
+                .format("%Y-%m-%d")
+                .to_string();
+            if mdate != today {
+                continue;
+            }
+
+            let Ok(contents) = std::fs::read_to_string(&file_path) else {
+                continue;
+            };
+
+            for line in contents.lines() {
+                let Ok(entry) = serde_json::from_str::<ConversationEntry>(line) else {
+                    continue;
+                };
+                let Some(ref ts) = entry.timestamp else {
+                    continue;
+                };
+                if !ts.starts_with(today) {
+                    continue;
+                }
+                if let Some(msg) = entry.message {
+                    if let Some(usage) = msg.usage {
+                        total += usage.input_tokens
+                            + usage.output_tokens
+                            + usage.cache_read_input_tokens
+                            + usage.cache_creation_input_tokens;
+                    }
+                }
+            }
+        }
+    }
+
+    total
 }
 
 fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {

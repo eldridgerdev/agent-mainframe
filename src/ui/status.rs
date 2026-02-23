@@ -523,6 +523,21 @@ pub fn draw(
                 format!("{} msgs ", usage.claude.today_messages),
                 Style::default().fg(Color::DarkGray),
             ));
+
+            if usage.claude.today_tokens > 0 {
+                let tok = usage.claude.today_tokens;
+                let tok_str = if tok >= 1_000_000 {
+                    format!("{:.1}M tok ", tok as f64 / 1_000_000.0)
+                } else if tok >= 1_000 {
+                    format!("{:.1}K tok ", tok as f64 / 1_000.0)
+                } else {
+                    format!("{} tok ", tok)
+                };
+                right_spans.push(Span::styled(
+                    tok_str,
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
         }
         Model::Zai => {
             let format_tokens = |n: u64| {

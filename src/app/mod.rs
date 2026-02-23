@@ -345,7 +345,10 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
-    let wants_diff_review = review;
+    // Per-edit vimdiff review only in vibeless mode; vibe/supervibe
+    // still write notes to review-notes.md (via CLAUDE.local.md) but
+    // skip the per-edit popup so Claude can work uninterrupted.
+    let wants_diff_review = review && matches!(mode, VibeMode::Vibeless);
 
     let mut settings: serde_json::Value =
         if settings_path.exists() {

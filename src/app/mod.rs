@@ -541,17 +541,34 @@ fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
         "<!-- AMF:review-instructions:end -->\n",
     );
 
-    let claude_dir = workdir.join(".claude");
-    let md_path = claude_dir.join("CLAUDE.md");
+    // CLAUDE.local.md is Claude Code's designated gitignored variant of
+    // CLAUDE.md — it is read automatically but never committed.
+    let md_path = workdir.join("CLAUDE.local.md");
     let current =
         std::fs::read_to_string(&md_path).unwrap_or_default();
     let has_block = current.contains(BEGIN);
+
+    // Ensure CLAUDE.local.md is gitignored at the workdir root.
+    let gitignore_path = workdir.join(".gitignore");
+    let needs_ignore =
+        std::fs::read_to_string(&gitignore_path)
+            .map(|s| !s.contains("CLAUDE.local.md"))
+            .unwrap_or(true);
+    if needs_ignore {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_path)
+        {
+            use std::io::Write as _;
+            let _ = f.write_all(b"CLAUDE.local.md\n");
+        }
+    }
 
     if enabled {
         if has_block {
             return; // already injected
         }
-        let _ = std::fs::create_dir_all(&claude_dir);
         let content = if current.is_empty() {
             BLOCK.to_string()
         } else {

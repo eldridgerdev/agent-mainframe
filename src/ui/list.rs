@@ -269,6 +269,16 @@ pub fn draw(
                         ));
                     }
 
+                    let has_pending_input =
+                        app.pending_inputs.iter().any(|p| {
+                            p.project_name.as_deref()
+                                == Some(&project.name)
+                                && p.feature_name.as_deref()
+                                    == Some(&feature.name)
+                                && p.notification_type
+                                    != "diff-review"
+                        });
+
                     let mut line_spans = vec![
                         Span::styled(
                             connector,
@@ -289,6 +299,14 @@ pub fn draw(
                         badge,
                         Style::default().fg(muted),
                     ));
+                    if has_pending_input {
+                        line_spans.push(Span::styled(
+                            " ?",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     line_spans.push(Span::styled(
                         format!(
                             "  {}",

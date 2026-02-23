@@ -2049,6 +2049,22 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
 
+        // Clear pending input notifications for this feature
+        self.pending_inputs.retain(|input| {
+            if input.project_name.as_deref()
+                == Some(&project_name)
+                && input.feature_name.as_deref()
+                    == Some(&feature_name)
+                && input.notification_type != "diff-review"
+            {
+                let _ =
+                    std::fs::remove_file(&input.file_path);
+                false
+            } else {
+                true
+            }
+        });
+
         let view = ViewState::new(
             project_name,
             feature_name,

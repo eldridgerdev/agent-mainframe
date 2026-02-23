@@ -76,10 +76,13 @@ pub fn draw(
             header_spans.extend(rainbow_spans("supervibe"));
             header_spans.push(Span::raw("] "));
         }
-        VibeMode::Review => {
-            header_spans.push(Span::styled("[review] ", Style::default().fg(Color::Cyan)))
-        }
     };
+    if view.review {
+        header_spans.push(Span::styled(
+            "[review] ",
+            Style::default().fg(Color::Cyan),
+        ));
+    }
 
     if view.scroll_mode {
         let scroll_pct = if view.scroll_total_lines > 0 && !view.scroll_passthrough {
@@ -114,7 +117,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach o:scroll x:stop ?:help",
+            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach o:scroll x:stop f:review ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {

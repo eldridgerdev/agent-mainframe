@@ -236,28 +236,38 @@ pub fn draw(
                         String::new()
                     };
 
-                    let mode_badge_spans: Vec<Span> = match feature.mode {
-                        VibeMode::Vibeless => vec![Span::styled(
-                            " [vibeless]",
-                            Style::default()
-                                .fg(Color::Green),
-                        )],
-                        VibeMode::Vibe => vec![Span::styled(
-                            " [vibe]",
-                            Style::default()
-                                .fg(Color::Yellow),
-                        )],
-                        VibeMode::SuperVibe => {
-                            let mut spans = vec![Span::raw(" [")];
-                            spans.extend(rainbow_spans("supervibe"));
-                            spans.push(Span::raw("]"));
-                            spans
-                        }
-                        VibeMode::Review => vec![Span::styled(
+                    let mut mode_badge_spans: Vec<Span> =
+                        match feature.mode {
+                            VibeMode::Vibeless => {
+                                vec![Span::styled(
+                                    " [vibeless]",
+                                    Style::default()
+                                        .fg(Color::Green),
+                                )]
+                            }
+                            VibeMode::Vibe => {
+                                vec![Span::styled(
+                                    " [vibe]",
+                                    Style::default()
+                                        .fg(Color::Yellow),
+                                )]
+                            }
+                            VibeMode::SuperVibe => {
+                                let mut spans =
+                                    vec![Span::raw(" [")];
+                                spans.extend(
+                                    rainbow_spans("supervibe"),
+                                );
+                                spans.push(Span::raw("]"));
+                                spans
+                            }
+                        };
+                    if feature.review {
+                        mode_badge_spans.push(Span::styled(
                             " [review]",
                             Style::default().fg(Color::Cyan),
-                        )],
-                    };
+                        ));
+                    }
 
                     let mut line_spans = vec![
                         Span::styled(

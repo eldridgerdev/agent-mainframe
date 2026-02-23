@@ -217,9 +217,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        3
+                        4
                     } else {
-                        2
+                        3
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -236,9 +236,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        3
+                        4
                     } else {
-                        2
+                        3
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -264,13 +264,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.mode = VibeMode::ALL[state.mode_index].clone();
                         }
                         2 => {
+                            state.review = !state.review;
+                        }
+                        3 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        3 => {
+                        4 => {
                             state.enable_notes = !state.enable_notes;
                         }
                         _ => {}
@@ -297,13 +300,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.mode = VibeMode::ALL[state.mode_index].clone();
                         }
                         2 => {
+                            state.review = !state.review;
+                        }
+                        3 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        3 => {
+                        4 => {
                             state.enable_notes = !state.enable_notes;
                         }
                         _ => {}

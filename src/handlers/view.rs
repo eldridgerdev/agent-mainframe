@@ -284,6 +284,9 @@ fn handle_leader_key(
         KeyCode::Char('o') | KeyCode::Char('S') => {
             app.toggle_scroll_mode(visible_rows);
         }
+        KeyCode::Char('f') => {
+            app.trigger_final_review()?;
+        }
         _ => {}
     }
 

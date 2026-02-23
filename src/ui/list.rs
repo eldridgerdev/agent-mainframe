@@ -171,9 +171,18 @@ pub fn draw(
                         "  ├─"
                     };
 
+                    let is_waiting_for_input =
+                        app.is_feature_waiting_for_input(&feature.name);
                     let is_thinking =
                         app.is_feature_thinking(&feature.tmux_session);
-                    let status_dot = if is_thinking {
+                    let status_dot = if is_waiting_for_input {
+                        Span::styled(
+                            " ? ",
+                            Style::default()
+                                .fg(Color::Rgb(255, 165, 0))
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else if is_thinking {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
                                 Style::default()

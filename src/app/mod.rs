@@ -926,6 +926,12 @@ impl App {
         self.thinking_features.contains(tmux_session)
     }
 
+    pub fn is_feature_waiting_for_input(&self, feature_name: &str) -> bool {
+        self.pending_inputs.iter().any(|input| {
+            input.feature_name.as_deref() == Some(feature_name)
+        })
+    }
+
     pub fn selected_project(&self) -> Option<&Project> {
         match &self.selection {
             Selection::Project(pi)

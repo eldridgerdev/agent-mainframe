@@ -1429,6 +1429,33 @@ impl App {
         self.message = None;
     }
 
+    pub fn open_settings_project(&mut self) -> Result<()> {
+        let settings_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amf");
+
+        if !settings_dir.exists() {
+            std::fs::create_dir_all(&settings_dir)?;
+        }
+
+        if let Some((pi, _)) = self.store.projects.iter().enumerate().find(|(_, p)| p.repo == settings_dir) {
+            self.selection = Selection::Project(pi);
+            self.store.projects[pi].collapsed = false;
+            self.message = Some("Opened AMF settings project".into());
+            return Ok(());
+        }
+
+        let project = Project::new("amf-settings".into(), settings_dir.clone(), false);
+        self.store.add_project(project);
+        self.save()?;
+
+        let pi = self.store.projects.len().saturating_sub(1);
+        self.selection = Selection::Project(pi);
+        self.message = Some("Created AMF settings project".into());
+
+        Ok(())
+    }
+
     pub fn cancel_create(&mut self) {
         self.mode = AppMode::Normal;
     }

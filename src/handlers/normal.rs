@@ -63,6 +63,9 @@ pub fn handle_normal_key(
         KeyCode::Char('N') => {
             app.start_create_project();
         }
+        KeyCode::Char('O') => {
+            app.open_settings_project()?;
+        }
         KeyCode::Char('n') => {
             if app.selected_project().is_some() {
                 app.start_create_feature();

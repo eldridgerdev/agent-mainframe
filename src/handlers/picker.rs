@@ -5,90 +5,6 @@ use crate::app::{App, AppMode};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
-pub fn handle_custom_session_picker_key(
-    app: &mut App,
-    key: KeyCode,
-) -> Result<()> {
-    match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
-            let old_mode = std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            );
-            if let AppMode::CustomSessionPicker(state) =
-                old_mode
-                && let Some(view) = state.from_view
-            {
-                app.mode = AppMode::Viewing(view);
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if let AppMode::CustomSessionPicker(
-                ref mut state,
-            ) = app.mode
-            {
-                let len = state.sessions.len();
-                if len > 0 {
-                    state.selected =
-                        (state.selected + 1) % len;
-                }
-            }
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if let AppMode::CustomSessionPicker(
-                ref mut state,
-            ) = app.mode
-            {
-                let len = state.sessions.len();
-                if len > 0 {
-                    state.selected = if state.selected == 0 {
-                        len - 1
-                    } else {
-                        state.selected - 1
-                    };
-                }
-            }
-        }
-        KeyCode::Enter => {
-            let old_mode = std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            );
-            if let AppMode::CustomSessionPicker(state) =
-                old_mode
-            {
-                if let Some(cfg) =
-                    state.sessions.get(state.selected).cloned()
-                {
-                    match app.add_custom_session_type(
-                        state.pi,
-                        state.fi,
-                        &cfg,
-                    ) {
-                        Ok(()) => {
-                            app.message = Some(format!(
-                                "Added '{}'",
-                                cfg.name
-                            ));
-                        }
-                        Err(e) => {
-                            app.message = Some(format!(
-                                "Error: {}",
-                                e
-                            ));
-                        }
-                    }
-                }
-                if let Some(view) = state.from_view {
-                    app.mode = AppMode::Viewing(view);
-                }
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 pub fn handle_command_picker_key(
     app: &mut App,
     key: KeyCode,
@@ -348,6 +264,108 @@ pub fn handle_opencode_session_confirm_key(
         }
         KeyCode::Char('y') => {
             app.confirm_and_start_opencode()?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_session_picker_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let old_mode = std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            );
+            if let AppMode::SessionPicker(state) = old_mode
+                && let Some(view) = state.from_view
+            {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::SessionPicker(ref mut state) = app.mode
+            {
+                let total = state.builtin_sessions.len()
+                    + state.custom_sessions.len();
+                if total > 0 {
+                    state.selected = (state.selected + 1) % total;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::SessionPicker(ref mut state) = app.mode
+            {
+                let total = state.builtin_sessions.len()
+                    + state.custom_sessions.len();
+                if total > 0 {
+                    state.selected = if state.selected == 0 {
+                        total - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            let old_mode = std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            );
+            if let AppMode::SessionPicker(state) = old_mode {
+                let builtin_len = state.builtin_sessions.len();
+                if state.selected < builtin_len {
+                    let builtin = &state.builtin_sessions[state.selected];
+                    match app.add_builtin_session(
+                        state.pi,
+                        state.fi,
+                        builtin.kind.clone(),
+                    ) {
+                        Ok(()) => {
+                            app.message = Some(format!(
+                                "Added '{}'",
+                                builtin.label
+                            ));
+                        }
+                        Err(e) => {
+                            app.message = Some(format!(
+                                "Error: {}",
+                                e
+                            ));
+                        }
+                    }
+                } else {
+                    let custom_idx = state.selected - builtin_len;
+                    if let Some(cfg) =
+                        state.custom_sessions.get(custom_idx).cloned()
+                    {
+                        match app.add_custom_session_type(
+                            state.pi,
+                            state.fi,
+                            &cfg,
+                        ) {
+                            Ok(()) => {
+                                app.message = Some(format!(
+                                    "Added '{}'",
+                                    cfg.name
+                                ));
+                            }
+                            Err(e) => {
+                                app.message = Some(format!(
+                                    "Error: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                }
+                if let Some(view) = state.from_view {
+                    app.mode = AppMode::Viewing(view);
+                }
+            }
         }
         _ => {}
     }

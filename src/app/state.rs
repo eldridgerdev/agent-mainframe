@@ -113,15 +113,23 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
-    CustomSessionPicker(CustomSessionPickerState),
+    SessionPicker(SessionPickerState),
 }
 
-pub struct CustomSessionPickerState {
-    pub sessions: Vec<CustomSessionConfig>,
+#[derive(Clone)]
+pub struct SessionPickerState {
+    pub builtin_sessions: Vec<BuiltinSessionOption>,
+    pub custom_sessions: Vec<CustomSessionConfig>,
     pub selected: usize,
     pub pi: usize,
     pub fi: usize,
     pub from_view: Option<ViewState>,
+}
+
+#[derive(Clone)]
+pub struct BuiltinSessionOption {
+    pub kind: crate::project::SessionKind,
+    pub label: String,
 }
 
 pub struct BrowsePathState {

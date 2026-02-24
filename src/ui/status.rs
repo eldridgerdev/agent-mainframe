@@ -298,9 +298,9 @@ pub fn draw(
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
-        | AppMode::CustomSessionPicker(_) => Line::from(vec![
+        | AppMode::SessionPicker(_) => Line::from(vec![
             Span::styled(
-                "j/k",
+                "j/k or \u{2191}/\u{2193}",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" navigate  "),

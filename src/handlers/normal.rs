@@ -132,43 +132,7 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('s') => {
-            match &app.selection {
-                Selection::Feature(_, _)
-                | Selection::Session(_, _, _) => {
-                    app.switch_to_selected()?;
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Char('S') => {
-            app.pick_session();
-        }
-        KeyCode::Char('t') => {
-            match &app.selection {
-                Selection::Feature(_, _)
-                | Selection::Session(_, _, _) => {
-                    app.add_terminal_session()?;
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Char('a') => {
-            match &app.selection {
-                Selection::Feature(_, _)
-                | Selection::Session(_, _, _) => {
-                    app.add_claude_session()?;
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Char('v') => {
-            match &app.selection {
-                Selection::Feature(_, _)
-                | Selection::Session(_, _, _) => {
-                    app.add_nvim_session()?;
-                }
-                _ => {}
-            }
+            app.open_session_picker()?;
         }
         KeyCode::Char('m') => {
             match &app.selection {
@@ -252,19 +216,6 @@ pub fn handle_normal_key(
                 app.session_filter.display_name()
             ));
         }
-        KeyCode::Char('p') => {
-            if matches!(
-                app.selection,
-                Selection::Feature(..)
-                    | Selection::Session(..)
-            ) && !app
-                .active_extension
-                .custom_sessions
-                .is_empty()
-            {
-                app.open_custom_session_picker()?;
-            }
-        }
         _ => {}
     }
     Ok(())
@@ -281,15 +232,11 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "start_session" => Some('c'),
         "stop_session" => Some('x'),
         "delete" => Some('d'),
-        "switch" => Some('s'),
+        "sessions" => Some('s'),
         "help" => Some('?'),
         "search" => Some('/'),
-        "add_terminal" => Some('t'),
-        "add_claude" => Some('a'),
-        "add_nvim" => Some('v'),
         "refresh" => Some('r'),
         "filter" => Some('f'),
-        "sessions" => Some('p'),
         _ => None,
     }
 }

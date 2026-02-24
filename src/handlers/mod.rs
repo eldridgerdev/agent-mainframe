@@ -27,7 +27,7 @@ pub use picker::{
     handle_session_switcher_key,
     handle_opencode_session_picker_key,
     handle_opencode_session_confirm_key,
-    handle_custom_session_picker_key,
+    handle_session_picker_key,
 };
 pub use input::handle_paste;
 pub use search::handle_search_key;
@@ -79,8 +79,8 @@ pub fn handle_key(
         AppMode::ConfirmingOpencodeSession { .. } => {
             handle_opencode_session_confirm_key(app, key.code)
         }
-        AppMode::CustomSessionPicker(_) => {
-            handle_custom_session_picker_key(app, key.code)
+        AppMode::SessionPicker(_) => {
+            handle_session_picker_key(app, key.code)
         }
     }
 }

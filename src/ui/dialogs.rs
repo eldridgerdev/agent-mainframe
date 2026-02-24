@@ -7,9 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    BrowsePathState, CreateFeatureState, CreateFeatureStep,
-    CreateProjectState, CreateProjectStep, RenameSessionState,
-    SearchState,
+    BrowsePathState, CreateFeatureState, CreateFeatureStep, CreateProjectState, CreateProjectStep,
+    RenameSessionState, SearchState,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -101,9 +100,7 @@ pub fn draw_create_feature_dialog(
             draw_create_feature_worktree_picker(frame, state);
         }
         CreateFeatureStep::SelectPreset => {
-            draw_create_feature_preset_picker(
-                frame, state, presets,
-            );
+            draw_create_feature_preset_picker(frame, state, presets);
         }
         _ => {
             draw_create_feature_branch_mode(frame, state);
@@ -144,8 +141,7 @@ fn draw_create_feature_source(
     )));
     frame.render_widget(label, chunks[0]);
 
-    let mut options: Vec<&str> =
-        vec!["New branch", "Existing worktree"];
+    let mut options: Vec<&str> = vec!["New branch", "Existing worktree"];
     if !presets.is_empty() {
         options.push("Use preset");
     }
@@ -169,7 +165,10 @@ fn draw_create_feature_source(
     frame.render_widget(options_widget, chunks[1]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            " j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
         Span::raw(" select  "),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(" confirm  "),
@@ -187,8 +186,7 @@ fn draw_create_feature_preset_picker(
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
 
-    let title =
-        format!(" Select Preset ({}) ", state.project_name);
+    let title = format!(" Select Preset ({}) ", state.project_name);
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -199,10 +197,7 @@ fn draw_create_feature_preset_picker(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
     if presets.is_empty() {
@@ -226,13 +221,9 @@ fn draw_create_feature_preset_picker(
                 };
                 let agent_str = preset.agent.display_name();
                 let mode_str = match &preset.mode {
-                    crate::project::VibeMode::Vibeless => {
-                        "vibeless"
-                    }
+                    crate::project::VibeMode::Vibeless => "vibeless",
                     crate::project::VibeMode::Vibe => "vibe",
-                    crate::project::VibeMode::SuperVibe => {
-                        "supervibe"
-                    }
+                    crate::project::VibeMode::SuperVibe => "supervibe",
                 };
                 let detail = format!(
                     " {} | {}{}",
@@ -246,16 +237,11 @@ fn draw_create_feature_preset_picker(
                         Style::default().fg(Color::Cyan),
                     ),
                     Span::styled(&preset.name, name_style),
-                    Span::styled(
-                        detail,
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(detail, Style::default().fg(Color::DarkGray)),
                 ]);
                 let item = ListItem::new(line);
                 if is_selected {
-                    item.style(
-                        Style::default().bg(Color::DarkGray),
-                    )
+                    item.style(Style::default().bg(Color::DarkGray))
                 } else {
                     item
                 }
@@ -267,14 +253,11 @@ fn draw_create_feature_preset_picker(
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
-            " j/k",
+            " j/k or \u{2191}/\u{2193}",
             Style::default().fg(Color::Yellow),
         ),
         Span::raw(" select  "),
-        Span::styled(
-            "Enter",
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(" use preset  "),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::raw(" back"),
@@ -356,7 +339,10 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
         ]))
     } else {
         Paragraph::new(Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" select  "),
@@ -383,22 +369,22 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // branch
-            Constraint::Length(1),  // spacer
-            Constraint::Length(4),  // worktree
-            Constraint::Length(1),  // spacer
-            Constraint::Length(4),  // agent
-            Constraint::Length(1),  // spacer
-            Constraint::Length(4),  // mode (3 variants)
-            Constraint::Length(1),  // spacer
-            Constraint::Length(2),  // review checkbox
-            Constraint::Length(1),  // spacer
-            Constraint::Length(2),  // chrome checkbox
-            Constraint::Length(1),  // spacer
-            Constraint::Length(2),  // notes checkbox
-            Constraint::Length(2),  // extra space
+            Constraint::Length(2), // branch
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // worktree
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // agent
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // mode (3 variants)
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // review checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // chrome checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // notes checkbox
+            Constraint::Length(2), // extra space
             Constraint::Min(0),
-            Constraint::Length(1),  // hints
+            Constraint::Length(1), // hints
         ])
         .split(inner);
 
@@ -522,8 +508,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     frame.render_widget(mode_widget, chunks[6]);
 
     // Review checkbox (chunks[8])
-    let review_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 2;
+    let review_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 2;
     let review_check = if state.review { "[x]" } else { "[ ]" };
     let review_style = if review_active {
         Style::default().fg(Color::White)
@@ -586,8 +571,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     } else {
         3
     };
-    let notes_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == memo_focus;
+    let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
     let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
     let notes_style = if notes_active {
         Style::default().fg(Color::White)
@@ -610,7 +594,10 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" select  "),
             Span::styled("h/l", Style::default().fg(Color::Yellow)),
             Span::raw(" prev/next field  "),
@@ -619,7 +606,10 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         ]))
     } else if state.step == CreateFeatureStep::Worktree {
         Paragraph::new(Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(" toggle  "),
             Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" next  "),
@@ -1131,7 +1121,10 @@ pub fn draw_search_dialog(frame: &mut Frame, state: &SearchState) {
         format!(" {} / {}", state.selected_match + 1, state.matches.len())
     };
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            " j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
         Span::raw(" navigate  "),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::raw(" jump  "),

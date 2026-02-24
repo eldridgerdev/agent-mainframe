@@ -170,8 +170,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_opencode_session_confirm(frame);
     }
 
-    if let AppMode::CustomSessionPicker(state) = &app.mode {
-        super::picker::draw_custom_session_picker(frame, state);
+    if let AppMode::SessionPicker(state) = &app.mode {
+        super::picker::draw_session_picker(frame, state);
     }
 }
 

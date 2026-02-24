@@ -81,31 +81,53 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     };
 
     match step {
-        CreateFeatureStep::Source => match key {
-            KeyCode::Esc => {
-                app.cancel_create();
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.source_index = (state.source_index + 1) % 2;
+        CreateFeatureStep::Source => {
+            // Max source options:
+            //   0 = new branch
+            //   1 = existing worktree
+            //   2 = use preset (only if presets exist)
+            let preset_count =
+                app.active_extension.feature_presets.len();
+            let source_options = if preset_count > 0 { 3 } else { 2 };
+            match key {
+                KeyCode::Esc => {
+                    app.cancel_create();
                 }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.source_index = if state.source_index == 0 { 1 } else { 0 };
-                }
-            }
-            KeyCode::Enter => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    if state.source_index == 0 {
-                        state.step = CreateFeatureStep::Branch;
-                    } else {
-                        state.step = CreateFeatureStep::ExistingWorktree;
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if let AppMode::CreatingFeature(state) =
+                        &mut app.mode
+                    {
+                        state.source_index = (state.source_index
+                            + 1)
+                            % source_options;
                     }
                 }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if let AppMode::CreatingFeature(state) =
+                        &mut app.mode
+                    {
+                        state.source_index =
+                            if state.source_index == 0 {
+                                source_options - 1
+                            } else {
+                                state.source_index - 1
+                            };
+                    }
+                }
+                KeyCode::Enter => {
+                    if let AppMode::CreatingFeature(state) =
+                        &mut app.mode
+                    {
+                        state.step = match state.source_index {
+                            0 => CreateFeatureStep::Branch,
+                            1 => CreateFeatureStep::ExistingWorktree,
+                            _ => CreateFeatureStep::SelectPreset,
+                        };
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        },
+        }
         CreateFeatureStep::ExistingWorktree => match key {
             KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
@@ -145,6 +167,78 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                         });
                         state.step = CreateFeatureStep::Mode;
                     }
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::SelectPreset => match key {
+            KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    state.step = CreateFeatureStep::Source;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    let len = app
+                        .active_extension
+                        .feature_presets
+                        .len();
+                    if len > 0 {
+                        state.preset_index =
+                            (state.preset_index + 1) % len;
+                    }
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let AppMode::CreatingFeature(state) =
+                    &mut app.mode
+                {
+                    let len = app
+                        .active_extension
+                        .feature_presets
+                        .len();
+                    if len > 0 {
+                        state.preset_index =
+                            if state.preset_index == 0 {
+                                len - 1
+                            } else {
+                                state.preset_index - 1
+                            };
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let preset_index = match &app.mode {
+                    AppMode::CreatingFeature(s) => {
+                        s.preset_index
+                    }
+                    _ => return Ok(()),
+                };
+                let preset = app
+                    .active_extension
+                    .feature_presets
+                    .get(preset_index)
+                    .cloned();
+                if let Some(preset) = preset
+                    && let AppMode::CreatingFeature(state) =
+                        &mut app.mode
+                {
+                    // Pre-fill fields from preset.
+                    state.mode = preset.mode;
+                    state.agent = preset.agent.clone();
+                    state.review = preset.review;
+                    state.enable_chrome = preset.enable_chrome;
+                    state.enable_notes = preset.enable_notes;
+                    if let Some(ref prefix) = preset.branch_prefix
+                        && !prefix.is_empty()
+                    {
+                        state.branch = format!("{}/", prefix);
+                    }
+                    state.step = CreateFeatureStep::Branch;
                 }
             }
             _ => {}
@@ -227,10 +321,10 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::BackTab | KeyCode::Char('h') => {
-                if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    if state.mode_focus > 0 {
-                        state.mode_focus -= 1;
-                    }
+                if let AppMode::CreatingFeature(state) = &mut app.mode
+                    && state.mode_focus > 0
+                {
+                    state.mode_focus -= 1;
                 }
             }
             KeyCode::Enter => {

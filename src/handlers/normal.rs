@@ -34,7 +34,28 @@ pub fn handle_normal_key(
         }
     }
 
-    let key = key.code;
+    // Apply keybinding remaps from extension config.
+    // Build a map from the user-defined key → the canonical
+    // action string, then convert pressed char → canonical
+    // char using default_key_for_action().
+    let raw_key = key.code;
+    let remapped_key = if let KeyCode::Char(c) = raw_key {
+        let bindings = &app.active_extension.keybindings;
+        let canonical_char = bindings
+            .iter()
+            .find(|&(_, &v)| v == c)
+            .and_then(|(action, _)| {
+                default_key_for_action(action)
+            });
+        if let Some(canonical) = canonical_char {
+            KeyCode::Char(canonical)
+        } else {
+            raw_key
+        }
+    } else {
+        raw_key
+    };
+    let key = remapped_key;
     match key {
         KeyCode::Char('q') | KeyCode::Esc => {
             app.should_quit = true;
@@ -175,13 +196,12 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('l') => {
-            if let Selection::Project(pi) = &app.selection {
-                if let Some(project) =
+            if let Selection::Project(pi) = &app.selection
+                && let Some(project) =
                     app.store.projects.get(*pi)
-                    && project.collapsed
-                {
-                    app.toggle_collapse();
-                }
+                && project.collapsed
+            {
+                app.toggle_collapse();
             }
         }
         KeyCode::Char('?') => {
@@ -232,9 +252,46 @@ pub fn handle_normal_key(
                 app.session_filter.display_name()
             ));
         }
+        KeyCode::Char('p') => {
+            if matches!(
+                app.selection,
+                Selection::Feature(..)
+                    | Selection::Session(..)
+            ) && !app
+                .active_extension
+                .custom_sessions
+                .is_empty()
+            {
+                app.open_custom_session_picker()?;
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Returns the default canonical key character for a named
+/// action. These correspond to the hardcoded keys in
+/// handle_normal_key().
+fn default_key_for_action(action: &str) -> Option<char> {
+    match action {
+        "quit" => Some('q'),
+        "create_project" => Some('N'),
+        "create_feature" => Some('n'),
+        "start_session" => Some('c'),
+        "stop_session" => Some('x'),
+        "delete" => Some('d'),
+        "switch" => Some('s'),
+        "help" => Some('?'),
+        "search" => Some('/'),
+        "add_terminal" => Some('t'),
+        "add_claude" => Some('a'),
+        "add_nvim" => Some('v'),
+        "refresh" => Some('r'),
+        "filter" => Some('f'),
+        "sessions" => Some('p'),
+        _ => None,
+    }
 }
 
 fn handle_normal_leader_key(

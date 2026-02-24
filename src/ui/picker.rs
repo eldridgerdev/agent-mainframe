@@ -7,7 +7,9 @@ use ratatui::{
 };
 
 use crate::app::{
-    CommandPickerState, OpencodeSessionPickerState, PendingInput, SessionSwitcherState,
+    CommandPickerState, CustomSessionPickerState,
+    OpencodeSessionPickerState, PendingInput,
+    SessionSwitcherState,
 };
 use crate::project::SessionKind;
 
@@ -201,6 +203,7 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
                     let icon = if nerd_font { "  \u{E62B} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
+                SessionKind::Custom => Span::styled("  $ ", Style::default().fg(Color::Yellow)),
             };
 
             let name_style = if is_selected {
@@ -319,6 +322,120 @@ pub fn draw_opencode_session_picker(frame: &mut Frame, state: &OpencodeSessionPi
         Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_custom_session_picker(
+    frame: &mut Frame,
+    state: &CustomSessionPickerState,
+) {
+    let area = centered_rect(50, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Custom Sessions ({}) ",
+        state.sessions.len()
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.sessions.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No custom sessions configured.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, cfg)| {
+            let is_selected = i == state.selected;
+
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let mut lines: Vec<Line> = vec![Line::from(
+                vec![
+                    Span::styled(
+                        if is_selected { "  > " } else { "    " },
+                        Style::default().fg(Color::Magenta),
+                    ),
+                    Span::styled(&cfg.name, name_style),
+                ],
+            )];
+
+            if let Some(ref cmd) = cfg.command {
+                let preview = if cmd.len() > 50 {
+                    format!("{}...", &cmd[..47])
+                } else {
+                    cmd.clone()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("      {}", preview),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+
+            let item = ListItem::new(lines);
+            if is_selected {
+                item.style(Style::default().bg(Color::DarkGray))
+            } else {
+                item
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " launch  ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "q",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            " cancel",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     frame.render_widget(hints, chunks[1]);
 }

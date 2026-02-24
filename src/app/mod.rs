@@ -11,6 +11,10 @@ const NOTIFY_SH: &str =
 const CLEAR_NOTIFY_SH: &str =
     include_str!("../../scripts/clear-notify.sh");
 
+use crate::extension::{
+    merge_project_extension_config, ExtensionConfig,
+    load_global_extension_config,
+};
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionKind, VibeMode,
@@ -28,6 +32,23 @@ fn shorten_path(path: &std::path::Path) -> String {
         return format!("~/{}", rest.display());
     }
     path.display().to_string()
+}
+
+fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 pub struct CommandEntry {
@@ -82,7 +103,7 @@ impl Default for ZaiPlanConfig {
 
 impl ZaiPlanConfig {
     pub fn get_monthly_limit(&self) -> Option<u64> {
-        self.monthly_token_limit.or_else(|| match self.plan.as_str() {
+        self.monthly_token_limit.or(match self.plan.as_str() {
             "free" => Some(10_000_000),
             "coding-plan" => Some(500_000_000),
             "unlimited" => None,
@@ -91,7 +112,7 @@ impl ZaiPlanConfig {
     }
 
     pub fn get_weekly_limit(&self) -> Option<u64> {
-        self.weekly_token_limit.or_else(|| match self.plan.as_str() {
+        self.weekly_token_limit.or(match self.plan.as_str() {
             "free" => Some(2_500_000),
             "coding-plan" => Some(125_000_000),
             "unlimited" => None,
@@ -100,7 +121,7 @@ impl ZaiPlanConfig {
     }
 
     pub fn get_five_hour_limit(&self) -> Option<u64> {
-        self.five_hour_token_limit.or_else(|| match self.plan.as_str() {
+        self.five_hour_token_limit.or(match self.plan.as_str() {
             "free" => Some(500_000),
             "coding-plan" => Some(25_000_000),
             "unlimited" => None,
@@ -115,6 +136,7 @@ pub struct AppConfig {
     pub nerd_font: bool,
     pub zai: ZaiPlanConfig,
     pub opencode_theme: Option<String>,
+    pub extension: ExtensionConfig,
 }
 
 impl Default for AppConfig {
@@ -123,6 +145,7 @@ impl Default for AppConfig {
             nerd_font: true,
             zai: ZaiPlanConfig::default(),
             opencode_theme: Some("catppuccin-frappe".to_string()),
+            extension: ExtensionConfig::default(),
         }
     }
 }
@@ -447,16 +470,14 @@ pub fn ensure_notification_hooks(
         {
             arr.push(serde_json::json!("Write"));
         }
-    } else {
-        if let Some(arr) = settings
-            .pointer_mut("/permissions/allow")
-            .and_then(|v| v.as_array_mut())
-        {
-            arr.retain(|v| {
-                v.as_str() != Some("Edit")
-                    && v.as_str() != Some("Write")
-            });
-        }
+    } else if let Some(arr) = settings
+        .pointer_mut("/permissions/allow")
+        .and_then(|v| v.as_array_mut())
+    {
+        arr.retain(|v| {
+            v.as_str() != Some("Edit")
+                && v.as_str() != Some("Write")
+        });
     }
 
     let _ = std::fs::create_dir_all(&claude_dir);
@@ -488,15 +509,14 @@ pub fn ensure_notification_hooks(
         std::fs::read_to_string(&claude_gitignore)
             .map(|s| !s.contains("review-notes.md"))
             .unwrap_or(true);
-    if needs_review_entry {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+    if needs_review_entry
+        && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&claude_gitignore)
-        {
-            use std::io::Write as _;
-            let _ = f.write_all(b"review-notes.md\n");
-        }
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(b"review-notes.md\n");
     }
 }
 
@@ -557,15 +577,14 @@ fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
         std::fs::read_to_string(&gitignore_path)
             .map(|s| !s.contains("CLAUDE.local.md"))
             .unwrap_or(true);
-    if needs_ignore {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+    if needs_ignore
+        && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&gitignore_path)
-        {
-            use std::io::Write as _;
-            let _ = f.write_all(b"CLAUDE.local.md\n");
-        }
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(b"CLAUDE.local.md\n");
     }
 
     if enabled {
@@ -612,6 +631,7 @@ pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
     pub config: AppConfig,
+    pub active_extension: ExtensionConfig,
     pub selection: Selection,
     pub mode: AppMode,
     pub message: Option<String>,
@@ -664,10 +684,22 @@ impl App {
         let zai_monthly = config.zai.get_monthly_limit();
         let zai_weekly = config.zai.get_weekly_limit();
         let zai_five_hour = config.zai.get_five_hour_limit();
+        let global_ext = load_global_extension_config();
+        let active_extension = store
+            .projects
+            .first()
+            .map(|p| {
+                merge_project_extension_config(
+                    &global_ext,
+                    &p.repo,
+                )
+            })
+            .unwrap_or(global_ext);
         Ok(Self {
             store,
             store_path,
             config,
+            active_extension,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
@@ -684,6 +716,166 @@ impl App {
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
         })
+    }
+
+    /// Re-merge extension config for the currently selected
+    /// project. Call this whenever the selected project changes.
+    pub fn reload_extension_config(&mut self) {
+        let global_ext = load_global_extension_config();
+        self.active_extension = match &self.selection {
+            Selection::Project(pi)
+            | Selection::Feature(pi, _)
+            | Selection::Session(pi, _, _) => {
+                if let Some(project) =
+                    self.store.projects.get(*pi)
+                {
+                    merge_project_extension_config(
+                        &global_ext,
+                        &project.repo,
+                    )
+                } else {
+                    global_ext
+                }
+            }
+        };
+    }
+
+    /// Open the custom session picker for the currently
+    /// selected feature/session. Returns without action if
+    /// no feature is selected or extension has no sessions.
+    pub fn open_custom_session_picker(&mut self) -> Result<()> {
+        use crate::app::CustomSessionPickerState;
+
+        let sessions =
+            self.active_extension.custom_sessions.clone();
+        if sessions.is_empty() {
+            return Ok(());
+        }
+
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        if self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .is_none()
+        {
+            return Ok(());
+        }
+
+        let from_view =
+            if let AppMode::Viewing(ref view) = self.mode {
+                Some((*view).clone())
+            } else {
+                None
+            };
+
+        self.mode = AppMode::CustomSessionPicker(
+            CustomSessionPickerState {
+                sessions,
+                selected: 0,
+                pi,
+                fi,
+                from_view,
+            },
+        );
+        Ok(())
+    }
+
+    /// Add a custom session type as a tracked FeatureSession.
+    /// If the feature's tmux session is already running, also
+    /// creates the window and sends the command immediately.
+    pub fn add_custom_session_type(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        config: &crate::extension::CustomSessionConfig,
+    ) -> Result<()> {
+        let window_hint = config
+            .window_name
+            .clone()
+            .unwrap_or_else(|| slugify(&config.name));
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        let tmux_session = feature.tmux_session.clone();
+        let workdir = config
+            .working_dir
+            .as_ref()
+            .map(|rel| feature.workdir.join(rel))
+            .unwrap_or_else(|| feature.workdir.clone());
+
+        let session = feature.add_custom_session_named(
+            config.name.clone(),
+            window_hint,
+            config.command.clone(),
+        );
+        let window = session.tmux_window.clone();
+        let command = session.command.clone();
+
+        if TmuxManager::session_exists(&tmux_session) {
+            TmuxManager::create_window(
+                &tmux_session,
+                &window,
+                &workdir,
+            )?;
+            if let Some(ref cmd) = command {
+                TmuxManager::send_literal(
+                    &tmux_session,
+                    &window,
+                    cmd,
+                )?;
+                TmuxManager::send_key_name(
+                    &tmux_session,
+                    &window,
+                    "Enter",
+                )?;
+            }
+        }
+
+        self.save()?;
+        Ok(())
+    }
+
+    /// Run a lifecycle hook script non-blocking.
+    /// Expands leading `~/` to the home directory.
+    pub fn run_lifecycle_hook(
+        &self,
+        script: &str,
+        workdir: &Path,
+    ) {
+        let expanded = if script.starts_with("~/") {
+            dirs::home_dir()
+                .map(|h| {
+                    format!(
+                        "{}/{}",
+                        h.display(),
+                        &script[2..]
+                    )
+                })
+                .unwrap_or_else(|| script.to_string())
+        } else {
+            script.to_string()
+        };
+
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&expanded)
+            .current_dir(workdir)
+            .spawn();
     }
 
     pub fn save(&self) -> Result<()> {
@@ -1558,6 +1750,20 @@ impl App {
                     }
                 }
                 SessionKind::Terminal => {}
+                SessionKind::Custom => {
+                    if let Some(ref cmd) = session.command {
+                        TmuxManager::send_literal(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            cmd,
+                        )?;
+                        TmuxManager::send_key_name(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            "Enter",
+                        )?;
+                    }
+                }
             }
         }
 
@@ -1604,6 +1810,23 @@ impl App {
 
         self.ensure_feature_running(pi, fi)?;
 
+        // Fire on_start lifecycle hook if configured.
+        let hook_info = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.workdir.clone())
+            .zip(
+                self.active_extension
+                    .lifecycle_hooks
+                    .on_start
+                    .clone(),
+            );
+        if let Some((workdir, script)) = hook_info {
+            self.run_lifecycle_hook(&script, &workdir);
+        }
+
         let name = self.store.projects[pi].features[fi]
             .name
             .clone();
@@ -1638,7 +1861,29 @@ impl App {
             return Ok(());
         }
 
-        TmuxManager::kill_session(&feature.tmux_session)?;
+        // Fire on_stop lifecycle hook before killing session.
+        // Clone hook and workdir data before mutable borrow.
+        let on_stop_hook =
+            self.active_extension.lifecycle_hooks.on_stop.clone();
+        let workdir_for_hook = feature.workdir.clone();
+        let tmux_session = feature.tmux_session.clone();
+
+        if let Some(ref script) = on_stop_hook {
+            self.run_lifecycle_hook(script, &workdir_for_hook);
+        }
+
+        TmuxManager::kill_session(&tmux_session)?;
+
+        // Re-borrow feature after hook
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
         self.save()?;
@@ -3053,17 +3298,17 @@ impl App {
             }
         }
 
-        if !scanned_repo {
-            if let Some(ref repo) = repo {
-                let project_cmd_dir =
-                    repo.join(".claude").join("commands");
-                scan_commands_recursive(
-                    &project_cmd_dir,
-                    &project_cmd_dir,
-                    "Project",
-                    &mut project_cmds,
-                );
-            }
+        if !scanned_repo
+            && let Some(ref repo) = repo
+        {
+            let project_cmd_dir =
+                repo.join(".claude").join("commands");
+            scan_commands_recursive(
+                &project_cmd_dir,
+                &project_cmd_dir,
+                "Project",
+                &mut project_cmds,
+            );
         }
 
         project_cmds.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3157,22 +3402,22 @@ impl App {
     }
 
     pub fn select_next_search_match(&mut self) {
-        if let AppMode::Searching(state) = &mut self.mode {
-            if !state.matches.is_empty() {
-                state.selected_match = (state.selected_match + 1) % state.matches.len();
-            }
+        if let AppMode::Searching(state) = &mut self.mode
+            && !state.matches.is_empty()
+        {
+            state.selected_match = (state.selected_match + 1) % state.matches.len();
         }
     }
 
     pub fn select_prev_search_match(&mut self) {
-        if let AppMode::Searching(state) = &mut self.mode {
-            if !state.matches.is_empty() {
-                state.selected_match = if state.selected_match == 0 {
-                    state.matches.len() - 1
-                } else {
-                    state.selected_match - 1
-                };
-            }
+        if let AppMode::Searching(state) = &mut self.mode
+            && !state.matches.is_empty()
+        {
+            state.selected_match = if state.selected_match == 0 {
+                state.matches.len() - 1
+            } else {
+                state.selected_match - 1
+            };
         }
     }
 
@@ -3230,7 +3475,7 @@ impl App {
             None => return,
         };
 
-        let feature_running = self.selected_feature().map_or(false, |(_, f)| {
+        let feature_running = self.selected_feature().is_some_and(|(_, f)| {
             f.status != ProjectStatus::Stopped
                 && TmuxManager::session_exists(&f.tmux_session)
         });
@@ -3264,10 +3509,7 @@ impl App {
 
         self.mode = AppMode::OpencodeSessionPicker(
             OpencodeSessionPickerState {
-                sessions: match fetch_opencode_sessions(&workdir) {
-                    Ok(s) => s,
-                    Err(_) => Vec::new(),
-                },
+                sessions: fetch_opencode_sessions(&workdir).unwrap_or_default(),
                 selected: 0,
                 workdir,
             },
@@ -3462,6 +3704,20 @@ impl App {
                     }
                 }
                 SessionKind::Terminal => {}
+                SessionKind::Custom => {
+                    if let Some(ref cmd) = session.command {
+                        TmuxManager::send_literal(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            cmd,
+                        )?;
+                        TmuxManager::send_key_name(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            "Enter",
+                        )?;
+                    }
+                }
             }
         }
 
@@ -3680,7 +3936,7 @@ fn scan_commands_recursive(
 }
 
 fn fetch_opencode_sessions(
-    workdir: &PathBuf,
+    workdir: &Path,
 ) -> Result<Vec<OpencodeSessionInfo>> {
     use std::process::Command;
 

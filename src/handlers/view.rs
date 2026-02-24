@@ -181,17 +181,17 @@ fn handle_scroll_key(
             }
         }
         _ => {
-            if passthrough {
-                if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
-                    let _ = match tmux_key {
-                        TmuxKey::Literal(text) => {
-                            TmuxManager::send_literal(&session, &window, &text)
-                        }
-                        TmuxKey::Named(name) => {
-                            TmuxManager::send_key_name(&session, &window, &name)
-                        }
-                    };
-                }
+            if passthrough
+                && let Some(tmux_key) = crossterm_key_to_tmux(&key)
+            {
+                let _ = match tmux_key {
+                    TmuxKey::Literal(text) => {
+                        TmuxManager::send_literal(&session, &window, &text)
+                    }
+                    TmuxKey::Named(name) => {
+                        TmuxManager::send_key_name(&session, &window, &name)
+                    }
+                };
             }
         }
     }

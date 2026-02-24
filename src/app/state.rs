@@ -1,6 +1,7 @@
 use ratatui_explorer::FileExplorer;
 use std::path::PathBuf;
 
+use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
@@ -11,6 +12,7 @@ pub enum Selection {
     Session(usize, usize, usize),
 }
 
+#[derive(Clone)]
 pub struct ViewState {
     pub project_name: String,
     pub feature_name: String,
@@ -111,6 +113,15 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    CustomSessionPicker(CustomSessionPickerState),
+}
+
+pub struct CustomSessionPickerState {
+    pub sessions: Vec<CustomSessionConfig>,
+    pub selected: usize,
+    pub pi: usize,
+    pub fi: usize,
+    pub from_view: Option<ViewState>,
 }
 
 pub struct BrowsePathState {
@@ -152,6 +163,7 @@ impl CreateProjectState {
 pub enum CreateFeatureStep {
     Source,
     ExistingWorktree,
+    SelectPreset,
     Branch,
     Worktree,
     Mode,
@@ -175,6 +187,7 @@ pub struct CreateFeatureState {
     pub use_worktree: bool,
     pub enable_chrome: bool,
     pub enable_notes: bool,
+    pub preset_index: usize,
 }
 
 impl CreateFeatureState {
@@ -212,6 +225,7 @@ impl CreateFeatureState {
             use_worktree: !is_first_feature,
             enable_chrome: false,
             enable_notes: false,
+            preset_index: 0,
         }
     }
 }

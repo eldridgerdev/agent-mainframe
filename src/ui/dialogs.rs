@@ -7,9 +7,11 @@ use ratatui::{
 };
 
 use crate::app::{
-    BrowsePathState, CreateFeatureState, CreateFeatureStep, CreateProjectState, CreateProjectStep,
-    RenameSessionState, SearchState,
+    BrowsePathState, CreateFeatureState, CreateFeatureStep,
+    CreateProjectState, CreateProjectStep, RenameSessionState,
+    SearchState,
 };
+use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
 
 use super::dashboard::centered_rect;
@@ -86,13 +88,22 @@ fn cursor_span_project<'a>(current: &CreateProjectStep, target: &CreateProjectSt
     }
 }
 
-pub fn draw_create_feature_dialog(frame: &mut Frame, state: &CreateFeatureState) {
+pub fn draw_create_feature_dialog(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
     match state.step {
         CreateFeatureStep::Source => {
-            draw_create_feature_source(frame, state);
+            draw_create_feature_source(frame, state, presets);
         }
         CreateFeatureStep::ExistingWorktree => {
             draw_create_feature_worktree_picker(frame, state);
+        }
+        CreateFeatureStep::SelectPreset => {
+            draw_create_feature_preset_picker(
+                frame, state, presets,
+            );
         }
         _ => {
             draw_create_feature_branch_mode(frame, state);
@@ -100,7 +111,11 @@ pub fn draw_create_feature_dialog(frame: &mut Frame, state: &CreateFeatureState)
     }
 }
 
-fn draw_create_feature_source(frame: &mut Frame, state: &CreateFeatureState) {
+fn draw_create_feature_source(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
 
@@ -129,7 +144,11 @@ fn draw_create_feature_source(frame: &mut Frame, state: &CreateFeatureState) {
     )));
     frame.render_widget(label, chunks[0]);
 
-    let options = ["New branch", "Existing worktree"];
+    let mut options: Vec<&str> =
+        vec!["New branch", "Existing worktree"];
+    if !presets.is_empty() {
+        options.push("Use preset");
+    }
     let mut lines = Vec::new();
     for (i, opt) in options.iter().enumerate() {
         let is_selected = i == state.source_index;
@@ -158,6 +177,109 @@ fn draw_create_feature_source(frame: &mut Frame, state: &CreateFeatureState) {
         Span::raw(" cancel"),
     ]));
     frame.render_widget(hints, chunks[3]);
+}
+
+fn draw_create_feature_preset_picker(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title =
+        format!(" Select Preset ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    if presets.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No presets configured.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, chunks[0]);
+    } else {
+        let items: Vec<ListItem> = presets
+            .iter()
+            .enumerate()
+            .map(|(i, preset)| {
+                let is_selected = i == state.preset_index;
+                let name_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let agent_str = preset.agent.display_name();
+                let mode_str = match &preset.mode {
+                    crate::project::VibeMode::Vibeless => {
+                        "vibeless"
+                    }
+                    crate::project::VibeMode::Vibe => "vibe",
+                    crate::project::VibeMode::SuperVibe => {
+                        "supervibe"
+                    }
+                };
+                let detail = format!(
+                    " {} | {}{}",
+                    agent_str,
+                    mode_str,
+                    if preset.review { " | review" } else { "" }
+                );
+                let line = Line::from(vec![
+                    Span::styled(
+                        if is_selected { "  > " } else { "    " },
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(&preset.name, name_style),
+                    Span::styled(
+                        detail,
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+                let item = ListItem::new(line);
+                if is_selected {
+                    item.style(
+                        Style::default().bg(Color::DarkGray),
+                    )
+                } else {
+                    item
+                }
+            })
+            .collect();
+        let list = List::new(items);
+        frame.render_widget(list, chunks[0]);
+    }
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " j/k",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" select  "),
+        Span::styled(
+            "Enter",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" use preset  "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }
 
 fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureState) {

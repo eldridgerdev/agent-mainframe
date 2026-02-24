@@ -558,13 +558,13 @@ fn calculate_claude_today_tokens(today: &str) -> u64 {
                 if !ts.starts_with(today) {
                     continue;
                 }
-                if let Some(msg) = entry.message {
-                    if let Some(usage) = msg.usage {
-                        total += usage.input_tokens
-                            + usage.output_tokens
-                            + usage.cache_read_input_tokens
-                            + usage.cache_creation_input_tokens;
-                    }
+                if let Some(msg) = entry.message
+                    && let Some(usage) = msg.usage
+                {
+                    total += usage.input_tokens
+                        + usage.output_tokens
+                        + usage.cache_read_input_tokens
+                        + usage.cache_creation_input_tokens;
                 }
             }
         }
@@ -654,10 +654,10 @@ fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {
                     continue;
                 };
 
-                if part.part_type == "step-finish" {
-                    if let Some(tokens) = part.tokens {
-                        total_tokens += tokens.input + tokens.output;
-                    }
+                if part.part_type == "step-finish"
+                    && let Some(tokens) = part.tokens
+                {
+                    total_tokens += tokens.input + tokens.output;
                 }
             }
         }

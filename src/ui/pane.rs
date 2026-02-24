@@ -173,12 +173,12 @@ pub fn draw(
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
 
-        if !view.scroll_mode {
-            if let Some((cursor_x, cursor_y)) = tmux_cursor {
-                let abs_x = content_area.x + cursor_x;
-                let abs_y = content_area.y + cursor_y.saturating_sub(1);
-                frame.set_cursor_position(Position::new(abs_x, abs_y));
-            }
+        if !view.scroll_mode
+            && let Some((cursor_x, cursor_y)) = tmux_cursor
+        {
+            let abs_x = content_area.x + cursor_x;
+            let abs_y = content_area.y + cursor_y.saturating_sub(1);
+            frame.set_cursor_position(Position::new(abs_x, abs_y));
         }
     }
 }
@@ -208,17 +208,17 @@ fn strip_ansi_codes(s: &str) -> String {
     let mut chars = s.chars().peekable();
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            if let Some(&next) = chars.peek() {
-                if next == '[' {
+            if let Some(&next) = chars.peek()
+                && next == '['
+            {
+                chars.next();
+                while let Some(&c) = chars.peek() {
                     chars.next();
-                    while let Some(&c) = chars.peek() {
-                        chars.next();
-                        if c.is_ascii_alphabetic() {
-                            break;
-                        }
+                    if c.is_ascii_alphabetic() {
+                        break;
                     }
-                    continue;
                 }
+                continue;
             }
         } else {
             result.push(ch);

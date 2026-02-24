@@ -31,6 +31,7 @@ pub enum SessionKind {
     Opencode,
     Terminal,
     Nvim,
+    Custom,
 }
 
 #[derive(
@@ -63,6 +64,8 @@ pub struct FeatureSession {
     pub tmux_window: String,
     pub claude_session_id: Option<String>,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -149,6 +152,7 @@ pub struct Feature {
 }
 
 impl Feature {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         branch: String,
@@ -204,6 +208,9 @@ impl Feature {
             SessionKind::Nvim => {
                 format!("Nvim {}", count + 1)
             }
+            SessionKind::Custom => {
+                format!("Custom {}", count + 1)
+            }
         }
     }
 
@@ -215,6 +222,7 @@ impl Feature {
             SessionKind::Opencode => "opencode",
             SessionKind::Terminal => "terminal",
             SessionKind::Nvim => "nvim",
+            SessionKind::Custom => "custom",
         };
         let count = self
             .sessions
@@ -253,6 +261,35 @@ impl Feature {
             tmux_window: window,
             claude_session_id: None,
             created_at: Utc::now(),
+            command: None,
+        };
+        self.sessions.push(session);
+        self.sessions.last_mut().unwrap()
+    }
+
+    /// Create and append a custom session with a user-provided
+    /// name, preferred window name, and optional command.
+    /// Collision-avoids the window name against existing sessions.
+    pub fn add_custom_session_named(
+        &mut self,
+        name: String,
+        window_name_hint: String,
+        command: Option<String>,
+    ) -> &mut FeatureSession {
+        let mut window = window_name_hint.clone();
+        let mut n = 2u32;
+        while self.sessions.iter().any(|s| s.tmux_window == window) {
+            window = format!("{}-{}", window_name_hint, n);
+            n += 1;
+        }
+        let session = FeatureSession {
+            id: Uuid::new_v4().to_string(),
+            kind: SessionKind::Custom,
+            label: name,
+            tmux_window: window,
+            claude_session_id: None,
+            created_at: Utc::now(),
+            command,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -493,6 +530,7 @@ impl ProjectStore {
                                 claude_session_id: f
                                     .claude_session_id,
                                 created_at: f.created_at,
+                                command: None,
                             },
                             FeatureSession {
                                 id: Uuid::new_v4().to_string(),
@@ -501,6 +539,7 @@ impl ProjectStore {
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
                                 created_at: f.created_at,
+                                command: None,
                             },
                         ];
                         Feature {

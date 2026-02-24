@@ -111,7 +111,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame);
             } else {
-                super::dialogs::draw_create_feature_dialog(frame, state);
+                let presets =
+                    app.active_extension.feature_presets.as_slice();
+                super::dialogs::draw_create_feature_dialog(
+                    frame, state, presets,
+                );
             }
         }
         AppMode::DeletingProject(name) => {
@@ -164,6 +168,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if matches!(app.mode, AppMode::ConfirmingOpencodeSession { .. }) {
         super::picker::draw_opencode_session_confirm(frame);
+    }
+
+    if let AppMode::CustomSessionPicker(state) = &app.mode {
+        super::picker::draw_custom_session_picker(frame, state);
     }
 }
 

@@ -23,10 +23,10 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
             }
         }
         AppMode::CreatingFeature(_) => {
-            if let AppMode::CreatingFeature(state) = &mut app.mode {
-                if matches!(state.step, CreateFeatureStep::Branch) {
-                    state.branch.push_str(text);
-                }
+            if let AppMode::CreatingFeature(state) = &mut app.mode
+                && matches!(state.step, CreateFeatureStep::Branch)
+            {
+                state.branch.push_str(text);
             }
         }
         AppMode::RenamingSession(_) => {

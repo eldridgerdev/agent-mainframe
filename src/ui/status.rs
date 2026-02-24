@@ -198,6 +198,15 @@ pub fn draw(
                         Style::default().fg(Color::Yellow),
                     ),
                     Span::raw(" delete  "),
+                ]);
+                if !app.active_extension.custom_sessions.is_empty() {
+                    spans.push(Span::styled(
+                        "p",
+                        Style::default().fg(Color::Yellow),
+                    ));
+                    spans.push(Span::raw(" sessions  "));
+                }
+                spans.extend(vec![
                     Span::styled(
                         "q",
                         Style::default().fg(Color::Yellow),
@@ -288,7 +297,8 @@ pub fn draw(
         | AppMode::NotificationPicker(_)
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
-        | AppMode::OpencodeSessionPicker(_) => Line::from(vec![
+        | AppMode::OpencodeSessionPicker(_)
+        | AppMode::CustomSessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k",
                 Style::default().fg(Color::Yellow),
@@ -421,6 +431,7 @@ pub fn draw(
                     SessionKind::Opencode => "opencode",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
+                    SessionKind::Custom => "custom",
                 };
                 Line::from(vec![
                     Span::styled(

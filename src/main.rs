@@ -2,6 +2,7 @@
 
 mod app;
 mod claude;
+mod extension;
 mod handlers;
 mod project;
 mod tmux;
@@ -135,15 +136,15 @@ fn setup_thinking_hooks() {
                 })
             })
             .unwrap_or(false);
-        if !already_present {
-            if let Some(arr) = event_arr.as_array_mut() {
-                arr.push(json!({
-                    "matcher": "",
-                    "hooks": [
-                        {"type": "command", "command": cmd}
-                    ]
-                }));
-            }
+        if !already_present
+            && let Some(arr) = event_arr.as_array_mut()
+        {
+            arr.push(json!({
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": cmd}
+                ]
+            }));
         }
     }
 

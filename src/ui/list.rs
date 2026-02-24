@@ -383,6 +383,13 @@ pub fn draw(
                                     .fg(Color::Cyan),
                             )
                         }
+                        SessionKind::Custom => {
+                            Span::styled(
+                                "$ ",
+                                Style::default()
+                                    .fg(Color::Yellow),
+                            )
+                        }
                     };
 
                     let name_style = if is_selected {

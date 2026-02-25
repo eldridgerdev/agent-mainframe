@@ -5,7 +5,7 @@ import { homedir } from "os"
 const NOTIFY_DIR = join(
   homedir(),
   ".config",
-  "claude-super-vibeless",
+  "amf",
   "notifications"
 )
 
@@ -34,43 +34,19 @@ function clearNotification(sessionId) {
   }
 }
 
-export const InputRequest = async ({ directory }) => {
+export const InputRequestPlugin = async ({ directory }) => {
   return {
-    "session.idle": async ({ event }) => {
-      const sessionId = event.sessionID || event.sessionId
-      if (!sessionId) return
-
-      const message = event.message || "Session waiting for input"
-      writeNotification(sessionId, directory, message)
+    "tool.execute.before": async (input) => {
+      // When question tool is used, the AI is waiting for user input
+      if (input.tool === "question") {
+        const sessionId = input.sessionID || "question"
+        writeNotification(sessionId, directory, "User input requested", "input-request")
+      }
     },
-
     "session.status": async ({ event }) => {
       const sessionId = event.sessionID || event.sessionId
       if (!sessionId) return
-
       if (event.status === "busy" || event.status === "running") {
-        clearNotification(sessionId)
-      }
-    },
-
-    "session.deleted": async ({ event }) => {
-      const sessionId = event.sessionID || event.sessionId
-      if (sessionId) {
-        clearNotification(sessionId)
-      }
-    },
-
-    "permission.asked": async ({ event }) => {
-      const sessionId = event.sessionID || event.sessionId
-      if (!sessionId) return
-
-      const message = event.message || event.permission || "Permission requested"
-      writeNotification(sessionId, directory, message, "permission-request")
-    },
-
-    "permission.replied": async ({ event }) => {
-      const sessionId = event.sessionID || event.sessionId
-      if (sessionId) {
         clearNotification(sessionId)
       }
     },

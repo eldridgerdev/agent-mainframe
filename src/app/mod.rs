@@ -285,37 +285,38 @@ fn ensure_opencode_plugins(
         let _ = std::fs::copy(&global_input_request, &dst_input_request);
     }
 
-    let dst_diff_review = plugins_dir.join("diff-review.ts");
+    let dst_diff_review_js = plugins_dir.join("diff-review.js");
     let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
+    let dst_change_tracker = plugins_dir.join("change-tracker.js");
     let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
     let dst_explain = plugins_dir.join("explain.sh");
-    let _ = std::fs::remove_file(&dst_diff_review);
+    let _ = std::fs::remove_file(&dst_diff_review_js);
     let _ = std::fs::remove_file(&dst_diff_review_sh);
+    let _ = std::fs::remove_file(&dst_change_tracker);
     let _ = std::fs::remove_file(&dst_feedback_prompt);
     let _ = std::fs::remove_file(&dst_explain);
 
-    if matches!(mode, VibeMode::Review) {
+    if matches!(mode, VibeMode::Vibeless | VibeMode::Review) {
         let src_change_tracker = repo
             .join(".opencode")
             .join("plugins")
             .join("change-tracker.js");
-        let dst_change_tracker = plugins_dir.join("change-tracker.js");
 
         if src_change_tracker.exists() {
             let _ = std::fs::copy(&src_change_tracker, &dst_change_tracker);
         }
 
-        let src_diff_review = repo
+        let src_diff_review_js = repo
             .join(".opencode")
             .join("plugins")
-            .join("diff-review.ts");
+            .join("diff-review.js");
         let src_diff_review_sh = repo
             .join(".opencode")
             .join("plugins")
             .join("diff-review.sh");
 
-        if src_diff_review.exists() {
-            let _ = std::fs::copy(&src_diff_review, &dst_diff_review);
+        if src_diff_review_js.exists() {
+            let _ = std::fs::copy(&src_diff_review_js, &dst_diff_review_js);
         }
 
         if src_diff_review_sh.exists() {
@@ -3374,7 +3375,9 @@ impl App {
             }
         };
 
-        if input.notification_type != "diff-review" {
+        if input.notification_type != "diff-review"
+            && input.notification_type != "input-request"
+        {
             let _ = std::fs::remove_file(&input.file_path);
         }
 
@@ -3414,6 +3417,7 @@ impl App {
         }
 
         self.pending_inputs.remove(idx);
+        let _ = std::fs::remove_file(&input.file_path);
         self.mode = AppMode::Normal;
         self.message = Some(
             "Notification cleared (no matching feature)"

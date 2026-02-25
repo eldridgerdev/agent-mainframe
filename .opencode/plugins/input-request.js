@@ -5,7 +5,7 @@ import { homedir } from "os"
 const NOTIFY_DIR = join(
   homedir(),
   ".config",
-  "claude-super-vibeless",
+  "amf",
   "notifications"
 )
 

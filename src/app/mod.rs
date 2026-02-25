@@ -2589,6 +2589,7 @@ impl App {
     pub fn exit_view(&mut self) {
         self.mode = AppMode::Normal;
         self.pane_content.clear();
+        self.tmux_cursor = None;
         self.message = Some("Returned to dashboard".into());
     }
 

@@ -75,6 +75,7 @@ pub enum VibeMode {
     Vibeless,
     Vibe,
     SuperVibe,
+    Review,
 }
 
 impl<'de> Deserialize<'de> for VibeMode {
@@ -97,6 +98,7 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
+            VibeMode::Review => "Review",
         }
     }
 
@@ -109,6 +111,7 @@ impl VibeMode {
             VibeMode::SuperVibe => {
                 vec!["--dangerously-skip-permissions".into()]
             }
+            VibeMode::Review => vec![],
         };
         if enable_chrome {
             flags.push("--chrome".into());
@@ -116,13 +119,18 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 3] =
-        [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
+    pub const ALL: [VibeMode; 4] = [
+        VibeMode::Vibeless,
+        VibeMode::Vibe,
+        VibeMode::SuperVibe,
+        VibeMode::Review,
+    ];
 }
 
 fn default_true() -> bool {
     true
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Feature {
@@ -655,6 +663,25 @@ impl ProjectStore {
 pub fn store_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
+        .join("amf");
     config_dir.join("projects.json")
+}
+
+pub fn migrate_from_old_path() {
+    let new_path = store_path();
+    if new_path.exists() {
+        return;
+    }
+
+    let old_path = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("claude-super-vibeless")
+        .join("projects.json");
+
+    if old_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(&old_path, &new_path);
+    }
 }

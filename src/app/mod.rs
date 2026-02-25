@@ -10,6 +10,8 @@ const NOTIFY_SH: &str =
     include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str =
     include_str!("../../scripts/clear-notify.sh");
+const INPUT_REQUEST_JS: &str =
+    include_str!("../../.opencode/plugins/input-request.js");
 
 use crate::extension::{
     merge_project_extension_config, ExtensionConfig,
@@ -272,37 +274,49 @@ fn ensure_opencode_plugins(
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
-    let src_input_request = repo
-        .join(".opencode")
+    let global_input_request = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("amf")
         .join("plugins")
         .join("input-request.js");
     let dst_input_request = plugins_dir.join("input-request.js");
 
-    if src_input_request.exists() {
-        let _ = std::fs::copy(&src_input_request, &dst_input_request);
+    if global_input_request.exists() {
+        let _ = std::fs::copy(&global_input_request, &dst_input_request);
     }
 
-    let dst_diff_review = plugins_dir.join("diff-review.ts");
+    let dst_diff_review_js = plugins_dir.join("diff-review.js");
     let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
+    let dst_change_tracker = plugins_dir.join("change-tracker.js");
     let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
     let dst_explain = plugins_dir.join("explain.sh");
-    let _ = std::fs::remove_file(&dst_diff_review);
+    let _ = std::fs::remove_file(&dst_diff_review_js);
     let _ = std::fs::remove_file(&dst_diff_review_sh);
+    let _ = std::fs::remove_file(&dst_change_tracker);
     let _ = std::fs::remove_file(&dst_feedback_prompt);
     let _ = std::fs::remove_file(&dst_explain);
 
-    if matches!(mode, VibeMode::Vibeless) {
-        let src_diff_review = repo
+    if matches!(mode, VibeMode::Vibeless | VibeMode::Review) {
+        let src_change_tracker = repo
             .join(".opencode")
             .join("plugins")
-            .join("diff-review.ts");
+            .join("change-tracker.js");
+
+        if src_change_tracker.exists() {
+            let _ = std::fs::copy(&src_change_tracker, &dst_change_tracker);
+        }
+
+        let src_diff_review_js = repo
+            .join(".opencode")
+            .join("plugins")
+            .join("diff-review.js");
         let src_diff_review_sh = repo
             .join(".opencode")
             .join("plugins")
             .join("diff-review.sh");
 
-        if src_diff_review.exists() {
-            let _ = std::fs::copy(&src_diff_review, &dst_diff_review);
+        if src_diff_review_js.exists() {
+            let _ = std::fs::copy(&src_diff_review_js, &dst_diff_review_js);
         }
 
         if src_diff_review_sh.exists() {
@@ -352,7 +366,7 @@ pub fn ensure_notification_hooks(
 
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
+        .join("amf");
 
     let notify_cmd =
         config_dir.join("notify.sh").to_string_lossy().to_string();
@@ -368,9 +382,6 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
-    // Per-edit vimdiff review only in vibeless mode; vibe/supervibe
-    // still write notes to review-notes.md (via CLAUDE.local.md) but
-    // skip the per-edit popup so Claude can work uninterrupted.
     let wants_diff_review = review && matches!(mode, VibeMode::Vibeless);
 
     let mut settings: serde_json::Value =
@@ -652,7 +663,7 @@ pub struct App {
 fn ensure_notify_scripts() {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
+        .join("amf");
     let _ = std::fs::create_dir_all(&config_dir);
     let notify_path = config_dir.join("notify.sh");
     let clear_path = config_dir.join("clear-notify.sh");
@@ -674,11 +685,16 @@ fn ensure_notify_scripts() {
             std::fs::Permissions::from_mode(0o755),
         );
     }
+    let plugins_dir = config_dir.join("plugins");
+    let _ = std::fs::create_dir_all(&plugins_dir);
+    let input_request_path = plugins_dir.join("input-request.js");
+    let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
 }
 
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
         ensure_notify_scripts();
+        crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
         let zai_monthly = config.zai.get_monthly_limit();
@@ -3126,6 +3142,15 @@ impl App {
             #[serde(alias = "type")]
             notification_type: Option<String>,
             proceed_signal: Option<String>,
+            file_path: Option<String>,
+            relative_path: Option<String>,
+            tool: Option<String>,
+            change_id: Option<String>,
+            old_snippet: Option<String>,
+            new_snippet: Option<String>,
+            content_preview: Option<String>,
+            response_file: Option<String>,
+            reason: Option<String>,
         }
 
         let mut inputs = Vec::new();
@@ -3190,41 +3215,148 @@ impl App {
             }
         }
 
-        // If we're already viewing the feature that requested the
-        // diff, auto-proceed immediately — no picker needed.
-        let viewing = if let AppMode::Viewing(ref view) = self.mode {
-            Some((
-                view.project_name.clone(),
-                view.feature_name.clone(),
-            ))
-        } else {
-            None
-        };
+        let global_notify_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amf")
+            .join("notifications");
 
-        if let Some((proj, feat)) = viewing {
-            inputs.retain(|input| {
-                if input.notification_type == "diff-review"
-                    && input.project_name.as_deref()
-                        == Some(&proj)
-                    && input.feature_name.as_deref()
-                        == Some(&feat)
+        if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str())
+                    != Some("json")
                 {
-                    if let Some(ref sig) = input.proceed_signal {
-                        let p = Path::new(sig);
-                        if let Some(parent) = p.parent() {
-                            let _ =
-                                std::fs::create_dir_all(parent);
-                        }
-                        let _ = std::fs::write(p, "");
-                    }
-                    false
-                } else {
-                    true
+                    continue;
                 }
-            });
+
+                let data = match std::fs::read_to_string(&path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                let notif: NotificationJson =
+                    match serde_json::from_str(&data) {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
+
+                let session_id =
+                    notif.session_id.unwrap_or_default();
+                let cwd = notif.cwd.unwrap_or_default();
+                let notification_type =
+                    notif.notification_type.unwrap_or_default();
+                let proceed_signal_val = notif.proceed_signal.clone();
+
+                if notification_type == "change-reason"
+                    && let AppMode::Viewing(ref view) = self.mode
+                {
+                    let mut found_feature_name = None;
+                    let cwd_path = PathBuf::from(&cwd);
+                    for project in &self.store.projects {
+                        for feature in &project.features {
+                            if cwd_path.starts_with(&feature.workdir)
+                                || feature.workdir.starts_with(&cwd_path)
+                            {
+                                found_feature_name = Some(feature.name.clone());
+                            }
+                        }
+                    }
+
+                    if found_feature_name.as_deref() == Some(&view.feature_name) {
+                        let response_file = notif
+                            .response_file
+                            .unwrap_or_default();
+                        let proceed_signal_path = proceed_signal_val
+                            .unwrap_or_default();
+
+                        self.mode = AppMode::ChangeReasonPrompt(
+                            ChangeReasonState {
+                                session_id,
+                                file_path: notif
+                                    .file_path
+                                    .unwrap_or_default(),
+                                relative_path: notif
+                                    .relative_path
+                                    .unwrap_or_default(),
+                                change_id: notif
+                                    .change_id
+                                    .unwrap_or_default(),
+                                tool: notif.tool.unwrap_or_default(),
+                                old_snippet: notif
+                                    .old_snippet
+                                    .unwrap_or_default(),
+                                new_snippet: notif
+                                    .new_snippet
+                                    .unwrap_or_default(),
+                                reason: notif.reason.unwrap_or_default(),
+                                response_file: PathBuf::from(response_file),
+                                proceed_signal: PathBuf::from(proceed_signal_path),
+                            },
+                        );
+                        let _ = std::fs::remove_file(&path);
+                        return;
+                    }
+                }
+
+                let mut project_name = None;
+                let mut feature_name = None;
+                let mut best_len: usize = 0;
+                let cwd_path = PathBuf::from(&cwd);
+                for project in &self.store.projects {
+                    for feature in &project.features {
+                        let wlen = feature
+                            .workdir
+                            .as_os_str()
+                            .len();
+                        if (cwd_path
+                            .starts_with(&feature.workdir)
+                            || feature
+                                .workdir
+                                .starts_with(&cwd_path))
+                            && wlen > best_len
+                        {
+                            project_name =
+                                Some(project.name.clone());
+                            feature_name =
+                                Some(feature.name.clone());
+                            best_len = wlen;
+                        }
+                    }
+                }
+
+                inputs.push(PendingInput {
+                    session_id,
+                    cwd,
+                    message: notif.message.unwrap_or_default(),
+                    notification_type,
+                    file_path: path,
+                    project_name,
+                    feature_name,
+                    proceed_signal: notif.proceed_signal,
+                });
+            }
         }
 
         self.pending_inputs = inputs;
+
+        if let AppMode::Viewing(ref view) = self.mode {
+            let feat_name = view.feature_name.clone();
+            for input in &self.pending_inputs {
+                if input.notification_type == "diff-review"
+                    && input.feature_name.as_deref()
+                        == Some(&feat_name)
+                    && let Some(signal_path) =
+                        &input.proceed_signal
+                {
+                    let p = Path::new(signal_path);
+                    if let Some(parent) = p.parent() {
+                        let _ =
+                            std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::write(p, "");
+                }
+            }
+        }
     }
 
     pub fn handle_notification_select(
@@ -3243,7 +3375,9 @@ impl App {
             }
         };
 
-        if input.notification_type != "diff-review" {
+        if input.notification_type != "diff-review"
+            && input.notification_type != "input-request"
+        {
             let _ = std::fs::remove_file(&input.file_path);
         }
 
@@ -3283,6 +3417,7 @@ impl App {
         }
 
         self.pending_inputs.remove(idx);
+        let _ = std::fs::remove_file(&input.file_path);
         self.mode = AppMode::Normal;
         self.message = Some(
             "Notification cleared (no matching feature)"

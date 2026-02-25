@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "/home/eldridger/.config/claude-super-vibeless/notify.sh",
+            "command": "/home/eldridger/.config/amf/notify.sh",
             "type": "command"
           }
         ],
@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "/home/eldridger/.config/claude-super-vibeless/clear-notify.sh",
+            "command": "/home/eldridger/.config/amf/clear-notify.sh",
             "type": "command"
           }
         ],

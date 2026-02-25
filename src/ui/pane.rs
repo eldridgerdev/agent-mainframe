@@ -82,6 +82,10 @@ pub fn draw(
             header_spans.extend(rainbow_spans("supervibe"));
             header_spans.push(Span::raw("] "));
         }
+        VibeMode::Review => header_spans.push(Span::styled(
+            "[review] ",
+            Style::default().fg(Color::Magenta),
+        )),
     };
     if view.review {
         header_spans.push(Span::styled(

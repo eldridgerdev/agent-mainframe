@@ -245,38 +245,28 @@ pub fn draw(
                         String::new()
                     };
 
-                    let mut mode_badge_spans: Vec<Span> =
-                        match feature.mode {
-                            VibeMode::Vibeless => {
-                                vec![Span::styled(
-                                    " [vibeless]",
-                                    Style::default()
-                                        .fg(Color::Green),
-                                )]
-                            }
-                            VibeMode::Vibe => {
-                                vec![Span::styled(
-                                    " [vibe]",
-                                    Style::default()
-                                        .fg(Color::Yellow),
-                                )]
-                            }
-                            VibeMode::SuperVibe => {
-                                let mut spans =
-                                    vec![Span::raw(" [")];
-                                spans.extend(
-                                    rainbow_spans("supervibe"),
-                                );
-                                spans.push(Span::raw("]"));
-                                spans
-                            }
-                        };
-                    if feature.review {
-                        mode_badge_spans.push(Span::styled(
+                    let mode_badge_spans: Vec<Span> = match feature.mode {
+                        VibeMode::Vibeless => vec![Span::styled(
+                            " [vibeless]",
+                            Style::default()
+                                .fg(Color::Green),
+                        )],
+                        VibeMode::Vibe => vec![Span::styled(
+                            " [vibe]",
+                            Style::default()
+                                .fg(Color::Yellow),
+                        )],
+                        VibeMode::SuperVibe => {
+                            let mut spans = vec![Span::raw(" [")];
+                            spans.extend(rainbow_spans("supervibe"));
+                            spans.push(Span::raw("]"));
+                            spans
+                        }
+                        VibeMode::Review => vec![Span::styled(
                             " [review]",
-                            Style::default().fg(Color::Cyan),
-                        ));
-                    }
+                            Style::default().fg(Color::Magenta),
+                        )],
+                    };
 
                     let has_pending_input =
                         app.pending_inputs.iter().any(|p| {

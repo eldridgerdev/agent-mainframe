@@ -1,4 +1,3 @@
-use chrono::{Datelike, Timelike};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -385,119 +384,11 @@ fn fetch_rate_limits(data: &Arc<Mutex<UsageData>>) {
 }
 
 fn fetch_zai_usage(
-    data: &Arc<Mutex<UsageData>>,
-    monthly_limit: Option<u64>,
-    weekly_limit: Option<u64>,
-    five_hour_limit: Option<u64>,
+    _data: &Arc<Mutex<UsageData>>,
+    _monthly_limit: Option<u64>,
+    _weekly_limit: Option<u64>,
+    _five_hour_limit: Option<u64>,
 ) {
-    let Some(opencode_data_dir) = dirs::data_dir().map(|d| d.join("opencode")) else {
-        return;
-    };
-
-    let auth_path = opencode_data_dir.join("auth.json");
-    let Ok(contents) = std::fs::read_to_string(&auth_path) else {
-        return;
-    };
-
-    let Ok(auth) = serde_json::from_str::<ZaiAuth>(&contents) else {
-        return;
-    };
-
-    let Some(zai_creds) = auth.zai_coding_plan else {
-        return;
-    };
-
-    let now = chrono::Local::now();
-    let today_str = now.format("%Y-%m-%d").to_string();
-
-    let month_start = now
-        .with_day(1)
-        .and_then(|d| d.with_hour(0))
-        .and_then(|d| d.with_minute(0))
-        .and_then(|d| d.with_second(0));
-    let month_start_str = month_start
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| today_str.clone());
-
-    let week_start = (now - chrono::Duration::days(6))
-        .with_hour(0)
-        .and_then(|d| d.with_minute(0))
-        .and_then(|d| d.with_second(0));
-    let week_start_str = week_start
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| today_str.clone());
-
-    let today_url = format!(
-        "https://api.z.ai/api/monitor/usage/model-usage?startTime={}%2000:00:00&endTime={}%2023:59:59",
-        today_str, today_str
-    );
-
-    let month_url = format!(
-        "https://api.z.ai/api/monitor/usage/model-usage?startTime={}%2000:00:00&endTime={}%2023:59:59",
-        month_start_str, today_str
-    );
-
-    let week_url = format!(
-        "https://api.z.ai/api/monitor/usage/model-usage?startTime={}%2000:00:00&endTime={}%2023:59:59",
-        week_start_str, today_str
-    );
-
-    fn fetch_usage(url: &str, key: &str) -> Option<ZaiTotalUsage> {
-        ureq::get(url)
-            .header("Authorization", &format!("Bearer {}", key))
-            .call()
-            .ok()
-            .and_then(|mut resp| resp.body_mut().read_to_string().ok())
-            .and_then(|body| serde_json::from_str::<ZaiUsageResponse>(&body).ok())
-            .map(|resp| resp.data.total_usage)
-    }
-
-    let today_usage = fetch_usage(&today_url, &zai_creds.key);
-    let _month_usage = fetch_usage(&month_url, &zai_creds.key);
-    let week_usage = fetch_usage(&week_url, &zai_creds.key);
-
-    if let Some(today) = today_usage {
-        let mut d = data.lock().unwrap();
-        d.zai.today_tokens = today.total_tokens_usage;
-        d.zai.today_calls = today.total_model_call_count;
-
-        let five_hour_tokens = calculate_five_hour_usage(&d);
-        d.zai.five_hour_tokens = five_hour_tokens;
-
-        if let Some(week) = week_usage {
-            d.zai.weekly_tokens = week.total_tokens_usage;
-        }
-
-        d.zai.monthly_token_limit = monthly_limit;
-        d.zai.weekly_token_limit = weekly_limit;
-        d.zai.five_hour_token_limit = five_hour_limit;
-
-        d.zai.monthly_usage_pct = monthly_limit.and_then(|limit| {
-            if limit > 0 {
-                Some((d.zai.monthly_tokens as f64 / limit as f64) * 100.0)
-            } else {
-                None
-            }
-        });
-
-        d.zai.weekly_usage_pct = weekly_limit.and_then(|limit| {
-            if limit > 0 {
-                Some((d.zai.weekly_tokens as f64 / limit as f64) * 100.0)
-            } else {
-                None
-            }
-        });
-
-        d.zai.five_hour_usage_pct = five_hour_limit.and_then(|limit| {
-            if limit > 0 {
-                Some((d.zai.five_hour_tokens as f64 / limit as f64) * 100.0)
-            } else {
-                None
-            }
-        });
-
-        d.zai.last_error = None;
-    }
 }
 
 fn calculate_claude_today_tokens(today: &str) -> u64 {

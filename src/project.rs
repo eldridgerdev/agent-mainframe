@@ -75,6 +75,7 @@ pub enum VibeMode {
     Vibeless,
     Vibe,
     SuperVibe,
+    Review,
 }
 
 impl<'de> Deserialize<'de> for VibeMode {
@@ -97,6 +98,7 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
+            VibeMode::Review => "Review",
         }
     }
 
@@ -109,6 +111,7 @@ impl VibeMode {
             VibeMode::SuperVibe => {
                 vec!["--dangerously-skip-permissions".into()]
             }
+            VibeMode::Review => vec![],
         };
         if enable_chrome {
             flags.push("--chrome".into());
@@ -116,13 +119,18 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 3] =
-        [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
+    pub const ALL: [VibeMode; 4] = [
+        VibeMode::Vibeless,
+        VibeMode::Vibe,
+        VibeMode::SuperVibe,
+        VibeMode::Review,
+    ];
 }
 
 fn default_true() -> bool {
     true
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Feature {

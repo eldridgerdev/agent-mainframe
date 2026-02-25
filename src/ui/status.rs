@@ -327,6 +327,23 @@ pub fn draw(
             ),
             Span::raw(" cancel"),
         ]),
+        AppMode::ChangeReasonPrompt(_) => Line::from(vec![
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" accept  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" skip  "),
+            Span::styled(
+                "r",
+                Style::default().fg(Color::Red),
+            ),
+            Span::raw(" reject"),
+        ]),
         AppMode::Viewing(_) => Line::from(vec![
             Span::styled(
                 "Ctrl+Space",

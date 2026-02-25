@@ -10,6 +10,8 @@ const NOTIFY_SH: &str =
     include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str =
     include_str!("../../scripts/clear-notify.sh");
+const INPUT_REQUEST_JS: &str =
+    include_str!("../../.opencode/plugins/input-request.js");
 
 use crate::extension::{
     merge_project_extension_config, ExtensionConfig,
@@ -272,14 +274,15 @@ fn ensure_opencode_plugins(
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
-    let src_input_request = repo
-        .join(".opencode")
+    let global_input_request = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("amf")
         .join("plugins")
         .join("input-request.js");
     let dst_input_request = plugins_dir.join("input-request.js");
 
-    if src_input_request.exists() {
-        let _ = std::fs::copy(&src_input_request, &dst_input_request);
+    if global_input_request.exists() {
+        let _ = std::fs::copy(&global_input_request, &dst_input_request);
     }
 
     let dst_diff_review = plugins_dir.join("diff-review.ts");
@@ -352,7 +355,7 @@ pub fn ensure_notification_hooks(
 
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
+        .join("amf");
 
     let notify_cmd =
         config_dir.join("notify.sh").to_string_lossy().to_string();
@@ -652,7 +655,7 @@ pub struct App {
 fn ensure_notify_scripts() {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless");
+        .join("amf");
     let _ = std::fs::create_dir_all(&config_dir);
     let notify_path = config_dir.join("notify.sh");
     let clear_path = config_dir.join("clear-notify.sh");
@@ -674,11 +677,16 @@ fn ensure_notify_scripts() {
             std::fs::Permissions::from_mode(0o755),
         );
     }
+    let plugins_dir = config_dir.join("plugins");
+    let _ = std::fs::create_dir_all(&plugins_dir);
+    let input_request_path = plugins_dir.join("input-request.js");
+    let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
 }
 
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
         ensure_notify_scripts();
+        crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
         let zai_monthly = config.zai.get_monthly_limit();
@@ -3186,6 +3194,68 @@ impl App {
                         proceed_signal: notif.proceed_signal,
                     });
                 }
+            }
+        }
+
+        let global_notify_dir = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amf")
+            .join("notifications");
+
+        if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str())
+                    != Some("json")
+                {
+                    continue;
+                }
+
+                let data = match std::fs::read_to_string(&path) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+
+                let notif: NotificationJson =
+                    match serde_json::from_str(&data) {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
+
+                let cwd = match &notif.cwd {
+                    Some(c) => PathBuf::from(c),
+                    None => continue,
+                };
+
+                let (project_name, feature_name) =
+                    self.store.projects.iter().find_map(|p| {
+                        p.features.iter().find_map(|f| {
+                            if f.workdir == cwd {
+                                Some((p.name.clone(), f.name.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                    }).unwrap_or((String::new(), String::new()));
+
+                if project_name.is_empty() {
+                    continue;
+                }
+
+                inputs.push(PendingInput {
+                    session_id: notif
+                        .session_id
+                        .unwrap_or_default(),
+                    cwd: notif.cwd.unwrap_or_default(),
+                    message: notif.message.unwrap_or_default(),
+                    notification_type: notif
+                        .notification_type
+                        .unwrap_or_default(),
+                    file_path: path,
+                    project_name: Some(project_name),
+                    feature_name: Some(feature_name),
+                    proceed_signal: notif.proceed_signal,
+                });
             }
         }
 

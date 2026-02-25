@@ -144,7 +144,7 @@ ProjectStore
 ```
 
 State is persisted as JSON at
-`~/.config/claude-super-vibeless/projects.json`.
+`~/.config/amf/projects.json`.
 
 ### Tmux Sessions
 
@@ -188,7 +188,7 @@ whether the diff-review hook is installed in the feature's
 
 When a Claude Code session needs user input, a notification
 hook writes a JSON file to
-`~/.config/claude-super-vibeless/notifications/`. The
+`~/.config/amf/notifications/`. The
 dashboard polls this directory and shows a badge. Press `i`
 to open the picker and jump to the session that needs
 attention.

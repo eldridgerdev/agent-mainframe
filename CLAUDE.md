@@ -45,7 +45,7 @@ ProjectStatus: Active | Idle | Stopped
 ```
 
 State persisted as JSON at
-`~/.config/claude-super-vibeless/projects.json`.
+`~/.config/amf/projects.json`.
 Tmux sessions are prefixed `amf-` (e.g., `amf-mybranch`).
 
 ### App State & Modes (app.rs)

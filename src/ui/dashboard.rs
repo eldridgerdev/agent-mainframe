@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Paragraph},
     Frame,
 };
 
@@ -206,31 +206,33 @@ fn draw_pane_view(
     leader_active: bool,
     pending_count: usize,
 ) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // header
-            Constraint::Min(1),   // pane content
-        ])
-        .split(frame.area());
+    let area = frame.area();
+    let header_area = Rect::new(area.x, area.y, area.width, 1);
+    let content_area = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
 
-    // Header bar with project/feature/session info
+    // Header bar - single line with essential info
     let mut header_spans = vec![
+        Span::raw("  "),
         Span::styled(
-            format!(" {} ", view.project_name),
+            format!("{} ", view.project_name),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("/ {} ", view.feature_name),
+            format!("/{} ", view.feature_name),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!("/ {} ", view.session_label),
-            Style::default().fg(Color::DarkGray),
+            format!("/{} ", view.session_label),
+            Style::default().fg(Color::White),
         ),
     ];
     match view.vibe_mode {
@@ -257,14 +259,14 @@ fn draw_pane_view(
 
     if leader_active {
         header_spans.push(Span::styled(
-            "| LEADER ",
+            "|LEADER ",
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach x:stop ?:help",
+            "q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -278,14 +280,13 @@ fn draw_pane_view(
         ));
         header_spans.push(Span::styled(
             " command palette",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::White),
         ));
     }
 
     if pending_count > 0 {
         header_spans.push(Span::styled(
-            format!(
-                " | {} input{}",
+            format!(" | {} input{}",
                 pending_count,
                 if pending_count == 1 { "" } else { "s" },
             ),
@@ -295,25 +296,12 @@ fn draw_pane_view(
         ));
     }
 
-    let border_color = if leader_active {
-        Color::Yellow
-    } else {
-        Color::Cyan
-    };
-
-    let header =
-        Paragraph::new(Line::from(header_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(
-                    Style::default().fg(border_color),
-                ),
-        );
-    frame.render_widget(header, chunks[0]);
+    let header = Paragraph::new(Line::from(header_spans))
+        .style(Style::default().bg(Color::Rgb(76, 79, 105)));
+    frame.render_widget(header, header_area);
 
     // Parse ANSI content through vt100 and render
     // Catppuccin Frappé base background (#303446)
-    let content_area = chunks[1];
     let bg_color = Color::Rgb(48, 52, 70);
     let text = ansi_to_ratatui_text(
         pane_content,

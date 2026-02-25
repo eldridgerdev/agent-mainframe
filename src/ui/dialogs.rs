@@ -855,6 +855,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("S", "Pick opencode session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
+        ("O", "Open AMF settings project"),
         ("d", "Delete project/feature/session"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),

@@ -180,8 +180,10 @@ pub fn draw(
         if !view.scroll_mode
             && let Some((cursor_x, cursor_y)) = tmux_cursor
         {
-            let abs_x = content_area.x + cursor_x;
-            let abs_y = content_area.y + cursor_y.saturating_sub(1);
+            let max_x = content_area.width.saturating_sub(1);
+            let max_y = content_area.height.saturating_sub(1);
+            let abs_x = content_area.x + cursor_x.min(max_x);
+            let abs_y = content_area.y + cursor_y.saturating_sub(1).min(max_y);
             frame.set_cursor_position(Position::new(abs_x, abs_y));
         }
     }

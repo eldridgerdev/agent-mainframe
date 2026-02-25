@@ -4186,7 +4186,7 @@ impl App {
 
     pub fn trigger_final_review(&mut self) -> Result<()> {
         // Extract everything we need before mutating self.
-        let (workdir, repo, session) = match &self.mode {
+        let (workdir, repo, session, feature_name) = match &self.mode {
             AppMode::Viewing(view) => {
                 let pi = self
                     .store
@@ -4217,6 +4217,7 @@ impl App {
                     feature.workdir.clone(),
                     repo,
                     view.session.clone(),
+                    feature.name.clone(),
                 )
             }
             _ => return Ok(()),
@@ -4256,6 +4257,25 @@ impl App {
             }
         };
 
+        // Check if the "terminal" window exists in the current session.
+        // If not, create a new "Review" session for this feature.
+        let windows = TmuxManager::list_windows(&session).unwrap_or_default();
+        let has_terminal = windows.iter().any(|w| w == "terminal");
+
+        let (target_session, target_window) = if has_terminal {
+            (session.clone(), "terminal".to_string())
+        } else {
+            let review_session = format!("amf-{}-Review", feature_name);
+            if !TmuxManager::session_exists(&review_session) {
+                TmuxManager::create_session_with_window(
+                    &review_session,
+                    "review",
+                    &workdir,
+                )?;
+            }
+            (review_session, "review".to_string())
+        };
+
         // Run the script directly in the feature's terminal pane.
         // Wrapping in display-popup would cause nested-popup failures
         // since final-review.sh opens its own popups for vimdiff/notes.
@@ -4275,14 +4295,14 @@ impl App {
             switch_back,
         );
         if let Err(e) =
-            TmuxManager::send_literal(&session, "terminal", &cmd)
+            TmuxManager::send_literal(&target_session, &target_window, &cmd)
         {
             self.message =
                 Some(format!("Failed to send review command: {e}"));
             return Ok(());
         }
         if let Err(e) =
-            TmuxManager::send_key_name(&session, "terminal", "Enter")
+            TmuxManager::send_key_name(&target_session, &target_window, "Enter")
         {
             self.message =
                 Some(format!("Failed to start review: {e}"));
@@ -4291,9 +4311,9 @@ impl App {
 
         // Switch to the session so the popup is visible.
         if TmuxManager::is_inside_tmux() {
-            TmuxManager::switch_client(&session)?;
+            TmuxManager::switch_client(&target_session)?;
         } else {
-            self.should_switch = Some(session);
+            self.should_switch = Some(target_session);
         }
 
         Ok(())

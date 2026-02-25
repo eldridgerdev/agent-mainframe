@@ -658,6 +658,7 @@ pub struct App {
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
+    pub last_timer_values: std::collections::HashMap<String, String>,
 }
 
 fn ensure_notify_scripts() {
@@ -731,6 +732,7 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            last_timer_values: std::collections::HashMap::new(),
         })
     }
 
@@ -1301,6 +1303,9 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) {
+        use regex::Regex;
+        let timer_re = Regex::new(r"\((\d+m\s+)?\d+s\)").unwrap();
+
         self.thinking_features.clear();
         for project in &self.store.projects {
             for feature in &project.features {
@@ -1308,14 +1313,35 @@ impl App {
                     continue;
                 }
                 let thinking = match feature.agent {
-                    // Claude: file written by PreToolUse hook
                     AgentKind::Claude => {
-                        Self::is_claude_thinking(
-                            &feature.tmux_session,
-                        )
+                        let session = feature.sessions.iter().find(
+                            |s| s.kind == SessionKind::Claude,
+                        );
+                        let timer_changed = session
+                            .and_then(|s| {
+                                TmuxManager::capture_pane(
+                                    &feature.tmux_session,
+                                    &s.tmux_window,
+                                )
+                                .ok()
+                            })
+                            .and_then(|content| {
+                                timer_re.find(&content).map(|m| {
+                                    let current = m.as_str().to_string();
+                                    let prev = self
+                                        .last_timer_values
+                                        .get(&feature.tmux_session)
+                                        .cloned();
+                                    self.last_timer_values.insert(
+                                        feature.tmux_session.clone(),
+                                        current.clone(),
+                                    );
+                                    prev.map(|p| p != current).unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false);
+                        timer_changed || Self::is_claude_thinking(&feature.tmux_session)
                     }
-                    // Opencode: no hook support, fall back to
-                    // pane text scan
                     AgentKind::Opencode => {
                         let session = feature.sessions.iter().find(
                             |s| s.kind == SessionKind::Opencode,
@@ -1329,8 +1355,7 @@ impl App {
                                 .ok()
                             })
                             .map(|content| {
-                                let lower =
-                                    content.to_lowercase();
+                                let lower = content.to_lowercase();
                                 lower.contains("esc interrupt")
                             })
                             .unwrap_or(false)

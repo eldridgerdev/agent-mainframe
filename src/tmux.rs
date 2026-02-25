@@ -211,8 +211,7 @@ impl TmuxManager {
         // Use `env` to set AMF_SESSION so PreToolUse/Stop hooks
         // can identify the session. `env VAR=val cmd` works in
         // all shells including fish (unlike `VAR=val cmd`).
-        let mut cmd_str =
-            format!("env AMF_SESSION={} claude", session);
+        let mut cmd_str = format!("env AMF_SESSION={} claude", session);
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", sid));
         }
@@ -368,11 +367,32 @@ impl TmuxManager {
 
     /// Capture pane content with ANSI escape sequences preserved
     pub fn capture_pane_ansi(session: &str, window: &str) -> Result<String> {
+        Self::capture_pane_ansi_from_line(session, window, 0, 0)
+    }
+
+    /// Capture pane content with ANSI, starting from a specific line offset.
+    /// top_skip: number of lines to skip from the top of the visible pane
+    /// extra_lines: additional lines to capture from scrollback to fill the gap
+    pub fn capture_pane_ansi_from_line(
+        session: &str,
+        window: &str,
+        top_skip: u16,
+        extra_lines: u16,
+    ) -> Result<String> {
         let target = format!("{}:{}", session, window);
-        let output = Command::new("tmux")
-            .args(["capture-pane", "-t", &target, "-e", "-p"])
-            .output()
-            .context("Failed to capture pane with ANSI")?;
+        let total_skip = top_skip as i32 + extra_lines as i32;
+        let output = if total_skip > 0 {
+            let start = format!("-{}", total_skip);
+            Command::new("tmux")
+                .args(["capture-pane", "-t", &target, "-e", "-p", "-S", &start])
+                .output()
+                .context("Failed to capture pane with ANSI")?
+        } else {
+            Command::new("tmux")
+                .args(["capture-pane", "-t", &target, "-e", "-p"])
+                .output()
+                .context("Failed to capture pane with ANSI")?
+        };
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }

@@ -354,9 +354,7 @@ fn ansi_to_ratatui_text<'a>(
 
             let style = vt100_cell_to_style(cell, bg_color);
 
-            if style != current_style
-                && !current_text.is_empty()
-            {
+            if style != current_style && !current_text.is_empty() {
                 spans.push(Span::styled(
                     std::mem::take(&mut current_text),
                     current_style,
@@ -367,10 +365,7 @@ fn ansi_to_ratatui_text<'a>(
         }
 
         if !current_text.is_empty() {
-            spans.push(Span::styled(
-                current_text,
-                current_style,
-            ));
+            spans.push(Span::styled(current_text, current_style));
         }
 
         lines.push(Line::from(spans));

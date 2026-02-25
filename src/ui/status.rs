@@ -587,6 +587,11 @@ pub fn draw(
         .iter()
         .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()) as u16)
         .sum();
+    let max_right_width = inner.width.saturating_sub(1);
+    let right_width = right_width.min(max_right_width);
+    if right_width == 0 {
+        return;
+    }
     let right_area = Rect {
         x: inner
             .x

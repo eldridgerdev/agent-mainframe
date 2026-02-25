@@ -45,14 +45,17 @@ pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize) {
         Span::styled(" help ", Style::default().fg(Color::DarkGray)),
     ]);
     let hint_width: u16 = help_hint.spans.iter().map(|s| s.content.len() as u16).sum();
-    let hint_area = Rect {
-        x: inner
-            .x
-            .saturating_add(inner.width.saturating_sub(hint_width)),
-        y: inner.y,
-        width: hint_width,
-        height: 1,
-    };
-    let hint = Paragraph::new(help_hint);
-    frame.render_widget(hint, hint_area);
+    let hint_width = hint_width.min(inner.width);
+    if hint_width > 0 {
+        let hint_area = Rect {
+            x: inner
+                .x
+                .saturating_add(inner.width.saturating_sub(hint_width)),
+            y: inner.y,
+            width: hint_width,
+            height: 1,
+        };
+        let hint = Paragraph::new(help_hint);
+        frame.render_widget(hint, hint_area);
+    }
 }

@@ -366,13 +366,24 @@ pub fn ensure_notification_hooks(
         .join("clear-notify.sh")
         .to_string_lossy()
         .to_string();
-    let diff_review_cmd = repo
-        .join("plugins")
-        .join("diff-review")
-        .join("scripts")
-        .join("diff-review.sh")
-        .to_string_lossy()
-        .to_string();
+    let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
+    let amf_root = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()?.parent()?.parent().map(PathBuf::from)
+    });
+    let diff_review_path = [
+        Some(workdir.to_path_buf()),
+        Some(repo.to_path_buf()),
+        amf_root,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
+    .find(|p| p.exists());
+
+    let diff_review_cmd = match diff_review_path {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => return,
+    };
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
 
@@ -1081,10 +1092,13 @@ impl App {
 
     /// Run a lifecycle hook script non-blocking.
     /// Expands leading `~/` to the home directory.
+    /// If `choice` is provided it is set as `AMF_HOOK_CHOICE`
+    /// in the child environment.
     pub fn run_lifecycle_hook(
         &self,
         script: &str,
         workdir: &Path,
+        choice: Option<&str>,
     ) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
@@ -1100,11 +1114,96 @@ impl App {
             script.to_string()
         };
 
-        let _ = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&expanded)
-            .current_dir(workdir)
-            .spawn();
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(&expanded).current_dir(workdir);
+        if let Some(c) = choice {
+            cmd.env("AMF_HOOK_CHOICE", c);
+        }
+        let _ = cmd.spawn();
+    }
+
+    /// Enter `HookPrompt` mode when the hook config has a
+    /// `prompt` field. Does nothing (returns `false`) for
+    /// plain `Script` configs so the caller can fall through
+    /// to immediate execution.
+    pub fn start_hook_prompt(
+        &mut self,
+        script: String,
+        workdir: PathBuf,
+        title: String,
+        options: Vec<String>,
+        next: HookNext,
+    ) {
+        self.mode = AppMode::HookPrompt(HookPromptState {
+            script,
+            workdir,
+            title,
+            options,
+            selected: 0,
+            next,
+        });
+    }
+
+    /// Called when the user presses Enter in `HookPrompt` mode.
+    pub fn confirm_hook_prompt(&mut self) -> Result<()> {
+        let state = match std::mem::replace(
+            &mut self.mode,
+            AppMode::Normal,
+        ) {
+            AppMode::HookPrompt(s) => s,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let choice = state
+            .options
+            .get(state.selected)
+            .cloned()
+            .unwrap_or_default();
+
+        match state.next {
+            HookNext::WorktreeCreated {
+                project_name,
+                branch,
+                mode,
+                review,
+                agent,
+                enable_chrome,
+                enable_notes,
+            } => {
+                self.start_worktree_hook(
+                    &state.script,
+                    state.workdir,
+                    project_name,
+                    branch,
+                    mode,
+                    review,
+                    agent,
+                    enable_chrome,
+                    enable_notes,
+                    Some(choice),
+                );
+            }
+            HookNext::StartFeature { pi, fi } => {
+                self.run_lifecycle_hook(
+                    &state.script,
+                    &state.workdir,
+                    Some(&choice),
+                );
+                self.do_start_feature(pi, fi)?;
+            }
+            HookNext::StopFeature { pi, fi } => {
+                self.run_lifecycle_hook(
+                    &state.script,
+                    &state.workdir,
+                    Some(&choice),
+                );
+                self.do_stop_feature(pi, fi)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn start_worktree_hook(
@@ -1118,6 +1217,7 @@ impl App {
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
+        choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
@@ -1133,14 +1233,16 @@ impl App {
             script.to_string()
         };
 
-        let child = std::process::Command::new("sh")
-            .arg("-c")
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c")
             .arg(&expanded)
             .current_dir(&workdir)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .ok();
+            .stderr(std::process::Stdio::piped());
+        if let Some(ref c) = choice {
+            cmd.env("AMF_HOOK_CHOICE", c);
+        }
+        let child = cmd.spawn().ok();
 
         self.mode = AppMode::RunningHook(RunningHookState {
             script: script.to_string(),
@@ -2042,18 +2144,37 @@ impl App {
                 let global_ext = load_global_extension_config();
                 let ext = merge_project_extension_config(&global_ext, &project_repo);
 
-                if let Some(ref hook_script) = ext.lifecycle_hooks.on_worktree_created {
-                    self.start_worktree_hook(
-                        hook_script,
-                        wt_path.clone(),
-                        project_name,
-                        branch,
-                        mode,
-                        review,
-                        state.agent.clone(),
-                        enable_chrome,
-                        enable_notes,
-                    );
+                if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
+                    if let Some(prompt) = hook_cfg.prompt() {
+                        self.start_hook_prompt(
+                            hook_cfg.script().to_string(),
+                            wt_path.clone(),
+                            prompt.title.clone(),
+                            prompt.options.clone(),
+                            HookNext::WorktreeCreated {
+                                project_name,
+                                branch,
+                                mode,
+                                review,
+                                agent: state.agent.clone(),
+                                enable_chrome,
+                                enable_notes,
+                            },
+                        );
+                    } else {
+                        self.start_worktree_hook(
+                            hook_cfg.script(),
+                            wt_path.clone(),
+                            project_name,
+                            branch,
+                            mode,
+                            review,
+                            state.agent.clone(),
+                            enable_chrome,
+                            enable_notes,
+                            None,
+                        );
+                    }
                     return Ok(());
                 }
 
@@ -2282,23 +2403,41 @@ impl App {
             return Ok(());
         }
 
+        // If on_start has a prompt, show the picker first.
+        let on_start =
+            self.active_extension.lifecycle_hooks.on_start.clone();
+        if let Some(ref cfg) = on_start {
+            if let Some(prompt) = cfg.prompt() {
+                let workdir = self
+                    .store
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.features.get(fi))
+                    .map(|f| f.workdir.clone())
+                    .unwrap_or_default();
+                self.start_hook_prompt(
+                    cfg.script().to_string(),
+                    workdir,
+                    prompt.title.clone(),
+                    prompt.options.clone(),
+                    HookNext::StartFeature { pi, fi },
+                );
+                return Ok(());
+            }
+        }
+
         self.ensure_feature_running(pi, fi)?;
 
-        // Fire on_start lifecycle hook if configured.
-        let hook_info = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .map(|f| f.workdir.clone())
-            .zip(
-                self.active_extension
-                    .lifecycle_hooks
-                    .on_start
-                    .clone(),
-            );
-        if let Some((workdir, script)) = hook_info {
-            self.run_lifecycle_hook(&script, &workdir);
+        // Fire on_start lifecycle hook (plain script) if configured.
+        if let Some(ref cfg) = on_start {
+            let workdir = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.workdir.clone())
+                .unwrap_or_default();
+            self.run_lifecycle_hook(cfg.script(), &workdir, None);
         }
 
         let name = self.store.projects[pi].features[fi]
@@ -2307,6 +2446,25 @@ impl App {
         self.save()?;
         self.message = Some(format!("Started '{}'", name));
 
+        Ok(())
+    }
+
+    /// Inner start logic called after a hook prompt is confirmed.
+    pub fn do_start_feature(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<()> {
+        self.ensure_feature_running(pi, fi)?;
+        let name = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| f.name.clone())
+            .unwrap_or_default();
+        self.save()?;
+        self.message = Some(format!("Started '{}'", name));
         Ok(())
     }
 
@@ -2340,15 +2498,52 @@ impl App {
         let on_stop_hook =
             self.active_extension.lifecycle_hooks.on_stop.clone();
         let workdir_for_hook = feature.workdir.clone();
-        let tmux_session = feature.tmux_session.clone();
 
-        if let Some(ref script) = on_stop_hook {
-            self.run_lifecycle_hook(script, &workdir_for_hook);
+        // If on_stop has a prompt, show the picker first.
+        if let Some(ref cfg) = on_stop_hook {
+            if let Some(prompt) = cfg.prompt() {
+                self.start_hook_prompt(
+                    cfg.script().to_string(),
+                    workdir_for_hook,
+                    prompt.title.clone(),
+                    prompt.options.clone(),
+                    HookNext::StopFeature { pi, fi },
+                );
+                return Ok(());
+            }
         }
+
+        if let Some(ref cfg) = on_stop_hook {
+            self.run_lifecycle_hook(
+                cfg.script(),
+                &workdir_for_hook,
+                None,
+            );
+        }
+
+        self.do_stop_feature(pi, fi)?;
+
+        Ok(())
+    }
+
+    /// Inner stop logic called after a hook prompt is confirmed.
+    pub fn do_stop_feature(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<()> {
+        let tmux_session = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(f) => f.tmux_session.clone(),
+            None => return Ok(()),
+        };
 
         TmuxManager::kill_session(&tmux_session)?;
 
-        // Re-borrow feature after hook
         let feature = match self
             .store
             .projects

@@ -605,3 +605,39 @@ pub fn handle_deleting_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn handle_hook_prompt_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc => {
+            app.mode = AppMode::Normal;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::HookPrompt(state) = &mut app.mode {
+                let len = state.options.len();
+                if len > 0 {
+                    state.selected = (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::HookPrompt(state) = &mut app.mode {
+                let len = state.options.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            app.confirm_hook_prompt()?;
+        }
+        _ => {}
+    }
+    Ok(())
+}

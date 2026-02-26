@@ -8,8 +8,8 @@ use ratatui::{
 
 use crate::app::{
     BrowsePathState, ChangeReasonState, CreateFeatureState, CreateFeatureStep, CreateProjectState,
-    CreateProjectStep, DeleteStage, DeletingFeatureState, RenameSessionState, RunningHookState,
-    SearchState,
+    CreateProjectStep, DeleteStage, DeletingFeatureState, HookPromptState, RenameSessionState,
+    RunningHookState, SearchState,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -1467,4 +1467,64 @@ pub fn draw_deleting_feature_dialog(
         )))
     };
     frame.render_widget(hints, chunks[3]);
+}
+
+pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(format!(" {} ", state.title))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            if i == state.selected {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        " > ",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        opt.as_str(),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]))
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(opt.as_str(), Style::default().fg(Color::White)),
+                ]))
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+        Span::raw(" move  "),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::raw(" confirm  "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(" cancel"),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }

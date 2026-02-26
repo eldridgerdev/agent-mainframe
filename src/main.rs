@@ -14,7 +14,7 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste,
-        Event,
+        DisableMouseCapture, EnableMouseCapture, Event,
     },
     execute,
     terminal::{
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -55,6 +55,7 @@ fn main() -> Result<()> {
     execute!(
         terminal.backend_mut(),
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -162,6 +163,7 @@ fn run_loop<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
+    let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> =
         None;
 
@@ -240,9 +242,13 @@ fn run_loop<B: Backend>(
                 app.sync_statuses();
                 app.sync_thinking_status();
             }
-            app.scan_notifications();
             app.usage.refresh();
             last_sync = std::time::Instant::now();
+        }
+
+        if last_notif_scan.elapsed() >= Duration::from_millis(500) {
+            app.scan_notifications();
+            last_notif_scan = std::time::Instant::now();
         }
 
         let poll_duration = if is_viewing {
@@ -264,6 +270,11 @@ fn run_loop<B: Backend>(
                 match ev {
                     Event::Key(key) => {
                         if let Err(e) = handlers::handle_key(app, key, visible_rows) {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Err(e) = handlers::handle_mouse(app, mouse, visible_rows) {
                             app.show_error(e);
                         }
                     }

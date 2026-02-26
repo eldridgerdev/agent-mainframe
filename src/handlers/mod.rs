@@ -5,6 +5,7 @@ mod picker;
 mod input;
 mod search;
 mod change_reason;
+mod mouse;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -23,6 +24,7 @@ pub use dialog::{
     handle_browse_path_key,
     handle_rename_session_key,
     handle_running_hook_key,
+    handle_hook_prompt_key,
 };
 pub use picker::{
     handle_command_picker_key,
@@ -35,6 +37,7 @@ pub use picker::{
 pub use input::handle_paste;
 pub use search::handle_search_key;
 pub use change_reason::handle_change_reason_key;
+pub use mouse::handle_mouse;
 
 pub fn handle_key(
     app: &mut App,
@@ -94,6 +97,9 @@ pub fn handle_key(
         }
         AppMode::DeletingFeatureInProgress(_) => {
             handle_deleting_feature_key(app, key.code)
+        }
+        AppMode::HookPrompt(_) => {
+            handle_hook_prompt_key(app, key.code)
         }
     }
 }

@@ -12,7 +12,8 @@
 #   Enter  — approve this file
 #   r      — reject (prompts for feedback)
 #   n      — show developer notes then re-open diff
-#   s      — skip (neither approve nor reject)
+#   e      — explain selection (in visual mode) or whole diff (normal mode)
+#   Esc    — skip (neither approve nor reject)
 #
 
 set -euo pipefail
@@ -25,6 +26,15 @@ ACTIVATION_DELAY=800
 INVOCATION_ID=$$
 TEMP_DIR="/tmp/claude-review/final/$INVOCATION_ID"
 mkdir -p "$TEMP_DIR"
+
+CLAUDE_CMD="${CLAUDE_CMD:-claude}"
+if ! command -v "$CLAUDE_CMD" &>/dev/null; then
+    for c in "$HOME/.local/bin/claude" \
+              "$HOME/.claude/local/claude" \
+              /usr/local/bin/claude; do
+        [[ -x "$c" ]] && CLAUDE_CMD="$c" && break
+    done
+fi
 
 cleanup() { rm -rf "$TEMP_DIR"; }
 trap cleanup EXIT
@@ -103,6 +113,52 @@ show_note_popup() {
         " 2>/dev/null || true
 }
 
+# ── Show AI explanation for selected lines or diff ──────────────────
+
+show_explanation_popup() {
+    local rel_path="$1"
+    local content_file="$2"
+    local mode="${3:-selection}"
+
+    if [[ ! -s "$content_file" ]]; then
+        tmux display-popup -E -w 55% -h 25% \
+            bash -c "
+                echo ''
+                echo '  No content to explain.'
+                echo ''
+                read -rp '  Press Enter to return to diff...'
+            " 2>/dev/null || true
+        return
+    fi
+
+    local prompt header_label
+    if [[ "$mode" == "diff" ]]; then
+        prompt="Explain these code changes concisely. What was changed and why?"
+        header_label="Diff for"
+    else
+        prompt="Explain these code lines concisely. What do they do and why?"
+        header_label="Selection in"
+    fi
+
+    local explanation
+    explanation=$("$CLAUDE_CMD" -p "$prompt" < "$content_file" 2>/dev/null) || true
+
+    tmux display-popup -E -w 80% -h 70% \
+        bash -c "
+            echo ''
+            echo \"  Explanation for $header_label: $rel_path\"
+            printf '  %s\n' '──────────────────────────────────────'
+            echo ''
+            if [[ -n \"$explanation\" ]]; then
+                echo \"$explanation\" | sed 's/^/  /'
+            else
+                echo '  (claude CLI unavailable)'
+            fi
+            echo ''
+            read -rp '  Press Enter to return to diff...'
+        " 2>/dev/null || true
+}
+
 # ── Build and run vimdiff popup for one file ───────────────────
 
 open_vimdiff() {
@@ -114,14 +170,16 @@ open_vimdiff() {
     local file_total="$6"
     local abs_path="$WORKDIR/$rel_path"
     local vim_script="$TEMP_DIR/review_${file_num}.vim"
+    local selection_file="$TEMP_DIR/selection_${file_num}.txt"
     local is_new=false
     [[ ! -s "$original" ]] && is_new=true
 
-    rm -f "$signal"
+    rm -f "$signal" "$selection_file"
 
     cat > "$vim_script" << VIMSCRIPT
 " Final Review — ${file_num} of ${file_total}: ${rel_path}
 let g:signal_file = '${signal}'
+let g:selection_file = '${selection_file}'
 let g:cwd = '${WORKDIR}'
 
 function! FinalApprove()
@@ -140,6 +198,18 @@ function! FinalSkip()
     call writefile(['skip'], g:signal_file)
     sleep 100m | qa!
 endfunction
+function! FinalExplain()
+    let sel_start = getpos("'<")
+    let sel_end = getpos("'>")
+    if sel_start[1] == 0 || sel_end[1] == 0
+        call writefile(['explain:'], g:signal_file)
+    else
+        let lines = getline(sel_start[1], sel_end[1])
+        call writefile(lines, g:selection_file)
+        call writefile(['explain:' . g:selection_file], g:signal_file)
+    endif
+    sleep 100m | qa!
+endfunction
 
 let g:keys_active = 0
 function! ActivateKeys(timer)
@@ -147,7 +217,9 @@ function! ActivateKeys(timer)
     nnoremap <buffer> <CR> :call FinalApprove()<CR>
     nnoremap <buffer> r    :call FinalReject()<CR>
     nnoremap <buffer> n    :call FinalNote()<CR>
+    nnoremap <buffer> e    :call FinalExplain()<CR>
     nnoremap <buffer> <Esc> :call FinalSkip()<CR>
+    vnoremap <buffer> e    :<C-U>call FinalExplain()<CR>
     redrawtabline | redraw
 endfunction
 function! GuardedApprove()
@@ -157,7 +229,9 @@ endfunction
 nnoremap <buffer> <CR> :call GuardedApprove()<CR>
 nnoremap <buffer> r <Nop>
 nnoremap <buffer> n <Nop>
+nnoremap <buffer> e <Nop>
 nnoremap <buffer> <Esc> <Nop>
+vnoremap <buffer> e <Nop>
 autocmd VimEnter * call timer_start(${ACTIVATION_DELAY}, 'ActivateKeys')
 
 highlight FRHeader   guifg=#ffffff guibg=#2563eb gui=bold ctermbg=26  ctermfg=white  cterm=bold
@@ -165,6 +239,7 @@ highlight FRFile     guifg=#e0e0e0 guibg=#2563eb gui=NONE ctermbg=26  ctermfg=25
 highlight FRApprove  guifg=#22c55e guibg=#2563eb gui=bold ctermbg=26  ctermfg=green  cterm=bold
 highlight FRReject   guifg=#fbbf24 guibg=#2563eb gui=bold ctermbg=26  ctermfg=yellow cterm=bold
 highlight FRNote     guifg=#89b4fa guibg=#2563eb gui=bold ctermbg=26  ctermfg=117    cterm=bold
+highlight FRExplain  guifg=#a78bfa guibg=#2563eb gui=bold ctermbg=26  ctermfg=141    cterm=bold
 highlight FRSkip     guifg=#94a3b8 guibg=#2563eb gui=NONE ctermbg=26  ctermfg=246
 highlight FRKey      guifg=#fef08a guibg=#2563eb gui=bold ctermbg=26  ctermfg=229    cterm=bold
 highlight FROriginal guifg=#f38ba8 guibg=#313244 gui=bold ctermbg=237 ctermfg=211    cterm=bold
@@ -175,13 +250,19 @@ set showtabline=2
 function! FRTabline()
     let tl = '%#FRHeader# FINAL REVIEW [${file_num}/${file_total}] %#FRFile#│ ${rel_path} %='
     if g:keys_active
-        let tl .= '%#FRKey#↵ %#FRApprove#Approve  %#FRKey#r %#FRReject#Redo  %#FRKey#n %#FRNote#Notes  %#FRKey#Esc %#FRSkip#Skip '
+        let tl .= '%#FRKey#↵ %#FRApprove#Approve  %#FRKey#r %#FRReject#Redo  %#FRKey#n %#FRNote#Notes  %#FRKey#e %#FRExplain#Explain  %#FRKey#Esc %#FRSkip#Skip '
     else
         let tl .= '%#FRSkip# 🔒 Keys locked — review the diff... '
     endif
     return tl
 endfunction
 set tabline=%!FRTabline()
+
+" TODO: Add mouse support for click-to-select and right-click context menu
+" - <LeftMouse> to position cursor
+" - <LeftDrag> for visual selection
+" - <RightMouse> for context menu (approve/reject/explain/etc)
+" - set mouse=a mousemodel=popup
 VIMSCRIPT
 
     if [[ "$is_new" == "true" ]]; then
@@ -258,8 +339,6 @@ while IFS= read -r rel_path; do
     git show "HEAD:${rel_path}" > "$PROPOSED" 2>/dev/null || touch "$PROPOSED"
     extract_note "$rel_path" "$NOTE_FILE"
 
-    show_note_popup "$rel_path" "$NOTE_FILE"
-
     while true; do
         open_vimdiff \
             "$rel_path" "$ORIGINAL" "$PROPOSED" \
@@ -270,6 +349,17 @@ while IFS= read -r rel_path; do
 
         if [[ "$decision" == "note" ]]; then
             show_note_popup "$rel_path" "$NOTE_FILE"
+            continue
+        elif [[ "$decision" == explain* ]]; then
+            explain_file="${decision#explain:}"
+            if [[ -z "$explain_file" ]]; then
+                DIFF_FILE="$TEMP_DIR/diff_${file_num}.txt"
+                diff -u --label "base: $rel_path" --label "current: $rel_path" \
+                    "$ORIGINAL" "$PROPOSED" > "$DIFF_FILE" 2>/dev/null || true
+                show_explanation_popup "$rel_path" "$DIFF_FILE" "diff"
+            else
+                show_explanation_popup "$rel_path" "$explain_file" "selection"
+            fi
             continue
         fi
         break

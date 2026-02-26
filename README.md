@@ -44,7 +44,7 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
 
 ```bash
 git clone <repo-url>
-cd claude_super_vibeless
+cd agent-mainframe
 cargo install --path .
 ```
 

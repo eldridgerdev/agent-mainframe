@@ -114,6 +114,20 @@ show_note_popup() {
         " 2>/dev/null || true
 }
 
+# ── Spinner for AI calls ──────────────────────────────────────────
+
+spin() {
+    local msg="$1"
+    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    tput civis
+    while true; do
+        printf "\r  %s %s" "${frames[$i]}" "$msg"
+        i=$(( (i + 1) % ${#frames[@]} ))
+        sleep 0.08
+    done
+}
+
 # ── Show AI explanation for selected lines or diff ──────────────────
 
 show_explanation_popup() {
@@ -267,6 +281,72 @@ show_ask_popup() {
             echo ""
             read -rp "  Press Enter to return to diff..."
         ' 2>/dev/null || true
+}
+
+# ── Ask a question about selected lines or diff ────────────────────────
+
+show_ask_popup() {
+    local rel_path="$1"
+    local content_file="$2"
+    local mode="${3:-selection}"
+    local question_file="$TEMP_DIR/question.txt"
+
+    tmux display-popup -E -w 70% -h 25% \
+        bash -c "
+            echo ''
+            echo '  Ask a question about the $mode:'
+            echo \"  File: $rel_path\"
+            echo ''
+            read -rp '  > ' question
+            [[ -n \"\$question\" ]] && echo \"\$question\" > '$question_file'
+        " 2>/dev/null || true
+
+    if [[ ! -s "$question_file" ]]; then
+        return
+    fi
+
+    local question
+    question=$(cat "$question_file")
+
+    local header_label
+    if [[ "$mode" == "diff" ]]; then
+        header_label="Diff for"
+    else
+        header_label="Selection in"
+    fi
+
+    spin "Thinking..." &
+    SPIN_PID=$!
+    trap 'kill $SPIN_PID 2>/dev/null; tput cnorm' EXIT
+
+    local context=""
+    if [[ -s "$content_file" ]]; then
+        context=$(cat "$content_file")
+    fi
+
+    local answer
+    answer=$("$CLAUDE_CMD" -p "Context:\n\`\`\`\n$context\n\`\`\`\n\nQuestion: $question" 2>/dev/null) || true
+
+    kill $SPIN_PID 2>/dev/null
+    wait $SPIN_PID 2>/dev/null
+    tput cnorm
+    printf "\r\033[K"
+
+    tmux display-popup -E -w 80% -h 70% \
+        bash -c "
+            echo ''
+            echo \"  Q: $question\"
+            echo \"  ($header_label: $rel_path)\"
+            printf '  %s\n' '──────────────────────────────────────'
+            echo ''
+            if [[ -n \"$answer\" ]]; then
+                echo \"$answer\" | sed 's/^/  /'
+            else
+                echo '  (claude CLI unavailable)'
+            fi
+            echo ''
+            read -rp '  Press Enter to return to diff...'
+        " 2>/dev/null || true
 }
 
 # ── Build and run vimdiff popup for one file ───────────────────

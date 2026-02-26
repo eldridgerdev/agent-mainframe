@@ -38,20 +38,7 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
 - **Rust** (edition 2024, requires rustc 1.85+)
 
 - **tmux** - must be installed and in `PATH`
-
-   ```bash
-   # macOS
-   brew install tmux
-
-   # Ubuntu / Debian
-   sudo apt install tmux
-
-   # Arch Linux
-   sudo pacman -S tmux
-
-   # Fedora
-   sudo dnf install tmux
-   ```
+  ([installation instructions](https://github.com/tmux/tmux/wiki/Installing))
 
 - **claude** CLI - the
   [Claude Code](https://docs.anthropic.com/en/docs/claude-code)

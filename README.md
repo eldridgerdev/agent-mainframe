@@ -32,13 +32,22 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
   repository (worktree features are disabled)
 
 ## Prerequisites
-- **Highly Recommended** GPU accelerated terminal (Ghostyy, Wezterm, Kitty, Alactritty)
+
+- **Highly Recommended** GPU accelerated terminal
+  (Ghostty, Wezterm, Kitty, Alacritty)
 - **Rust** (edition 2024, requires rustc 1.85+)
 - **tmux** - must be installed and in `PATH`
 - **claude** CLI - the
   [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   CLI must be installed and authenticated
 - **git** - used for worktree management
+- **Nerd Font** (optional) - a
+  [Nerd Font](https://www.nerdfonts.com/) is recommended
+  for icon rendering. The app defaults to `nerd_font: true`;
+  if your terminal font does not include Nerd Font glyphs,
+  set `nerd_font: false` in
+  `~/.config/amf/config.json` to use ASCII fallbacks
+  instead.
 
 ## Installation
 

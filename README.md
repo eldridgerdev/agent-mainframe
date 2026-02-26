@@ -239,6 +239,128 @@ attention.
 The notification hooks are configured automatically in each
 feature's `.claude/settings.json` when the session starts.
 
+## Configuration
+
+The config file lives at `~/.config/amf/config.json` and
+is created automatically with defaults on first run.
+
+### Top-level options
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
+| `opencode_theme` | string | `"catppuccin-frappe"` | Theme name passed to Opencode. |
+
+### `zai` — token usage limits
+
+Tracks token consumption and shows usage in the status
+bar. Set `plan` to one of the presets, or override
+individual limits manually.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `plan` | string | `"free"` | Preset plan: `"free"`, `"coding-plan"`, or `"unlimited"`. |
+| `monthly_token_limit` | number? | (from plan) | Override the monthly token limit. |
+| `weekly_token_limit` | number? | (from plan) | Override the weekly token limit. |
+| `five_hour_token_limit` | number? | (from plan) | Override the rolling 5-hour token limit. |
+
+### `extension` — customizations
+
+The `extension` block can be set globally in
+`~/.config/amf/config.json` or per-project in
+`.amf/config.json` at the repo root. Project-level
+settings are merged on top of global ones.
+
+#### `custom_sessions`
+
+Add extra session types that appear alongside Claude,
+Terminal, and Nvim when creating sessions.
+
+```json
+"custom_sessions": [
+  {
+    "name": "Docs",
+    "command": "npm run docs:dev",
+    "window_name": "docs",
+    "working_dir": "packages/docs"
+  }
+]
+```
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `name` | string | Display name shown in the session list. |
+| `command` | string? | Shell command to run when the session starts. |
+| `window_name` | string? | tmux window name (defaults to a slug of `name`). |
+| `working_dir` | path? | Working directory relative to the feature's workdir. |
+
+#### `lifecycle_hooks`
+
+Shell scripts executed automatically on feature lifecycle
+events. The script receives the feature's working
+directory as the first argument.
+
+```json
+"lifecycle_hooks": {
+  "on_start": "/path/to/setup.sh",
+  "on_stop": "/path/to/teardown.sh",
+  "on_worktree_created": "/path/to/init-worktree.sh"
+}
+```
+
+| Key | Description |
+| --- | --- |
+| `on_start` | Runs when a feature session is started. |
+| `on_stop` | Runs when a feature session is stopped. |
+| `on_worktree_created` | Runs once after a new worktree is created for a feature. |
+
+#### `keybindings`
+
+Remap dashboard normal-mode keys. The key is the action
+name and the value is the replacement character.
+
+```json
+"keybindings": {
+  "create_feature": "f",
+  "delete": "D"
+}
+```
+
+Available actions: `quit`, `create_project`,
+`create_feature`, `start_session`, `stop_session`,
+`delete`, `sessions`, `help`, `search`, `refresh`,
+`filter`.
+
+#### `feature_presets`
+
+Presets appear as quick-select options when creating a
+new feature, pre-filling the vibe mode, agent, and other
+settings.
+
+```json
+"feature_presets": [
+  {
+    "name": "Quick fix",
+    "branch_prefix": "fix/",
+    "mode": "Vibe",
+    "agent": "Claude",
+    "review": false,
+    "enable_chrome": false,
+    "enable_notes": false
+  }
+]
+```
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `name` | string | Preset label shown during feature creation. |
+| `branch_prefix` | string? | Prepended to the branch name automatically. |
+| `mode` | string | Vibe mode: `"Vibeless"`, `"Vibe"`, or `"SuperVibe"`. |
+| `agent` | string | Agent to use: `"Claude"` or `"Opencode"`. |
+| `review` | bool | Whether to enable the diff-review hook. |
+| `enable_chrome` | bool | Enable browser/Chrome integration. |
+| `enable_notes` | bool | Enable session notes. |
+
 ## Development
 
 ### Build Commands

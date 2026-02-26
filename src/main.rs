@@ -162,6 +162,7 @@ fn run_loop<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
+    let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> =
         None;
 
@@ -228,9 +229,13 @@ fn run_loop<B: Backend>(
                 app.sync_statuses();
                 app.sync_thinking_status();
             }
-            app.scan_notifications();
             app.usage.refresh();
             last_sync = std::time::Instant::now();
+        }
+
+        if last_notif_scan.elapsed() >= Duration::from_millis(500) {
+            app.scan_notifications();
+            last_notif_scan = std::time::Instant::now();
         }
 
         let poll_duration = if is_viewing {

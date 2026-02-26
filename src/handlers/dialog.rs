@@ -557,3 +557,22 @@ pub fn handle_rename_session_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn handle_running_hook_key(app: &mut App, key: KeyCode) -> Result<()> {
+    let is_running = match &app.mode {
+        AppMode::RunningHook(state) => state.child.is_some(),
+        _ => return Ok(()),
+    };
+
+    if is_running {
+        return Ok(());
+    }
+
+    match key {
+        KeyCode::Enter | KeyCode::Esc => {
+            app.complete_running_hook()?;
+        }
+        _ => {}
+    }
+    Ok(())
+}

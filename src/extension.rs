@@ -19,6 +19,7 @@ pub struct CustomSessionConfig {
 pub struct LifecycleHooks {
     pub on_start: Option<String>,
     pub on_stop: Option<String>,
+    pub on_worktree_created: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -114,9 +115,12 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         .on_stop
         .clone()
         .or_else(|| base.lifecycle_hooks.on_stop.clone());
+    let on_worktree_created = project
+        .lifecycle_hooks
+        .on_worktree_created
+        .clone()
+        .or_else(|| base.lifecycle_hooks.on_worktree_created.clone());
 
-    // Merge keybindings: start with global, then overlay
-    // project entries.
     let mut keybindings = base.keybindings.clone();
     for (action, key) in &project.keybindings {
         keybindings.insert(action.clone(), *key);
@@ -124,7 +128,11 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
 
     ExtensionConfig {
         custom_sessions,
-        lifecycle_hooks: LifecycleHooks { on_start, on_stop },
+        lifecycle_hooks: LifecycleHooks {
+            on_start,
+            on_stop,
+            on_worktree_created,
+        },
         keybindings,
         feature_presets,
     }

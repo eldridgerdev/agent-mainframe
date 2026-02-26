@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{
     BrowsePathState, ChangeReasonState, CreateFeatureState, CreateFeatureStep, CreateProjectState,
-    CreateProjectStep, RenameSessionState, SearchState,
+    CreateProjectStep, RenameSessionState, RunningHookState, SearchState,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -1252,4 +1252,107 @@ pub fn draw_change_reason_dialog(frame: &mut Frame, state: &ChangeReasonState) {
         Span::raw(" reject"),
     ]));
     frame.render_widget(hints, chunks[5]);
+}
+
+pub fn draw_running_hook_dialog(
+    frame: &mut Frame,
+    state: &RunningHookState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    let area = centered_rect(70, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let is_running = state.child.is_some();
+    let border_color = if is_running {
+        Color::Cyan
+    } else if state.success.unwrap_or(false) {
+        Color::Green
+    } else {
+        Color::Red
+    };
+
+    let block = Block::default()
+        .title(" Running Hook ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let status_text = if is_running {
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let span = throbber.to_symbol_span(throbber_state);
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            span,
+            Span::styled(" Running hook...", Style::default().fg(Color::Cyan)),
+        ])
+    } else if state.success.unwrap_or(false) {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled(
+                "Hook completed successfully",
+                Style::default().fg(Color::Green),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✗ ", Style::default().fg(Color::Red)),
+            Span::styled("Hook failed", Style::default().fg(Color::Red)),
+        ])
+    };
+    frame.render_widget(Paragraph::new(status_text), chunks[0]);
+
+    let script_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Script: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            if state.script.len() > 50 {
+                format!("{}...", &state.script[..47])
+            } else {
+                state.script.clone()
+            },
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    frame.render_widget(script_line, chunks[1]);
+
+    let branch_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Branch: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.branch, Style::default().fg(Color::Cyan)),
+    ]));
+    frame.render_widget(branch_line, chunks[2]);
+
+    let hints = if is_running {
+        Paragraph::new(Line::from(Span::styled(
+            " Please wait...",
+            Style::default().fg(Color::DarkGray),
+        )))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" continue  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" skip"),
+        ]))
+    };
+    frame.render_widget(hints, chunks[3]);
 }

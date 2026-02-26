@@ -32,7 +32,7 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
   repository (worktree features are disabled)
 
 ## Prerequisites
-
+- **Highly Recommended** GPU accelerated terminal (Ghostyy, Wezterm, Kitty, Alactritty)
 - **Rust** (edition 2024, requires rustc 1.85+)
 - **tmux** - must be installed and in `PATH`
 - **claude** CLI - the
@@ -44,7 +44,7 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
 
 ```bash
 git clone <repo-url>
-cd claude_super_vibeless
+cd agent-mainframe
 cargo install --path .
 ```
 
@@ -58,7 +58,7 @@ cargo build --release
 ```
 
 ## Quick Start
-
+0. Create or attach to a TMUX session (tmux new / tmux attach)
 1. Launch the dashboard:
 
    ```bash

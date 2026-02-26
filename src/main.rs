@@ -214,6 +214,12 @@ fn run_loop<B: Backend>(
 
         app.throbber_state.calc_next();
 
+        if matches!(app.mode, app::AppMode::RunningHook(_))
+            && let Err(e) = app.poll_running_hook()
+        {
+            app.show_error(e);
+        }
+
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.should_quit || app.should_switch.is_some() {

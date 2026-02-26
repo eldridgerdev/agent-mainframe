@@ -153,10 +153,7 @@ impl Default for AppConfig {
 }
 
 pub fn load_config() -> AppConfig {
-    let config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf")
-        .join("config.json");
+    let config_path = crate::project::amf_config_dir().join("config.json");
 
     let config = if config_path.exists() {
         std::fs::read_to_string(&config_path)
@@ -274,9 +271,7 @@ fn ensure_opencode_plugins(
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
-    let global_input_request = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf")
+    let global_input_request = crate::project::amf_config_dir()
         .join("plugins")
         .join("input-request.js");
     let dst_input_request = plugins_dir.join("input-request.js");
@@ -363,9 +358,7 @@ pub fn ensure_notification_hooks(
     let claude_dir = workdir.join(config_subdir);
     let settings_path = claude_dir.join("settings.json");
 
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf");
+    let config_dir = crate::project::amf_config_dir();
 
     let notify_cmd =
         config_dir.join("notify.sh").to_string_lossy().to_string();
@@ -672,9 +665,7 @@ pub struct App {
 }
 
 fn ensure_notify_scripts() {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf");
+    let config_dir = crate::project::amf_config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
     let notify_path = config_dir.join("notify.sh");
     let clear_path = config_dir.join("clear-notify.sh");
@@ -1127,6 +1118,185 @@ impl App {
             .spawn();
     }
 
+    pub fn start_worktree_hook(
+        &mut self,
+        script: &str,
+        workdir: PathBuf,
+        project_name: String,
+        branch: String,
+        mode: VibeMode,
+        review: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+        enable_notes: bool,
+    ) {
+        let expanded = if script.starts_with("~/") {
+            dirs::home_dir()
+                .map(|h| {
+                    format!(
+                        "{}/{}",
+                        h.display(),
+                        &script[2..]
+                    )
+                })
+                .unwrap_or_else(|| script.to_string())
+        } else {
+            script.to_string()
+        };
+
+        let child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&expanded)
+            .current_dir(&workdir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .ok();
+
+        self.mode = AppMode::RunningHook(RunningHookState {
+            script: script.to_string(),
+            workdir,
+            project_name,
+            branch,
+            mode,
+            review,
+            agent,
+            enable_chrome,
+            enable_notes,
+            child,
+            output: String::new(),
+            success: None,
+        });
+    }
+
+    pub fn poll_running_hook(&mut self) -> Result<()> {
+        let state = match &mut self.mode {
+            AppMode::RunningHook(s) => s,
+            _ => return Ok(()),
+        };
+
+        if let Some(ref mut child) = state.child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    state.success = Some(status.success());
+                    if let Some(code) = status.code() {
+                        state.output.push_str(&format!(
+                            "\nProcess exited with code: {}",
+                            code
+                        ));
+                    }
+                    state.child = None;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    state.success = Some(false);
+                    state
+                        .output
+                        .push_str(&format!("\nError: {}", e));
+                    state.child = None;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn complete_running_hook(&mut self) -> Result<()> {
+        let (workdir, project_name, branch, mode, review, agent, enable_chrome, enable_notes, success) = {
+            match &self.mode {
+                AppMode::RunningHook(s) => (
+                    s.workdir.clone(),
+                    s.project_name.clone(),
+                    s.branch.clone(),
+                    s.mode.clone(),
+                    s.review,
+                    s.agent.clone(),
+                    s.enable_chrome,
+                    s.enable_notes,
+                    s.success,
+                ),
+                _ => return Ok(()),
+            }
+        };
+
+        let is_worktree = workdir != self.store.find_project(&project_name)
+            .map(|p| p.repo.clone())
+            .unwrap_or_default();
+
+        if enable_notes {
+            let claude_dir = workdir.join(".claude");
+            if !claude_dir.exists() {
+                let _ = std::fs::create_dir_all(&claude_dir);
+            }
+            let notes_path = claude_dir.join("notes.md");
+            if !notes_path.exists() {
+                let _ = std::fs::write(
+                    &notes_path,
+                    "# Notes\n\nWrite instructions for Claude here.\n",
+                );
+            }
+        }
+
+        let feature = Feature::new(
+            branch.clone(),
+            branch.clone(),
+            workdir.clone(),
+            is_worktree,
+            mode,
+            review,
+            agent,
+            enable_chrome,
+            enable_notes,
+        );
+
+        self.store.add_feature(&project_name, feature);
+        self.save()?;
+
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name)
+        {
+            let fi = self.store.projects[pi]
+                .features
+                .len()
+                .saturating_sub(1);
+            self.store.projects[pi].collapsed = false;
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        self.mode = AppMode::Normal;
+
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name)
+        {
+            let fi = self.store.projects[pi]
+                .features
+                .len()
+                .saturating_sub(1);
+            self.ensure_feature_running(pi, fi)?;
+            self.save()?;
+        }
+
+        if success.unwrap_or(false) {
+            self.message = Some(format!(
+                "Created and started feature '{}' (hook succeeded)",
+                branch
+            ));
+        } else {
+            self.message = Some(format!(
+                "Created and started feature '{}' (hook failed)",
+                branch
+            ));
+        }
+
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<()> {
         self.store.save(&self.store_path)
     }
@@ -1480,9 +1650,7 @@ impl App {
     }
 
     pub fn open_settings_project(&mut self) -> Result<()> {
-        let settings_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("amf");
+        let settings_dir = crate::project::amf_config_dir();
 
         if !settings_dir.exists() {
             std::fs::create_dir_all(&settings_dir)?;
@@ -1881,6 +2049,25 @@ impl App {
                     &branch,
                     &branch,
                 )?;
+
+                let global_ext = load_global_extension_config();
+                let ext = merge_project_extension_config(&global_ext, &project_repo);
+
+                if let Some(ref hook_script) = ext.lifecycle_hooks.on_worktree_created {
+                    self.start_worktree_hook(
+                        hook_script,
+                        wt_path.clone(),
+                        project_name,
+                        branch,
+                        mode,
+                        review,
+                        state.agent.clone(),
+                        enable_chrome,
+                        enable_notes,
+                    );
+                    return Ok(());
+                }
+
                 (wt_path, true)
             } else {
                 (project_repo.clone(), false)
@@ -3247,9 +3434,7 @@ impl App {
             }
         }
 
-        let global_notify_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("amf")
+        let global_notify_dir = crate::project::amf_config_dir()
             .join("notifications");
 
         if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
@@ -4192,7 +4377,7 @@ impl App {
 
     pub fn trigger_final_review(&mut self) -> Result<()> {
         // Extract everything we need before mutating self.
-        let (workdir, repo, session) = match &self.mode {
+        let (workdir, repo, session, feature_name) = match &self.mode {
             AppMode::Viewing(view) => {
                 let pi = self
                     .store
@@ -4223,6 +4408,7 @@ impl App {
                     feature.workdir.clone(),
                     repo,
                     view.session.clone(),
+                    feature.name.clone(),
                 )
             }
             _ => return Ok(()),
@@ -4262,6 +4448,25 @@ impl App {
             }
         };
 
+        // Check if the "terminal" window exists in the current session.
+        // If not, create a new "Review" session for this feature.
+        let windows = TmuxManager::list_windows(&session).unwrap_or_default();
+        let has_terminal = windows.iter().any(|w| w == "terminal");
+
+        let (target_session, target_window) = if has_terminal {
+            (session.clone(), "terminal".to_string())
+        } else {
+            let review_session = format!("amf-{}-Review", feature_name);
+            if !TmuxManager::session_exists(&review_session) {
+                TmuxManager::create_session_with_window(
+                    &review_session,
+                    "review",
+                    &workdir,
+                )?;
+            }
+            (review_session, "review".to_string())
+        };
+
         // Run the script directly in the feature's terminal pane.
         // Wrapping in display-popup would cause nested-popup failures
         // since final-review.sh opens its own popups for vimdiff/notes.
@@ -4281,14 +4486,14 @@ impl App {
             switch_back,
         );
         if let Err(e) =
-            TmuxManager::send_literal(&session, "terminal", &cmd)
+            TmuxManager::send_literal(&target_session, &target_window, &cmd)
         {
             self.message =
                 Some(format!("Failed to send review command: {e}"));
             return Ok(());
         }
         if let Err(e) =
-            TmuxManager::send_key_name(&session, "terminal", "Enter")
+            TmuxManager::send_key_name(&target_session, &target_window, "Enter")
         {
             self.message =
                 Some(format!("Failed to start review: {e}"));
@@ -4297,9 +4502,9 @@ impl App {
 
         // Switch to the session so the popup is visible.
         if TmuxManager::is_inside_tmux() {
-            TmuxManager::switch_client(&session)?;
+            TmuxManager::switch_client(&target_session)?;
         } else {
-            self.should_switch = Some(session);
+            self.should_switch = Some(target_session);
         }
 
         Ok(())

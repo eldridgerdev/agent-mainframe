@@ -177,6 +177,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::ChangeReasonPrompt(state) = &app.mode {
         super::dialogs::draw_change_reason_dialog(frame, state);
     }
+
+    if let AppMode::RunningHook(state) = &app.mode {
+        super::dialogs::draw_running_hook_dialog(frame, state, &app.throbber_state);
+    }
 }
 
 pub fn centered_rect(

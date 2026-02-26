@@ -147,21 +147,53 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('h') | KeyCode::Left => {
-            if let Selection::Project(pi) = &app.selection
-                && let Some(project) =
-                    app.store.projects.get(*pi)
-                && !project.collapsed
-            {
-                app.toggle_collapse();
+            match &app.selection {
+                Selection::Project(pi) => {
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
+                        && !project.collapsed
+                    {
+                        app.toggle_collapse();
+                    }
+                }
+                Selection::Feature(pi, fi) => {
+                    if let Some(feature) = app
+                        .store
+                        .projects
+                        .get(*pi)
+                        .and_then(|p| p.features.get(*fi))
+                        && !feature.collapsed
+                    {
+                        app.toggle_collapse();
+                    }
+                }
+                Selection::Session(_, _, _) => {
+                    app.toggle_collapse();
+                }
             }
         }
         KeyCode::Char('l') | KeyCode::Right => {
-            if let Selection::Project(pi) = &app.selection
-                && let Some(project) =
-                    app.store.projects.get(*pi)
-                && project.collapsed
-            {
-                app.toggle_collapse();
+            match &app.selection {
+                Selection::Project(pi) => {
+                    if let Some(project) =
+                        app.store.projects.get(*pi)
+                        && project.collapsed
+                    {
+                        app.toggle_collapse();
+                    }
+                }
+                Selection::Feature(pi, fi) => {
+                    if let Some(feature) = app
+                        .store
+                        .projects
+                        .get(*pi)
+                        .and_then(|p| p.features.get(*fi))
+                        && feature.collapsed
+                    {
+                        app.toggle_collapse();
+                    }
+                }
+                Selection::Session(_, _, _) => {}
             }
         }
         KeyCode::Char('?') => {

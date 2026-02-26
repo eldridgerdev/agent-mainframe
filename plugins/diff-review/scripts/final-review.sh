@@ -155,32 +155,132 @@ show_explanation_popup() {
         header_label="Selection in"
     fi
 
-    spin "Generating explanation..." &
-    SPIN_PID=$!
-    trap 'kill $SPIN_PID 2>/dev/null; tput cnorm' EXIT
-
-    local explanation
-    explanation=$("$CLAUDE_CMD" -p "$prompt" < "$content_file" 2>/dev/null) || true
-
-    kill $SPIN_PID 2>/dev/null
-    wait $SPIN_PID 2>/dev/null
-    tput cnorm
-    printf "\r\033[K"
-
     tmux display-popup -E -w 80% -h 70% \
+        bash -c '
+            CLAUDE_CMD="'"$CLAUDE_CMD"'"
+            CONTENT_FILE="'"$content_file"'"
+            PROMPT="'"$prompt"'"
+            HEADER_LABEL="'"$header_label"'"
+            REL_PATH="'"$rel_path"'"
+
+            spin() {
+                local msg="$1"
+                local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+                local i=0
+                tput civis
+                while true; do
+                    printf "\r  %s %s" "${frames[$i]}" "$msg"
+                    i=$(( (i + 1) % ${#frames[@]} ))
+                    sleep 0.08
+                done
+            }
+
+            spin "Generating explanation..." &
+            SPIN_PID=$!
+            trap "kill \$SPIN_PID 2>/dev/null; tput cnorm" EXIT
+
+            explanation=$("$CLAUDE_CMD" -p "$PROMPT" < "$CONTENT_FILE" 2>/dev/null) || true
+
+            kill $SPIN_PID 2>/dev/null
+            wait $SPIN_PID 2>/dev/null
+            tput cnorm
+            printf "\r\033[K"
+
+            echo ""
+            echo "  Explanation for $HEADER_LABEL: $REL_PATH"
+            printf "  %s\n" "──────────────────────────────────────"
+            echo ""
+            if [[ -n "$explanation" ]]; then
+                echo "$explanation" | sed "s/^/  /"
+            else
+                echo "  (claude CLI unavailable)"
+            fi
+            echo ""
+            read -rp "  Press Enter to return to diff..."
+        ' 2>/dev/null || true
+}
+
+# ── Ask a question about selected lines or diff ────────────────────────
+
+show_ask_popup() {
+    local rel_path="$1"
+    local content_file="$2"
+    local mode="${3:-selection}"
+    local question_file="$TEMP_DIR/question.txt"
+
+    tmux display-popup -E -w 70% -h 25% \
         bash -c "
             echo ''
-            echo \"  Explanation for $header_label: $rel_path\"
-            printf '  %s\n' '──────────────────────────────────────'
+            echo '  Ask a question about the $mode:'
+            echo \"  File: $rel_path\"
             echo ''
-            if [[ -n \"$explanation\" ]]; then
-                echo \"$explanation\" | sed 's/^/  /'
-            else
-                echo '  (claude CLI unavailable)'
-            fi
-            echo ''
-            read -rp '  Press Enter to return to diff...'
+            read -rp '  > ' question
+            [[ -n \"\$question\" ]] && echo \"\$question\" > '$question_file'
         " 2>/dev/null || true
+
+    if [[ ! -s "$question_file" ]]; then
+        return
+    fi
+
+    local question
+    question=$(cat "$question_file")
+
+    local header_label
+    if [[ "$mode" == "diff" ]]; then
+        header_label="Diff for"
+    else
+        header_label="Selection in"
+    fi
+
+    local context=""
+    if [[ -s "$content_file" ]]; then
+        context=$(cat "$content_file")
+    fi
+
+    tmux display-popup -E -w 80% -h 70% \
+        bash -c '
+            CLAUDE_CMD="'"$CLAUDE_CMD"'"
+            CONTEXT="'"$context"'"
+            QUESTION="'"$question"'"
+            HEADER_LABEL="'"$header_label"'"
+            REL_PATH="'"$rel_path"'"
+
+            spin() {
+                local msg="$1"
+                local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+                local i=0
+                tput civis
+                while true; do
+                    printf "\r  %s %s" "${frames[$i]}" "$msg"
+                    i=$(( (i + 1) % ${#frames[@]} ))
+                    sleep 0.08
+                done
+            }
+
+            spin "Thinking..." &
+            SPIN_PID=$!
+            trap "kill \$SPIN_PID 2>/dev/null; tput cnorm" EXIT
+
+            answer=$("$CLAUDE_CMD" -p "Context:\n\`\`\`\n$CONTEXT\n\`\`\`\n\nQuestion: $QUESTION" 2>/dev/null) || true
+
+            kill $SPIN_PID 2>/dev/null
+            wait $SPIN_PID 2>/dev/null
+            tput cnorm
+            printf "\r\033[K"
+
+            echo ""
+            echo "  Q: $QUESTION"
+            echo "  ($HEADER_LABEL: $REL_PATH)"
+            printf "  %s\n" "──────────────────────────────────────"
+            echo ""
+            if [[ -n "$answer" ]]; then
+                echo "$answer" | sed "s/^/  /"
+            else
+                echo "  (claude CLI unavailable)"
+            fi
+            echo ""
+            read -rp "  Press Enter to return to diff..."
+        ' 2>/dev/null || true
 }
 
 # ── Ask a question about selected lines or diff ────────────────────────

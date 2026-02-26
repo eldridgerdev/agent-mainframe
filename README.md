@@ -42,6 +42,22 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
 
 ## Installation
 
+### Install Rust
+
+This project requires Rust 1.85+ (2024 edition). Install using rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+After installation, restart your shell or run:
+
+```bash
+source ~/.cargo/env
+```
+
+### Build
+
 ```bash
 git clone <repo-url>
 cd agent-mainframe

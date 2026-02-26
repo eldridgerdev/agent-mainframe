@@ -114,20 +114,6 @@ show_note_popup() {
         " 2>/dev/null || true
 }
 
-# ── Spinner for AI calls ──────────────────────────────────────────
-
-spin() {
-    local msg="$1"
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
-    tput civis
-    while true; do
-        printf "\r  %s %s" "${frames[$i]}" "$msg"
-        i=$(( (i + 1) % ${#frames[@]} ))
-        sleep 0.08
-    done
-}
-
 # ── Show AI explanation for selected lines or diff ──────────────────
 
 show_explanation_popup() {
@@ -155,32 +141,49 @@ show_explanation_popup() {
         header_label="Selection in"
     fi
 
-    spin "Generating explanation..." &
-    SPIN_PID=$!
-    trap 'kill $SPIN_PID 2>/dev/null; tput cnorm' EXIT
-
-    local explanation
-    explanation=$("$CLAUDE_CMD" -p "$prompt" < "$content_file" 2>/dev/null) || true
-
-    kill $SPIN_PID 2>/dev/null
-    wait $SPIN_PID 2>/dev/null
-    tput cnorm
-    printf "\r\033[K"
-
     tmux display-popup -E -w 80% -h 70% \
-        bash -c "
-            echo ''
-            echo \"  Explanation for $header_label: $rel_path\"
-            printf '  %s\n' '──────────────────────────────────────'
-            echo ''
-            if [[ -n \"$explanation\" ]]; then
-                echo \"$explanation\" | sed 's/^/  /'
+        bash -c '
+            CLAUDE_CMD="'"$CLAUDE_CMD"'"
+            CONTENT_FILE="'"$content_file"'"
+            PROMPT="'"$prompt"'"
+            HEADER_LABEL="'"$header_label"'"
+            REL_PATH="'"$rel_path"'"
+
+            spin() {
+                local msg="$1"
+                local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+                local i=0
+                tput civis
+                while true; do
+                    printf "\r  %s %s" "${frames[$i]}" "$msg"
+                    i=$(( (i + 1) % ${#frames[@]} ))
+                    sleep 0.08
+                done
+            }
+
+            spin "Generating explanation..." &
+            SPIN_PID=$!
+            trap "kill \$SPIN_PID 2>/dev/null; tput cnorm" EXIT
+
+            explanation=$("$CLAUDE_CMD" -p "$PROMPT" < "$CONTENT_FILE" 2>/dev/null) || true
+
+            kill $SPIN_PID 2>/dev/null
+            wait $SPIN_PID 2>/dev/null
+            tput cnorm
+            printf "\r\033[K"
+
+            echo ""
+            echo "  Explanation for $HEADER_LABEL: $REL_PATH"
+            printf "  %s\n" "──────────────────────────────────────"
+            echo ""
+            if [[ -n "$explanation" ]]; then
+                echo "$explanation" | sed "s/^/  /"
             else
-                echo '  (claude CLI unavailable)'
+                echo "  (claude CLI unavailable)"
             fi
-            echo ''
-            read -rp '  Press Enter to return to diff...'
-        " 2>/dev/null || true
+            echo ""
+            read -rp "  Press Enter to return to diff..."
+        ' 2>/dev/null || true
 }
 
 # ── Ask a question about selected lines or diff ────────────────────────
@@ -215,38 +218,55 @@ show_ask_popup() {
         header_label="Selection in"
     fi
 
-    spin "Thinking..." &
-    SPIN_PID=$!
-    trap 'kill $SPIN_PID 2>/dev/null; tput cnorm' EXIT
-
     local context=""
     if [[ -s "$content_file" ]]; then
         context=$(cat "$content_file")
     fi
 
-    local answer
-    answer=$("$CLAUDE_CMD" -p "Context:\n\`\`\`\n$context\n\`\`\`\n\nQuestion: $question" 2>/dev/null) || true
-
-    kill $SPIN_PID 2>/dev/null
-    wait $SPIN_PID 2>/dev/null
-    tput cnorm
-    printf "\r\033[K"
-
     tmux display-popup -E -w 80% -h 70% \
-        bash -c "
-            echo ''
-            echo \"  Q: $question\"
-            echo \"  ($header_label: $rel_path)\"
-            printf '  %s\n' '──────────────────────────────────────'
-            echo ''
-            if [[ -n \"$answer\" ]]; then
-                echo \"$answer\" | sed 's/^/  /'
+        bash -c '
+            CLAUDE_CMD="'"$CLAUDE_CMD"'"
+            CONTEXT="'"$context"'"
+            QUESTION="'"$question"'"
+            HEADER_LABEL="'"$header_label"'"
+            REL_PATH="'"$rel_path"'"
+
+            spin() {
+                local msg="$1"
+                local frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+                local i=0
+                tput civis
+                while true; do
+                    printf "\r  %s %s" "${frames[$i]}" "$msg"
+                    i=$(( (i + 1) % ${#frames[@]} ))
+                    sleep 0.08
+                done
+            }
+
+            spin "Thinking..." &
+            SPIN_PID=$!
+            trap "kill \$SPIN_PID 2>/dev/null; tput cnorm" EXIT
+
+            answer=$("$CLAUDE_CMD" -p "Context:\n\`\`\`\n$CONTEXT\n\`\`\`\n\nQuestion: $QUESTION" 2>/dev/null) || true
+
+            kill $SPIN_PID 2>/dev/null
+            wait $SPIN_PID 2>/dev/null
+            tput cnorm
+            printf "\r\033[K"
+
+            echo ""
+            echo "  Q: $QUESTION"
+            echo "  ($HEADER_LABEL: $REL_PATH)"
+            printf "  %s\n" "──────────────────────────────────────"
+            echo ""
+            if [[ -n "$answer" ]]; then
+                echo "$answer" | sed "s/^/  /"
             else
-                echo '  (claude CLI unavailable)'
+                echo "  (claude CLI unavailable)"
             fi
-            echo ''
-            read -rp '  Press Enter to return to diff...'
-        " 2>/dev/null || true
+            echo ""
+            read -rp "  Press Enter to return to diff..."
+        ' 2>/dev/null || true
 }
 
 # ── Build and run vimdiff popup for one file ───────────────────

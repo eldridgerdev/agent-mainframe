@@ -348,7 +348,6 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    review: bool,
 ) {
     remove_old_diff_review_plugin(repo);
 
@@ -382,7 +381,7 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .to_string();
 
-    let wants_diff_review = review && matches!(mode, VibeMode::Vibeless);
+    let wants_diff_review = matches!(mode, VibeMode::Vibeless);
 
     let mut settings: serde_json::Value =
         if settings_path.exists() {
@@ -1046,7 +1045,6 @@ impl App {
             &repo,
             &mode,
             &agent,
-            feature.review,
         );
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
@@ -1966,7 +1964,6 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
-            feature.review,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
@@ -2450,7 +2447,6 @@ impl App {
             &repo,
             &mode,
             &agent,
-            feature.review,
         );
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
@@ -4043,7 +4039,6 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
-            feature.review,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
 

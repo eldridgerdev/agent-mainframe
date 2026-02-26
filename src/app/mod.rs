@@ -366,13 +366,24 @@ pub fn ensure_notification_hooks(
         .join("clear-notify.sh")
         .to_string_lossy()
         .to_string();
-    let diff_review_cmd = repo
-        .join("plugins")
-        .join("diff-review")
-        .join("scripts")
-        .join("diff-review.sh")
-        .to_string_lossy()
-        .to_string();
+    let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
+    let amf_root = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()?.parent()?.parent().map(PathBuf::from)
+    });
+    let diff_review_path = [
+        Some(workdir.to_path_buf()),
+        Some(repo.to_path_buf()),
+        amf_root,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
+    .find(|p| p.exists());
+
+    let diff_review_cmd = match diff_review_path {
+        Some(p) => p.to_string_lossy().to_string(),
+        None => return,
+    };
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
 

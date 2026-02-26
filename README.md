@@ -193,7 +193,16 @@ session, and you can add more sessions at any time:
 - **Nvim** (`v`) - opens neovim in the feature's working
   directory
 
-Sessions can be renamed with `r` when selected.
+Sessions can be renamed with `r` when a session is
+selected on the dashboard.
+
+#### Session Picker
+
+While viewing a feature (`Enter`), press `w` to open the
+session picker — a popup listing all sessions for the
+current feature. Use `j`/`k` to navigate, `Enter` to
+switch to a session, `r` to rename the selected session,
+and `Esc` to dismiss.
 
 ### Git Worktrees
 

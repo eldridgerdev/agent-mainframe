@@ -377,6 +377,23 @@ pub fn draw(
                 ])
             }
         }
+        AppMode::HookPrompt(_) => Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" move  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

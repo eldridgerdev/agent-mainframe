@@ -181,6 +181,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::RunningHook(state) = &app.mode {
         super::dialogs::draw_running_hook_dialog(frame, state, &app.throbber_state);
     }
+
+    if let AppMode::HookPrompt(state) = &app.mode {
+        super::dialogs::draw_hook_prompt_dialog(frame, state);
+    }
 }
 
 pub fn centered_rect(

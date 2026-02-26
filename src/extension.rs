@@ -14,12 +14,41 @@ pub struct CustomSessionConfig {
     pub working_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookPrompt {
+    pub title: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HookConfig {
+    Script(String),
+    WithPrompt { script: String, prompt: HookPrompt },
+}
+
+impl HookConfig {
+    pub fn script(&self) -> &str {
+        match self {
+            HookConfig::Script(s) => s,
+            HookConfig::WithPrompt { script, .. } => script,
+        }
+    }
+
+    pub fn prompt(&self) -> Option<&HookPrompt> {
+        match self {
+            HookConfig::Script(_) => None,
+            HookConfig::WithPrompt { prompt, .. } => Some(prompt),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LifecycleHooks {
-    pub on_start: Option<String>,
-    pub on_stop: Option<String>,
-    pub on_worktree_created: Option<String>,
+    pub on_start: Option<HookConfig>,
+    pub on_stop: Option<HookConfig>,
+    pub on_worktree_created: Option<HookConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

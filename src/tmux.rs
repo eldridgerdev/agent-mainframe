@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command};
 
 pub struct TmuxManager;
 
@@ -333,6 +333,19 @@ impl TmuxManager {
             .context("Failed to kill tmux session")?;
 
         Ok(())
+    }
+
+    pub fn spawn_kill_session(session: &str) -> Result<Option<Child>> {
+        if !Self::session_exists(session) {
+            return Ok(None);
+        }
+
+        let child = Command::new("tmux")
+            .args(["kill-session", "-t", session])
+            .spawn()
+            .context("Failed to spawn tmux kill-session")?;
+
+        Ok(Some(child))
     }
 
     /// List all amf-* tmux sessions

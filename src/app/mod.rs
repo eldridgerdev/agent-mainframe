@@ -2569,23 +2569,116 @@ impl App {
             _ => return Ok(()),
         };
 
-        if let Some(project) =
-            self.store.find_project(&project_name)
-            && let Some(feature) = project
-                .features
-                .iter()
-                .find(|f| f.name == feature_name)
+        let (tmux_session, is_worktree, repo, workdir) =
+            if let Some(project) =
+                self.store.find_project(&project_name)
+                && let Some(feature) = project
+                    .features
+                    .iter()
+                    .find(|f| f.name == feature_name)
             {
-                let _ = TmuxManager::kill_session(
-                    &feature.tmux_session,
-                );
-                if feature.is_worktree {
-                    let _ = WorktreeManager::remove(
-                        &project.repo,
-                        &feature.workdir,
-                    );
+                (
+                    feature.tmux_session.clone(),
+                    feature.is_worktree,
+                    project.repo.clone(),
+                    feature.workdir.clone(),
+                )
+            } else {
+                return Ok(());
+            };
+
+        let child = TmuxManager::spawn_kill_session(&tmux_session)?;
+
+        self.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+            project_name,
+            feature_name,
+            tmux_session,
+            is_worktree,
+            repo,
+            workdir,
+            stage: DeleteStage::KillingTmux,
+            child,
+            error: None,
+        });
+
+        Ok(())
+    }
+
+    pub fn poll_deleting_feature(&mut self) -> Result<()> {
+        let state = match &mut self.mode {
+            AppMode::DeletingFeatureInProgress(s) => s,
+            _ => return Ok(()),
+        };
+
+        if let Some(ref mut child) = state.child {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if !status.success() {
+                        state.error = Some(format!(
+                            "Command failed with code: {:?}",
+                            status.code()
+                        ));
+                    }
+                    state.child = None;
+                }
+                Ok(None) => return Ok(()),
+                Err(e) => {
+                    state.error = Some(e.to_string());
+                    state.child = None;
                 }
             }
+        }
+
+        match state.stage {
+            DeleteStage::KillingTmux => {
+                if state.is_worktree {
+                    match WorktreeManager::spawn_remove(
+                        &state.repo,
+                        &state.workdir,
+                    ) {
+                        Ok(child) => {
+                            state.child = Some(child);
+                            state.stage = DeleteStage::RemovingWorktree;
+                        }
+                        Err(e) => {
+                            state.error = Some(e.to_string());
+                        }
+                    }
+                } else {
+                    state.stage = DeleteStage::Completed;
+                }
+            }
+            DeleteStage::RemovingWorktree => {
+                state.stage = DeleteStage::Completed;
+            }
+            DeleteStage::Completed => {}
+        }
+
+        Ok(())
+    }
+
+    pub fn complete_deleting_feature(&mut self) -> Result<()> {
+        let (project_name, feature_name, had_error, error_msg) = {
+            match &self.mode {
+                AppMode::DeletingFeatureInProgress(s) => (
+                    s.project_name.clone(),
+                    s.feature_name.clone(),
+                    s.error.is_some(),
+                    s.error.clone(),
+                ),
+                _ => return Ok(()),
+            }
+        };
+
+        if had_error {
+            self.mode = AppMode::Normal;
+            self.message = Some(format!(
+                "Error deleting feature '{}': {}",
+                feature_name,
+                error_msg.unwrap_or_else(|| "Unknown error".to_string())
+            ));
+            return Ok(());
+        }
 
         self.store
             .remove_feature(&project_name, &feature_name);
@@ -2606,6 +2699,10 @@ impl App {
             feature_name
         ));
         Ok(())
+    }
+
+    pub fn cancel_deleting_feature(&mut self) {
+        self.mode = AppMode::Normal;
     }
 
     pub fn add_terminal_session(&mut self) -> Result<()> {

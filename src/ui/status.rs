@@ -377,6 +377,27 @@ pub fn draw(
                 ])
             }
         }
+        AppMode::DeletingFeatureInProgress(state) => {
+            if state.child.is_some() {
+                Line::from(Span::styled(
+                    "Deleting feature...",
+                    Style::default().fg(Color::Yellow),
+                ))
+            } else if state.error.is_some() {
+                Line::from(vec![
+                    Span::styled(
+                        "Enter",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" acknowledge"),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    "Press any key to continue...",
+                    Style::default().fg(Color::DarkGray),
+                ))
+            }
+        }
         AppMode::HookPrompt(_) => Line::from(vec![
             Span::styled(
                 " j/k",

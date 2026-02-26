@@ -153,10 +153,7 @@ impl Default for AppConfig {
 }
 
 pub fn load_config() -> AppConfig {
-    let config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf")
-        .join("config.json");
+    let config_path = crate::project::amf_config_dir().join("config.json");
 
     let config = if config_path.exists() {
         std::fs::read_to_string(&config_path)
@@ -274,9 +271,7 @@ fn ensure_opencode_plugins(
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
-    let global_input_request = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf")
+    let global_input_request = crate::project::amf_config_dir()
         .join("plugins")
         .join("input-request.js");
     let dst_input_request = plugins_dir.join("input-request.js");
@@ -364,9 +359,7 @@ pub fn ensure_notification_hooks(
     let claude_dir = workdir.join(config_subdir);
     let settings_path = claude_dir.join("settings.json");
 
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf");
+    let config_dir = crate::project::amf_config_dir();
 
     let notify_cmd =
         config_dir.join("notify.sh").to_string_lossy().to_string();
@@ -662,9 +655,7 @@ pub struct App {
 }
 
 fn ensure_notify_scripts() {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf");
+    let config_dir = crate::project::amf_config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
     let notify_path = config_dir.join("notify.sh");
     let clear_path = config_dir.join("clear-notify.sh");
@@ -1471,9 +1462,7 @@ impl App {
     }
 
     pub fn open_settings_project(&mut self) -> Result<()> {
-        let settings_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("amf");
+        let settings_dir = crate::project::amf_config_dir();
 
         if !settings_dir.exists() {
             std::fs::create_dir_all(&settings_dir)?;
@@ -3240,9 +3229,7 @@ impl App {
             }
         }
 
-        let global_notify_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("amf")
+        let global_notify_dir = crate::project::amf_config_dir()
             .join("notifications");
 
         if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {

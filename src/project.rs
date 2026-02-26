@@ -660,11 +660,15 @@ impl ProjectStore {
     }
 }
 
-pub fn store_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
+pub fn amf_config_dir() -> PathBuf {
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("amf");
-    config_dir.join("projects.json")
+        .join(".config")
+        .join("amf")
+}
+
+pub fn store_path() -> PathBuf {
+    amf_config_dir().join("projects.json")
 }
 
 pub fn migrate_from_old_path() {
@@ -673,15 +677,24 @@ pub fn migrate_from_old_path() {
         return;
     }
 
-    let old_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-super-vibeless")
-        .join("projects.json");
+    let old_paths = vec![
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("amf")
+            .join("projects.json"),
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("claude-super-vibeless")
+            .join("projects.json"),
+    ];
 
-    if old_path.exists() {
-        if let Some(parent) = new_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    for old_path in old_paths {
+        if old_path.exists() {
+            if let Some(parent) = new_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&old_path, &new_path);
+            return;
         }
-        let _ = std::fs::copy(&old_path, &new_path);
     }
 }

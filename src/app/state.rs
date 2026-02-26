@@ -1,5 +1,6 @@
 use ratatui_explorer::FileExplorer;
 use std::path::PathBuf;
+use std::process::Child;
 
 use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
@@ -115,6 +116,7 @@ pub enum AppMode {
     },
     SessionPicker(SessionPickerState),
     ChangeReasonPrompt(ChangeReasonState),
+    RunningHook(RunningHookState),
 }
 
 #[derive(Clone)]
@@ -144,6 +146,21 @@ pub struct ChangeReasonState {
     pub reason: String,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
+}
+
+pub struct RunningHookState {
+    pub script: String,
+    pub workdir: PathBuf,
+    pub project_name: String,
+    pub branch: String,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub agent: AgentKind,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub child: Option<Child>,
+    pub output: String,
+    pub success: Option<bool>,
 }
 
 pub struct BrowsePathState {

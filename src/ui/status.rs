@@ -356,6 +356,27 @@ pub fn draw(
             ),
             Span::raw(" exit view"),
         ]),
+        AppMode::RunningHook(state) => {
+            if state.child.is_some() {
+                Line::from(Span::styled(
+                    "Running hook...",
+                    Style::default().fg(Color::Cyan),
+                ))
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        "Enter",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" continue  "),
+                    Span::styled(
+                        "Esc",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw(" skip"),
+                ])
+            }
+        }
     };
 
     let message_line = if let Some(ref msg) = app.message {

@@ -86,7 +86,7 @@ show_note_popup() {
                 echo '  No developer notes found for:'
                 echo \"  $rel_path\"
                 echo ''
-                read -rp '  Press Enter to return to diff...'
+                read -rp '  Press Enter to view diff...'
             " 2>/dev/null || true
         return
     fi
@@ -99,7 +99,7 @@ show_note_popup() {
             echo ''
             cat '$note_file' | sed 's/^/  /'
             echo ''
-            read -rp '  Press Enter to return to diff...'
+            read -rp '  Press Enter to view diff...'
         " 2>/dev/null || true
 }
 
@@ -222,7 +222,7 @@ VIMSCRIPT
 cd "$WORKDIR"
 BASE=$(determine_base)
 
-CHANGED_FILES=$(git diff --name-only "$BASE"..HEAD 2>/dev/null || true)
+CHANGED_FILES=$(git log --no-merges --pretty=format: --name-only "$BASE"..HEAD 2>/dev/null | grep -v '^$' | sort -u || true)
 if [[ -z "$CHANGED_FILES" ]]; then
     tmux display-popup -E -w 60% -h 25% \
         bash -c "
@@ -258,7 +258,8 @@ while IFS= read -r rel_path; do
     git show "HEAD:${rel_path}" > "$PROPOSED" 2>/dev/null || touch "$PROPOSED"
     extract_note "$rel_path" "$NOTE_FILE"
 
-    # Review loop for this file (allows 'n' to show notes then re-review)
+    show_note_popup "$rel_path" "$NOTE_FILE"
+
     while true; do
         open_vimdiff \
             "$rel_path" "$ORIGINAL" "$PROPOSED" \
@@ -269,7 +270,7 @@ while IFS= read -r rel_path; do
 
         if [[ "$decision" == "note" ]]; then
             show_note_popup "$rel_path" "$NOTE_FILE"
-            continue  # re-open the diff for the same file
+            continue
         fi
         break
     done

@@ -5,6 +5,7 @@ mod picker;
 mod input;
 mod search;
 mod change_reason;
+mod mouse;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -34,6 +35,7 @@ pub use picker::{
 pub use input::handle_paste;
 pub use search::handle_search_key;
 pub use change_reason::handle_change_reason_key;
+pub use mouse::handle_mouse;
 
 pub fn handle_key(
     app: &mut App,

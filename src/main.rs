@@ -14,7 +14,7 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste,
-        Event,
+        DisableMouseCapture, EnableMouseCapture, Event,
     },
     execute,
     terminal::{
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -55,6 +55,7 @@ fn main() -> Result<()> {
     execute!(
         terminal.backend_mut(),
         DisableBracketedPaste,
+        DisableMouseCapture,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
@@ -258,6 +259,11 @@ fn run_loop<B: Backend>(
                 match ev {
                     Event::Key(key) => {
                         if let Err(e) = handlers::handle_key(app, key, visible_rows) {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Err(e) = handlers::handle_mouse(app, mouse, visible_rows) {
                             app.show_error(e);
                         }
                     }

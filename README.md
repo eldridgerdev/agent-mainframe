@@ -58,7 +58,7 @@ cargo build --release
 ```
 
 ## Quick Start
-
+0. Create or attach to a TMUX session (tmux new / tmux attach)
 1. Launch the dashboard:
 
    ```bash

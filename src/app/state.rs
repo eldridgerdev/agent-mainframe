@@ -101,6 +101,7 @@ pub enum AppMode {
     CreatingFeature(CreateFeatureState),
     DeletingProject(String),
     DeletingFeature(String, String),
+    DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
     Help,
     NotificationPicker(usize),
@@ -161,6 +162,25 @@ pub struct RunningHookState {
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
+}
+
+pub struct DeletingFeatureState {
+    pub project_name: String,
+    pub feature_name: String,
+    pub tmux_session: String,
+    pub is_worktree: bool,
+    pub repo: PathBuf,
+    pub workdir: PathBuf,
+    pub stage: DeleteStage,
+    pub child: Option<Child>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum DeleteStage {
+    KillingTmux,
+    RemovingWorktree,
+    Completed,
 }
 
 pub struct BrowsePathState {

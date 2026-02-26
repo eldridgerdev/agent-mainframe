@@ -8,7 +8,8 @@ use ratatui::{
 
 use crate::app::{
     BrowsePathState, ChangeReasonState, CreateFeatureState, CreateFeatureStep, CreateProjectState,
-    CreateProjectStep, RenameSessionState, RunningHookState, SearchState,
+    CreateProjectStep, DeleteStage, DeletingFeatureState, RenameSessionState, RunningHookState,
+    SearchState,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -1353,6 +1354,117 @@ pub fn draw_running_hook_dialog(
             Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" skip"),
         ]))
+    };
+    frame.render_widget(hints, chunks[3]);
+}
+
+pub fn draw_deleting_feature_dialog(
+    frame: &mut Frame,
+    state: &DeletingFeatureState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    let area = centered_rect(50, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let is_running = state.child.is_some();
+    let border_color = if is_running {
+        Color::Yellow
+    } else if state.error.is_some() {
+        Color::Red
+    } else {
+        Color::Green
+    };
+
+    let block = Block::default()
+        .title(" Deleting Feature ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let stage_text = match state.stage {
+        DeleteStage::KillingTmux => "Stopping tmux session...",
+        DeleteStage::RemovingWorktree => "Removing worktree...",
+        DeleteStage::Completed => "Done",
+    };
+
+    let status_text = if is_running {
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let span = throbber.to_symbol_span(throbber_state);
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            span,
+            Span::styled(
+                format!(" {}", stage_text),
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else if let Some(ref err) = state.error {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✗ ", Style::default().fg(Color::Red)),
+            Span::styled(err, Style::default().fg(Color::Red)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled(
+                "Feature deleted successfully",
+                Style::default().fg(Color::Green),
+            ),
+        ])
+    };
+    frame.render_widget(Paragraph::new(status_text), chunks[0]);
+
+    let feature_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Feature: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            &state.feature_name,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(feature_line, chunks[1]);
+
+    let project_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Project: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.project_name, Style::default().fg(Color::Cyan)),
+    ]));
+    frame.render_widget(project_line, chunks[2]);
+
+    let hints = if is_running {
+        Paragraph::new(Line::from(Span::styled(
+            " Please wait...",
+            Style::default().fg(Color::DarkGray),
+        )))
+    } else if state.error.is_some() {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" acknowledge  "),
+        ]))
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            " Press any key to continue...",
+            Style::default().fg(Color::DarkGray),
+        )))
     };
     frame.render_widget(hints, chunks[3]);
 }

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 
 pub struct WorktreeManager;
 
@@ -17,9 +17,7 @@ impl WorktreeManager {
             bail!("{} is not inside a git repository", path.display());
         }
 
-        let root = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(PathBuf::from(root))
     }
 
@@ -31,9 +29,7 @@ impl WorktreeManager {
             .output();
 
         let common = match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             _ => return false,
         };
 
@@ -43,9 +39,7 @@ impl WorktreeManager {
             .output();
 
         let gitdir = match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).trim().to_string()
-            }
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             _ => return false,
         };
 
@@ -53,21 +47,14 @@ impl WorktreeManager {
     }
 
     /// Create a new worktree for a branch
-    pub fn create(
-        repo: &Path,
-        name: &str,
-        branch: &str,
-    ) -> Result<PathBuf> {
+    pub fn create(repo: &Path, name: &str, branch: &str) -> Result<PathBuf> {
         let worktree_dir = repo.join(".worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
 
         let worktree_path = worktree_dir.join(name);
 
         if worktree_path.exists() {
-            bail!(
-                "Worktree path already exists: {}",
-                worktree_path.display()
-            );
+            bail!("Worktree path already exists: {}", worktree_path.display());
         }
 
         // Check if branch exists
@@ -80,12 +67,7 @@ impl WorktreeManager {
 
         let output = if branch_exists {
             Command::new("git")
-                .args([
-                    "worktree",
-                    "add",
-                    &worktree_path.to_string_lossy(),
-                    branch,
-                ])
+                .args(["worktree", "add", &worktree_path.to_string_lossy(), branch])
                 .current_dir(repo)
                 .output()
                 .context("Failed to create worktree")?
@@ -110,41 +92,32 @@ impl WorktreeManager {
         }
 
         // Merge .claude/settings.local.json into new worktree
-        let src_settings =
-            repo.join(".claude").join("settings.local.json");
+        let src_settings = repo.join(".claude").join("settings.local.json");
         if src_settings.exists() {
             let dest_dir = worktree_path.join(".claude");
             let dest_settings = dest_dir.join("settings.local.json");
             std::fs::create_dir_all(&dest_dir)?;
 
             let src: serde_json::Value =
-                serde_json::from_str(
-                    &std::fs::read_to_string(&src_settings)?,
-                )?;
+                serde_json::from_str(&std::fs::read_to_string(&src_settings)?)?;
 
-            let mut dest: serde_json::Value =
-                if dest_settings.exists() {
-                    std::fs::read_to_string(&dest_settings)
-                        .ok()
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or_else(|| serde_json::json!({}))
-                } else {
-                    serde_json::json!({})
-                };
+            let mut dest: serde_json::Value = if dest_settings.exists() {
+                std::fs::read_to_string(&dest_settings)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
 
             // Merge each top-level key from src into dest
-            if let (Some(src_obj), Some(dest_obj)) =
-                (src.as_object(), dest.as_object_mut())
-            {
+            if let (Some(src_obj), Some(dest_obj)) = (src.as_object(), dest.as_object_mut()) {
                 for (key, src_val) in src_obj {
                     let entry = dest_obj
                         .entry(key.clone())
                         .or_insert_with(|| serde_json::json!({}));
                     // Deep-merge objects, overwrite scalars
-                    if let (Some(sv), Some(ev)) = (
-                        src_val.as_object(),
-                        entry.as_object_mut(),
-                    ) {
+                    if let (Some(sv), Some(ev)) = (src_val.as_object(), entry.as_object_mut()) {
                         for (k, v) in sv {
                             ev.insert(k.clone(), v.clone());
                         }
@@ -154,10 +127,7 @@ impl WorktreeManager {
                 }
             }
 
-            std::fs::write(
-                &dest_settings,
-                serde_json::to_string_pretty(&dest)? + "\n",
-            )?;
+            std::fs::write(&dest_settings, serde_json::to_string_pretty(&dest)? + "\n")?;
         }
 
         Ok(worktree_path)
@@ -186,6 +156,21 @@ impl WorktreeManager {
         }
 
         Ok(())
+    }
+
+    pub fn spawn_remove(repo: &Path, worktree_path: &Path) -> Result<Child> {
+        let child = Command::new("git")
+            .args([
+                "worktree",
+                "remove",
+                "--force",
+                &worktree_path.to_string_lossy(),
+            ])
+            .current_dir(repo)
+            .spawn()
+            .context("Failed to spawn git worktree remove")?;
+
+        Ok(child)
     }
 
     /// List worktrees for a repo
@@ -241,9 +226,7 @@ impl WorktreeManager {
             return Ok(None);
         }
 
-        let branch = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string();
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if branch.is_empty() {
             Ok(None)
         } else {

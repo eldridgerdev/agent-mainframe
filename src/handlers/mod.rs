@@ -18,6 +18,7 @@ pub use dialog::{
     handle_create_feature_key,
     handle_delete_project_key,
     handle_delete_feature_key,
+    handle_deleting_feature_key,
     handle_help_key,
     handle_browse_path_key,
     handle_rename_session_key,
@@ -90,6 +91,9 @@ pub fn handle_key(
         }
         AppMode::RunningHook(_) => {
             handle_running_hook_key(app, key.code)
+        }
+        AppMode::DeletingFeatureInProgress(_) => {
+            handle_deleting_feature_key(app, key.code)
         }
     }
 }

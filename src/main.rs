@@ -219,6 +219,12 @@ fn run_loop<B: Backend>(
             app.show_error(e);
         }
 
+        if matches!(app.mode, app::AppMode::DeletingFeatureInProgress(_))
+            && let Err(e) = app.poll_deleting_feature()
+        {
+            app.show_error(e);
+        }
+
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.should_quit || app.should_switch.is_some() {

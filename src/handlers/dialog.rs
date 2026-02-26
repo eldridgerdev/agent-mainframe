@@ -576,3 +576,32 @@ pub fn handle_running_hook_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn handle_deleting_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
+    let (is_running, is_completed) = match &app.mode {
+        AppMode::DeletingFeatureInProgress(state) => {
+            (state.child.is_some(), state.stage == crate::app::DeleteStage::Completed)
+        }
+        _ => return Ok(()),
+    };
+
+    if is_running {
+        return Ok(());
+    }
+
+    match key {
+        KeyCode::Enter | KeyCode::Esc => {
+            if is_completed {
+                app.complete_deleting_feature()?;
+            } else {
+                app.cancel_deleting_feature();
+            }
+        }
+        _ => {
+            if is_completed {
+                app.complete_deleting_feature()?;
+            }
+        }
+    }
+    Ok(())
+}

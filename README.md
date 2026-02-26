@@ -252,7 +252,7 @@ is created automatically with defaults on first run.
 | `opencode_theme` | string | `"catppuccin-frappe"` | Theme name passed to Opencode. |
 
 ### `zai` — token usage limits
-
+(Doesn't really work, zai doesn't provide useful info here)
 Tracks token consumption and shows usage in the status
 bar. Set `plan` to one of the presets, or override
 individual limits manually.

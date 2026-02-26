@@ -23,6 +23,7 @@ pub use dialog::{
     handle_browse_path_key,
     handle_rename_session_key,
     handle_running_hook_key,
+    handle_hook_prompt_key,
 };
 pub use picker::{
     handle_command_picker_key,
@@ -92,6 +93,9 @@ pub fn handle_key(
         }
         AppMode::RunningHook(_) => {
             handle_running_hook_key(app, key.code)
+        }
+        AppMode::HookPrompt(_) => {
+            handle_hook_prompt_key(app, key.code)
         }
     }
 }

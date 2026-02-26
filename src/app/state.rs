@@ -117,6 +117,7 @@ pub enum AppMode {
     SessionPicker(SessionPickerState),
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),
+    HookPrompt(HookPromptState),
 }
 
 #[derive(Clone)]
@@ -146,6 +147,35 @@ pub struct ChangeReasonState {
     pub reason: String,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
+}
+
+pub enum HookNext {
+    WorktreeCreated {
+        project_name: String,
+        branch: String,
+        mode: VibeMode,
+        review: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+        enable_notes: bool,
+    },
+    StartFeature {
+        pi: usize,
+        fi: usize,
+    },
+    StopFeature {
+        pi: usize,
+        fi: usize,
+    },
+}
+
+pub struct HookPromptState {
+    pub script: String,
+    pub workdir: PathBuf,
+    pub title: String,
+    pub options: Vec<String>,
+    pub selected: usize,
+    pub next: HookNext,
 }
 
 pub struct RunningHookState {

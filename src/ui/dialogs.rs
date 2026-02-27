@@ -1259,7 +1259,7 @@ pub fn draw_running_hook_dialog(
     state: &RunningHookState,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
-    let area = centered_rect(70, 40, frame.area());
+    let area = centered_rect(90, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let is_running = state.child.is_some();
@@ -1282,8 +1282,8 @@ pub fn draw_running_hook_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(1),
         ])
@@ -1325,21 +1325,50 @@ pub fn draw_running_hook_dialog(
     let script_line = Paragraph::new(Line::from(vec![
         Span::styled(" Script: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            if state.script.len() > 50 {
-                format!("{}...", &state.script[..47])
-            } else {
-                state.script.clone()
-            },
+            state.script.clone(),
             Style::default().fg(Color::White),
         ),
-    ]));
+    ]))
+    .wrap(Wrap { trim: false });
     frame.render_widget(script_line, chunks[1]);
 
-    let branch_line = Paragraph::new(Line::from(vec![
-        Span::styled(" Branch: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&state.branch, Style::default().fg(Color::Cyan)),
-    ]));
-    frame.render_widget(branch_line, chunks[2]);
+    // Show the last N lines of captured stdout/stderr output.
+    // Subtract 1 for the Borders::TOP header row.
+    let output_height =
+        chunks[2].height.saturating_sub(1) as usize;
+    let all_lines: Vec<&str> = state.output.lines().collect();
+    let start =
+        all_lines.len().saturating_sub(output_height);
+    let output_lines: Vec<Line> = if all_lines.is_empty() {
+        vec![Line::from(Span::styled(
+            " (no output yet)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        all_lines[start..]
+            .iter()
+            .map(|l| {
+                Line::from(Span::styled(
+                    format!(" {}", l),
+                    Style::default().fg(Color::White),
+                ))
+            })
+            .collect()
+    };
+    let output_para = Paragraph::new(output_lines)
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(
+                    Style::default().fg(Color::DarkGray),
+                )
+                .title(Span::styled(
+                    " output ",
+                    Style::default().fg(Color::DarkGray),
+                )),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(output_para, chunks[2]);
 
     let hints = if is_running {
         Paragraph::new(Line::from(Span::styled(

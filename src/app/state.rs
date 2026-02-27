@@ -192,6 +192,7 @@ pub struct RunningHookState {
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
 }
 
 pub struct DeletingFeatureState {

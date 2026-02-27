@@ -1242,7 +1242,37 @@ impl App {
         if let Some(ref c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-        let child = cmd.spawn().ok();
+        let (tx, rx) =
+            std::sync::mpsc::channel::<String>();
+        let mut child = cmd.spawn().ok();
+
+        if let Some(ref mut c) = child {
+            if let Some(stdout) = c.stdout.take() {
+                let tx2 = tx.clone();
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    for line in
+                        std::io::BufReader::new(stdout).lines()
+                    {
+                        if let Ok(l) = line {
+                            let _ = tx2.send(l);
+                        }
+                    }
+                });
+            }
+            if let Some(stderr) = c.stderr.take() {
+                std::thread::spawn(move || {
+                    use std::io::BufRead;
+                    for line in
+                        std::io::BufReader::new(stderr).lines()
+                    {
+                        if let Ok(l) = line {
+                            let _ = tx.send(l);
+                        }
+                    }
+                });
+            }
+        }
 
         self.mode = AppMode::RunningHook(RunningHookState {
             script: script.to_string(),
@@ -1257,6 +1287,7 @@ impl App {
             child,
             output: String::new(),
             success: None,
+            output_rx: Some(rx),
         });
     }
 
@@ -1265,6 +1296,14 @@ impl App {
             AppMode::RunningHook(s) => s,
             _ => return Ok(()),
         };
+
+        // Drain any lines the reader threads have sent.
+        if let Some(ref rx) = state.output_rx {
+            while let Ok(line) = rx.try_recv() {
+                state.output.push_str(&line);
+                state.output.push('\n');
+            }
+        }
 
         if let Some(ref mut child) = state.child {
             match child.try_wait() {

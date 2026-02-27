@@ -23,3 +23,8 @@ ratatui-explorer = "0.2"
 ureq = "3"
 unicode-width = "0.1"
 regex = "1"
+
+[dev-dependencies]
+mockall = "0.13"
+tempfile = "3"
+pretty_assertions = "1"

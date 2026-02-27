@@ -292,3 +292,84 @@ fn handle_leader_key(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn alt(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    // ── crossterm_key_to_tmux ─────────────────────────────────
+
+    #[test]
+    fn ctrl_c_becomes_named_c_c() {
+        let k = ctrl(KeyCode::Char('c'));
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Named(s)) if s == "C-c"
+        ));
+    }
+
+    #[test]
+    fn alt_x_becomes_named_m_x() {
+        let k = alt(KeyCode::Char('x'));
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Named(s)) if s == "M-x"
+        ));
+    }
+
+    #[test]
+    fn regular_char_becomes_literal() {
+        let k = key(KeyCode::Char('a'));
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Literal(s)) if s == "a"
+        ));
+    }
+
+    #[test]
+    fn enter_becomes_named_enter() {
+        let k = key(KeyCode::Enter);
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Named(s)) if s == "Enter"
+        ));
+    }
+
+    #[test]
+    fn f5_becomes_named_f5() {
+        let k = key(KeyCode::F(5));
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Named(s)) if s == "F5"
+        ));
+    }
+
+    #[test]
+    fn backspace_becomes_named_bspace() {
+        let k = key(KeyCode::Backspace);
+        assert!(matches!(
+            crossterm_key_to_tmux(&k),
+            Some(TmuxKey::Named(s)) if s == "BSpace"
+        ));
+    }
+
+    #[test]
+    fn unknown_key_returns_none() {
+        // Null is not handled in the match
+        let k = key(KeyCode::Null);
+        assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+}

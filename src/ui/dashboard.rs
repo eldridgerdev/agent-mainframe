@@ -412,3 +412,52 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::layout::Rect;
+
+    // ── centered_rect ─────────────────────────────────────────
+
+    #[test]
+    fn centered_rect_50_percent() {
+        let area = Rect::new(0, 0, 100, 100);
+        let result = centered_rect(50, 50, area);
+        // Middle slice should be 50% of 100 = 50 in each dim
+        assert_eq!(result.width, 50);
+        assert_eq!(result.height, 50);
+        // Should start at 25% offset
+        assert_eq!(result.x, 25);
+        assert_eq!(result.y, 25);
+    }
+
+    #[test]
+    fn centered_rect_80_60_percent() {
+        let area = Rect::new(0, 0, 100, 100);
+        let result = centered_rect(80, 60, area);
+        assert_eq!(result.width, 80);
+        assert_eq!(result.height, 60);
+        assert_eq!(result.x, 10);
+        assert_eq!(result.y, 20);
+    }
+
+    #[test]
+    fn centered_rect_fits_within_area() {
+        let area = Rect::new(10, 5, 80, 40);
+        let result = centered_rect(60, 50, area);
+        // Result must be inside the original area
+        assert!(result.x >= area.x);
+        assert!(result.y >= area.y);
+        assert!(result.x + result.width <= area.x + area.width);
+        assert!(result.y + result.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn centered_rect_100_percent_fills_area() {
+        let area = Rect::new(0, 0, 80, 40);
+        let result = centered_rect(100, 100, area);
+        assert_eq!(result.width, area.width);
+        assert_eq!(result.height, area.height);
+    }
+}

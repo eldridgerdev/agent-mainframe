@@ -166,3 +166,177 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         feature_presets,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn write_extension_config(dir: &TempDir, config: &ExtensionConfig) {
+        let amf_dir = dir.path().join(".amf");
+        std::fs::create_dir_all(&amf_dir).unwrap();
+        let json = serde_json::to_string(config).unwrap();
+        std::fs::write(amf_dir.join("config.json"), json).unwrap();
+    }
+
+    // ── merge_project_extension_config ────────────────────────
+
+    #[test]
+    fn no_project_config_returns_base_unchanged() {
+        let global = ExtensionConfig {
+            custom_sessions: vec![CustomSessionConfig {
+                name: "test".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap(); // no .amf/config.json
+        let merged =
+            merge_project_extension_config(&global, tmp.path());
+        assert_eq!(merged.custom_sessions.len(), 1);
+        assert_eq!(merged.custom_sessions[0].name, "test");
+    }
+
+    #[test]
+    fn project_hook_overrides_global_hook() {
+        let global = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_start: Some(HookConfig::Script(
+                    "global-start.sh".to_string(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_start: Some(HookConfig::Script(
+                    "project-start.sh".to_string(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged =
+            merge_project_extension_config(&global, tmp.path());
+        let on_start =
+            merged.lifecycle_hooks.on_start.unwrap();
+        assert_eq!(on_start.script(), "project-start.sh");
+    }
+
+    #[test]
+    fn global_hook_used_when_project_does_not_set_it() {
+        let global = ExtensionConfig {
+            lifecycle_hooks: LifecycleHooks {
+                on_start: Some(HookConfig::Script(
+                    "global-start.sh".to_string(),
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Project config present but no on_start
+        let project_config = ExtensionConfig::default();
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged =
+            merge_project_extension_config(&global, tmp.path());
+        let on_start =
+            merged.lifecycle_hooks.on_start.unwrap();
+        assert_eq!(on_start.script(), "global-start.sh");
+    }
+
+    #[test]
+    fn custom_sessions_deduplicated_by_name_project_wins() {
+        let global = ExtensionConfig {
+            custom_sessions: vec![
+                CustomSessionConfig {
+                    name: "shared".to_string(),
+                    command: Some("global-cmd".to_string()),
+                    ..Default::default()
+                },
+                CustomSessionConfig {
+                    name: "global-only".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            custom_sessions: vec![
+                CustomSessionConfig {
+                    name: "shared".to_string(),
+                    command: Some("project-cmd".to_string()),
+                    ..Default::default()
+                },
+                CustomSessionConfig {
+                    name: "project-only".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged =
+            merge_project_extension_config(&global, tmp.path());
+        // "shared" must appear exactly once (project version)
+        let shared: Vec<_> = merged
+            .custom_sessions
+            .iter()
+            .filter(|s| s.name == "shared")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(
+            shared[0].command.as_deref(),
+            Some("project-cmd")
+        );
+        // Both unique entries should be present
+        assert!(merged
+            .custom_sessions
+            .iter()
+            .any(|s| s.name == "global-only"));
+        assert!(merged
+            .custom_sessions
+            .iter()
+            .any(|s| s.name == "project-only"));
+        assert_eq!(merged.custom_sessions.len(), 3);
+    }
+
+    #[test]
+    fn keybindings_project_overrides_per_action() {
+        let mut global_bindings = HashMap::new();
+        global_bindings.insert("quit".to_string(), 'q');
+        global_bindings.insert("delete".to_string(), 'd');
+
+        let global = ExtensionConfig {
+            keybindings: global_bindings,
+            ..Default::default()
+        };
+        let mut project_bindings = HashMap::new();
+        // Override quit only
+        project_bindings.insert("quit".to_string(), 'Q');
+
+        let project_config = ExtensionConfig {
+            keybindings: project_bindings,
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged =
+            merge_project_extension_config(&global, tmp.path());
+        assert_eq!(merged.keybindings.get("quit"), Some(&'Q'));
+        // Global key preserved when not overridden
+        assert_eq!(
+            merged.keybindings.get("delete"),
+            Some(&'d')
+        );
+    }
+}

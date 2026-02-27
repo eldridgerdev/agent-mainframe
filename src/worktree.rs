@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
+use crate::traits::WorktreeOps;
+
 pub struct WorktreeManager;
 
 impl WorktreeManager {
@@ -239,4 +241,21 @@ impl WorktreeManager {
 pub struct WorktreeInfo {
     pub path: PathBuf,
     pub branch: Option<String>,
+}
+
+// ── WorktreeOps trait implementation ─────────────────────────────────────────
+
+impl WorktreeOps for WorktreeManager {
+    fn repo_root(&self, path: &Path) -> Result<PathBuf> {
+        WorktreeManager::repo_root(path)
+    }
+
+    fn create(
+        &self,
+        repo: &Path,
+        name: &str,
+        branch: &str,
+    ) -> Result<PathBuf> {
+        WorktreeManager::create(repo, name, branch)
+    }
 }

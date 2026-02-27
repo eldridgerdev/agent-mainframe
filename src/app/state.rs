@@ -377,3 +377,35 @@ pub enum VisibleItem {
     Feature(usize, usize),
     Session(usize, usize, usize),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SessionFilter::next ───────────────────────────────────
+
+    #[test]
+    fn session_filter_next_cycles_through_all_variants() {
+        let all = SessionFilter::ALL.as_slice();
+        for (i, variant) in all.iter().enumerate() {
+            let next = variant.next();
+            let expected = &all[(i + 1) % all.len()];
+            assert_eq!(&next, expected,
+                "after {i} expected {:?} got {:?}",
+                expected, next
+            );
+        }
+    }
+
+    #[test]
+    fn session_filter_last_wraps_to_first() {
+        let last = SessionFilter::ALL.last().unwrap();
+        let next = last.next();
+        assert_eq!(next, SessionFilter::ALL[0]);
+    }
+
+    #[test]
+    fn session_filter_all_has_six_variants() {
+        assert_eq!(SessionFilter::ALL.len(), 6);
+    }
+}

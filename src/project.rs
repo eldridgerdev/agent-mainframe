@@ -671,6 +671,335 @@ pub fn store_path() -> PathBuf {
     amf_config_dir().join("projects.json")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
+
+    fn make_feature_session(
+        kind: SessionKind,
+        window: &str,
+    ) -> FeatureSession {
+        FeatureSession {
+            id: "test-id".to_string(),
+            kind,
+            label: "test".to_string(),
+            tmux_window: window.to_string(),
+            claude_session_id: None,
+            created_at: Utc::now(),
+            command: None,
+        }
+    }
+
+    fn make_feature() -> Feature {
+        Feature {
+            id: "feat-id".to_string(),
+            name: "test-feature".to_string(),
+            branch: "test-branch".to_string(),
+            workdir: PathBuf::from("/tmp/test"),
+            is_worktree: false,
+            tmux_session: "amf-test".to_string(),
+            sessions: vec![],
+            collapsed: true,
+            mode: VibeMode::default(),
+            review: false,
+            agent: AgentKind::default(),
+            enable_chrome: false,
+            has_notes: false,
+            status: ProjectStatus::Stopped,
+            created_at: Utc::now(),
+            last_accessed: Utc::now(),
+        }
+    }
+
+    // ── ProjectStore serialization round-trip ────────────────
+
+    #[test]
+    fn projectstore_roundtrip() {
+        let store = ProjectStore {
+            version: 2,
+            projects: vec![Project {
+                id: "proj-id".to_string(),
+                name: "my-project".to_string(),
+                repo: PathBuf::from("/home/user/my-project"),
+                collapsed: false,
+                features: vec![],
+                created_at: Utc::now(),
+                is_git: true,
+            }],
+        };
+        let tmp = NamedTempFile::new().unwrap();
+        store.save(tmp.path()).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].name, "my-project");
+        assert_eq!(
+            loaded.projects[0].repo,
+            PathBuf::from("/home/user/my-project")
+        );
+        assert!(loaded.projects[0].is_git);
+    }
+
+    // ── Migration v0 → v2 ────────────────────────────────────
+
+    #[test]
+    fn migration_v0_to_v2() {
+        let v0_json = r#"{
+            "projects": [
+                {
+                    "id": "old-id",
+                    "name": "my-feature",
+                    "repo": "/home/user/my-repo",
+                    "workdir": "/home/user/my-repo",
+                    "branch": "main",
+                    "is_worktree": false,
+                    "tmux_session": "amf-my-feature",
+                    "claude_session_id": null,
+                    "status": "stopped",
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "last_accessed": "2024-01-01T00:00:00Z"
+                }
+            ]
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), v0_json).unwrap();
+
+        let store = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(store.version, 2);
+        assert_eq!(store.projects.len(), 1);
+
+        let proj = &store.projects[0];
+        // project name derived from repo basename
+        assert_eq!(proj.name, "my-repo");
+        assert_eq!(proj.features.len(), 1);
+
+        let feat = &proj.features[0];
+        assert_eq!(feat.name, "my-feature");
+        assert_eq!(feat.branch, "main");
+        // v0 → v1 → v2 adds Claude + Terminal sessions
+        assert_eq!(feat.sessions.len(), 2);
+        assert!(feat
+            .sessions
+            .iter()
+            .any(|s| s.kind == SessionKind::Claude));
+        assert!(feat
+            .sessions
+            .iter()
+            .any(|s| s.kind == SessionKind::Terminal));
+    }
+
+    // ── Migration v1 → v2 ────────────────────────────────────
+
+    #[test]
+    fn migration_v1_to_v2() {
+        let v1_json = r#"{
+            "version": 1,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-repo",
+                    "collapsed": false,
+                    "features": [
+                        {
+                            "id": "feat-id",
+                            "name": "my-feature",
+                            "branch": "feat/my-feature",
+                            "workdir": "/home/user/my-repo/.worktrees/my-feature",
+                            "is_worktree": true,
+                            "tmux_session": "amf-my-feature",
+                            "claude_session_id": "sess-123",
+                            "status": "idle",
+                            "created_at": "2024-06-01T12:00:00Z",
+                            "last_accessed": "2024-06-01T12:00:00Z"
+                        }
+                    ],
+                    "created_at": "2024-06-01T00:00:00Z"
+                }
+            ]
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), v1_json).unwrap();
+
+        let store = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(store.version, 2);
+        assert_eq!(store.projects.len(), 1);
+
+        let proj = &store.projects[0];
+        assert_eq!(proj.name, "my-project");
+
+        let feat = &proj.features[0];
+        assert_eq!(feat.name, "my-feature");
+        assert_eq!(feat.sessions.len(), 2);
+
+        let claude_sess = feat
+            .sessions
+            .iter()
+            .find(|s| s.kind == SessionKind::Claude)
+            .unwrap();
+        assert_eq!(
+            claude_sess.claude_session_id,
+            Some("sess-123".to_string())
+        );
+        assert_eq!(claude_sess.tmux_window, "claude");
+
+        let term_sess = feat
+            .sessions
+            .iter()
+            .find(|s| s.kind == SessionKind::Terminal)
+            .unwrap();
+        assert_eq!(term_sess.tmux_window, "terminal");
+    }
+
+    // ── Feature::next_label ───────────────────────────────────
+
+    #[test]
+    fn next_label_empty_sessions() {
+        let feat = make_feature();
+        assert_eq!(feat.next_label(&SessionKind::Claude), "Claude 1");
+        assert_eq!(
+            feat.next_label(&SessionKind::Terminal),
+            "Terminal 1"
+        );
+        assert_eq!(feat.next_label(&SessionKind::Nvim), "Nvim 1");
+    }
+
+    #[test]
+    fn next_label_one_claude_session() {
+        let mut feat = make_feature();
+        feat.sessions
+            .push(make_feature_session(SessionKind::Claude, "claude"));
+        assert_eq!(feat.next_label(&SessionKind::Claude), "Claude 2");
+        // Terminal count unaffected
+        assert_eq!(
+            feat.next_label(&SessionKind::Terminal),
+            "Terminal 1"
+        );
+    }
+
+    #[test]
+    fn next_label_mixed_sessions() {
+        let mut feat = make_feature();
+        feat.sessions
+            .push(make_feature_session(SessionKind::Claude, "claude"));
+        feat.sessions.push(make_feature_session(
+            SessionKind::Terminal,
+            "terminal",
+        ));
+        feat.sessions.push(make_feature_session(
+            SessionKind::Terminal,
+            "terminal-2",
+        ));
+        assert_eq!(feat.next_label(&SessionKind::Claude), "Claude 2");
+        assert_eq!(
+            feat.next_label(&SessionKind::Terminal),
+            "Terminal 3"
+        );
+    }
+
+    // ── Feature::next_window_name ─────────────────────────────
+
+    #[test]
+    fn next_window_name_empty_sessions() {
+        let feat = make_feature();
+        assert_eq!(
+            feat.next_window_name(&SessionKind::Claude),
+            "claude"
+        );
+        assert_eq!(
+            feat.next_window_name(&SessionKind::Terminal),
+            "terminal"
+        );
+    }
+
+    #[test]
+    fn next_window_name_one_existing_session() {
+        let mut feat = make_feature();
+        feat.sessions
+            .push(make_feature_session(SessionKind::Claude, "claude"));
+        assert_eq!(
+            feat.next_window_name(&SessionKind::Claude),
+            "claude-2"
+        );
+        // Terminal still empty → just prefix
+        assert_eq!(
+            feat.next_window_name(&SessionKind::Terminal),
+            "terminal"
+        );
+    }
+
+    #[test]
+    fn next_window_name_collision_avoidance() {
+        let mut feat = make_feature();
+        feat.sessions
+            .push(make_feature_session(SessionKind::Claude, "claude"));
+        // Manually add "claude-2" to force a collision
+        feat.sessions.push(make_feature_session(
+            SessionKind::Claude,
+            "claude-2",
+        ));
+        // Should skip "claude-2" and return "claude-3"
+        assert_eq!(
+            feat.next_window_name(&SessionKind::Claude),
+            "claude-3"
+        );
+    }
+
+    // ── VibeMode::cli_flags ───────────────────────────────────
+
+    #[test]
+    fn vibe_mode_vibeless_flags() {
+        assert_eq!(
+            VibeMode::Vibeless.cli_flags(false),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            VibeMode::Vibeless.cli_flags(true),
+            vec!["--chrome"]
+        );
+    }
+
+    #[test]
+    fn vibe_mode_vibe_flags() {
+        assert_eq!(
+            VibeMode::Vibe.cli_flags(false),
+            vec!["--permission-mode", "acceptEdits"]
+        );
+        assert_eq!(
+            VibeMode::Vibe.cli_flags(true),
+            vec!["--permission-mode", "acceptEdits", "--chrome"]
+        );
+    }
+
+    #[test]
+    fn vibe_mode_supervibe_flags() {
+        assert_eq!(
+            VibeMode::SuperVibe.cli_flags(false),
+            vec!["--dangerously-skip-permissions"]
+        );
+        assert_eq!(
+            VibeMode::SuperVibe.cli_flags(true),
+            vec!["--dangerously-skip-permissions", "--chrome"]
+        );
+    }
+
+    #[test]
+    fn vibe_mode_review_flags() {
+        assert_eq!(
+            VibeMode::Review.cli_flags(false),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            VibeMode::Review.cli_flags(true),
+            vec!["--chrome"]
+        );
+    }
+}
+
 pub fn migrate_from_old_path() {
     let new_path = store_path();
     if new_path.exists() {

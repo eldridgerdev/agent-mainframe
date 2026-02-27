@@ -301,3 +301,44 @@ fn handle_normal_leader_key(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── default_key_for_action ────────────────────────────────
+
+    #[test]
+    fn default_key_all_known_actions() {
+        assert_eq!(default_key_for_action("quit"), Some('q'));
+        assert_eq!(
+            default_key_for_action("create_project"),
+            Some('N')
+        );
+        assert_eq!(
+            default_key_for_action("create_feature"),
+            Some('n')
+        );
+        assert_eq!(
+            default_key_for_action("start_session"),
+            Some('c')
+        );
+        assert_eq!(
+            default_key_for_action("stop_session"),
+            Some('x')
+        );
+        assert_eq!(default_key_for_action("delete"), Some('d'));
+        assert_eq!(default_key_for_action("sessions"), Some('s'));
+        assert_eq!(default_key_for_action("help"), Some('?'));
+        assert_eq!(default_key_for_action("search"), Some('/'));
+        assert_eq!(default_key_for_action("refresh"), Some('r'));
+        assert_eq!(default_key_for_action("filter"), Some('f'));
+    }
+
+    #[test]
+    fn default_key_unknown_action_returns_none() {
+        assert_eq!(default_key_for_action("unknown_action"), None);
+        assert_eq!(default_key_for_action(""), None);
+        assert_eq!(default_key_for_action("QUIT"), None);
+    }
+}

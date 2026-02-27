@@ -6,6 +6,7 @@ mod extension;
 mod handlers;
 mod project;
 mod tmux;
+mod traits;
 mod ui;
 mod usage;
 mod worktree;

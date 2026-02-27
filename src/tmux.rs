@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::process::{Child, Command};
 
+use crate::traits::TmuxOps;
+
 pub struct TmuxManager;
 
 impl TmuxManager {
@@ -554,5 +556,112 @@ impl TmuxManager {
             .status()
             .context("Failed to exit tmux copy mode")?;
         Ok(())
+    }
+}
+
+// ── TmuxOps trait implementation ─────────────────────────────────────────────
+
+impl TmuxOps for TmuxManager {
+    fn session_exists(&self, session: &str) -> bool {
+        TmuxManager::session_exists(session)
+    }
+
+    fn list_sessions(&self) -> Result<Vec<String>> {
+        TmuxManager::list_sessions()
+    }
+
+    fn create_session_with_window(
+        &self,
+        session: &str,
+        first_window: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        TmuxManager::create_session_with_window(
+            session,
+            first_window,
+            workdir,
+        )
+    }
+
+    fn set_session_env(
+        &self,
+        session: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        TmuxManager::set_session_env(session, key, value)
+    }
+
+    fn create_window(
+        &self,
+        session: &str,
+        window: &str,
+        workdir: &Path,
+    ) -> Result<()> {
+        TmuxManager::create_window(session, window, workdir)
+    }
+
+    fn launch_claude(
+        &self,
+        session: &str,
+        window: &str,
+        resume_id: Option<String>,
+        extra_args: Vec<String>,
+    ) -> Result<()> {
+        let refs: Vec<&str> =
+            extra_args.iter().map(|s| s.as_str()).collect();
+        TmuxManager::launch_claude(
+            session,
+            window,
+            resume_id.as_deref(),
+            &refs,
+        )
+    }
+
+    fn launch_opencode(
+        &self,
+        session: &str,
+        window: &str,
+    ) -> Result<()> {
+        TmuxManager::launch_opencode(session, window)
+    }
+
+    fn send_keys(
+        &self,
+        session: &str,
+        window: &str,
+        keys: &str,
+    ) -> Result<()> {
+        TmuxManager::send_keys(session, window, keys)
+    }
+
+    fn send_literal(
+        &self,
+        session: &str,
+        window: &str,
+        text: &str,
+    ) -> Result<()> {
+        TmuxManager::send_literal(session, window, text)
+    }
+
+    fn send_key_name(
+        &self,
+        session: &str,
+        window: &str,
+        key_name: &str,
+    ) -> Result<()> {
+        TmuxManager::send_key_name(session, window, key_name)
+    }
+
+    fn select_window(
+        &self,
+        session: &str,
+        window: &str,
+    ) -> Result<()> {
+        TmuxManager::select_window(session, window)
+    }
+
+    fn kill_session(&self, session: &str) -> Result<()> {
+        TmuxManager::kill_session(session)
     }
 }

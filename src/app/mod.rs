@@ -22,6 +22,7 @@ use crate::project::{
     ProjectStore, SessionKind, VibeMode,
 };
 use crate::tmux::TmuxManager;
+use crate::traits::{TmuxOps, WorktreeOps};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
@@ -662,6 +663,8 @@ pub struct App {
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
     pub last_timer_values: std::collections::HashMap<String, String>,
+    pub tmux: Box<dyn TmuxOps>,
+    pub worktree: Box<dyn WorktreeOps>,
 }
 
 fn ensure_notify_scripts() {
@@ -734,7 +737,50 @@ impl App {
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
             last_timer_values: std::collections::HashMap::new(),
+            tmux: Box::new(TmuxManager),
+            worktree: Box::new(WorktreeManager),
         })
+    }
+
+    /// Lightweight constructor for unit/integration tests.
+    ///
+    /// Accepts a pre-built `ProjectStore` and injected trait objects so
+    /// tests can drive App logic without touching the filesystem or
+    /// spawning real tmux sessions.
+    #[cfg(test)]
+    pub fn new_for_test(
+        store: ProjectStore,
+        tmux: Box<dyn TmuxOps>,
+        worktree: Box<dyn WorktreeOps>,
+    ) -> Self {
+        use crate::extension::ExtensionConfig;
+        Self {
+            store,
+            store_path: PathBuf::new(),
+            config: AppConfig::default(),
+            active_extension: ExtensionConfig::default(),
+            selection: Selection::Project(0),
+            mode: AppMode::Normal,
+            message: None,
+            should_quit: false,
+            should_switch: None,
+            pane_content: String::new(),
+            tmux_cursor: None,
+            leader_active: false,
+            leader_activated_at: None,
+            pending_inputs: Vec::new(),
+            usage: UsageManager::new(None, None, None),
+            scroll_offset: 0,
+            session_filter: SessionFilter::default(),
+            throbber_state:
+                throbber_widgets_tui::ThrobberState::default(),
+            thinking_features:
+                std::collections::HashSet::new(),
+            last_timer_values:
+                std::collections::HashMap::new(),
+            tmux,
+            worktree,
+        }
     }
 
     /// Re-merge extension config for the currently selected
@@ -1594,7 +1640,7 @@ impl App {
 
     pub fn sync_statuses(&mut self) {
         let live_sessions =
-            TmuxManager::list_sessions().unwrap_or_default();
+            self.tmux.list_sessions().unwrap_or_default();
         for project in &mut self.store.projects {
             for feature in &mut project.features {
                 if live_sessions
@@ -2149,7 +2195,7 @@ impl App {
         };
 
         let is_git = stored_is_git
-            || WorktreeManager::repo_root(&project_repo).is_ok();
+            || self.worktree.repo_root(&project_repo).is_ok();
 
         if is_git && !stored_is_git {
             if let Some(p) =
@@ -2174,7 +2220,7 @@ impl App {
             if let Some(wt) = &selected_worktree {
                 (wt.path.clone(), true)
             } else if use_worktree {
-                let wt_path = WorktreeManager::create(
+                let wt_path = self.worktree.create(
                     &project_repo,
                     &branch,
                     &branch,
@@ -2327,56 +2373,56 @@ impl App {
             }
         }
 
-        if TmuxManager::session_exists(&feature.tmux_session) {
+        if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());
         }
 
-        TmuxManager::create_session_with_window(
+        self.tmux.create_session_with_window(
             &feature.tmux_session,
             &feature.sessions[0].tmux_window,
             &feature.workdir,
         )?;
-        TmuxManager::set_session_env(
+        self.tmux.set_session_env(
             &feature.tmux_session,
             "AMF_SESSION",
             &feature.tmux_session,
         )?;
 
         for session in &feature.sessions[1..] {
-            TmuxManager::create_window(
+            self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
                 &feature.workdir,
             )?;
         }
 
-        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
-        let extra_args_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+        let extra_args: Vec<String> =
+            feature.mode.cli_flags(feature.enable_chrome);
         for session in &feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
-                    TmuxManager::launch_claude(
+                    self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
-                        session.claude_session_id.as_deref(),
-                        &extra_args_refs,
+                        session.claude_session_id.clone(),
+                        extra_args.clone(),
                     )?;
                 }
                 SessionKind::Opencode => {
-                    TmuxManager::launch_opencode(
+                    self.tmux.launch_opencode(
                         &feature.tmux_session,
                         &session.tmux_window,
                     )?;
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {
-                        TmuxManager::send_keys(
+                        self.tmux.send_keys(
                             &feature.tmux_session,
                             &session.tmux_window,
                             "nvim .claude/notes.md",
                         )?;
                     } else {
-                        TmuxManager::send_keys(
+                        self.tmux.send_keys(
                             &feature.tmux_session,
                             &session.tmux_window,
                             "nvim",
@@ -2386,12 +2432,12 @@ impl App {
                 SessionKind::Terminal => {}
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
-                        TmuxManager::send_literal(
+                        self.tmux.send_literal(
                             &feature.tmux_session,
                             &session.tmux_window,
                             cmd,
                         )?;
-                        TmuxManager::send_key_name(
+                        self.tmux.send_key_name(
                             &feature.tmux_session,
                             &session.tmux_window,
                             "Enter",
@@ -2401,7 +2447,7 @@ impl App {
             }
         }
 
-        TmuxManager::select_window(
+        self.tmux.select_window(
             &feature.tmux_session,
             &feature.sessions[0].tmux_window,
         )?;
@@ -2581,7 +2627,7 @@ impl App {
             None => return Ok(()),
         };
 
-        TmuxManager::kill_session(&tmux_session)?;
+        self.tmux.kill_session(&tmux_session)?;
 
         let feature = match self
             .store
@@ -4925,4 +4971,401 @@ fn fetch_opencode_sessions(
         .collect();
 
     Ok(filtered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── slugify ───────────────────────────────────────────────
+
+    #[test]
+    fn slugify_spaces_become_hyphens() {
+        assert_eq!(slugify("hello world"), "hello-world");
+    }
+
+    #[test]
+    fn slugify_special_chars_become_hyphens() {
+        assert_eq!(slugify("foo/bar.baz"), "foo-bar-baz");
+    }
+
+    #[test]
+    fn slugify_consecutive_hyphens_collapsed() {
+        assert_eq!(slugify("foo--bar"), "foo-bar");
+    }
+
+    #[test]
+    fn slugify_empty_input() {
+        assert_eq!(slugify(""), "");
+    }
+
+    #[test]
+    fn slugify_all_specials() {
+        assert_eq!(slugify("!@#$%"), "");
+    }
+
+    #[test]
+    fn slugify_preserves_hyphens() {
+        assert_eq!(slugify("my-feature"), "my-feature");
+    }
+
+    // ── shorten_path ──────────────────────────────────────────
+
+    #[test]
+    fn shorten_path_inside_home() {
+        if let Some(home) = dirs::home_dir() {
+            let path = home.join("projects").join("my-app");
+            let result = shorten_path(&path);
+            assert_eq!(result, "~/projects/my-app");
+        }
+    }
+
+    #[test]
+    fn shorten_path_outside_home() {
+        let path = std::path::Path::new("/tmp/some/path");
+        let result = shorten_path(path);
+        assert_eq!(result, "/tmp/some/path");
+    }
+
+    // ── strip_between_markers ─────────────────────────────────
+
+    #[test]
+    fn strip_between_markers_basic_removal() {
+        let result = strip_between_markers(
+            "hello <!-- BEGIN -->REMOVED<!-- END --> world",
+            "<!-- BEGIN -->",
+            "<!-- END -->",
+        );
+        assert_eq!(result, "hello  world");
+    }
+
+    #[test]
+    fn strip_between_markers_eats_trailing_newline() {
+        let result = strip_between_markers(
+            "before <!-- BEGIN -->X<!-- END -->\nafter",
+            "<!-- BEGIN -->",
+            "<!-- END -->",
+        );
+        assert_eq!(result, "before after");
+    }
+
+    #[test]
+    fn strip_between_markers_eats_leading_blank_line() {
+        let result = strip_between_markers(
+            "before\n\n<!-- BEGIN -->X<!-- END -->\nafter",
+            "<!-- BEGIN -->",
+            "<!-- END -->",
+        );
+        assert_eq!(result, "before\nafter");
+    }
+
+    #[test]
+    fn strip_between_markers_absent_returns_unchanged() {
+        let s = "no markers here";
+        let result =
+            strip_between_markers(s, "<!-- BEGIN -->", "<!-- END -->");
+        assert_eq!(result, "no markers here");
+    }
+
+    #[test]
+    fn strip_between_markers_adjacent_markers() {
+        let result = strip_between_markers(
+            "<!-- BEGIN --><!-- END -->",
+            "<!-- BEGIN -->",
+            "<!-- END -->",
+        );
+        assert_eq!(result, "");
+    }
+
+    // ── ZaiPlanConfig::get_monthly_limit ─────────────────────
+
+    #[test]
+    fn zai_free_plan_monthly_limit() {
+        let config = ZaiPlanConfig {
+            plan: "free".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.get_monthly_limit(), Some(10_000_000));
+    }
+
+    #[test]
+    fn zai_coding_plan_monthly_limit() {
+        let config = ZaiPlanConfig {
+            plan: "coding-plan".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.get_monthly_limit(), Some(500_000_000));
+    }
+
+    #[test]
+    fn zai_unlimited_plan_monthly_limit_is_none() {
+        let config = ZaiPlanConfig {
+            plan: "unlimited".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.get_monthly_limit(), None);
+    }
+
+    #[test]
+    fn zai_custom_plan_monthly_limit_is_none() {
+        let config = ZaiPlanConfig {
+            plan: "enterprise".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(config.get_monthly_limit(), None);
+    }
+
+    #[test]
+    fn zai_explicit_token_limit_overrides_plan() {
+        let config = ZaiPlanConfig {
+            plan: "free".to_string(),
+            monthly_token_limit: Some(999),
+            ..Default::default()
+        };
+        assert_eq!(config.get_monthly_limit(), Some(999));
+    }
+
+    // ── Phase 3: App integration tests using mock trait objects ──
+
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use crate::project::{Feature, Project, AgentKind};
+    use chrono::Utc;
+    use tempfile::NamedTempFile;
+
+    /// Build a minimal `ProjectStore` with one project and one
+    /// feature at the requested status.
+    fn store_with_feature(status: ProjectStatus) -> ProjectStore {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".to_string(),
+            name: "my-feat".to_string(),
+            branch: "my-feat".to_string(),
+            workdir: PathBuf::from("/tmp/test-workdir"),
+            is_worktree: false,
+            tmux_session: "amf-my-feat".to_string(),
+            sessions: vec![],
+            collapsed: false,
+            mode: VibeMode::default(),
+            review: false,
+            agent: AgentKind::default(),
+            enable_chrome: false,
+            has_notes: false,
+            status,
+            created_at: now,
+            last_accessed: now,
+        };
+        let project = Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: PathBuf::from("/tmp/test-repo"),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            is_git: false,
+        };
+        ProjectStore { version: 2, projects: vec![project] }
+    }
+
+    // ── sync_statuses ─────────────────────────────────────────────
+
+    #[test]
+    fn sync_statuses_stopped_becomes_idle_when_session_live() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .returning(|| Ok(vec!["amf-my-feat".to_string()]));
+
+        let store = store_with_feature(ProjectStatus::Stopped);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.sync_statuses();
+
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Idle
+        );
+    }
+
+    #[test]
+    fn sync_statuses_active_becomes_stopped_when_session_gone() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .returning(|| Ok(vec![]));
+
+        let store = store_with_feature(ProjectStatus::Active);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.sync_statuses();
+
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn sync_statuses_idle_stays_idle_when_session_live() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_list_sessions()
+            .times(1)
+            .returning(|| Ok(vec!["amf-my-feat".to_string()]));
+
+        let store = store_with_feature(ProjectStatus::Idle);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.sync_statuses();
+
+        // Already Idle; stays Idle (not overwritten)
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Idle
+        );
+    }
+
+    // ── create_feature validation ─────────────────────────────────
+
+    fn app_in_creating_feature_mode(
+        store: ProjectStore,
+        project_name: &str,
+        branch: &str,
+        use_worktree: bool,
+    ) -> App {
+        use crate::app::state::{
+            CreateFeatureState, CreateFeatureStep,
+        };
+        let project_repo = store
+            .find_project(project_name)
+            .map(|p| p.repo.clone())
+            .unwrap_or_default();
+        let state = CreateFeatureState {
+            project_name: project_name.to_string(),
+            project_repo,
+            branch: branch.to_string(),
+            step: CreateFeatureStep::Branch,
+            agent: AgentKind::default(),
+            agent_index: 0,
+            mode: VibeMode::default(),
+            mode_index: 0,
+            mode_focus: 0,
+            review: false,
+            source_index: 0,
+            worktrees: vec![],
+            worktree_index: 0,
+            use_worktree,
+            enable_chrome: false,
+            enable_notes: false,
+            preset_index: 0,
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::CreatingFeature(state);
+        app
+    }
+
+    #[test]
+    fn create_feature_empty_branch_sets_error_no_external_calls() {
+        let store = store_with_feature(ProjectStatus::Stopped);
+        let mut app = app_in_creating_feature_mode(
+            store,
+            "my-project",
+            "",    // empty branch
+            false,
+        );
+        app.create_feature().unwrap();
+
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("cannot be empty"),
+            "got: {:?}", app.message
+        );
+    }
+
+    #[test]
+    fn create_feature_duplicate_name_sets_error_no_external_calls() {
+        let store = store_with_feature(ProjectStatus::Stopped);
+        // "my-feat" already exists in the store
+        let mut app = app_in_creating_feature_mode(
+            store,
+            "my-project",
+            "my-feat",
+            false,
+        );
+        app.create_feature().unwrap();
+
+        let msg = app.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("already exists"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn create_feature_second_non_worktree_sets_error() {
+        let store = store_with_feature(ProjectStatus::Stopped);
+        // Existing feature is non-worktree; adding another must fail
+        let mut app = app_in_creating_feature_mode(
+            store,
+            "my-project",
+            "other-feat",
+            false, // use_worktree = false
+        );
+        app.create_feature().unwrap();
+
+        let msg = app.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("Only one non-worktree"),
+            "got: {msg}"
+        );
+    }
+
+    // ── stop_feature ──────────────────────────────────────────────
+
+    #[test]
+    fn stop_feature_transitions_idle_to_stopped() {
+        let tmp = NamedTempFile::new().unwrap();
+
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_kill_session()
+            .withf(|s| s == "amf-my-feat")
+            .times(1)
+            .returning(|_| Ok(()));
+
+        let store = store_with_feature(ProjectStatus::Idle);
+        let mut app = App::new_for_test(
+            store,
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.store_path = tmp.path().to_path_buf();
+        app.selection = Selection::Feature(0, 0);
+
+        app.stop_feature().unwrap();
+
+        assert_eq!(
+            app.store.projects[0].features[0].status,
+            ProjectStatus::Stopped
+        );
+        assert!(
+            app.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("Stopped"),
+            "got: {:?}", app.message
+        );
+    }
 }

@@ -36,7 +36,7 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    setup_thinking_hooks();
+    cleanup_global_hooks();
 
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
@@ -76,84 +76,93 @@ fn main() -> Result<()> {
 ///
 /// The function is idempotent: it only appends entries when they are
 /// not already present, and silently skips on any I/O error.
-fn setup_thinking_hooks() {
-    use serde_json::{json, Value};
-    use std::fs;
-    use std::path::PathBuf;
-
-    let pre_tool_cmd =
-        "[ -n \"$AMF_SESSION\" ] \
-         && mkdir -p /tmp/amf-thinking \
-         && touch \"/tmp/amf-thinking/$AMF_SESSION\" \
-         || true";
-    let stop_cmd =
-        "[ -n \"$AMF_SESSION\" ] \
-         && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" \
-         || true";
-
-    let settings_path: PathBuf = match std::env::var("HOME") {
-        Ok(h) => {
-            PathBuf::from(h).join(".claude").join("settings.json")
-        }
+/// Removes any AMF-managed hook entries that were previously
+/// injected into the global ~/.claude/settings.json.
+/// Hook management now happens in the per-worktree local
+/// settings via `ensure_notification_hooks`.
+fn cleanup_global_hooks() {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
         Err(_) => return,
     };
+    let settings_path = std::path::PathBuf::from(&home)
+        .join(".claude")
+        .join("settings.json");
+    let extra_cmds =
+        [format!("{home}/.config/amf/notify.sh")];
+    let extra: Vec<&str> =
+        extra_cmds.iter().map(|s| s.as_str()).collect();
+    cleanup_hooks_at(&settings_path, &extra);
+}
 
-    let mut root: Value = if settings_path.exists() {
-        match fs::read_to_string(&settings_path) {
-            Ok(s) => {
-                serde_json::from_str(&s).unwrap_or(json!({}))
-            }
-            Err(_) => return,
-        }
-    } else {
-        json!({})
-    };
+/// Inner logic for `cleanup_global_hooks`, factored out for
+/// testability.  `extra_cmds` are host-specific command
+/// strings (e.g. absolute paths) to remove in addition to
+/// the static AMF commands.
+pub fn cleanup_hooks_at(
+    settings_path: &std::path::Path,
+    extra_cmds: &[&str],
+) {
+    use serde_json::Value;
 
-    let Some(root_obj) = root.as_object_mut() else {
+    let mut root: Value =
+        match std::fs::read_to_string(settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+        {
+            Some(v) => v,
+            None => return,
+        };
+
+    let Some(hooks_obj) = root
+        .get_mut("hooks")
+        .and_then(|h| h.as_object_mut())
+    else {
         return;
     };
-    let hooks = root_obj
-        .entry("hooks")
-        .or_insert(json!({}));
-    let Some(hooks_obj) = hooks.as_object_mut() else {
-        return;
-    };
 
-    for (event, cmd) in
-        [("PreToolUse", pre_tool_cmd), ("Stop", stop_cmd)]
-    {
-        let event_arr =
-            hooks_obj.entry(event).or_insert(json!([]));
-        let already_present = event_arr
-            .as_array()
-            .map(|arr| {
-                arr.iter().any(|entry| {
-                    entry["hooks"]
-                        .as_array()
-                        .map(|hs| {
-                            hs.iter()
-                                .any(|h| h["command"] == cmd)
-                        })
-                        .unwrap_or(false)
+    // Static commands previously injected by AMF globally.
+    let static_cmds: &[&str] = &[
+        "[ -n \"$AMF_SESSION\" ] && mkdir -p /tmp/amf-thinking && touch \"/tmp/amf-thinking/$AMF_SESSION\" || true",
+        "[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true",
+        "/tmp/debug-hook.sh",
+    ];
+
+    let mut changed = false;
+    for event_arr in hooks_obj.values_mut() {
+        let Some(arr) = event_arr.as_array_mut() else {
+            continue;
+        };
+        let before = arr.len();
+        arr.retain(|entry| {
+            !entry["hooks"].as_array().is_some_and(|hs| {
+                hs.iter().any(|h| {
+                    h["command"].as_str().is_some_and(|c| {
+                        static_cmds.contains(&c)
+                            || extra_cmds.contains(&c)
+                    })
                 })
             })
-            .unwrap_or(false);
-        if !already_present
-            && let Some(arr) = event_arr.as_array_mut()
-        {
-            arr.push(json!({
-                "matcher": "",
-                "hooks": [
-                    {"type": "command", "command": cmd}
-                ]
-            }));
+        });
+        if arr.len() != before {
+            changed = true;
         }
     }
 
-    if let Ok(serialized) = serde_json::to_string_pretty(&root)
+    // Drop empty event arrays.
+    hooks_obj.retain(|_, v| {
+        v.as_array().is_none_or(|a| !a.is_empty())
+    });
+
+    if !changed {
+        return;
+    }
+
+    if let Ok(serialized) =
+        serde_json::to_string_pretty(&root)
     {
-        let _ = fs::write(
-            &settings_path,
+        let _ = std::fs::write(
+            settings_path,
             serialized + "\n",
         );
     }
@@ -164,6 +173,7 @@ fn run_loop<B: Backend>(
     app: &mut App,
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
+    let mut last_thinking_sync = std::time::Instant::now();
     let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> =
         None;
@@ -241,10 +251,14 @@ fn run_loop<B: Backend>(
         if last_sync.elapsed() >= Duration::from_secs(5) {
             if !is_viewing {
                 app.sync_statuses();
-                app.sync_thinking_status();
             }
             app.usage.refresh();
             last_sync = std::time::Instant::now();
+        }
+
+        if last_thinking_sync.elapsed() >= Duration::from_millis(500) {
+            app.sync_thinking_status();
+            last_thinking_sync = std::time::Instant::now();
         }
 
         if last_notif_scan.elapsed() >= Duration::from_millis(500) {
@@ -293,5 +307,136 @@ fn run_loop<B: Backend>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cleanup_hooks_at;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_settings(dir: &TempDir, json: &str) -> std::path::PathBuf {
+        let path = dir.path().join("settings.json");
+        fs::write(&path, json).unwrap();
+        path
+    }
+
+    fn read_settings(path: &std::path::Path) -> serde_json::Value {
+        let s = fs::read_to_string(path).unwrap();
+        serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn removes_static_amf_thinking_commands() {
+        let dir = TempDir::new().unwrap();
+        let path = write_settings(&dir, r#"{
+            "hooks": {
+                "PreToolUse": [{"matcher":"","hooks":[
+                    {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && mkdir -p /tmp/amf-thinking && touch \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
+                ]}],
+                "Stop": [{"matcher":"","hooks":[
+                    {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
+                ]}]
+            }
+        }"#);
+
+        cleanup_hooks_at(&path, &[]);
+
+        let s = read_settings(&path);
+        assert!(
+            s["hooks"].get("PreToolUse").is_none(),
+            "PreToolUse should be gone"
+        );
+        assert!(
+            s["hooks"].get("Stop").is_none(),
+            "Stop should be gone"
+        );
+    }
+
+    #[test]
+    fn removes_extra_cmd_path() {
+        let dir = TempDir::new().unwrap();
+        let path = write_settings(&dir, r#"{
+            "hooks": {
+                "Stop": [{"matcher":"","hooks":[
+                    {"type":"command","command":"/home/user/.config/amf/notify.sh"}
+                ]}]
+            }
+        }"#);
+
+        cleanup_hooks_at(&path, &["/home/user/.config/amf/notify.sh"]);
+
+        let s = read_settings(&path);
+        assert!(
+            s["hooks"].get("Stop").is_none(),
+            "Stop entry for notify.sh should be removed"
+        );
+    }
+
+    #[test]
+    fn preserves_non_amf_hooks() {
+        let dir = TempDir::new().unwrap();
+        let path = write_settings(&dir, r#"{
+            "hooks": {
+                "Stop": [
+                    {"matcher":"","hooks":[{"type":"command","command":"/my/custom/hook.sh"}]},
+                    {"matcher":"","hooks":[{"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}]}
+                ]
+            }
+        }"#);
+
+        cleanup_hooks_at(&path, &[]);
+
+        let s = read_settings(&path);
+        let stop = s["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "only the AMF entry should be removed");
+        assert_eq!(
+            stop[0]["hooks"][0]["command"].as_str().unwrap(),
+            "/my/custom/hook.sh"
+        );
+    }
+
+    #[test]
+    fn idempotent_when_nothing_to_remove() {
+        let dir = TempDir::new().unwrap();
+        let json = r#"{"hooks":{"Stop":[{"matcher":"","hooks":[{"type":"command","command":"/my/hook.sh"}]}]}}"#;
+        let path = write_settings(&dir, json);
+
+        cleanup_hooks_at(&path, &[]);
+        let after = fs::read_to_string(&path).unwrap();
+
+        // File should be unchanged (function returns early without writing).
+        let v1: serde_json::Value = serde_json::from_str(json).unwrap();
+        let v2: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn no_op_when_file_missing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("nonexistent.json");
+        // Should not panic.
+        cleanup_hooks_at(&path, &[]);
+    }
+
+    #[test]
+    fn removes_debug_hook() {
+        let dir = TempDir::new().unwrap();
+        let path = write_settings(&dir, r#"{
+            "hooks": {
+                "Stop": [{"matcher":"","hooks":[
+                    {"type":"command","command":"/tmp/debug-hook.sh"}
+                ]}]
+            }
+        }"#);
+
+        cleanup_hooks_at(&path, &[]);
+
+        let s = read_settings(&path);
+        assert!(
+            s["hooks"].get("Stop").is_none(),
+            "debug-hook.sh entry should be removed"
+        );
     }
 }

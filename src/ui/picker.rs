@@ -259,6 +259,8 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
         Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("s", Style::default().fg(Color::Yellow)),
+        Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
         Span::styled("r", Style::default().fg(Color::Yellow)),
         Span::styled(" rename  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),

@@ -865,6 +865,78 @@ impl App {
         Ok(())
     }
 
+    pub fn open_session_picker_from_switcher(
+        &mut self,
+    ) -> Result<()> {
+        use crate::app::{BuiltinSessionOption, SessionPickerState};
+
+        let (project_name, feature_name) = match &self.mode {
+            AppMode::SessionSwitcher(state) => (
+                state.project_name.clone(),
+                state.feature_name.clone(),
+            ),
+            _ => return Ok(()),
+        };
+
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name);
+        let pi = match pi {
+            Some(pi) => pi,
+            None => return Ok(()),
+        };
+
+        let fi = self.store.projects[pi]
+            .features
+            .iter()
+            .position(|f| f.name == feature_name);
+        let fi = match fi {
+            Some(fi) => fi,
+            None => return Ok(()),
+        };
+
+        let feature =
+            self.store.projects[pi].features[fi].clone();
+        let agent = feature.agent.clone();
+
+        let builtin_sessions = vec![
+            BuiltinSessionOption {
+                kind: SessionKind::Claude,
+                label: match agent {
+                    AgentKind::Claude => {
+                        "Claude".to_string()
+                    }
+                    AgentKind::Opencode => {
+                        "Opencode (Claude)".to_string()
+                    }
+                },
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Terminal,
+                label: "Terminal".to_string(),
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Nvim,
+                label: "Neovim".to_string(),
+            },
+        ];
+
+        let custom_sessions =
+            self.active_extension.custom_sessions.clone();
+
+        self.mode = AppMode::SessionPicker(SessionPickerState {
+            builtin_sessions,
+            custom_sessions,
+            selected: 0,
+            pi,
+            fi,
+            from_view: None,
+        });
+        Ok(())
+    }
+
     /// Add a custom session type as a tracked FeatureSession.
     /// If the feature's tmux session is already running, also
     /// creates the window and sends the command immediately.

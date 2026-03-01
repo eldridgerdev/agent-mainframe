@@ -208,6 +208,9 @@ pub fn handle_session_switcher_key(
         KeyCode::Char('r') => {
             app.start_rename_from_switcher();
         }
+        KeyCode::Char('s') => {
+            app.open_session_picker_from_switcher()?;
+        }
         _ => {}
     }
     Ok(())

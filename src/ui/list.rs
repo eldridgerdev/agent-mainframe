@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -10,6 +11,23 @@ use ratatui::{
 
 use crate::app::{App, Selection, VisibleItem};
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
+
+fn format_age(dt: DateTime<Utc>) -> String {
+    let secs = Utc::now()
+        .signed_duration_since(dt)
+        .num_seconds();
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else if secs < 7 * 86400 {
+        format!("{}d ago", secs / 86400)
+    } else {
+        dt.format("%b %d").to_string()
+    }
+}
 
 const RAINBOW_COLORS: &[Color] = &[
     Color::Red,
@@ -89,7 +107,8 @@ pub fn draw(
 
     let items: Vec<ListItem> = visible_slice
         .iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(idx, item)| {
             let is_selected =
                 match (&app.selection, item) {
                     (
@@ -162,8 +181,16 @@ pub fn draw(
                     let project =
                         &app.store.projects[*pi];
                     let feature = &project.features[*fi];
-                    let is_last_feature =
-                        *fi == project.features.len() - 1;
+                    let is_last_feature = !visible_slice
+                        [idx + 1..]
+                        .iter()
+                        .any(|i| {
+                            matches!(
+                                i,
+                                VisibleItem::Feature(p, _)
+                                    if *p == *pi
+                            )
+                        });
 
                     let connector = if is_last_feature {
                         "  └─"
@@ -295,6 +322,14 @@ pub fn draw(
                     ];
                     line_spans.extend(mode_badge_spans);
                     line_spans.push(Span::styled(
+                        format!(
+                            " {}",
+                            format_age(feature.created_at)
+                        ),
+                        Style::default()
+                            .fg(Color::Rgb(180, 140, 80)),
+                    ));
+                    line_spans.push(Span::styled(
                         badge,
                         Style::default().fg(muted),
                     ));
@@ -322,8 +357,16 @@ pub fn draw(
                     let session =
                         &feature.sessions[*si];
 
-                    let is_last_feature =
-                        *fi == project.features.len() - 1;
+                    let is_last_feature = !visible_slice
+                        [idx + 1..]
+                        .iter()
+                        .any(|i| {
+                            matches!(
+                                i,
+                                VisibleItem::Feature(p, _)
+                                    if *p == *pi
+                            )
+                        });
                     let is_last_session =
                         *si == feature.sessions.len() - 1;
 

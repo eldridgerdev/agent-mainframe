@@ -10,6 +10,7 @@ own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
 attention, and get notified the moment one is waiting for input.
 
+NOTE: I'll add real screenshots eventually
 ```text
 ┌─ Agent Mainframe ─────────────────── ~/code ───────── ? help ─┐
 └────────────────────────────────────────────────────────────────┘

@@ -1,68 +1,108 @@
 # Agent Mainframe (amf)
 
-A terminal UI for managing multiple concurrent
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-agent sessions. Each session runs in its own tmux session,
-and the dashboard lets you create, monitor, switch between,
-and interact with them all from one place.
+Run many AI coding agents in parallel — each on its own branch,
+each in its own terminal — without losing track of any of them.
 
-NOTE: Opencode is supported but a little buggy (mostly visual)
+`amf` is a terminal dashboard for managing concurrent
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and
+[Opencode](https://opencode.ai) agent sessions. Each feature gets its
+own tmux session and git worktree so agents work simultaneously without
+conflicts. You watch them all from one place, jump into whichever needs
+attention, and get notified the moment one is waiting for input.
+
+NOTE: I'll add real screenshots eventually
+```text
+┌─ Agent Mainframe ─────────────────── ~/code ───────── ? help ─┐
+└────────────────────────────────────────────────────────────────┘
+┌ Projects ──────────────────────────────────────────────────────┐
+│ v my-app  ~/code/my-app                                        │
+│   ├─ ●  v  main          [vibeless]  2h ago   [2]             │
+│   │       ├─ * claude                                          │
+│   │       └─ > terminal                                        │
+│   └─ ⠿  v  auth-rework   [vibe]      just now [1]             │
+│              └─ * claude                                       │
+│ v api-service  ~/code/api                                      │
+│   └─ ■     cache-layer   [supervibe] Jan 10   [0]             │
+└────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│ auth-rework [auth-rework]  ~/code/my-app/.worktrees/auth-rew…  │
+│  n feature  Enter expand  c start  x stop  t +term  q quit     │
+│       [Claude] 5h ┃┃┃░░░░░░░░░░░░ 20%  7d ┃░░░░░░░░░ 8%      │
+└────────────────────────────────────────────────────────────────┘
+```
 
 ## Features
 
-- **Project / Feature hierarchy** - organize work by
-  project and feature branch
-- **Multi-session support** - each feature can have
-  multiple Claude, terminal, and nvim sessions
-- **Vibe modes** - choose Vibeless (diff-review gate),
-  Vibe (auto-accept edits), or SuperVibe (skip all
-  permissions) per feature
-- **Embedded tmux view** - watch Claude Code output
-  directly inside the TUI with full ANSI rendering
-- **Git worktree integration** - each feature automatically
-  gets its own worktree so agents work in parallel without
-  conflicts
-- **Notification system** - get alerted when an agent needs
-  input, jump straight to the right session
-- **Leader key chords** - vim-style Ctrl+Space leader key
-  for quick actions while viewing a session
-- **File browser** - browse and select project paths with
-  an interactive file explorer (Ctrl+B)
-- **Non-git projects** - projects don't require a git
-  repository (worktree features are disabled)
+- **Project / Feature hierarchy** — organize work by project and
+  feature branch
+- **Multi-session support** — each feature can have multiple Claude,
+  terminal, and nvim sessions, all in the same tmux session
+- **Vibe modes** — choose Vibeless (diff-review gate), Vibe
+  (auto-accept edits), or SuperVibe (skip all permissions) per feature
+- **Embedded tmux view** — watch agent output directly inside the TUI
+  with full ANSI rendering
+- **Git worktree integration** — each feature automatically gets its
+  own worktree so agents work in parallel without conflicts
+- **Notification system** — get alerted when an agent needs input;
+  jump straight to the right session
+- **Leader key chords** — vim-style `Ctrl+Space` leader key for quick
+  actions while viewing a session
+- **File browser** — browse and select project paths with an
+  interactive explorer (`Ctrl+B`)
+- **Opencode support** — use Opencode as an alternative agent
+  alongside or instead of Claude Code
+- **Non-git projects** — projects don't require a git repository
+  (worktree features are disabled for those)
 
 ## Prerequisites
 
 ### Required
 
 - **Rust** (edition 2024, requires rustc 1.85+)
-
-- **tmux** - must be installed and in `PATH`
-  ([installation instructions](https://github.com/tmux/tmux/wiki/Installing))
-
-- **claude** CLI - the
+- **tmux** — must be installed and in `PATH`
+  ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
+- **claude** CLI — the
   [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
   CLI must be installed and authenticated
-
-- **git** - used for worktree management
+- **git** — used for worktree management
 
 ### Optional
 
-- **GPU accelerated terminal** (Ghostty, Wezterm, Kitty,
-  Alacritty) - highly recommended for smooth ANSI rendering
-
-- **Nerd Font** - a
-  [Nerd Font](https://www.nerdfonts.com/) is recommended
-  for icon rendering. The app defaults to `nerd_font: true`;
-  if your terminal font does not include Nerd Font glyphs,
-  set `nerd_font: false` in `~/.config/amf/config.json` to
-  use ASCII fallbacks instead.
+- **GPU-accelerated terminal** (Ghostty, Wezterm, Kitty, Alacritty) —
+  highly recommended for smooth ANSI rendering in the embedded view
+- **Nerd Font** — a
+  [Nerd Font](https://www.nerdfonts.com/) is recommended for icon
+  rendering. The app defaults to `nerd_font: true`; if your terminal
+  font does not include Nerd Font glyphs, set `nerd_font: false` in
+  `~/.config/amf/config.json` to use ASCII fallbacks instead.
 
 ## Installation
 
-### Install Rust
+### Pre-built binaries (recommended)
 
-This project requires Rust 1.85+ (2024 edition). Install using rustup:
+Download the latest binary from the
+[GitHub Releases page](https://github.com/eldridgerdev/agent-mainframe/releases).
+
+| Platform | File |
+| --- | --- |
+| Linux x86_64 (musl) | `amf-x86_64-unknown-linux-musl` |
+| Linux x86_64 (gnu) | `amf-x86_64-unknown-linux-gnu` |
+| Linux aarch64 | `amf-aarch64-unknown-linux-gnu` |
+| macOS (Apple Silicon) | `amf-aarch64-apple-darwin` |
+
+Quick install (Linux x86_64 musl — most portable):
+
+```bash
+curl -L \
+  https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl \
+  -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+### Build from source
+
+This project requires Rust 1.85+ (2024 edition). Install via rustup:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -74,10 +114,10 @@ After installation, restart your shell or run:
 source ~/.cargo/env
 ```
 
-### Build
+Then clone and install:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/eldridgerdev/agent-mainframe
 cd agent-mainframe
 cargo install --path .
 ```
@@ -92,37 +132,58 @@ cargo build --release
 ```
 
 ## Quick Start
-0. Create or attach to a TMUX session (tmux new / tmux attach)
-1. Launch the dashboard:
+
+1. Create or attach to a tmux session:
+
+   ```bash
+   tmux new -s main    # new session
+   tmux attach         # or attach to existing
+   ```
+
+2. Launch the dashboard:
 
    ```bash
    amf
    ```
 
-2. Press `N` to create a new project. Enter a name and
-   the path to a git repository (or press `Ctrl+B` to
-   browse for a directory).
+3. Press `N` to create a new project. Enter a name and the path to a
+   git repository (or press `Ctrl+B` to browse for a directory).
 
-3. Press `n` to add a feature. Enter a branch name and
-   select a vibe mode. A git worktree is created
-   automatically (the first feature reuses the repo
-   directory). Features auto-start on creation.
+4. Press `n` to add a feature. Enter a branch name, choose your agent
+   (Claude or Opencode), and pick a vibe mode. A git worktree is
+   created automatically (the first feature reuses the repo directory).
+   Features auto-start on creation.
 
-4. Press `Enter` to view the embedded tmux output, or
-   `s` to switch directly into the tmux session.
+   ```text
+            ┌─ New Feature ─────────────────────────────────┐
+            │                                               │
+            │  Branch: auth-rework_                         │
+            │                                               │
+            │  Agent:  [● Claude] [  Opencode]              │
+            │                                               │
+            │  Mode:                                        │
+            │  ● Vibeless  diff-review gate on all edits    │
+            │  ○ Vibe      auto-accept edits                │
+            │  ○ SuperVibe skip all permission checks       │
+            │                                               │
+            │  Review hook: [✓]                             │
+            │                                               │
+            │              Enter confirm   Esc cancel       │
+            └───────────────────────────────────────────────┘
+   ```
 
-5. Use `Ctrl+Space` then a key for leader commands while
-   viewing a session.
+5. Press `Enter` to view the embedded tmux output, or `s` to switch
+   directly into the tmux session.
+
+6. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
 ## Keybindings
-NOTE: hotkeys are a bit of a mess, I put 0 thought into them and just went with AI suggestions.
-I plan on cleaning them up and making them configurable
 
 ### Dashboard (Normal Mode)
 
 | Key | Action |
 | --- | --- |
-| `j` / `k` / `Up` / `Down` | Navigate project tree |
+| `j` / `k` / `↑` / `↓` | Navigate project tree |
 | `h` | Collapse project / go to parent |
 | `l` | Expand project / view feature |
 | `Enter` | Toggle expand / view feature |
@@ -132,11 +193,12 @@ I plan on cleaning them up and making them configurable
 | `a` | Add Claude session to feature |
 | `t` | Add terminal session to feature |
 | `v` | Add nvim session to feature |
-| `r` | Rename session (on session) / refresh |
+| `r` | Rename session (when session selected) |
 | `R` | Refresh statuses |
 | `d` | Delete project or feature |
 | `c` | Start feature session |
 | `x` | Stop feature session |
+| `f` | Filter by session type |
 | `i` | Input requests picker |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
@@ -155,14 +217,16 @@ All keys are forwarded to the tmux session except:
 | Key | Action |
 | --- | --- |
 | `q` | Exit view |
-| `t` | Toggle claude / terminal window |
+| `t` / `T` | Cycle between sessions (claude, terminal, nvim) |
+| `w` | Open session switcher |
 | `s` | Switch/attach to tmux session directly |
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
+| `/` | Command palette |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
 | `x` | Stop session and exit view |
-| `h` | Show help |
+| `?` | Show help |
 
 ## How It Works
 
@@ -172,49 +236,66 @@ All keys are forwarded to the tmux session except:
 ProjectStore
   └─ Project (name, repo path, is_git)
        └─ Feature (branch, workdir, tmux session, status,
-                   mode: VibeMode)
-            └─ FeatureSession (kind: Claude|Terminal|Nvim,
+                   mode: VibeMode, agent: Claude|Opencode)
+            └─ FeatureSession (kind: Claude|Terminal|Nvim|Custom,
                                label, tmux window)
 ```
 
-State is persisted as JSON at
-`~/.config/amf/projects.json`.
+State is persisted as JSON at `~/.config/amf/projects.json`.
 
 ### Tmux Sessions
 
-Each feature gets a tmux session named `amf-<branch>`.
-Features start with a Claude session and a terminal
-session, and you can add more sessions at any time:
+Each feature gets a tmux session named `amf-<branch>`. Features start
+with a Claude (or Opencode) session and a terminal session. You can
+add more sessions at any time:
 
-- **Claude** (`a`) - runs `claude` CLI interactively,
-  with CLI flags determined by the feature's vibe mode
-- **Terminal** (`t`) - a plain shell in the feature's
-  working directory
-- **Nvim** (`v`) - opens neovim in the feature's working
-  directory
+| Key | Session type |
+| --- | --- |
+| `a` | Claude Code session |
+| `t` | Plain shell terminal |
+| `v` | Neovim in the feature's working directory |
 
-Sessions can be renamed with `r` when a session is
-selected on the dashboard.
+Sessions can be renamed with `r` when a session item is selected.
+
+Press `Enter` to enter the embedded view, which streams the tmux pane
+output live through a vt100 parser and renders it with full ANSI color:
+
+```text
+  my-app /auth-rework /claude  [vibe] | Ctrl+Space command palette
+
+  ╭──────────────────────────────────────────────────────────────╮
+  │ > Implement JWT auth with refresh token rotation             │
+  ╰──────────────────────────────────────────────────────────────╯
+
+  ● Reading src/auth/mod.rs...
+  ● Reading src/middleware/auth.rs...
+
+  Here's my plan:
+   1. Replace session tokens with signed JWTs
+   2. Add refresh token rotation on each use
+   3. Update the auth middleware to validate claims
+
+  Shall I proceed? [Y/n] _
+```
 
 #### Session Picker
 
-While viewing a feature (`Enter`), press `w` to open the
-session picker — a popup listing all sessions for the
-current feature. Use `j`/`k` to navigate, `Enter` to
-switch to a session, `r` to rename the selected session,
-and `Esc` to dismiss.
+While viewing a feature, press `w` to open the session picker — a
+popup listing all sessions for the current feature. Use `j`/`k` to
+navigate, `Enter` to switch to a session, `r` to rename, `Esc` to
+dismiss.
 
 ### Git Worktrees
 
-The first feature in a project uses the repo directory
-directly. Additional features get worktrees under
-`.worktrees/<branch>` so multiple agents can work on the
-same repo simultaneously without conflicts.
+The first feature in a project uses the repo directory directly.
+Additional features get worktrees under `.worktrees/<branch>` so
+multiple agents can work on the same repo simultaneously without
+conflicts.
 
 ### Vibe Modes
 
-Each feature is created with one of three vibe modes that
-control how Claude Code handles permissions:
+Each feature is created with one of three vibe modes that control how
+the agent handles permissions:
 
 | Mode | Behavior |
 | --- | --- |
@@ -222,27 +303,70 @@ control how Claude Code handles permissions:
 | **Vibe** | Auto-accepts edits (`--permission-mode acceptEdits`). No diff-review hook. |
 | **SuperVibe** | Skips all permission checks (`--dangerously-skip-permissions`). Shows a confirmation warning before creation. |
 
-The vibe mode is selected during feature creation and
-determines both the CLI flags passed to `claude` and
-whether the diff-review hook is installed in the feature's
-`.claude/settings.json`.
+### Diff-Review Hook
+
+In Vibeless mode, `amf` installs a Claude Code hook in the feature's
+`.claude/settings.json`. The hook intercepts every `Edit`, `Write`,
+and `MultiEdit` tool call before it executes and shows you the diff:
+
+```text
+  ╭─ Diff Review ──────────────────────────────────────────────╮
+  │                                                            │
+  │  src/auth/mod.rs                                           │
+  │                                                            │
+  │  - fn verify_token(token: &str) -> bool {                  │
+  │  -     session_store.contains(token)                       │
+  │  + fn verify_token(token: &str) -> Result<Claims> {        │
+  │  +     jwt::decode(token, &KEYS.decoding)                  │
+  │  }                                                         │
+  │                                                            │
+  │  Enter accept   r reject   Esc skip                        │
+  ╰────────────────────────────────────────────────────────────╯
+```
+
+Press `Enter` to accept the change, `r` to reject it (the agent is
+told the edit was refused), or `Esc` to skip review and allow it.
+
+The hook is written to the worktree's local `.claude/settings.json`
+only — your global Claude Code settings are never modified.
 
 ### Notifications
 
-When a Claude Code session needs user input, a notification
-hook writes a JSON file to
-`~/.config/amf/notifications/`. The
-dashboard polls this directory and shows a badge. Press `i`
-to open the picker and jump to the session that needs
-attention.
+When a Claude Code session needs user input, a notification hook writes
+a JSON file to `~/.config/amf/notifications/`. The dashboard polls
+this directory and shows a badge. Press `i` to open the picker and
+jump to the session that needs attention:
 
-The notification hooks are configured automatically in each
-feature's `.claude/settings.json` when the session starts.
+```text
+       ┌─ Input Requests ──────────────────────────────┐
+       │                                               │
+       │ ▶ my-app / auth-rework                        │
+       │     claude is waiting for input               │
+       │                                               │
+       │ ▶ my-app / main                               │
+       │     diff review pending                       │
+       │                                               │
+       │   j/k navigate   Enter jump   Esc close       │
+       └───────────────────────────────────────────────┘
+```
+
+Notification hooks are configured automatically in each feature's
+`.claude/settings.json` when the session starts.
+
+### Opencode Support
+
+[Opencode](https://opencode.ai) is supported as an alternative to
+Claude Code. When creating a feature, choose **Opencode** as the
+agent. `amf` launches it in the same tmux session structure and
+monitors it the same way.
+
+> **Note:** Opencode integration is functional but has some minor
+> visual rendering quirks in the embedded view.
 
 ## Configuration
 
-The config file lives at `~/.config/amf/config.json` and
-is created automatically with defaults on first run.
+The config file lives at `~/.config/amf/config.json` and is created
+automatically with defaults on first run.
 
 ### Top-level options
 
@@ -250,12 +374,26 @@ is created automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `opencode_theme` | string | `"catppuccin-frappe"` | Theme name passed to Opencode. |
+| `zai` | object? | `null` | ZAI usage tracking. `null` or omitted disables ZAI in the status bar. |
 
-### `zai` — token usage limits
-(Doesn't really work, zai doesn't provide useful info here)
-Tracks token consumption and shows usage in the status
-bar. Set `plan` to one of the presets, or override
-individual limits manually.
+### `zai` — token usage limits (optional)
+
+Controls whether ZAI usage is shown in the status bar. Set to `null`
+or omit the key entirely to disable — the status bar will only show
+Claude usage.
+
+```json
+"zai": null
+```
+
+To enable ZAI, set `plan` to one of the presets or override individual
+limits manually:
+
+```json
+"zai": {
+  "plan": "coding-plan"
+}
+```
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -267,14 +405,13 @@ individual limits manually.
 ### `extension` — customizations
 
 The `extension` block can be set globally in
-`~/.config/amf/config.json` or per-project in
-`.amf/config.json` at the repo root. Project-level
-settings are merged on top of global ones.
+`~/.config/amf/config.json` or per-project in `.amf/config.json` at
+the repo root. Project-level settings are merged on top of global ones.
 
 #### `custom_sessions`
 
-Add extra session types that appear alongside Claude,
-Terminal, and Nvim when creating sessions.
+Add extra session types that appear alongside Claude, Terminal, and
+Nvim when creating sessions.
 
 ```json
 "custom_sessions": [
@@ -296,9 +433,8 @@ Terminal, and Nvim when creating sessions.
 
 #### `lifecycle_hooks`
 
-Shell scripts executed automatically on feature lifecycle
-events. The script receives the feature's working
-directory as the first argument.
+Shell scripts executed automatically on feature lifecycle events. The
+script receives the feature's working directory as the first argument.
 
 ```json
 "lifecycle_hooks": {
@@ -316,8 +452,8 @@ directory as the first argument.
 
 #### `keybindings`
 
-Remap dashboard normal-mode keys. The key is the action
-name and the value is the replacement character.
+Remap dashboard normal-mode keys. The key is the action name and the
+value is the replacement character.
 
 ```json
 "keybindings": {
@@ -326,16 +462,14 @@ name and the value is the replacement character.
 }
 ```
 
-Available actions: `quit`, `create_project`,
-`create_feature`, `start_session`, `stop_session`,
-`delete`, `sessions`, `help`, `search`, `refresh`,
-`filter`.
+Available actions: `quit`, `create_project`, `create_feature`,
+`start_session`, `stop_session`, `delete`, `sessions`, `help`,
+`search`, `refresh`, `filter`.
 
 #### `feature_presets`
 
-Presets appear as quick-select options when creating a
-new feature, pre-filling the vibe mode, agent, and other
-settings.
+Presets appear as quick-select options when creating a new feature,
+pre-filling the vibe mode, agent, and other settings.
 
 ```json
 "feature_presets": [
@@ -377,51 +511,70 @@ cargo clippy           # lint
 
 ```text
 src/
-├── main.rs        # entry point, event loop, key handling
-├── app.rs         # App state, modes, CRUD operations,
-│                  # notification hooks
-├── project.rs     # ProjectStore / Project / Feature models,
-│                  # JSON persistence
-├── tmux.rs        # TmuxManager - all tmux interaction
-├── worktree.rs    # WorktreeManager - git worktree ops
-├── claude.rs      # ClaudeLauncher - claude CLI wrapper
+├── main.rs          # entry point, event loop, key handling
+├── app.rs           # App state, modes, CRUD, notification hooks
+├── project.rs       # ProjectStore / Project / Feature models,
+│                    # JSON persistence
+├── extension.rs     # extension config (presets, hooks, sessions)
+├── tmux.rs          # TmuxManager — all tmux interaction
+├── worktree.rs      # WorktreeManager — git worktree ops
+├── claude.rs        # ClaudeLauncher — claude CLI wrapper
+├── usage.rs         # token usage tracking (Claude / ZAI)
+├── traits.rs        # shared traits
+├── handlers/        # key event handlers per mode
 └── ui/
-    └── dashboard.rs  # ratatui rendering, help overlay,
-                      # ANSI-to-TUI conversion
+    ├── dashboard.rs  # top-level draw dispatch
+    ├── list.rs       # project tree rendering
+    ├── header.rs     # header bar
+    ├── status.rs     # status bar + usage meters
+    ├── pane.rs       # embedded tmux ANSI view
+    ├── dialogs.rs    # create/delete/rename overlays
+    └── picker.rs     # notification, session, command pickers
 ```
 
 ### Key Dependencies
 
-- [ratatui](https://ratatui.rs/) 0.29 - terminal UI
-  framework
-- [crossterm](https://github.com/crossterm-rs/crossterm)
-  0.28 - terminal input/output
-- [vt100](https://github.com/doy/vt100-rust) 0.15 - ANSI
-  escape sequence parsing for embedded tmux rendering
-- [clap](https://github.com/clap-rs/clap) 4 - CLI argument
-  parsing
-- [serde](https://serde.rs/) / serde_json - JSON
-  serialization
-- [chrono](https://github.com/chronotope/chrono) 0.4 -
-  timestamps
+- [ratatui](https://ratatui.rs/) 0.29 — terminal UI framework
+- [crossterm](https://github.com/crossterm-rs/crossterm) 0.28 —
+  terminal input/output
+- [vt100](https://github.com/doy/vt100-rust) 0.15 — ANSI escape
+  sequence parsing for embedded tmux rendering
+- [clap](https://github.com/clap-rs/clap) 4 — CLI argument parsing
+- [serde](https://serde.rs/) / serde_json — JSON serialization
+- [chrono](https://github.com/chronotope/chrono) 0.4 — timestamps
 - [ratatui-explorer](https://github.com/tatounee/ratatui-explorer)
-  0.2 - file browser widget for path selection
+  0.2 — file browser widget for path selection
 
 ### Architecture Notes
 
-- All external tool interaction (tmux, git, claude) goes
-  through `std::process::Command` in dedicated manager
-  structs
-- The event loop polls at 50ms in viewing mode (for smooth
-  tmux rendering) and 250ms otherwise
-- Status sync polls tmux every 5 seconds to reconcile
-  feature statuses with actual session state
-- The embedded tmux view captures ANSI output from tmux and
-  renders it through a vt100 parser into ratatui spans
-- When running inside tmux, switching uses
-  `switch-client`; outside tmux, the TUI exits and
-  attaches directly
+- All external tool interaction (tmux, git, claude) goes through
+  `std::process::Command` in dedicated manager structs
+- The event loop polls at 50ms in viewing mode (for smooth tmux
+  rendering) and 250ms otherwise
+- Status sync polls tmux every 5 seconds to reconcile feature statuses
+  with actual session state
+- The embedded tmux view captures ANSI output from tmux and renders it
+  through a vt100 parser into ratatui spans
+- When running inside tmux, switching uses `switch-client`; outside
+  tmux, the TUI exits and attaches directly
+- Hook files are written to the worktree's local `.claude/settings.json`
+  only — global settings are never modified. On startup,
+  `cleanup_global_hooks()` removes any previously-injected entries.
+
+### Contributing
+
+Contributions are welcome. There are no tests yet — the main way to
+verify changes is to run `cargo check && cargo clippy` and then
+exercise the TUI manually.
+
+1. Fork the repo and create a feature branch.
+2. Make your changes. Run `cargo check && cargo clippy -- -W
+   clippy::all` and fix any warnings before submitting.
+3. Open a pull request with a short description of what changed and
+   why.
+
+The project uses Rust 2024 edition (rustc 1.85+).
 
 ---
 
-*Last updated: 2026-02-13*
+*Last updated: 2026-03-01*

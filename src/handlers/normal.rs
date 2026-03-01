@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, AppMode, Selection};
+use crate::project::{AgentKind, SessionKind};
 
 pub fn handle_normal_key(
     app: &mut App,
@@ -137,6 +138,30 @@ pub fn handle_normal_key(
         KeyCode::Char('s') => {
             app.open_session_picker()?;
         }
+        KeyCode::Char('S') => {
+            let is_opencode = match &app.selection {
+                Selection::Feature(pi, fi) => app
+                    .store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .map(|f| f.agent == AgentKind::Opencode),
+                Selection::Session(pi, fi, si) => app
+                    .store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .and_then(|f| f.sessions.get(*si))
+                    .map(|s| s.kind == SessionKind::Opencode),
+                _ => Some(false),
+            };
+            if is_opencode.unwrap_or(false) {
+                app.pick_session();
+            } else {
+                app.message =
+                    Some("S only works for opencode sessions".into());
+            }
+        }
         KeyCode::Char('m') => {
             match &app.selection {
                 Selection::Feature(_, _)
@@ -197,14 +222,14 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
+            app.mode = AppMode::Help(None);
         }
         KeyCode::Char('/') => {
             app.start_search();
         }
         KeyCode::Char('i') => {
             if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0);
+                app.mode = AppMode::NotificationPicker(0, None);
             } else {
                 app.message =
                     Some("No pending input requests".into());
@@ -278,14 +303,14 @@ fn handle_normal_leader_key(
     match key.code {
         KeyCode::Char('i') => {
             if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0);
+                app.mode = AppMode::NotificationPicker(0, None);
             } else {
                 app.message =
                     Some("No pending input requests".into());
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
+            app.mode = AppMode::Help(None);
         }
         KeyCode::Char('/') => {
             app.open_command_picker(None);

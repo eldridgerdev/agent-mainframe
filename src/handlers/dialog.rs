@@ -430,7 +430,19 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
 pub fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-            app.mode = AppMode::Normal;
+            let from_view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Help(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
         }
         _ => {}
     }
@@ -602,6 +614,29 @@ pub fn handle_deleting_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 app.complete_deleting_feature()?;
             }
         }
+    }
+    Ok(())
+}
+
+pub fn handle_latest_prompt_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::LatestPrompt(_, v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::Viewing(view);
+        }
+        _ => {}
     }
     Ok(())
 }

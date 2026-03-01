@@ -204,14 +204,25 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
                 SessionKind::Opencode => Span::styled("  * ", Style::default().fg(Color::Cyan)),
                 SessionKind::Terminal => Span::styled("  > ", Style::default().fg(Color::Green)),
                 SessionKind::Nvim => {
-                    let icon = if nerd_font { "  \u{E62B} " } else { "  ~ " };
+                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
                 SessionKind::Vscode => {
                     let icon = if nerd_font { "  \u{E70C} " } else { "  V " };
                     Span::styled(icon, Style::default().fg(Color::Blue))
                 }
-                SessionKind::Custom => Span::styled("  $ ", Style::default().fg(Color::Yellow)),
+                SessionKind::Custom => {
+                    let raw = if nerd_font {
+                        entry
+                            .icon_nerd
+                            .as_deref()
+                            .or(entry.icon.as_deref())
+                            .unwrap_or("$")
+                    } else {
+                        entry.icon.as_deref().unwrap_or("$")
+                    };
+                    Span::styled(format!("  {} ", raw), Style::default().fg(Color::Yellow))
+                }
             };
 
             let name_style = if is_selected {
@@ -251,6 +262,8 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
         Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Enter", Style::default().fg(Color::Yellow)),
         Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("s", Style::default().fg(Color::Yellow)),
+        Span::styled(" new  ", Style::default().fg(Color::DarkGray)),
         Span::styled("r", Style::default().fg(Color::Yellow)),
         Span::styled(" rename  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
@@ -381,7 +394,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame) {
     frame.render_widget(text, area);
 }
 
-pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState) {
+pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_font: bool) {
     let area = centered_rect(55, 50, frame.area());
     frame.render_widget(Clear, area);
 
@@ -432,7 +445,8 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState) {
                     Span::styled("  > ", Style::default().fg(Color::Green))
                 }
                 crate::project::SessionKind::Nvim => {
-                    Span::styled("  ~ ", Style::default().fg(Color::Cyan))
+                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
+                    Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
                 crate::project::SessionKind::Vscode => {
                     Span::styled("  V ", Style::default().fg(Color::Blue))
@@ -508,21 +522,32 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState) {
                 Style::default().fg(Color::White)
             };
 
+            let raw_icon = if nerd_font {
+                cfg.icon_nerd
+                    .as_deref()
+                    .or(cfg.icon.as_deref())
+                    .unwrap_or("$")
+            } else {
+                cfg.icon.as_deref().unwrap_or("$")
+            };
+            let icon_str = format!("  {} ", raw_icon);
+
             let mut lines: Vec<Line> = vec![Line::from(vec![
                 if is_selected {
                     Span::styled("  > ", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("    ", Style::default().fg(Color::DarkGray))
                 },
-                Span::styled("  $ ", Style::default().fg(Color::Magenta)),
+                Span::styled(icon_str, Style::default().fg(Color::Magenta)),
                 Span::styled(&cfg.name, name_style),
             ])];
 
-            if let Some(ref cmd) = cfg.command {
-                let preview = if cmd.len() > 50 {
-                    format!("{}...", &cmd[..47])
+            let subtitle = cfg.description.as_deref().or(cfg.command.as_deref());
+            if let Some(text) = subtitle {
+                let preview = if text.len() > 50 {
+                    format!("{}...", &text[..47])
                 } else {
-                    cmd.clone()
+                    text.to_string()
                 };
                 let desc_color = if is_selected {
                     SELECTED_GRAY

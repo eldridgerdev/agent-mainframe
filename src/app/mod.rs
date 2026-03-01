@@ -1039,6 +1039,11 @@ impl App {
             &window,
             &workdir,
         )?;
+        TmuxManager::send_keys(
+            &tmux_session,
+            &window,
+            "nvim",
+        )?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;

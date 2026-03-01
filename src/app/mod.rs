@@ -1486,9 +1486,15 @@ impl App {
         {
             items.push(VisibleItem::Project(pi));
             if !project.collapsed {
-                for (fi, feature) in
-                    project.features.iter().enumerate()
-                {
+                let mut feature_indices: Vec<usize> =
+                    (0..project.features.len()).collect();
+                feature_indices.sort_by(|&a, &b| {
+                    project.features[b]
+                        .created_at
+                        .cmp(&project.features[a].created_at)
+                });
+                for fi in feature_indices {
+                    let feature = &project.features[fi];
                     items.push(VisibleItem::Feature(pi, fi));
                     if !feature.collapsed {
                         for (si, session) in

@@ -352,26 +352,33 @@ pub fn ensure_notification_hooks(
         return;
     }
 
-    let config_subdir = match agent {
-        AgentKind::Claude => ".claude",
-        AgentKind::Opencode => ".opencode",
-    };
-    let claude_dir = workdir.join(config_subdir);
+    let claude_dir = workdir.join(".claude");
     let settings_path = claude_dir.join("settings.json");
 
     let config_dir = crate::project::amf_config_dir();
-
     let notify_cmd =
-        config_dir.join("notify.sh").to_string_lossy().to_string();
+        config_dir.join("notify.sh").to_string_lossy().into_owned();
     let clear_cmd = config_dir
         .join("clear-notify.sh")
         .to_string_lossy()
-        .to_string();
-    let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
+        .into_owned();
+
+    let thinking_touch_cmd =
+        "[ -n \"$AMF_SESSION\" ] \
+         && mkdir -p /tmp/amf-thinking \
+         && touch \"/tmp/amf-thinking/$AMF_SESSION\" \
+         || true";
+    let thinking_remove_cmd =
+        "[ -n \"$AMF_SESSION\" ] \
+         && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" \
+         || true";
+
+    let script_suffix =
+        ["plugins", "diff-review", "scripts", "diff-review.sh"];
     let amf_root = std::env::current_exe().ok().and_then(|exe| {
         exe.parent()?.parent()?.parent().map(PathBuf::from)
     });
-    let diff_review_path = [
+    let diff_review_cmd = [
         Some(workdir.to_path_buf()),
         Some(repo.to_path_buf()),
         amf_root,
@@ -379,12 +386,8 @@ pub fn ensure_notification_hooks(
     .into_iter()
     .flatten()
     .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
-    .find(|p| p.exists());
-
-    let diff_review_cmd = match diff_review_path {
-        Some(p) => p.to_string_lossy().to_string(),
-        None => return,
-    };
+    .find(|p| p.exists())
+    .map(|p| p.to_string_lossy().into_owned());
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
 
@@ -398,73 +401,54 @@ pub fn ensure_notification_hooks(
             serde_json::json!({})
         };
 
-    let has_notification = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("Notification").is_some());
-    let has_stop = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("Stop").is_some());
-    let has_pre_tool_use = settings
-        .get("hooks")
-        .is_some_and(|h| h.get("PreToolUse").is_some());
-    let has_perms = settings
-        .get("permissions")
-        .and_then(|p| p.get("allow"))
-        .and_then(|a| a.as_array())
-        .is_some_and(|arr| {
-            arr.iter().any(|v| v.as_str() == Some("Edit"))
-                && arr
-                    .iter()
-                    .any(|v| v.as_str() == Some("Write"))
-        });
-
-    let already_correct = has_notification
-        && has_stop
-        && if wants_diff_review {
-            has_pre_tool_use && has_perms
-        } else {
-            !has_pre_tool_use && !has_perms
-        };
-    if already_correct {
-        return;
-    }
-
     let hooks = settings
         .as_object_mut()
         .unwrap()
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
-
-    let notification_hook = serde_json::json!([{
-        "matcher": "",
-        "hooks": [{ "type": "command", "command": notify_cmd }]
-    }]);
-    let stop_hook = serde_json::json!([{
-        "matcher": "",
-        "hooks": [{ "type": "command", "command": clear_cmd }]
-    }]);
-
     let hooks_obj = hooks.as_object_mut().unwrap();
-    hooks_obj
-        .entry("Notification")
-        .or_insert(notification_hook);
-    hooks_obj.entry("Stop").or_insert(stop_hook);
 
+    // Stop: remove thinking sentinel + write notification.
+    hooks_obj.insert("Stop".to_string(), serde_json::json!([{
+        "matcher": "",
+        "hooks": [
+            { "type": "command", "command": thinking_remove_cmd },
+            { "type": "command", "command": notify_cmd }
+        ]
+    }]));
+
+    // Remove legacy Notification hook (replaced by Stop above).
+    hooks_obj.remove("Notification");
+
+    // PreToolUse: touch thinking sentinel + clear notification,
+    // plus diff-review for vibeless mode.
+    let mut pre_tool_hooks: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "type": "command",
+            "command": thinking_touch_cmd
+        }),
+        serde_json::json!({
+            "type": "command",
+            "command": clear_cmd
+        }),
+    ];
     if wants_diff_review {
-        let pre_tool_use_hook = serde_json::json!([{
-            "matcher": "Edit|Write",
-            "hooks": [{
+        if let Some(ref dr_cmd) = diff_review_cmd {
+            pre_tool_hooks.push(serde_json::json!({
                 "type": "command",
-                "command": diff_review_cmd,
+                "command": dr_cmd,
                 "timeout": 600
-            }]
-        }]);
-        hooks_obj
-            .entry("PreToolUse")
-            .or_insert(pre_tool_use_hook);
-    } else {
-        hooks_obj.remove("PreToolUse");
+            }));
+        }
     }
+    hooks_obj.insert("PreToolUse".to_string(), serde_json::json!([{
+        "matcher": if wants_diff_review && diff_review_cmd.is_some() {
+            "Edit|Write"
+        } else {
+            ""
+        },
+        "hooks": pre_tool_hooks
+    }]));
 
     if wants_diff_review {
         let perms = settings
@@ -5367,5 +5351,186 @@ mod tests {
                 .contains("Stopped"),
             "got: {:?}", app.message
         );
+    }
+
+    // ── ensure_notification_hooks ─────────────────────────────
+
+    use tempfile::TempDir;
+
+    fn read_settings(dir: &TempDir) -> serde_json::Value {
+        let path = dir.path().join(".claude").join("settings.json");
+        let s = std::fs::read_to_string(&path)
+            .expect("settings.json should exist");
+        serde_json::from_str(&s).expect("valid JSON")
+    }
+
+    fn hook_commands_for(
+        settings: &serde_json::Value,
+        event: &str,
+    ) -> Vec<String> {
+        settings["hooks"][event]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|entry| {
+                entry["hooks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|h| {
+                        h["command"].as_str().map(|s| s.to_string())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
+        let repo = workdir.path(); // repo = workdir in tests
+        ensure_notification_hooks(
+            workdir.path(),
+            repo,
+            &mode,
+            &AgentKind::Claude,
+        );
+    }
+
+    #[test]
+    fn stop_hook_has_thinking_remove_and_notify() {
+        let workdir = TempDir::new().unwrap();
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+        let s = read_settings(&workdir);
+        let cmds = hook_commands_for(&s, "Stop");
+        assert!(
+            cmds.iter().any(|c| c.contains("amf-thinking") && c.contains("rm")),
+            "Stop hook missing thinking-remove cmd; got: {cmds:?}"
+        );
+        assert!(
+            cmds.iter().any(|c| c.contains("notify.sh")),
+            "Stop hook missing notify.sh; got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_hook_has_thinking_touch_and_clear() {
+        let workdir = TempDir::new().unwrap();
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+        let s = read_settings(&workdir);
+        let cmds = hook_commands_for(&s, "PreToolUse");
+        assert!(
+            cmds.iter().any(|c| c.contains("amf-thinking") && c.contains("touch")),
+            "PreToolUse missing thinking-touch cmd; got: {cmds:?}"
+        );
+        assert!(
+            cmds.iter().any(|c| c.contains("clear-notify.sh")),
+            "PreToolUse missing clear-notify.sh; got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn notification_hook_is_removed() {
+        let workdir = TempDir::new().unwrap();
+        // Pre-populate with the legacy Notification hook.
+        let claude_dir = workdir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"hooks":{"Notification":[{"matcher":"","hooks":[{"type":"command","command":"/old/notify.sh"}]}]}}"#,
+        ).unwrap();
+
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+        let s = read_settings(&workdir);
+        assert!(
+            s["hooks"].get("Notification").is_none(),
+            "legacy Notification hook should be removed"
+        );
+    }
+
+    #[test]
+    fn vibeless_pre_tool_use_includes_diff_review_when_script_present() {
+        let workdir = TempDir::new().unwrap();
+        // Create the diff-review script so it gets picked up.
+        let scripts_dir = workdir
+            .path()
+            .join("plugins")
+            .join("diff-review")
+            .join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
+
+        call_ensure_hooks(&workdir, VibeMode::Vibeless);
+
+        let s = read_settings(&workdir);
+        let cmds = hook_commands_for(&s, "PreToolUse");
+        assert!(
+            cmds.iter().any(|c| c.contains("diff-review.sh")),
+            "Vibeless PreToolUse should include diff-review; got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn vibeless_permissions_include_edit_and_write() {
+        let workdir = TempDir::new().unwrap();
+        // Need diff-review script for vibeless path to complete.
+        let scripts_dir = workdir
+            .path()
+            .join("plugins")
+            .join("diff-review")
+            .join("scripts");
+        std::fs::create_dir_all(&scripts_dir).unwrap();
+        std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
+
+        call_ensure_hooks(&workdir, VibeMode::Vibeless);
+
+        let s = read_settings(&workdir);
+        let allow = s["permissions"]["allow"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let strs: Vec<&str> = allow
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(strs.contains(&"Edit"), "permissions should allow Edit");
+        assert!(strs.contains(&"Write"), "permissions should allow Write");
+    }
+
+    #[test]
+    fn vibe_mode_strips_edit_write_permissions_left_from_vibeless() {
+        let workdir = TempDir::new().unwrap();
+        // Pre-populate with permissions that would have been added by vibeless.
+        let claude_dir = workdir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"permissions":{"allow":["Edit","Write","Bash"]}}"#,
+        ).unwrap();
+
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+        let s = read_settings(&workdir);
+        let allow = s["permissions"]["allow"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let strs: Vec<&str> = allow
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(!strs.contains(&"Edit"), "Edit should be removed for Vibe mode");
+        assert!(!strs.contains(&"Write"), "Write should be removed for Vibe mode");
+        // Unrelated permissions are preserved.
+        assert!(strs.contains(&"Bash"), "unrelated permissions should remain");
+    }
+
+    #[test]
+    fn ensure_hooks_is_idempotent() {
+        let workdir = TempDir::new().unwrap();
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+        let first = read_settings(&workdir);
+        call_ensure_hooks(&workdir, VibeMode::Vibe);
+        let second = read_settings(&workdir);
+        assert_eq!(first, second, "calling twice should produce identical output");
     }
 }

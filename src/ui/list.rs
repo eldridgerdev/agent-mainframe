@@ -374,8 +374,26 @@ pub fn draw(
                             )
                         }
                         SessionKind::Custom => {
+                            let cfg = app
+                                .active_extension
+                                .custom_sessions
+                                .iter()
+                                .find(|c| {
+                                    c.name == session.label
+                                });
+                            let raw = cfg
+                                .and_then(|c| {
+                                    if app.config.nerd_font {
+                                        c.icon_nerd
+                                            .as_deref()
+                                            .or(c.icon.as_deref())
+                                    } else {
+                                        c.icon.as_deref()
+                                    }
+                                })
+                                .unwrap_or("$");
                             Span::styled(
-                                "$ ",
+                                format!("{} ", raw),
                                 Style::default()
                                     .fg(Color::Yellow),
                             )

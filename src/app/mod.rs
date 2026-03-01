@@ -70,6 +70,8 @@ pub struct SwitcherEntry {
     pub tmux_window: String,
     pub kind: SessionKind,
     pub label: String,
+    pub icon: Option<String>,
+    pub icon_nerd: Option<String>,
 }
 
 pub struct SessionSwitcherState {
@@ -3597,12 +3599,25 @@ impl App {
                     let entries: Vec<SwitcherEntry> = feature
                         .sessions
                         .iter()
-                        .map(|s| SwitcherEntry {
-                            tmux_window: s
-                                .tmux_window
-                                .clone(),
-                            kind: s.kind.clone(),
-                            label: s.label.clone(),
+                        .map(|s| {
+                            let cfg = self
+                                .active_extension
+                                .custom_sessions
+                                .iter()
+                                .find(|c| c.name == s.label);
+                            SwitcherEntry {
+                                tmux_window: s
+                                    .tmux_window
+                                    .clone(),
+                                kind: s.kind.clone(),
+                                label: s.label.clone(),
+                                icon: cfg.and_then(|c| {
+                                    c.icon.clone()
+                                }),
+                                icon_nerd: cfg.and_then(|c| {
+                                    c.icon_nerd.clone()
+                                }),
+                            }
                         })
                         .collect();
                     (
@@ -4097,6 +4112,8 @@ impl App {
                     tmux_window: s.tmux_window.clone(),
                     kind: s.kind.clone(),
                     label: s.label.clone(),
+                    icon: s.icon.clone(),
+                    icon_nerd: s.icon_nerd.clone(),
                 })
                 .collect(),
             selected: switcher_state.selected,
@@ -4169,12 +4186,25 @@ impl App {
                     switcher.sessions = feature
                         .sessions
                         .iter()
-                        .map(|s| SwitcherEntry {
-                            tmux_window: s
-                                .tmux_window
-                                .clone(),
-                            kind: s.kind.clone(),
-                            label: s.label.clone(),
+                        .map(|s| {
+                            let cfg = self
+                                .active_extension
+                                .custom_sessions
+                                .iter()
+                                .find(|c| c.name == s.label);
+                            SwitcherEntry {
+                                tmux_window: s
+                                    .tmux_window
+                                    .clone(),
+                                kind: s.kind.clone(),
+                                label: s.label.clone(),
+                                icon: cfg.and_then(|c| {
+                                    c.icon.clone()
+                                }),
+                                icon_nerd: cfg.and_then(|c| {
+                                    c.icon_nerd.clone()
+                                }),
+                            }
                         })
                         .collect();
                     self.mode =

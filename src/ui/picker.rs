@@ -207,7 +207,19 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
                     let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
-                SessionKind::Custom => Span::styled("  $ ", Style::default().fg(Color::Yellow)),
+                SessionKind::Custom => {
+                    let raw = if nerd_font {
+                        entry.icon_nerd.as_deref()
+                            .or(entry.icon.as_deref())
+                            .unwrap_or("$")
+                    } else {
+                        entry.icon.as_deref().unwrap_or("$")
+                    };
+                    Span::styled(
+                        format!("  {} ", raw),
+                        Style::default().fg(Color::Yellow),
+                    )
+                }
             };
 
             let name_style = if is_selected {
@@ -485,13 +497,22 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
                 Style::default().fg(Color::White)
             };
 
+            let raw_icon = if nerd_font {
+                cfg.icon_nerd.as_deref()
+                    .or(cfg.icon.as_deref())
+                    .unwrap_or("$")
+            } else {
+                cfg.icon.as_deref().unwrap_or("$")
+            };
+            let icon_str = format!("  {} ", raw_icon);
+
             let mut lines: Vec<Line> = vec![Line::from(vec![
                 if is_selected {
                     Span::styled("  > ", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("    ", Style::default().fg(Color::DarkGray))
                 },
-                Span::styled("  $ ", Style::default().fg(Color::Magenta)),
+                Span::styled(icon_str, Style::default().fg(Color::Magenta)),
                 Span::styled(&cfg.name, name_style),
             ])];
 

@@ -138,10 +138,22 @@ pub fn handle_notification_picker_key(
 ) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = AppMode::Normal;
+            let from_view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::NotificationPicker(_, v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let AppMode::NotificationPicker(ref mut idx) =
+            if let AppMode::NotificationPicker(ref mut idx, _) =
                 app.mode
             {
                 let len = app.pending_inputs.len();
@@ -151,7 +163,7 @@ pub fn handle_notification_picker_key(
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if let AppMode::NotificationPicker(ref mut idx) =
+            if let AppMode::NotificationPicker(ref mut idx, _) =
                 app.mode
             {
                 let len = app.pending_inputs.len();

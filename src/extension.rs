@@ -9,6 +9,7 @@ use crate::project::{AgentKind, VibeMode};
 #[serde(default)]
 pub struct CustomSessionConfig {
     pub name: String,
+    pub description: Option<String>,
     pub command: Option<String>,
     pub window_name: Option<String>,
     pub working_dir: Option<PathBuf>,

@@ -516,11 +516,12 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
                 Span::styled(&cfg.name, name_style),
             ])];
 
-            if let Some(ref cmd) = cfg.command {
-                let preview = if cmd.len() > 50 {
-                    format!("{}...", &cmd[..47])
+            let subtitle = cfg.description.as_deref().or(cfg.command.as_deref());
+            if let Some(text) = subtitle {
+                let preview = if text.len() > 50 {
+                    format!("{}...", &text[..47])
                 } else {
-                    cmd.clone()
+                    text.to_string()
                 };
                 let desc_color = if is_selected {
                     SELECTED_GRAY

@@ -250,12 +250,27 @@ is created automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `opencode_theme` | string | `"catppuccin-frappe"` | Theme name passed to Opencode. |
+| `zai` | object? | `null` | ZAI usage tracking. `null` or omitted disables ZAI in the status bar. |
 
-### `zai` — token usage limits
-(Doesn't really work, zai doesn't provide useful info here)
-Tracks token consumption and shows usage in the status
-bar. Set `plan` to one of the presets, or override
-individual limits manually.
+### `zai` — token usage limits (optional)
+
+Controls whether ZAI usage is shown in the status bar.
+Set to `null` or omit the key entirely to disable ZAI
+tracking — the status bar will only show Claude usage and
+will not rotate between models.
+
+```json
+"zai": null
+```
+
+To enable ZAI, set `plan` to one of the presets or
+override individual limits manually:
+
+```json
+"zai": {
+  "plan": "coding-plan"
+}
+```
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |

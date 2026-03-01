@@ -31,6 +31,7 @@ pub enum SessionKind {
     Opencode,
     Terminal,
     Nvim,
+    Vscode,
     Custom,
 }
 
@@ -216,6 +217,9 @@ impl Feature {
             SessionKind::Nvim => {
                 format!("Nvim {}", count + 1)
             }
+            SessionKind::Vscode => {
+                format!("VSCode {}", count + 1)
+            }
             SessionKind::Custom => {
                 format!("Custom {}", count + 1)
             }
@@ -230,6 +234,7 @@ impl Feature {
             SessionKind::Opencode => "opencode",
             SessionKind::Terminal => "terminal",
             SessionKind::Nvim => "nvim",
+            SessionKind::Vscode => "vscode",
             SessionKind::Custom => "custom",
         };
         let count = self

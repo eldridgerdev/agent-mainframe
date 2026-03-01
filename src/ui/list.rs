@@ -416,6 +416,19 @@ pub fn draw(
                                     .fg(Color::Cyan),
                             )
                         }
+                        SessionKind::Vscode => {
+                            let icon =
+                                if app.config.nerd_font {
+                                    "\u{E70C} "
+                                } else {
+                                    "V "
+                                };
+                            Span::styled(
+                                icon,
+                                Style::default()
+                                    .fg(Color::Blue),
+                            )
+                        }
                         SessionKind::Custom => {
                             let cfg = app
                                 .active_extension

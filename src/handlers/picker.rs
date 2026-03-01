@@ -307,7 +307,20 @@ pub fn handle_session_picker_key(
                 let total = state.builtin_sessions.len()
                     + state.custom_sessions.len();
                 if total > 0 {
-                    state.selected = (state.selected + 1) % total;
+                    let start = state.selected;
+                    loop {
+                        state.selected = (state.selected + 1) % total;
+                        if state.selected == start {
+                            break;
+                        }
+                        if state.selected < state.builtin_sessions.len() {
+                            if state.builtin_sessions[state.selected].disabled.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -317,11 +330,24 @@ pub fn handle_session_picker_key(
                 let total = state.builtin_sessions.len()
                     + state.custom_sessions.len();
                 if total > 0 {
-                    state.selected = if state.selected == 0 {
-                        total - 1
-                    } else {
-                        state.selected - 1
-                    };
+                    let start = state.selected;
+                    loop {
+                        state.selected = if state.selected == 0 {
+                            total - 1
+                        } else {
+                            state.selected - 1
+                        };
+                        if state.selected == start {
+                            break;
+                        }
+                        if state.selected < state.builtin_sessions.len() {
+                            if state.builtin_sessions[state.selected].disabled.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -334,6 +360,11 @@ pub fn handle_session_picker_key(
                 let builtin_len = state.builtin_sessions.len();
                 if state.selected < builtin_len {
                     let builtin = &state.builtin_sessions[state.selected];
+                    if let Some(ref reason) = builtin.disabled {
+                        app.message = Some(format!("Cannot start: {}", reason));
+                        app.mode = AppMode::SessionPicker(state);
+                        return Ok(());
+                    }
                     match app.add_builtin_session(
                         state.pi,
                         state.fi,

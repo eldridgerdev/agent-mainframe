@@ -518,6 +518,7 @@ pub fn draw(
                     SessionKind::Opencode => "opencode",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
+                    SessionKind::Vscode => "vscode",
                     SessionKind::Custom => "custom",
                 };
                 Line::from(vec![

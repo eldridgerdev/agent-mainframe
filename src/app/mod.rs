@@ -859,6 +859,13 @@ impl App {
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
+        let vscode_available = std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+
         let builtin_sessions = vec![
             BuiltinSessionOption {
                 kind: SessionKind::Claude,
@@ -866,14 +873,26 @@ impl App {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
                 },
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
+                disabled: None,
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Vscode,
+                label: "VSCode".to_string(),
+                disabled: if vscode_available {
+                    None
+                } else {
+                    Some("code not found in PATH".to_string())
+                },
             },
         ];
 
@@ -893,10 +912,15 @@ impl App {
             None
         };
 
+        let initial_selected = builtin_sessions
+            .iter()
+            .position(|s| s.disabled.is_none())
+            .unwrap_or(0);
+
         self.mode = AppMode::SessionPicker(SessionPickerState {
             builtin_sessions,
             custom_sessions,
-            selected: 0,
+            selected: initial_selected,
             pi,
             fi,
             from_view,
@@ -940,6 +964,13 @@ impl App {
             self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
+        let vscode_available = std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+
         let builtin_sessions = vec![
             BuiltinSessionOption {
                 kind: SessionKind::Claude,
@@ -951,24 +982,41 @@ impl App {
                         "Opencode (Claude)".to_string()
                     }
                 },
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
+                disabled: None,
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Vscode,
+                label: "VSCode".to_string(),
+                disabled: if vscode_available {
+                    None
+                } else {
+                    Some("code not found in PATH".to_string())
+                },
             },
         ];
 
         let custom_sessions =
             self.active_extension.custom_sessions.clone();
 
+        let initial_selected = builtin_sessions
+            .iter()
+            .position(|s| s.disabled.is_none())
+            .unwrap_or(0);
+
         self.mode = AppMode::SessionPicker(SessionPickerState {
             builtin_sessions,
             custom_sessions,
-            selected: 0,
+            selected: initial_selected,
             pi,
             fi,
             from_view: None,
@@ -1051,6 +1099,9 @@ impl App {
             }
             SessionKind::Nvim => {
                 self.add_nvim_session_for_picker(pi, fi)
+            }
+            SessionKind::Vscode => {
+                self.add_vscode_session_for_picker(pi, fi)
             }
             SessionKind::Claude => {
                 self.add_claude_session_for_picker(pi, fi)
@@ -1161,6 +1212,41 @@ impl App {
         self.selection = Selection::Session(pi, fi, si);
         self.save()?;
         self.message = Some(format!("Added '{}'", label));
+
+        Ok(())
+    }
+
+    fn add_vscode_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
+        if std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            self.message = Some(
+                "Error: code (VSCode CLI) is not installed".into(),
+            );
+            return Ok(());
+        }
+
+        let feature = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        let workdir = feature.workdir.clone();
+        std::process::Command::new("code")
+            .arg(&workdir)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
+
+        self.message = Some(format!("Opened VSCode in {}", workdir.display()));
 
         Ok(())
     }
@@ -1625,6 +1711,7 @@ impl App {
             SessionFilter::Nvim => {
                 session.kind == SessionKind::Nvim && session.label != "Memo"
             }
+            SessionFilter::Vscode => session.kind == SessionKind::Vscode,
             SessionFilter::Memo => {
                 session.kind == SessionKind::Nvim && session.label == "Memo"
             }
@@ -2540,6 +2627,13 @@ impl App {
                     }
                 }
                 SessionKind::Terminal => {}
+                SessionKind::Vscode => {
+                    self.tmux.send_keys(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &format!("code {}", feature.workdir.display()),
+                    )?;
+                }
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
                         self.tmux.send_literal(
@@ -4826,6 +4920,13 @@ impl App {
                     }
                 }
                 SessionKind::Terminal => {}
+                SessionKind::Vscode => {
+                    TmuxManager::send_keys(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &format!("code {}", feature.workdir.display()),
+                    )?;
+                }
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
                         TmuxManager::send_literal(

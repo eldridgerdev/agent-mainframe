@@ -103,8 +103,8 @@ pub enum AppMode {
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
-    Help,
-    NotificationPicker(usize),
+    Help(Option<ViewState>),
+    NotificationPicker(usize, Option<ViewState>),
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
     BrowsingPath(Box<BrowsePathState>),
@@ -119,6 +119,7 @@ pub enum AppMode {
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
+    LatestPrompt(String, ViewState),
 }
 
 #[derive(Clone)]

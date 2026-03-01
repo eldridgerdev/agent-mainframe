@@ -253,12 +253,22 @@ fn handle_leader_key(
             app.message = Some("Stopped session".into());
         }
         KeyCode::Char('i') => {
-            app.exit_view();
-            if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0);
-            } else {
+            if app.pending_inputs.is_empty() {
                 app.message =
                     Some("No pending input requests".into());
+            } else {
+                let view = match std::mem::replace(
+                    &mut app.mode,
+                    AppMode::Normal,
+                ) {
+                    AppMode::Viewing(v) => v,
+                    other => {
+                        app.mode = other;
+                        return Ok(());
+                    }
+                };
+                app.mode =
+                    AppMode::NotificationPicker(0, Some(view));
             }
         }
         KeyCode::Char('w') => {
@@ -278,14 +288,57 @@ fn handle_leader_key(
             app.open_command_picker(Some(view_state));
         }
         KeyCode::Char('?') => {
-            app.exit_view();
-            app.mode = AppMode::Help;
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::Help(Some(view));
         }
         KeyCode::Char('o') | KeyCode::Char('S') => {
             app.toggle_scroll_mode(visible_rows);
         }
         KeyCode::Char('f') => {
             app.trigger_final_review()?;
+        }
+        KeyCode::Char('l') => {
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            let workdir = app
+                .store
+                .projects
+                .iter()
+                .find(|p| p.name == view.project_name)
+                .and_then(|p| {
+                    p.features
+                        .iter()
+                        .find(|f| f.name == view.feature_name)
+                })
+                .map(|f| f.workdir.clone());
+            let prompt = if let Some(wd) = workdir {
+                std::fs::read_to_string(
+                    wd.join(".claude").join("latest-prompt.txt"),
+                )
+                .unwrap_or_else(|_| {
+                    "(No prompt saved yet)".to_string()
+                })
+            } else {
+                "(No prompt saved yet)".to_string()
+            };
+            app.mode = AppMode::LatestPrompt(prompt, view);
         }
         _ => {}
     }

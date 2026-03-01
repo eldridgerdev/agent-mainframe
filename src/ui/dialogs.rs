@@ -1557,3 +1557,36 @@ pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState) {
     ]));
     frame.render_widget(hints, chunks[1]);
 }
+
+pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: &str) {
+    let area = centered_rect(80, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Latest Prompt ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let paragraph = Paragraph::new(prompt)
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(Color::White));
+    frame.render_widget(paragraph, chunks[0]);
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("/q", Style::default().fg(Color::Yellow)),
+        Span::styled(" close", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hint, chunks[1]);
+}

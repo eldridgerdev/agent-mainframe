@@ -49,6 +49,51 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::Help(Some(view)) = &app.mode {
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+        );
+        super::dialogs::draw_help(frame);
+        return;
+    }
+
+    if let AppMode::NotificationPicker(selected, Some(view)) =
+        &app.mode
+    {
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+        );
+        super::picker::draw_notification_picker(
+            frame,
+            &app.pending_inputs,
+            *selected,
+        );
+        return;
+    }
+
+    if let AppMode::LatestPrompt(prompt, view) = &app.mode {
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+        );
+        super::dialogs::draw_latest_prompt_dialog(frame, prompt);
+        return;
+    }
+
     if let AppMode::CommandPicker(state) = &app.mode
         && state.from_view.is_some()
     {
@@ -141,12 +186,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_rename_session_dialog(frame, state);
     }
 
-    if matches!(app.mode, AppMode::Help) {
+    if matches!(app.mode, AppMode::Help(None)) {
         super::dialogs::draw_help(frame);
     }
 
-    if let AppMode::NotificationPicker(selected) = &app.mode
-    {
+    if let AppMode::NotificationPicker(selected, None) = &app.mode {
         super::picker::draw_notification_picker(
             frame,
             &app.pending_inputs,
@@ -286,7 +330,7 @@ fn draw_pane_view(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            "q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach x:stop ?:help",
+            "q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs l:prompt s:attach x:stop ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {

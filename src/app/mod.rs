@@ -139,7 +139,7 @@ impl ZaiPlanConfig {
 #[serde(default)]
 pub struct AppConfig {
     pub nerd_font: bool,
-    pub zai: ZaiPlanConfig,
+    pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
 }
@@ -148,7 +148,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nerd_font: true,
-            zai: ZaiPlanConfig::default(),
+            zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
         }
@@ -704,9 +704,11 @@ impl App {
         crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let config = load_config();
-        let zai_monthly = config.zai.get_monthly_limit();
-        let zai_weekly = config.zai.get_weekly_limit();
-        let zai_five_hour = config.zai.get_five_hour_limit();
+        let zai_enabled = config.zai.is_some();
+        let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
+        let zai_weekly = config.zai.as_ref().and_then(|z| z.get_weekly_limit());
+        let zai_five_hour =
+            config.zai.as_ref().and_then(|z| z.get_five_hour_limit());
         let global_ext = load_global_extension_config();
         let active_extension = store
             .projects
@@ -733,7 +735,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
-            usage: UsageManager::new(zai_monthly, zai_weekly, zai_five_hour),
+            usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -771,7 +773,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
-            usage: UsageManager::new(None, None, None),
+            usage: UsageManager::new(false, None, None, None),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state:

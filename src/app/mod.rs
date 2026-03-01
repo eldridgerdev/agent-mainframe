@@ -128,6 +128,7 @@ pub struct AppConfig {
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
+    pub theme: crate::theme::ThemeName,
 }
 
 impl Default for AppConfig {
@@ -137,6 +138,7 @@ impl Default for AppConfig {
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
+            theme: crate::theme::ThemeName::default(),
         }
     }
 }
@@ -146,6 +148,7 @@ pub struct App {
     pub store_path: PathBuf,
     pub config: AppConfig,
     pub active_extension: ExtensionConfig,
+    pub theme: crate::theme::Theme,
     pub selection: Selection,
     pub mode: AppMode,
     pub message: Option<String>,
@@ -188,11 +191,13 @@ impl App {
                 )
             })
             .unwrap_or(global_ext);
+        let theme = crate::theme::Theme::load(&config.theme);
         Ok(Self {
             store,
             store_path,
             config,
             active_extension,
+            theme,
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
@@ -231,6 +236,7 @@ impl App {
             store_path: PathBuf::new(),
             config: AppConfig::default(),
             active_extension: ExtensionConfig::default(),
+            theme: crate::theme::Theme::default(),
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
@@ -244,12 +250,9 @@ impl App {
             usage: UsageManager::new(false, None, None, None),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
-            throbber_state:
-                throbber_widgets_tui::ThrobberState::default(),
-            thinking_features:
-                std::collections::HashSet::new(),
-            last_timer_values:
-                std::collections::HashMap::new(),
+            throbber_state: throbber_widgets_tui::ThrobberState::default(),
+            thinking_features: std::collections::HashSet::new(),
+            last_timer_values: std::collections::HashMap::new(),
             tmux,
             worktree,
         }

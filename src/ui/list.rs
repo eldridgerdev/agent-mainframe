@@ -5,12 +5,13 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, ListItem, List, Paragraph},
     Frame,
 };
 
 use crate::app::{App, Selection, VisibleItem};
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
+use crate::theme::Theme;
 
 fn format_age(dt: DateTime<Utc>) -> String {
     let secs = Utc::now()
@@ -29,21 +30,19 @@ fn format_age(dt: DateTime<Utc>) -> String {
     }
 }
 
-const RAINBOW_COLORS: &[Color] = &[
-    Color::Red,
-    Color::Rgb(255, 127, 0),
-    Color::Yellow,
-    Color::Green,
-    Color::Cyan,
-    Color::Blue,
-    Color::Magenta,
-];
-
-pub fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+pub fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let colors = [
+        theme.error.to_color(),
+        theme.warning.to_color(),
+        theme.success.to_color(),
+        theme.accent.to_color(),
+        theme.info.to_color(),
+        theme.accent_alt.to_color(),
+    ];
     text.chars()
         .enumerate()
         .map(|(i, ch)| {
-            let color = RAINBOW_COLORS[i % RAINBOW_COLORS.len()];
+            let color = colors[i % colors.len()];
             Span::styled(
                 ch.to_string(),
                 Style::default()
@@ -63,8 +62,6 @@ fn shorten_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-const SELECTED_GRAY: Color = Color::Rgb(140, 140, 140);
-
 pub fn draw(
     frame: &mut Frame,
     app: &mut App,
@@ -73,27 +70,30 @@ pub fn draw(
     let visible_height = area.height.saturating_sub(2) as usize;
     app.ensure_selection_visible(visible_height);
 
+    let theme = app.theme.clone();
+
     if app.store.projects.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
                 "No projects yet. Press ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted.to_color()),
             ),
             Span::styled(
                 "N",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " to create one.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted.to_color()),
             ),
         ]))
         .block(
             Block::default()
                 .title(" Projects ")
-                .borders(Borders::ALL),
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.border.to_color())),
         );
         frame.render_widget(empty, area);
         return;
@@ -102,8 +102,8 @@ pub fn draw(
     let visible = app.visible_items();
 
     let start = app.scroll_offset;
-    let end = (start + visible_height).min(visible.len());
-    let visible_slice = &visible[start..end];
+    let end_idx = (start + visible_height).min(visible.len());
+    let visible_slice = &visible[start..end_idx];
 
     let items: Vec<ListItem> = visible_slice
         .iter()
@@ -127,9 +127,9 @@ pub fn draw(
                 };
 
             let muted = if is_selected {
-                SELECTED_GRAY
+                theme.fg.to_color()
             } else {
-                Color::DarkGray
+                theme.muted.to_color()
             };
 
             let line = match item {
@@ -154,7 +154,7 @@ pub fn draw(
                         Span::styled(
                             &project.name,
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(theme.project_name.to_color())
                                 .add_modifier(
                                     Modifier::BOLD,
                                 ),
@@ -206,14 +206,14 @@ pub fn draw(
                         Span::styled(
                             " ? ",
                             Style::default()
-                                .fg(Color::Rgb(255, 165, 0))
+                                .fg(theme.status_waiting.to_color())
                                 .add_modifier(Modifier::BOLD),
                         )
                     } else if is_thinking {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
                                 Style::default()
-                                    .fg(Color::Cyan)
+                                    .fg(theme.accent.to_color())
                                     .add_modifier(Modifier::BOLD),
                             )
                             .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
@@ -227,21 +227,21 @@ pub fn draw(
                                 Span::styled(
                                     " ● ",
                                     Style::default()
-                                        .fg(Color::Green),
+                                        .fg(theme.status_active.to_color()),
                                 )
                             }
                             ProjectStatus::Idle => {
                                 Span::styled(
                                     " ○ ",
                                     Style::default()
-                                        .fg(Color::Yellow),
+                                        .fg(theme.status_idle.to_color()),
                                 )
                             }
                             ProjectStatus::Stopped => {
                                 Span::styled(
                                     " ■ ",
                                     Style::default()
-                                        .fg(Color::Red),
+                                        .fg(theme.status_stopped.to_color()),
                                 )
                             }
                         }
@@ -258,10 +258,10 @@ pub fn draw(
 
                     let name_style = if is_selected {
                         Style::default()
-                            .fg(Color::White)
+                            .fg(theme.feature_name.to_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(theme.feature_name.to_color())
                     };
 
                     let session_count =
@@ -276,22 +276,22 @@ pub fn draw(
                         VibeMode::Vibeless => vec![Span::styled(
                             " [vibeless]",
                             Style::default()
-                                .fg(Color::Green),
+                                .fg(theme.mode_vibeless.to_color()),
                         )],
                         VibeMode::Vibe => vec![Span::styled(
                             " [vibe]",
                             Style::default()
-                                .fg(Color::Yellow),
+                                .fg(theme.mode_vibe.to_color()),
                         )],
                         VibeMode::SuperVibe => {
                             let mut spans = vec![Span::raw(" [")];
-                            spans.extend(rainbow_spans("supervibe"));
+                            spans.extend(rainbow_spans("supervibe", &theme));
                             spans.push(Span::raw("]"));
                             spans
                         }
                         VibeMode::Review => vec![Span::styled(
                             " [review]",
-                            Style::default().fg(Color::Magenta),
+                            Style::default().fg(theme.mode_review.to_color()),
                         )],
                     };
 
@@ -337,7 +337,7 @@ pub fn draw(
                         line_spans.push(Span::styled(
                             " ?",
                             Style::default()
-                                .fg(Color::Yellow)
+                                .fg(theme.warning.to_color())
                                 .add_modifier(Modifier::BOLD),
                         ));
                     }
@@ -386,21 +386,21 @@ pub fn draw(
                             Span::styled(
                                 "* ",
                                 Style::default()
-                                    .fg(Color::Magenta),
+                                    .fg(theme.session_icon_claude.to_color()),
                             )
                         }
                         SessionKind::Opencode => {
                             Span::styled(
                                 "* ",
                                 Style::default()
-                                    .fg(Color::Cyan),
+                                    .fg(theme.session_icon_opencode.to_color()),
                             )
                         }
                         SessionKind::Terminal => {
                             Span::styled(
                                 "> ",
                                 Style::default()
-                                    .fg(Color::Green),
+                                    .fg(theme.session_icon_terminal.to_color()),
                             )
                         }
                         SessionKind::Nvim => {
@@ -413,7 +413,7 @@ pub fn draw(
                             Span::styled(
                                 icon,
                                 Style::default()
-                                    .fg(Color::Cyan),
+                                    .fg(theme.session_icon_nvim.to_color()),
                             )
                         }
                         SessionKind::Vscode => {
@@ -451,17 +451,17 @@ pub fn draw(
                             Span::styled(
                                 format!("{} ", raw),
                                 Style::default()
-                                    .fg(Color::Yellow),
+                                    .fg(theme.session_icon_custom.to_color()),
                             )
                         }
                     };
 
                     let name_style = if is_selected {
                         Style::default()
-                            .fg(Color::White)
+                            .fg(theme.fg.to_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(theme.fg.to_color())
                     };
 
                     let main_line = Line::from(vec![
@@ -533,7 +533,7 @@ pub fn draw(
 
             if is_selected {
                 ListItem::new(line).style(
-                    Style::default().bg(Color::DarkGray),
+                    Style::default().bg(theme.selection_bg.to_color()),
                 )
             } else {
                 ListItem::new(line)
@@ -545,7 +545,7 @@ pub fn draw(
         Block::default()
             .title(" Projects ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::White)),
+            .border_style(Style::default().fg(theme.border.to_color())),
     );
 
     frame.render_widget(list, area);

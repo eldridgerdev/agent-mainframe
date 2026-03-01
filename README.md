@@ -60,7 +60,29 @@ NOTE: Opencode is supported but a little buggy (mostly visual)
 
 ## Installation
 
-### Install Rust
+### Pre-built binaries (recommended)
+
+Download the latest binary from the
+[GitHub Releases page](https://github.com/eldridgerdev/agent-mainframe/releases).
+
+| Platform              | File                              |
+| --------------------- | --------------------------------- |
+| Linux x86_64 (musl)   | `amf-x86_64-unknown-linux-musl`  |
+| Linux x86_64 (gnu)    | `amf-x86_64-unknown-linux-gnu`   |
+| Linux aarch64         | `amf-aarch64-unknown-linux-gnu`  |
+| macOS (Apple Silicon) | `amf-aarch64-apple-darwin`       |
+
+Quick install (Linux x86_64 musl — most portable):
+
+```bash
+curl -L \
+  https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl \
+  -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+### Build from source
 
 This project requires Rust 1.85+ (2024 edition). Install using rustup:
 
@@ -74,10 +96,10 @@ After installation, restart your shell or run:
 source ~/.cargo/env
 ```
 
-### Build
+Then clone and install:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/eldridgerdev/agent-mainframe
 cd agent-mainframe
 cargo install --path .
 ```

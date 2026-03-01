@@ -84,6 +84,25 @@ cargo install --path .
 
 This installs the `amf` binary to `~/.cargo/bin/`.
 
+## Built-in OpenCode Themes
+
+AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
+
+### Available Themes
+
+- **amf** - Nord-based theme with transparent background
+- **amf-tokyonight** - Tokyo Night with transparent background
+- **amf-catppuccin** - Catppuccin Mocha with transparent background
+
+### Using the Themes
+
+When you start a feature in AMF, these themes are automatically added to `.opencode/themes/` in your worktree. You can then:
+
+1. Use the `/theme` command in opencode to select a theme
+2. Edit `.opencode/tui.json` in the worktree to set your preferred theme
+
+The themes are embedded in the AMF binary, so they're always available without any external dependencies.
+
 Or build without installing:
 
 ```bash

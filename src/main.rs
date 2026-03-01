@@ -5,6 +5,7 @@ mod claude;
 mod extension;
 mod handlers;
 mod project;
+mod theme;
 mod tmux;
 mod traits;
 mod ui;

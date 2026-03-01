@@ -138,7 +138,6 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub zai: ZaiPlanConfig,
-    pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
 }
 
@@ -147,7 +146,6 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             zai: ZaiPlanConfig::default(),
-            opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
         }
     }
@@ -173,42 +171,7 @@ pub fn load_config() -> AppConfig {
         config
     };
 
-    if let Some(ref theme) = config.opencode_theme {
-        let _ = update_opencode_theme(theme);
-    }
-
     config
-}
-
-fn update_opencode_theme(theme: &str) -> anyhow::Result<()> {
-    let opencode_config_path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
-        .join("opencode.json");
-
-    let mut config: serde_json::Value = if opencode_config_path.exists() {
-        std::fs::read_to_string(&opencode_config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    if let Some(obj) = config.as_object_mut() {
-        obj.insert("theme".to_string(), serde_json::json!(theme));
-    }
-
-    if let Some(parent) = opencode_config_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    std::fs::write(
-        &opencode_config_path,
-        serde_json::to_string_pretty(&config)?,
-    )?;
-
-    Ok(())
 }
 
 fn remove_old_diff_review_plugin(repo: &Path) {
@@ -2359,6 +2322,8 @@ impl App {
             &feature.agent,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+
+        crate::theme::ThemeManager::inject_opencode_themes(&feature.workdir)?;
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
@@ -4620,6 +4585,8 @@ impl App {
             &feature.agent,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+
+        crate::theme::ThemeManager::inject_opencode_themes(&feature.workdir)?;
 
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Opencode);

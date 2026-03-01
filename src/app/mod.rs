@@ -4390,11 +4390,28 @@ impl App {
     }
 
     pub fn pick_session(&mut self) {
-        let workdir = match self.selected_feature() {
-            Some((_, feature)) => feature.workdir.clone(),
+        let workdir = match &self.selection {
+            Selection::Feature(pi, fi) => {
+                self.store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .map(|f| f.workdir.clone())
+            }
+            Selection::Session(pi, fi, _) => {
+                self.store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .map(|f| f.workdir.clone())
+            }
+            _ => None,
+        };
+        let workdir = match workdir {
+            Some(w) => w,
             None => {
                 self.message =
-                    Some("Select a feature first".into());
+                    Some("Select a feature or session first".into());
                 return;
             }
         };

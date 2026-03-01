@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, AppMode, Selection};
+use crate::project::{AgentKind, SessionKind};
 
 pub fn handle_normal_key(
     app: &mut App,
@@ -136,6 +137,30 @@ pub fn handle_normal_key(
         }
         KeyCode::Char('s') => {
             app.open_session_picker()?;
+        }
+        KeyCode::Char('S') => {
+            let is_opencode = match &app.selection {
+                Selection::Feature(pi, fi) => app
+                    .store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .map(|f| f.agent == AgentKind::Opencode),
+                Selection::Session(pi, fi, si) => app
+                    .store
+                    .projects
+                    .get(*pi)
+                    .and_then(|p| p.features.get(*fi))
+                    .and_then(|f| f.sessions.get(*si))
+                    .map(|s| s.kind == SessionKind::Opencode),
+                _ => Some(false),
+            };
+            if is_opencode.unwrap_or(false) {
+                app.pick_session();
+            } else {
+                app.message =
+                    Some("S only works for opencode sessions".into());
+            }
         }
         KeyCode::Char('m') => {
             match &app.selection {

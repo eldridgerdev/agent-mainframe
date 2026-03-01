@@ -138,10 +138,22 @@ pub fn handle_notification_picker_key(
 ) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
-            app.mode = AppMode::Normal;
+            let from_view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::NotificationPicker(_, v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let AppMode::NotificationPicker(ref mut idx) =
+            if let AppMode::NotificationPicker(ref mut idx, _) =
                 app.mode
             {
                 let len = app.pending_inputs.len();
@@ -151,7 +163,7 @@ pub fn handle_notification_picker_key(
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if let AppMode::NotificationPicker(ref mut idx) =
+            if let AppMode::NotificationPicker(ref mut idx, _) =
                 app.mode
             {
                 let len = app.pending_inputs.len();
@@ -207,6 +219,9 @@ pub fn handle_session_switcher_key(
         }
         KeyCode::Char('r') => {
             app.start_rename_from_switcher();
+        }
+        KeyCode::Char('s') => {
+            app.open_session_picker_from_switcher()?;
         }
         _ => {}
     }
@@ -292,7 +307,20 @@ pub fn handle_session_picker_key(
                 let total = state.builtin_sessions.len()
                     + state.custom_sessions.len();
                 if total > 0 {
-                    state.selected = (state.selected + 1) % total;
+                    let start = state.selected;
+                    loop {
+                        state.selected = (state.selected + 1) % total;
+                        if state.selected == start {
+                            break;
+                        }
+                        if state.selected < state.builtin_sessions.len() {
+                            if state.builtin_sessions[state.selected].disabled.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -302,11 +330,24 @@ pub fn handle_session_picker_key(
                 let total = state.builtin_sessions.len()
                     + state.custom_sessions.len();
                 if total > 0 {
-                    state.selected = if state.selected == 0 {
-                        total - 1
-                    } else {
-                        state.selected - 1
-                    };
+                    let start = state.selected;
+                    loop {
+                        state.selected = if state.selected == 0 {
+                            total - 1
+                        } else {
+                            state.selected - 1
+                        };
+                        if state.selected == start {
+                            break;
+                        }
+                        if state.selected < state.builtin_sessions.len() {
+                            if state.builtin_sessions[state.selected].disabled.is_none() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -319,6 +360,11 @@ pub fn handle_session_picker_key(
                 let builtin_len = state.builtin_sessions.len();
                 if state.selected < builtin_len {
                     let builtin = &state.builtin_sessions[state.selected];
+                    if let Some(ref reason) = builtin.disabled {
+                        app.message = Some(format!("Cannot start: {}", reason));
+                        app.mode = AppMode::SessionPicker(state);
+                        return Ok(());
+                    }
                     match app.add_builtin_session(
                         state.pi,
                         state.fi,

@@ -222,14 +222,14 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
+            app.mode = AppMode::Help(None);
         }
         KeyCode::Char('/') => {
             app.start_search();
         }
         KeyCode::Char('i') => {
             if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0);
+                app.mode = AppMode::NotificationPicker(0, None);
             } else {
                 app.message =
                     Some("No pending input requests".into());
@@ -303,14 +303,14 @@ fn handle_normal_leader_key(
     match key.code {
         KeyCode::Char('i') => {
             if !app.pending_inputs.is_empty() {
-                app.mode = AppMode::NotificationPicker(0);
+                app.mode = AppMode::NotificationPicker(0, None);
             } else {
                 app.message =
                     Some("No pending input requests".into());
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help;
+            app.mode = AppMode::Help(None);
         }
         KeyCode::Char('/') => {
             app.open_command_picker(None);

@@ -1,7 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code)
-when working with code in this repository.
+This file provides guidance to AI coding agents
+(Claude Code, OpenCode, etc.) when working with
+this repository.
 
 ## Build and Run
 
@@ -131,7 +132,7 @@ Key dispatch per mode:
 - `resize_pane(session, window, cols, rows)`
 - `send_literal(session, window, text)`,
   `send_key_name(session, window, key_name)`,
-  `send_keys(session, window, keys)`
+  `send_keys(session, window)`
 
 **WorktreeManager** (worktree.rs) - all static methods:
 

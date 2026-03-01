@@ -286,7 +286,7 @@ pub fn draw(
                 Span::raw(" cancel"),
             ])
         }
-        AppMode::Help => Line::from(vec![
+        AppMode::Help(_) => Line::from(vec![
             Span::styled(
                 "Esc/q/?",
                 Style::default().fg(Color::Yellow),
@@ -294,7 +294,7 @@ pub fn draw(
             Span::raw(" close help"),
         ]),
         AppMode::CommandPicker(_)
-        | AppMode::NotificationPicker(_)
+        | AppMode::NotificationPicker(_, _)
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
@@ -415,6 +415,17 @@ pub fn draw(
             ),
             Span::raw(" cancel"),
         ]),
+        AppMode::LatestPrompt(_, _) => Line::from(vec![
+            Span::styled(
+                " Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                "/q",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" close"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {
@@ -507,6 +518,7 @@ pub fn draw(
                     SessionKind::Opencode => "opencode",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
+                    SessionKind::Vscode => "vscode",
                     SessionKind::Custom => "custom",
                 };
                 Line::from(vec![

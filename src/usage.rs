@@ -208,6 +208,7 @@ pub struct UsageManager {
     last_oauth_refresh: Option<Instant>,
     last_cycle: Instant,
     cycle_interval_secs: u64,
+    zai_enabled: bool,
     zai_monthly_limit: Option<u64>,
     zai_weekly_limit: Option<u64>,
     zai_five_hour_limit: Option<u64>,
@@ -215,6 +216,7 @@ pub struct UsageManager {
 
 impl UsageManager {
     pub fn new(
+        zai_enabled: bool,
         zai_monthly_limit: Option<u64>,
         zai_weekly_limit: Option<u64>,
         zai_five_hour_limit: Option<u64>,
@@ -229,6 +231,7 @@ impl UsageManager {
             last_oauth_refresh: None,
             last_cycle: Instant::now(),
             cycle_interval_secs: 5,
+            zai_enabled,
             zai_monthly_limit,
             zai_weekly_limit,
             zai_five_hour_limit,
@@ -245,7 +248,8 @@ impl UsageManager {
     }
 
     pub fn should_cycle(&self) -> bool {
-        self.last_cycle.elapsed().as_secs() >= self.cycle_interval_secs
+        self.zai_enabled
+            && self.last_cycle.elapsed().as_secs() >= self.cycle_interval_secs
     }
 
     pub fn refresh(&mut self) {
@@ -274,12 +278,15 @@ impl UsageManager {
         if should_refresh_oauth {
             self.last_oauth_refresh = Some(now);
             let data = Arc::clone(&self.data);
+            let zai_enabled = self.zai_enabled;
             let monthly = self.zai_monthly_limit;
             let weekly = self.zai_weekly_limit;
             let five_hour = self.zai_five_hour_limit;
             std::thread::spawn(move || {
                 fetch_rate_limits(&data);
-                fetch_zai_usage(&data, monthly, weekly, five_hour);
+                if zai_enabled {
+                    fetch_zai_usage(&data, monthly, weekly, five_hour);
+                }
             });
         }
     }

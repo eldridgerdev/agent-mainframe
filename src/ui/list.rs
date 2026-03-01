@@ -363,7 +363,7 @@ pub fn draw(
                         SessionKind::Nvim => {
                             let icon =
                                 if app.config.nerd_font {
-                                    "\u{E62B} "
+                                    "\u{e6ae} "
                                 } else {
                                     "~ "
                                 };

@@ -204,7 +204,7 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
                 SessionKind::Opencode => Span::styled("  * ", Style::default().fg(Color::Cyan)),
                 SessionKind::Terminal => Span::styled("  > ", Style::default().fg(Color::Green)),
                 SessionKind::Nvim => {
-                    let icon = if nerd_font { "  \u{E62B} " } else { "  ~ " };
+                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
                 SessionKind::Custom => Span::styled("  $ ", Style::default().fg(Color::Yellow)),
@@ -377,7 +377,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame) {
     frame.render_widget(text, area);
 }
 
-pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState) {
+pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_font: bool) {
     let area = centered_rect(55, 50, frame.area());
     frame.render_widget(Clear, area);
 
@@ -427,7 +427,8 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState) {
                     Span::styled("  > ", Style::default().fg(Color::Green))
                 }
                 crate::project::SessionKind::Nvim => {
-                    Span::styled("  ~ ", Style::default().fg(Color::Cyan))
+                    let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
+                    Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
                 _ => Span::styled("    ", Style::default().fg(Color::DarkGray)),
             };

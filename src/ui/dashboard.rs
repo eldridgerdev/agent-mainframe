@@ -171,7 +171,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::SessionPicker(state) = &app.mode {
-        super::picker::draw_session_picker(frame, state);
+        super::picker::draw_session_picker(frame, state, app.config.nerd_font);
     }
 
     if let AppMode::ChangeReasonPrompt(state) = &app.mode {

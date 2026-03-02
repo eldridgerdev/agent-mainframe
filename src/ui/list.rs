@@ -464,7 +464,7 @@ pub fn draw(
                         Style::default().fg(Color::White)
                     };
 
-                    Line::from(vec![
+                    let main_line = Line::from(vec![
                         Span::styled(
                             vert,
                             Style::default().fg(muted),
@@ -478,7 +478,56 @@ pub fn draw(
                             &session.label,
                             name_style,
                         ),
-                    ])
+                    ]);
+
+                    if let Some(ref text) =
+                        session.status_text
+                    {
+                        let status_vert =
+                            if is_last_feature {
+                                "  "
+                            } else {
+                                "  │"
+                            };
+                        let status_pad =
+                            if is_last_session {
+                                "       "
+                            } else {
+                                "   │   "
+                            };
+                        let status_line = Line::from(vec![
+                            Span::styled(
+                                status_vert,
+                                Style::default().fg(muted),
+                            ),
+                            Span::styled(
+                                status_pad,
+                                Style::default().fg(muted),
+                            ),
+                            Span::styled(
+                                text.as_str(),
+                                Style::default()
+                                    .fg(Color::DarkGray),
+                            ),
+                        ]);
+                        return if is_selected {
+                            ListItem::new(vec![
+                                main_line,
+                                status_line,
+                            ])
+                            .style(
+                                Style::default()
+                                    .bg(Color::DarkGray),
+                            )
+                        } else {
+                            ListItem::new(vec![
+                                main_line,
+                                status_line,
+                            ])
+                        };
+                    }
+
+                    main_line
                 }
             };
 

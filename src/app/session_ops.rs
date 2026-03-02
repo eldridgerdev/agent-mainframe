@@ -224,6 +224,7 @@ impl App {
             window_hint,
             config.command.clone(),
         );
+        let session_id = session.id.clone();
         let window = session.tmux_window.clone();
         let command = session.command.clone();
 
@@ -233,6 +234,29 @@ impl App {
                 &window,
                 &workdir,
             )?;
+
+            // Set up status directory and env vars for
+            // the custom session
+            let status_dir =
+                workdir.join(".amf").join("session-status");
+            let _ = std::fs::create_dir_all(&status_dir);
+            let export_cmd = format!(
+                "export AMF_SESSION_ID='{}' \
+                 AMF_STATUS_DIR='{}'",
+                session_id,
+                status_dir.display(),
+            );
+            TmuxManager::send_literal(
+                &tmux_session,
+                &window,
+                &export_cmd,
+            )?;
+            TmuxManager::send_key_name(
+                &tmux_session,
+                &window,
+                "Enter",
+            )?;
+
             if let Some(ref cmd) = command {
                 TmuxManager::send_literal(
                     &tmux_session,

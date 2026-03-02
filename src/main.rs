@@ -41,6 +41,7 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.sync_statuses();
+    app.sync_session_status();
     app.scan_notifications();
     app.usage.refresh();
 
@@ -252,6 +253,7 @@ fn run_loop<B: Backend>(
             if !is_viewing {
                 app.sync_statuses();
             }
+            app.sync_session_status();
             app.usage.refresh();
             last_sync = std::time::Instant::now();
         }

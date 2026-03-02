@@ -67,6 +67,8 @@ pub struct FeatureSession {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    #[serde(skip)]
+    pub status_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -275,6 +277,7 @@ impl Feature {
             claude_session_id: None,
             created_at: Utc::now(),
             command: None,
+            status_text: None,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -303,6 +306,7 @@ impl Feature {
             claude_session_id: None,
             created_at: Utc::now(),
             command,
+            status_text: None,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -544,6 +548,7 @@ impl ProjectStore {
                                     .claude_session_id,
                                 created_at: f.created_at,
                                 command: None,
+                                status_text: None,
                             },
                             FeatureSession {
                                 id: Uuid::new_v4().to_string(),
@@ -553,6 +558,7 @@ impl ProjectStore {
                                 claude_session_id: None,
                                 created_at: f.created_at,
                                 command: None,
+                                status_text: None,
                             },
                         ];
                         Feature {
@@ -695,6 +701,7 @@ mod tests {
             claude_session_id: None,
             created_at: Utc::now(),
             command: None,
+            status_text: None,
         }
     }
 

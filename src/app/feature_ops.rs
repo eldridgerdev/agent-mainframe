@@ -369,6 +369,29 @@ impl App {
                     )?;
                 }
                 SessionKind::Custom => {
+                    let status_dir = feature
+                        .workdir
+                        .join(".amf")
+                        .join("session-status");
+                    let _ = std::fs::create_dir_all(
+                        &status_dir,
+                    );
+                    let export_cmd = format!(
+                        "export AMF_SESSION_ID='{}' \
+                         AMF_STATUS_DIR='{}'",
+                        session.id,
+                        status_dir.display(),
+                    );
+                    self.tmux.send_literal(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &export_cmd,
+                    )?;
+                    self.tmux.send_key_name(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        "Enter",
+                    )?;
                     if let Some(ref cmd) = session.command {
                         self.tmux.send_literal(
                             &feature.tmux_session,

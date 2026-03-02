@@ -450,6 +450,39 @@ Nvim when creating sessions.
 | `window_name` | string? | tmux window name (defaults to a slug of `name`). |
 | `working_dir` | path? | Working directory relative to the feature's workdir. |
 
+##### Session Status Text
+
+Custom sessions can relay runtime information back to the
+dashboard. When a custom session starts, two environment
+variables are exported into its tmux window:
+
+| Variable | Description |
+| --- | --- |
+| `AMF_SESSION_ID` | The session's unique ID. |
+| `AMF_STATUS_DIR` | Path to the status directory (`{workdir}/.amf/session-status/`). |
+
+Write a status file to display text under the session
+entry in the project tree:
+
+```bash
+echo "API :3000 | DB :5432" \
+  > "$AMF_STATUS_DIR/$AMF_SESSION_ID.txt"
+```
+
+AMF polls the status file every 5 seconds and displays the
+first line in the dashboard. The text appears in a muted
+style below the session name:
+
+```text
+  │   ├─ $ Dev Servers
+  │   │   API :3000 | DB :5432
+  │   └─ > terminal
+```
+
+To clear the status, delete the file or write an empty
+string. The `.amf/` directory is local to the worktree and
+should be added to `.gitignore`.
+
 #### `lifecycle_hooks`
 
 Shell scripts executed automatically on feature lifecycle events. The

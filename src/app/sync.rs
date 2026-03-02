@@ -21,6 +21,40 @@ impl App {
         }
     }
 
+    pub fn sync_session_status(&mut self) {
+        for project in &mut self.store.projects {
+            for feature in &mut project.features {
+                for session in &mut feature.sessions {
+                    if session.kind
+                        != crate::project::SessionKind::Custom
+                    {
+                        continue;
+                    }
+                    let status_path = feature
+                        .workdir
+                        .join(".amf")
+                        .join("session-status")
+                        .join(format!("{}.txt", session.id));
+                    session.status_text =
+                        std::fs::read_to_string(&status_path)
+                            .ok()
+                            .and_then(|content| {
+                                let line = content
+                                    .lines()
+                                    .next()?
+                                    .trim()
+                                    .to_string();
+                                if line.is_empty() {
+                                    None
+                                } else {
+                                    Some(line)
+                                }
+                            });
+                }
+            }
+        }
+    }
+
     pub fn sync_thinking_status(&mut self) {
         use regex::Regex;
         let timer_re = Regex::new(r"\((\d+m\s+)?\d+s\)").unwrap();

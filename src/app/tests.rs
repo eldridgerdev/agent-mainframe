@@ -574,3 +574,253 @@ fn ensure_hooks_is_idempotent() {
     let second = read_settings(&workdir);
     assert_eq!(first, second, "calling twice should produce identical output");
 }
+
+// ── sync_session_status ──────────────────────────────────────
+
+use crate::project::{FeatureSession, SessionKind};
+
+fn store_with_custom_session(
+    workdir: &std::path::Path,
+    session_id: &str,
+) -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: session_id.to_string(),
+        kind: SessionKind::Custom,
+        label: "Dev Servers".to_string(),
+        tmux_window: "custom".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: Some("./start.sh".to_string()),
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+    }
+}
+
+#[test]
+fn sync_session_status_reads_first_line() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "test-sess-123";
+    let status_dir = workdir
+        .path()
+        .join(".amf")
+        .join("session-status");
+    std::fs::create_dir_all(&status_dir).unwrap();
+    std::fs::write(
+        status_dir.join(format!("{}.txt", session_id)),
+        "API :3000 | DB :5432\nextra line\n",
+    )
+    .unwrap();
+
+    let store = store_with_custom_session(
+        workdir.path(),
+        session_id,
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0]
+            .status_text,
+        Some("API :3000 | DB :5432".to_string()),
+    );
+}
+
+#[test]
+fn sync_session_status_none_when_file_missing() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "test-sess-456";
+    // No status file created
+
+    let store = store_with_custom_session(
+        workdir.path(),
+        session_id,
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0]
+            .status_text,
+        None,
+    );
+}
+
+#[test]
+fn sync_session_status_none_when_file_empty() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "test-sess-789";
+    let status_dir = workdir
+        .path()
+        .join(".amf")
+        .join("session-status");
+    std::fs::create_dir_all(&status_dir).unwrap();
+    std::fs::write(
+        status_dir.join(format!("{}.txt", session_id)),
+        "",
+    )
+    .unwrap();
+
+    let store = store_with_custom_session(
+        workdir.path(),
+        session_id,
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0]
+            .status_text,
+        None,
+    );
+}
+
+#[test]
+fn sync_session_status_skips_non_custom_sessions() {
+    let workdir = TempDir::new().unwrap();
+    let now = Utc::now();
+
+    // Create a Claude session (not Custom)
+    let session = FeatureSession {
+        id: "claude-sess".to_string(),
+        kind: SessionKind::Claude,
+        label: "Claude 1".to_string(),
+        tmux_window: "claude".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+    };
+
+    // Even if a status file exists for this ID, it should
+    // be ignored because the session is not Custom.
+    let status_dir = workdir
+        .path()
+        .join(".amf")
+        .join("session-status");
+    std::fs::create_dir_all(&status_dir).unwrap();
+    std::fs::write(
+        status_dir.join("claude-sess.txt"),
+        "should be ignored",
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0]
+            .status_text,
+        None,
+    );
+}
+
+#[test]
+fn sync_session_status_trims_whitespace() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "test-sess-trim";
+    let status_dir = workdir
+        .path()
+        .join(".amf")
+        .join("session-status");
+    std::fs::create_dir_all(&status_dir).unwrap();
+    std::fs::write(
+        status_dir.join(format!("{}.txt", session_id)),
+        "  API :3000  \n",
+    )
+    .unwrap();
+
+    let store = store_with_custom_session(
+        workdir.path(),
+        session_id,
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0]
+            .status_text,
+        Some("API :3000".to_string()),
+    );
+}

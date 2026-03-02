@@ -124,34 +124,6 @@ cargo install --path .
 
 This installs the `amf` binary to `~/.cargo/bin/`.
 
-## Built-in OpenCode Themes
-
-AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
-
-NOTE: Normal opencode themes don't look right in the embedded tmux view so I have to extend and modify them. I will port other more themes to amf-themes as I go
-
-### Available Themes
-
-- **amf** - Nord-based theme with transparent background
-- **amf-tokyonight** - Tokyo Night with transparent background
-- **amf-catppuccin** - Catppuccin Mocha with transparent background
-
-### Using the Themes
-
-When you start a feature in AMF, these themes are automatically added to `.opencode/themes/` in your worktree. You can then:
-
-1. Use the `/theme` command in opencode to select a theme
-2. Edit `.opencode/tui.json` in the worktree to set your preferred theme
-
-The themes are embedded in the AMF binary, so they're always available without any external dependencies.
-
-Or build without installing:
-
-```bash
-cargo build --release
-# binary at target/release/amf
-```
-
 ## Quick Start
 
 1. Create or attach to a tmux session:
@@ -548,6 +520,35 @@ pre-filling the vibe mode, agent, and other settings.
 | `review` | bool | Whether to enable the diff-review hook. |
 | `enable_chrome` | bool | Enable browser/Chrome integration. |
 | `enable_notes` | bool | Enable session notes. |
+
+## Built-in OpenCode Themes
+
+AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
+
+NOTE: Normal opencode themes don't look right in the embedded tmux view so I have to extend and modify them. I will port other more themes to amf-themes as I go
+
+### Available Themes
+
+- **amf** - Nord-based theme with transparent background
+- **amf-tokyonight** - Tokyo Night with transparent background
+- **amf-catppuccin** - Catppuccin Mocha with transparent background
+
+### Using the Themes
+
+When you start a feature in AMF, these themes are automatically added to `.opencode/themes/` in your worktree. You can then:
+
+1. Use the `/theme` command in opencode to select a theme
+2. Edit `.opencode/tui.json` in the worktree to set your preferred theme
+
+The themes are embedded in the AMF binary, so they're always available without any external dependencies.
+
+Or build without installing:
+
+```bash
+cargo build --release
+# binary at target/release/amf
+```
+
 
 ## Development
 

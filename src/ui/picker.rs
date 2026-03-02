@@ -207,18 +207,21 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
                     let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
+                SessionKind::Vscode => {
+                    let icon = if nerd_font { "  \u{E70C} " } else { "  V " };
+                    Span::styled(icon, Style::default().fg(Color::Blue))
+                }
                 SessionKind::Custom => {
                     let raw = if nerd_font {
-                        entry.icon_nerd.as_deref()
+                        entry
+                            .icon_nerd
+                            .as_deref()
                             .or(entry.icon.as_deref())
                             .unwrap_or("$")
                     } else {
                         entry.icon.as_deref().unwrap_or("$")
                     };
-                    Span::styled(
-                        format!("  {} ", raw),
-                        Style::default().fg(Color::Yellow),
-                    )
+                    Span::styled(format!("  {} ", raw), Style::default().fg(Color::Yellow))
                 }
             };
 
@@ -432,6 +435,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
         for (i, session) in state.builtin_sessions.iter().enumerate() {
             let idx = i;
             let is_selected = idx == state.selected;
+            let is_disabled = session.disabled.is_some();
 
             let icon = match session.kind {
                 crate::project::SessionKind::Claude => {
@@ -444,29 +448,48 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
                     let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
                     Span::styled(icon, Style::default().fg(Color::Cyan))
                 }
+                crate::project::SessionKind::Vscode => {
+                    Span::styled("  V ", Style::default().fg(Color::Blue))
+                }
                 _ => Span::styled("    ", Style::default().fg(Color::DarkGray)),
             };
 
-            let line = Line::from(vec![
-                if is_selected {
+            let (label_style, msg) = if is_disabled {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    session.disabled.as_ref(),
+                )
+            } else if is_selected {
+                (
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                    None,
+                )
+            } else {
+                (Style::default().fg(Color::White), None)
+            };
+
+            let mut spans = vec![
+                if is_selected && !is_disabled {
                     Span::styled("  > ", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("    ", Style::default().fg(Color::DarkGray))
                 },
                 icon,
-                Span::styled(
-                    &session.label,
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-            ]);
+                Span::styled(&session.label, label_style),
+            ];
 
-            if is_selected {
+            if let Some(reason) = msg {
+                spans.push(Span::styled(
+                    format!(" ({})", reason),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+
+            let line = Line::from(spans);
+
+            if is_selected && !is_disabled {
                 items.push(ListItem::new(line).style(Style::default().bg(Color::DarkGray)));
             } else {
                 items.push(ListItem::new(line));
@@ -500,7 +523,8 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
             };
 
             let raw_icon = if nerd_font {
-                cfg.icon_nerd.as_deref()
+                cfg.icon_nerd
+                    .as_deref()
                     .or(cfg.icon.as_deref())
                     .unwrap_or("$")
             } else {

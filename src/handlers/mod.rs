@@ -22,6 +22,7 @@ pub use dialog::{
     handle_delete_project_key,
     handle_delete_feature_key,
     handle_help_key,
+    handle_latest_prompt_key,
     handle_rename_session_key,
 };
 pub use browse::handle_browse_path_key;
@@ -69,8 +70,8 @@ pub fn handle_key(
             handle_delete_feature_key(app, key.code)
         }
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
-        AppMode::Help => handle_help_key(app, key.code),
-        AppMode::NotificationPicker(_) => {
+        AppMode::Help(_) => handle_help_key(app, key.code),
+        AppMode::NotificationPicker(_, _) => {
             handle_notification_picker_key(app, key.code)
         }
         AppMode::SessionSwitcher(_) => {
@@ -105,6 +106,9 @@ pub fn handle_key(
         }
         AppMode::HookPrompt(_) => {
             handle_hook_prompt_key(app, key.code)
+        }
+        AppMode::LatestPrompt(_, _) => {
+            handle_latest_prompt_key(app, key.code)
         }
     }
 }

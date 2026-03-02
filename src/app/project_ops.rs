@@ -86,7 +86,7 @@ impl App {
         self.message = Some(format!("Error: {}", error));
         match &self.mode {
             AppMode::Normal
-            | AppMode::Help
+            | AppMode::Help(_)
             | AppMode::Viewing(_) => {}
             _ => {
                 self.mode = AppMode::Normal;

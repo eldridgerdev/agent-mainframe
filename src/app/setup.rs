@@ -8,6 +8,8 @@ const NOTIFY_SH: &str =
     include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str =
     include_str!("../../scripts/clear-notify.sh");
+const SAVE_PROMPT_SH: &str =
+    include_str!("../../scripts/save-prompt.sh");
 const INPUT_REQUEST_JS: &str =
     include_str!("../../.opencode/plugins/input-request.js");
 
@@ -31,6 +33,16 @@ pub fn ensure_notify_scripts() {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(
             &clear_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+    let save_prompt_path = config_dir.join("save-prompt.sh");
+    let _ = std::fs::write(&save_prompt_path, SAVE_PROMPT_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &save_prompt_path,
             std::fs::Permissions::from_mode(0o755),
         );
     }
@@ -249,6 +261,10 @@ pub fn ensure_notification_hooks(
         .join("clear-notify.sh")
         .to_string_lossy()
         .into_owned();
+    let save_prompt_cmd = config_dir
+        .join("save-prompt.sh")
+        .to_string_lossy()
+        .into_owned();
 
     let thinking_touch_cmd =
         "[ -n \"$AMF_SESSION\" ] \
@@ -337,6 +353,14 @@ pub fn ensure_notification_hooks(
         "hooks": pre_tool_hooks
     }]));
 
+    // UserPromptSubmit: save the latest prompt text.
+    hooks_obj.insert("UserPromptSubmit".to_string(), serde_json::json!([{
+        "matcher": "",
+        "hooks": [
+            { "type": "command", "command": save_prompt_cmd }
+        ]
+    }]));
+
     if wants_diff_review {
         let perms = settings
             .as_object_mut()
@@ -403,6 +427,21 @@ pub fn ensure_notification_hooks(
     {
         use std::io::Write as _;
         let _ = f.write_all(b"review-notes.md\n");
+    }
+
+    // Ensure latest-prompt.txt is gitignored within .claude/
+    let needs_prompt_entry =
+        std::fs::read_to_string(&claude_gitignore)
+            .map(|s| !s.contains("latest-prompt.txt"))
+            .unwrap_or(true);
+    if needs_prompt_entry
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&claude_gitignore)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(b"latest-prompt.txt\n");
     }
 }
 

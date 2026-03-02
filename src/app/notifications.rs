@@ -233,7 +233,7 @@ impl App {
         &mut self,
     ) -> Result<()> {
         let idx = match &self.mode {
-            AppMode::NotificationPicker(i) => *i,
+            AppMode::NotificationPicker(i, _) => *i,
             _ => return Ok(()),
         };
 

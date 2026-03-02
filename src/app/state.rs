@@ -103,8 +103,8 @@ pub enum AppMode {
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
-    Help,
-    NotificationPicker(usize),
+    Help(Option<ViewState>),
+    NotificationPicker(usize, Option<ViewState>),
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
     BrowsingPath(Box<BrowsePathState>),
@@ -119,6 +119,7 @@ pub enum AppMode {
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
+    LatestPrompt(String, ViewState),
 }
 
 #[derive(Clone)]
@@ -135,6 +136,7 @@ pub struct SessionPickerState {
 pub struct BuiltinSessionOption {
     pub kind: crate::project::SessionKind,
     pub label: String,
+    pub disabled: Option<String>,
 }
 
 pub struct ChangeReasonState {
@@ -328,16 +330,18 @@ pub enum SessionFilter {
     Opencode,
     Terminal,
     Nvim,
+    Vscode,
     Memo,
 }
 
 impl SessionFilter {
-    pub const ALL: [SessionFilter; 6] = [
+    pub const ALL: [SessionFilter; 7] = [
         SessionFilter::All,
         SessionFilter::Claude,
         SessionFilter::Opencode,
         SessionFilter::Terminal,
         SessionFilter::Nvim,
+        SessionFilter::Vscode,
         SessionFilter::Memo,
     ];
 
@@ -348,6 +352,7 @@ impl SessionFilter {
             SessionFilter::Opencode => "opencode",
             SessionFilter::Terminal => "terminal",
             SessionFilter::Nvim => "nvim",
+            SessionFilter::Vscode => "vscode",
             SessionFilter::Memo => "memo",
         }
     }
@@ -391,7 +396,8 @@ mod tests {
         for (i, variant) in all.iter().enumerate() {
             let next = variant.next();
             let expected = &all[(i + 1) % all.len()];
-            assert_eq!(&next, expected,
+            assert_eq!(
+                &next, expected,
                 "after {i} expected {:?} got {:?}",
                 expected, next
             );
@@ -406,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn session_filter_all_has_six_variants() {
-        assert_eq!(SessionFilter::ALL.len(), 6);
+    fn session_filter_all_has_seven_variants() {
+        assert_eq!(SessionFilter::ALL.len(), 7);
     }
 }

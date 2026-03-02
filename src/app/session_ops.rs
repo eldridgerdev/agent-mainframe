@@ -33,6 +33,13 @@ impl App {
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
+        let vscode_available = std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+
         let builtin_sessions = vec![
             BuiltinSessionOption {
                 kind: SessionKind::Claude,
@@ -40,14 +47,26 @@ impl App {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
                 },
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
+                disabled: None,
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Vscode,
+                label: "VSCode".to_string(),
+                disabled: if vscode_available {
+                    None
+                } else {
+                    Some("code not found in PATH".to_string())
+                },
             },
         ];
 
@@ -114,6 +133,13 @@ impl App {
             self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
+        let vscode_available = std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+
         let builtin_sessions = vec![
             BuiltinSessionOption {
                 kind: SessionKind::Claude,
@@ -125,14 +151,26 @@ impl App {
                         "Opencode (Claude)".to_string()
                     }
                 },
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
+                disabled: None,
             },
             BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
+                disabled: None,
+            },
+            BuiltinSessionOption {
+                kind: SessionKind::Vscode,
+                label: "VSCode".to_string(),
+                disabled: if vscode_available {
+                    None
+                } else {
+                    Some("code not found in PATH".to_string())
+                },
             },
         ];
 
@@ -228,6 +266,9 @@ impl App {
             }
             SessionKind::Claude => {
                 self.add_claude_session_for_picker(pi, fi)
+            }
+            SessionKind::Vscode => {
+                self.add_vscode_session_for_picker(pi, fi)
             }
             _ => {
                 self.message =
@@ -335,6 +376,41 @@ impl App {
         self.selection = Selection::Session(pi, fi, si);
         self.save()?;
         self.message = Some(format!("Added '{}'", label));
+
+        Ok(())
+    }
+
+    fn add_vscode_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
+        if std::process::Command::new("code")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            self.message = Some(
+                "Error: code (VSCode CLI) is not installed".into(),
+            );
+            return Ok(());
+        }
+
+        let feature = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        let workdir = feature.workdir.clone();
+        std::process::Command::new("code")
+            .arg(&workdir)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
+
+        self.message = Some(format!("Opened VSCode in {}", workdir.display()));
 
         Ok(())
     }

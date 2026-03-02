@@ -304,6 +304,13 @@ impl App {
                     }
                 }
                 SessionKind::Terminal => {}
+                SessionKind::Vscode => {
+                    TmuxManager::send_keys(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &format!("code {}", feature.workdir.display()),
+                    )?;
+                }
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
                         TmuxManager::send_literal(

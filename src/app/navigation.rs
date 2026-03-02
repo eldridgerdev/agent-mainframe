@@ -48,6 +48,7 @@ impl App {
             SessionFilter::Memo => {
                 session.kind == SessionKind::Nvim && session.label == "Memo"
             }
+            SessionFilter::Vscode => session.kind == SessionKind::Vscode,
         }
     }
 

@@ -76,7 +76,7 @@ fn handle_click(
                 let inputs_start = header_len;
                 let inputs_end = inputs_start + inputs_len;
                 if col >= inputs_start && col < inputs_end {
-                    app.mode = AppMode::NotificationPicker(0);
+                    app.mode = AppMode::NotificationPicker(0, None);
                     return Ok(());
                 }
             }
@@ -84,7 +84,7 @@ fn handle_click(
         return Ok(());
     }
 
-    if matches!(app.mode, AppMode::Help) {
+    if matches!(app.mode, AppMode::Help(_)) {
         app.mode = AppMode::Normal;
         return Ok(());
     }
@@ -99,7 +99,7 @@ fn handle_click(
         let badge_start = prefix_len;
         let badge_end = badge_start + badge_text.len() as u16;
         if col >= badge_start && col < badge_end {
-            app.mode = AppMode::NotificationPicker(0);
+            app.mode = AppMode::NotificationPicker(0, None);
             return Ok(());
         }
     }
@@ -118,7 +118,7 @@ fn handle_click(
             | AppMode::SessionPicker(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
-            | AppMode::NotificationPicker(_)
+            | AppMode::NotificationPicker(_, _)
             | AppMode::ChangeReasonPrompt(_)
             | AppMode::RunningHook(_)
     ) {

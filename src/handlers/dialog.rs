@@ -76,7 +76,42 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
 pub fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-            app.mode = AppMode::Normal;
+            let from_view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Help(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_latest_prompt_key(
+    app: &mut App,
+    key: KeyCode,
+) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::LatestPrompt(_, v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::Viewing(view);
         }
         _ => {}
     }

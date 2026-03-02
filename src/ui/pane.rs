@@ -50,48 +50,50 @@ pub fn draw(
     );
 
     // Single line header - minimal info
-    let mut header_spans = vec![
-        Span::raw("  "),
-        Span::styled(
+    let mut header_spans = vec![Span::raw("  ")];
+
+    // Hide project/feature/session info when leader or scroll is active
+    if !leader_active && !view.scroll_mode {
+        header_spans.push(Span::styled(
             format!("{} ", view.project_name),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
+        ));
+        header_spans.push(Span::styled(
             format!("/{} ", view.feature_name),
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
+        ));
+        header_spans.push(Span::styled(
             format!("/{} ", view.session_label),
             Style::default().fg(Color::White),
-        ),
-    ];
-    match view.vibe_mode {
-        VibeMode::Vibeless => header_spans.push(Span::styled(
-            "[vibeless] ",
-            Style::default().fg(Color::Green),
-        )),
-        VibeMode::Vibe => {
-            header_spans.push(Span::styled("[vibe] ", Style::default().fg(Color::Yellow)))
-        }
-        VibeMode::SuperVibe => {
-            header_spans.push(Span::raw("["));
-            header_spans.extend(rainbow_spans("supervibe"));
-            header_spans.push(Span::raw("] "));
-        }
-        VibeMode::Review => header_spans.push(Span::styled(
-            "[review] ",
-            Style::default().fg(Color::Magenta),
-        )),
-    };
-    if view.review {
-        header_spans.push(Span::styled(
-            "[review] ",
-            Style::default().fg(Color::Cyan),
         ));
+        match view.vibe_mode {
+            VibeMode::Vibeless => header_spans.push(Span::styled(
+                "[vibeless] ",
+                Style::default().fg(Color::Green),
+            )),
+            VibeMode::Vibe => {
+                header_spans.push(Span::styled("[vibe] ", Style::default().fg(Color::Yellow)))
+            }
+            VibeMode::SuperVibe => {
+                header_spans.push(Span::raw("["));
+                header_spans.extend(rainbow_spans("supervibe"));
+                header_spans.push(Span::raw("] "));
+            }
+            VibeMode::Review => header_spans.push(Span::styled(
+                "[review] ",
+                Style::default().fg(Color::Magenta),
+            )),
+        };
+        if view.review {
+            header_spans.push(Span::styled(
+                "[review] ",
+                Style::default().fg(Color::Cyan),
+            ));
+        }
     }
 
     if view.scroll_mode {
@@ -127,7 +129,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            "q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach o:scroll x:stop f:review ?:help",
+            " q:exit  t/T:cycle  w:switcher  n/p:feature  /:commands  i:inputs  s:attach  o:scroll  x:stop  f:review  ?:help",
             Style::default().fg(Color::Yellow),
         ));
     } else {

@@ -1,0 +1,794 @@
+use ratatui::{
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    Frame,
+};
+
+use crate::app::{CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState};
+use crate::extension::FeaturePreset;
+use crate::project::{AgentKind, VibeMode};
+
+use super::super::dashboard::centered_rect;
+
+pub fn draw_create_feature_dialog(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
+    match state.step {
+        CreateFeatureStep::Source => {
+            draw_create_feature_source(frame, state, presets);
+        }
+        CreateFeatureStep::ExistingWorktree => {
+            draw_create_feature_worktree_picker(frame, state);
+        }
+        CreateFeatureStep::SelectPreset => {
+            draw_create_feature_preset_picker(frame, state, presets);
+        }
+        _ => {
+            draw_create_feature_branch_mode(frame, state);
+        }
+    }
+}
+
+fn draw_create_feature_source(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" New Feature ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let label = Paragraph::new(Line::from(Span::styled(
+        " Source:",
+        Style::default().fg(Color::Cyan),
+    )));
+    frame.render_widget(label, chunks[0]);
+
+    let mut options: Vec<&str> = vec!["New branch", "Existing worktree"];
+    if !presets.is_empty() {
+        options.push("Use preset");
+    }
+    let mut lines = Vec::new();
+    for (i, opt) in options.iter().enumerate() {
+        let is_selected = i == state.source_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, opt),
+            style,
+        )));
+    }
+    let options_widget = Paragraph::new(lines);
+    frame.render_widget(options_widget, chunks[1]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" select  "),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::raw(" confirm  "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(" cancel"),
+    ]));
+    frame.render_widget(hints, chunks[3]);
+}
+
+fn draw_create_feature_preset_picker(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    presets: &[FeaturePreset],
+) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Select Preset ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if presets.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No presets configured.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, chunks[0]);
+    } else {
+        let items: Vec<ListItem> = presets
+            .iter()
+            .enumerate()
+            .map(|(i, preset)| {
+                let is_selected = i == state.preset_index;
+                let name_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let agent_str = preset.agent.display_name();
+                let mode_str = match &preset.mode {
+                    crate::project::VibeMode::Vibeless => "vibeless",
+                    crate::project::VibeMode::Vibe => "vibe",
+                    crate::project::VibeMode::SuperVibe => "supervibe",
+                    crate::project::VibeMode::Review => "review",
+                };
+                let detail = format!(
+                    " {} | {}{}",
+                    agent_str,
+                    mode_str,
+                    if preset.review { " | review" } else { "" }
+                );
+                let line = Line::from(vec![
+                    Span::styled(
+                        if is_selected { "  > " } else { "    " },
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(&preset.name, name_style),
+                    Span::styled(detail, Style::default().fg(Color::DarkGray)),
+                ]);
+                let item = ListItem::new(line);
+                if is_selected {
+                    item.style(Style::default().bg(Color::DarkGray))
+                } else {
+                    item
+                }
+            })
+            .collect();
+        let list = List::new(items);
+        frame.render_widget(list, chunks[0]);
+    }
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            " j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" select  "),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::raw(" use preset  "),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureState) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Select Worktree ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    if state.worktrees.is_empty() {
+        let empty_msg = Paragraph::new(Line::from(Span::styled(
+            "  No available worktrees",
+            Style::default().fg(Color::Yellow),
+        )));
+        frame.render_widget(empty_msg, chunks[0]);
+    } else {
+        let items: Vec<ListItem> = state
+            .worktrees
+            .iter()
+            .enumerate()
+            .map(|(i, wt)| {
+                let is_selected = i == state.worktree_index;
+                let branch_label = wt.branch.as_deref().unwrap_or("(detached)");
+                let path_str = wt.path.display().to_string();
+
+                let line = Line::from(vec![
+                    Span::styled(
+                        if is_selected { "  > " } else { "    " },
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::styled(
+                        branch_label,
+                        if is_selected {
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(Color::White)
+                        },
+                    ),
+                    Span::styled(
+                        format!("  {}", path_str),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+
+                if is_selected {
+                    ListItem::new(line).style(Style::default().bg(Color::DarkGray))
+                } else {
+                    ListItem::new(line)
+                }
+            })
+            .collect();
+
+        let list = List::new(items);
+        frame.render_widget(list, chunks[0]);
+    }
+
+    let hints = if state.worktrees.is_empty() {
+        Paragraph::new(Line::from(vec![
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" select  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ]))
+    };
+    frame.render_widget(hints, chunks[1]);
+}
+
+fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState) {
+    let area = centered_rect(60, 70, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" New Feature ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // branch
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // worktree
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // agent
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // mode (3 variants)
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // review checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // chrome checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // notes checkbox
+            Constraint::Length(2), // extra space
+            Constraint::Min(0),
+            Constraint::Length(1), // hints
+        ])
+        .split(inner);
+
+    let branch_active = state.step == CreateFeatureStep::Branch;
+    let branch_label_style = if branch_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let cursor = if branch_active {
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw("")
+    };
+
+    let branch_field = Paragraph::new(Line::from(vec![
+        Span::styled(" Branch: ", branch_label_style),
+        Span::styled(&state.branch, Style::default().fg(Color::White)),
+        cursor,
+    ]));
+    frame.render_widget(branch_field, chunks[0]);
+
+    let wt_active = state.step == CreateFeatureStep::Worktree;
+    let wt_label_style = if wt_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let yes_marker = if state.use_worktree { ">" } else { " " };
+    let no_marker = if !state.use_worktree { ">" } else { " " };
+
+    let yes_style = if wt_active && state.use_worktree {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if state.use_worktree {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let no_style = if wt_active && !state.use_worktree {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if !state.use_worktree {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let wt_lines = vec![
+        Line::from(Span::styled(" Worktree:", wt_label_style)),
+        Line::from(Span::styled(format!("   {} Yes", yes_marker), yes_style)),
+        Line::from(Span::styled(
+            format!("   {} No (use repo dir)", no_marker),
+            no_style,
+        )),
+    ];
+    let wt_widget = Paragraph::new(wt_lines);
+    frame.render_widget(wt_widget, chunks[2]);
+
+    let agent_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 0;
+    let agent_label_style = if agent_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
+
+    for (i, agent) in AgentKind::ALL.iter().enumerate() {
+        let is_selected = i == state.agent_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if agent_active && is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        agent_lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, agent.display_name()),
+            style,
+        )));
+    }
+
+    let agent_widget = Paragraph::new(agent_lines);
+    frame.render_widget(agent_widget, chunks[4]);
+
+    let mode_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 1;
+    let mode_label_style = if mode_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut mode_lines = vec![Line::from(Span::styled(" Mode:", mode_label_style))];
+
+    for (i, m) in VibeMode::ALL.iter().enumerate() {
+        let is_selected = i == state.mode_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if mode_active && is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        mode_lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, m.display_name()),
+            style,
+        )));
+    }
+
+    let mode_widget = Paragraph::new(mode_lines);
+    frame.render_widget(mode_widget, chunks[6]);
+
+    // Review checkbox (chunks[8])
+    let review_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 2;
+    let review_check = if state.review { "[x]" } else { "[ ]" };
+    let review_style = if review_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let review_lines = vec![Line::from(vec![
+        Span::styled(
+            " Review: ",
+            if review_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(
+            format!("{} Approve each edit before apply", review_check),
+            review_style,
+        ),
+    ])];
+    let review_widget = Paragraph::new(review_lines);
+    frame.render_widget(review_widget, chunks[8]);
+
+    // Chrome checkbox (chunks[10])
+    let chrome_active = state.step == CreateFeatureStep::Mode
+        && state.mode_focus == 3
+        && state.agent == AgentKind::Claude;
+    let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
+    let chrome_style = if chrome_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let chrome_label_style =
+        if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
+            if state.mode_focus == 3 {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            }
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+    if state.agent == AgentKind::Claude {
+        let chrome_lines = vec![Line::from(vec![
+            Span::styled(" Chrome: ", chrome_label_style),
+            Span::styled(
+                format!("{} Enable browser automation", chrome_check),
+                chrome_style,
+            ),
+        ])];
+        let chrome_widget = Paragraph::new(chrome_lines);
+        frame.render_widget(chrome_widget, chunks[10]);
+    }
+
+    // Notes checkbox (chunks[12])
+    let memo_focus = if state.agent == AgentKind::Claude {
+        4
+    } else {
+        3
+    };
+    let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
+    let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
+    let notes_style = if notes_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let notes_lines = vec![Line::from(vec![
+        Span::styled(
+            " Memo: ",
+            if notes_active {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ),
+        Span::styled(format!("{} Create memo", notes_check), notes_style),
+    ])];
+    let notes_widget = Paragraph::new(notes_lines);
+    frame.render_widget(notes_widget, chunks[12]);
+
+    let hints = if state.step == CreateFeatureStep::Mode {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" select  "),
+            Span::styled("h/l", Style::default().fg(Color::Yellow)),
+            Span::raw(" prev/next field  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" confirm"),
+        ]))
+    } else if state.step == CreateFeatureStep::Worktree {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" toggle  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" next  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" back"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" next  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ]))
+    };
+    frame.render_widget(hints, chunks[15]);
+}
+
+pub fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" SuperVibe Mode ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let warning = Paragraph::new(Line::from(vec![Span::styled(
+        " WARNING",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    )]));
+    frame.render_widget(warning, chunks[0]);
+
+    let desc = Paragraph::new(vec![
+        Line::from(Span::styled(
+            " SuperVibe skips ALL permission checks.",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " Claude will be able to execute any tool",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " without asking for confirmation, including",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            " running arbitrary shell commands.",
+            Style::default().fg(Color::White),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(desc, chunks[2]);
+
+    let prompt = Paragraph::new(Line::from(vec![
+        Span::styled(" Continue? ", Style::default().fg(Color::Yellow)),
+        Span::styled("(y/n)", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(prompt, chunks[4]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(" y", Style::default().fg(Color::Yellow)),
+        Span::raw(" confirm  "),
+        Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[5]);
+}
+
+pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, feature_name: &str) {
+    let area = centered_rect(50, 25, frame.area());
+    frame.render_widget(Clear, area);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Delete feature "),
+            Span::styled(
+                feature_name,
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" from "),
+            Span::styled(
+                project_name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            " This will kill the tmux session and remove the worktree.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Press "),
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" to confirm, "),
+            Span::styled(
+                "n",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" or "),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" to cancel"),
+        ]),
+    ])
+    .wrap(Wrap { trim: false })
+    .block(
+        Block::default()
+            .title(" Confirm Delete ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red)),
+    );
+
+    frame.render_widget(text, area);
+}
+
+pub fn draw_deleting_feature_dialog(
+    frame: &mut Frame,
+    state: &DeletingFeatureState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+) {
+    let area = centered_rect(50, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let is_running = state.child.is_some();
+    let border_color = if is_running {
+        Color::Yellow
+    } else if state.error.is_some() {
+        Color::Red
+    } else {
+        Color::Green
+    };
+
+    let block = Block::default()
+        .title(" Deleting Feature ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(2),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let stage_text = match state.stage {
+        DeleteStage::KillingTmux => "Stopping tmux session...",
+        DeleteStage::RemovingWorktree => "Removing worktree...",
+        DeleteStage::Completed => "Done",
+    };
+
+    let status_text = if is_running {
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let span = throbber.to_symbol_span(throbber_state);
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            span,
+            Span::styled(
+                format!(" {}", stage_text),
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else if let Some(ref err) = state.error {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✗ ", Style::default().fg(Color::Red)),
+            Span::styled(err, Style::default().fg(Color::Red)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled(
+                "Feature deleted successfully",
+                Style::default().fg(Color::Green),
+            ),
+        ])
+    };
+    frame.render_widget(Paragraph::new(status_text), chunks[0]);
+
+    let feature_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Feature: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            &state.feature_name,
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    frame.render_widget(feature_line, chunks[1]);
+
+    let project_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Project: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.project_name, Style::default().fg(Color::Cyan)),
+    ]));
+    frame.render_widget(project_line, chunks[2]);
+
+    let hints = if is_running {
+        Paragraph::new(Line::from(Span::styled(
+            " Please wait...",
+            Style::default().fg(Color::DarkGray),
+        )))
+    } else if state.error.is_some() {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" acknowledge  "),
+        ]))
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            " Press any key to continue...",
+            Style::default().fg(Color::DarkGray),
+        )))
+    };
+    frame.render_widget(hints, chunks[3]);
+}

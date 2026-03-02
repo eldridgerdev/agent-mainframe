@@ -1,6 +1,9 @@
 mod normal;
 mod view;
 mod dialog;
+mod browse;
+mod feature_creation;
+mod hooks;
 mod picker;
 mod input;
 mod search;
@@ -16,16 +19,18 @@ pub use normal::handle_normal_key;
 pub use view::handle_view_key;
 pub use dialog::{
     handle_create_project_key,
-    handle_create_feature_key,
     handle_delete_project_key,
     handle_delete_feature_key,
-    handle_deleting_feature_key,
     handle_help_key,
-    handle_browse_path_key,
-    handle_rename_session_key,
-    handle_running_hook_key,
-    handle_hook_prompt_key,
     handle_latest_prompt_key,
+    handle_rename_session_key,
+};
+pub use browse::handle_browse_path_key;
+pub use feature_creation::handle_create_feature_key;
+pub use hooks::{
+    handle_running_hook_key,
+    handle_deleting_feature_key,
+    handle_hook_prompt_key,
 };
 pub use picker::{
     handle_command_picker_key,

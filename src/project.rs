@@ -67,6 +67,8 @@ pub struct FeatureSession {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_stop: Option<String>,
     #[serde(skip)]
     pub status_text: Option<String>,
 }
@@ -277,6 +279,7 @@ impl Feature {
             claude_session_id: None,
             created_at: Utc::now(),
             command: None,
+            on_stop: None,
             status_text: None,
         };
         self.sessions.push(session);
@@ -291,6 +294,7 @@ impl Feature {
         name: String,
         window_name_hint: String,
         command: Option<String>,
+        on_stop: Option<String>,
     ) -> &mut FeatureSession {
         let mut window = window_name_hint.clone();
         let mut n = 2u32;
@@ -306,6 +310,7 @@ impl Feature {
             claude_session_id: None,
             created_at: Utc::now(),
             command,
+            on_stop,
             status_text: None,
         };
         self.sessions.push(session);
@@ -548,6 +553,7 @@ impl ProjectStore {
                                     .claude_session_id,
                                 created_at: f.created_at,
                                 command: None,
+                                on_stop: None,
                                 status_text: None,
                             },
                             FeatureSession {
@@ -558,6 +564,7 @@ impl ProjectStore {
                                 claude_session_id: None,
                                 created_at: f.created_at,
                                 command: None,
+                                on_stop: None,
                                 status_text: None,
                             },
                         ];
@@ -701,6 +708,7 @@ mod tests {
             claude_session_id: None,
             created_at: Utc::now(),
             command: None,
+            on_stop: None,
             status_text: None,
         }
     }

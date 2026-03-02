@@ -15,6 +15,7 @@ pub struct CustomSessionConfig {
     pub working_dir: Option<PathBuf>,
     pub icon: Option<String>,
     pub icon_nerd: Option<String>,
+    pub on_stop: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

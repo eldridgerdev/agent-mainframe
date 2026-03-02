@@ -223,6 +223,7 @@ impl App {
             config.name.clone(),
             window_hint,
             config.command.clone(),
+            config.on_stop.clone(),
         );
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();
@@ -797,12 +798,44 @@ impl App {
         };
 
         let tmux_session = feature.tmux_session.clone();
+        let workdir = feature.workdir.clone();
         let session = match feature.sessions.get(si) {
             Some(s) => s,
             None => return Ok(()),
         };
         let window = session.tmux_window.clone();
         let label = session.label.clone();
+        let on_stop = session.on_stop.clone();
+        let session_id = session.id.clone();
+        let is_custom = session.kind == SessionKind::Custom;
+
+        // Run on_stop command for custom sessions before
+        // killing the window.
+        if is_custom {
+            if let Some(ref cmd) = on_stop {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&workdir)
+                    .env("AMF_SESSION_ID", &session_id)
+                    .env(
+                        "AMF_STATUS_DIR",
+                        workdir
+                            .join(".amf")
+                            .join("session-status"),
+                    )
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+
+            // Clean up status file.
+            let status_file = workdir
+                .join(".amf")
+                .join("session-status")
+                .join(format!("{}.txt", session_id));
+            let _ = std::fs::remove_file(status_file);
+        }
 
         if TmuxManager::session_exists(&tmux_session) {
             let _ = TmuxManager::kill_window(

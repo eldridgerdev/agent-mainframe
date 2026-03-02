@@ -578,6 +578,16 @@ impl App {
         pi: usize,
         fi: usize,
     ) -> Result<()> {
+        // Run on_stop for custom sessions before killing tmux.
+        if let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Self::run_custom_session_on_stop(feature);
+        }
+
         let tmux_session = match self
             .store
             .projects
@@ -607,6 +617,37 @@ impl App {
         Ok(())
     }
 
+    /// Run on_stop commands for all custom sessions in a
+    /// feature and clean up their status files. Fire-and-forget.
+    fn run_custom_session_on_stop(feature: &Feature) {
+        use crate::project::SessionKind;
+
+        let status_dir = feature
+            .workdir
+            .join(".amf")
+            .join("session-status");
+
+        for session in &feature.sessions {
+            if session.kind != SessionKind::Custom {
+                continue;
+            }
+            if let Some(ref cmd) = session.on_stop {
+                let _ = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .current_dir(&feature.workdir)
+                    .env("AMF_SESSION_ID", &session.id)
+                    .env("AMF_STATUS_DIR", &status_dir)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            let _ = std::fs::remove_file(
+                status_dir.join(format!("{}.txt", session.id)),
+            );
+        }
+    }
+
     pub fn delete_feature(&mut self) -> Result<()> {
         let (project_name, feature_name) = match &self.mode {
             AppMode::DeletingFeature(pn, fn_) => {
@@ -623,6 +664,8 @@ impl App {
                     .iter()
                     .find(|f| f.name == feature_name)
             {
+                // Run on_stop for custom sessions before killing.
+                Self::run_custom_session_on_stop(feature);
                 (
                     feature.tmux_session.clone(),
                     feature.is_worktree,

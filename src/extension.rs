@@ -16,6 +16,7 @@ pub struct CustomSessionConfig {
     pub icon: Option<String>,
     pub icon_nerd: Option<String>,
     pub on_stop: Option<String>,
+    pub autolaunch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

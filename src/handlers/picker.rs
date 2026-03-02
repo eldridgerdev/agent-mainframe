@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Selection};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -393,11 +393,23 @@ pub fn handle_session_picker_key(
                             state.fi,
                             &cfg,
                         ) {
-                            Ok(()) => {
+                            Ok(autolaunch) => {
                                 app.message = Some(format!(
                                     "Added '{}'",
                                     cfg.name
                                 ));
+                                if autolaunch {
+                                    // Point selection to the newly added session
+                                    // (last in the sessions list).
+                                    if let Some(feature) = app.store.projects
+                                        .get(state.pi)
+                                        .and_then(|p| p.features.get(state.fi))
+                                    {
+                                        let si = feature.sessions.len().saturating_sub(1);
+                                        app.selection = Selection::Session(state.pi, state.fi, si);
+                                    }
+                                    let _ = app.enter_view();
+                                }
                             }
                             Err(e) => {
                                 app.message = Some(format!(

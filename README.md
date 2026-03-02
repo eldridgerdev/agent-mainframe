@@ -128,6 +128,8 @@ This installs the `amf` binary to `~/.cargo/bin/`.
 
 AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
 
+NOTE: Normal opencode themes don't look right in the embedded tmux view so I have to extend and modify them. I will port other more themes to amf-themes as I go
+
 ### Available Themes
 
 - **amf** - Nord-based theme with transparent background
@@ -378,9 +380,6 @@ Notification hooks are configured automatically in each feature's
 Claude Code. When creating a feature, choose **Opencode** as the
 agent. `amf` launches it in the same tmux session structure and
 monitors it the same way.
-
-> **Note:** Opencode integration is functional but has some minor
-> visual rendering quirks in the embedded view.
 
 ## Configuration
 

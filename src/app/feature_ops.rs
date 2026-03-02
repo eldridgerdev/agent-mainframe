@@ -376,34 +376,30 @@ impl App {
                     let _ = std::fs::create_dir_all(
                         &status_dir,
                     );
-                    let export_cmd = format!(
-                        "export AMF_SESSION_ID='{}' \
-                         AMF_STATUS_DIR='{}'",
+                    let env_prefix = format!(
+                        "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
                         session.id,
                         status_dir.display(),
                     );
+                    let shell_cmd = if let Some(ref cmd) = session.command {
+                        format!(
+                            "env {} bash -c '{}'",
+                            env_prefix,
+                            cmd.replace('\'', "'\\''"),
+                        )
+                    } else {
+                        format!("env {}", env_prefix)
+                    };
                     self.tmux.send_literal(
                         &feature.tmux_session,
                         &session.tmux_window,
-                        &export_cmd,
+                        &shell_cmd,
                     )?;
                     self.tmux.send_key_name(
                         &feature.tmux_session,
                         &session.tmux_window,
                         "Enter",
                     )?;
-                    if let Some(ref cmd) = session.command {
-                        self.tmux.send_literal(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            cmd,
-                        )?;
-                        self.tmux.send_key_name(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "Enter",
-                        )?;
-                    }
                 }
             }
         }

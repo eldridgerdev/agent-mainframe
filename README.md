@@ -511,25 +511,66 @@ cargo clippy           # lint
 
 ```text
 src/
-├── main.rs          # entry point, event loop, key handling
-├── app.rs           # App state, modes, CRUD, notification hooks
-├── project.rs       # ProjectStore / Project / Feature models,
-│                    # JSON persistence
-├── extension.rs     # extension config (presets, hooks, sessions)
-├── tmux.rs          # TmuxManager — all tmux interaction
-├── worktree.rs      # WorktreeManager — git worktree ops
-├── claude.rs        # ClaudeLauncher — claude CLI wrapper
-├── usage.rs         # token usage tracking (Claude / ZAI)
-├── traits.rs        # shared traits
-├── handlers/        # key event handlers per mode
+├── main.rs            # entry point, event loop
+├── app/
+│   ├── mod.rs         # App struct, config types, new/save
+│   ├── state.rs       # AppMode, Selection, dialog states
+│   ├── navigation.rs  # tree navigation, selection getters
+│   ├── sync.rs        # status polling, thinking detection
+│   ├── project_ops.rs # project CRUD, path browsing
+│   ├── feature_ops.rs # feature create/start/stop/delete
+│   ├── session_ops.rs # session picker, add/remove sessions
+│   ├── view.rs        # embedded tmux view, leader key
+│   ├── switcher.rs    # session switcher
+│   ├── notifications.rs # notification scanning
+│   ├── hooks.rs       # lifecycle hook execution
+│   ├── opencode.rs    # opencode session management
+│   ├── search.rs      # search and jump
+│   ├── commands.rs    # command picker
+│   ├── rename.rs      # session renaming
+│   ├── review.rs      # final review trigger
+│   ├── setup.rs       # notification hooks, config loading
+│   ├── util.rs        # path/string helpers
+│   └── tests.rs       # unit tests
+├── project.rs         # ProjectStore / Project / Feature models,
+│                      # JSON persistence
+├── extension.rs       # extension config (presets, hooks,
+│                      # sessions)
+├── tmux.rs            # TmuxManager — all tmux interaction
+├── worktree.rs        # WorktreeManager — git worktree ops
+├── claude.rs          # ClaudeLauncher — claude CLI wrapper
+├── usage.rs           # token usage tracking (Claude / ZAI)
+├── traits.rs          # shared traits (TmuxOps, WorktreeOps)
+├── handlers/
+│   ├── mod.rs         # top-level key dispatch
+│   ├── normal.rs      # dashboard normal mode
+│   ├── view.rs        # embedded tmux view mode
+│   ├── dialog.rs      # project/delete/rename handlers
+│   ├── feature_creation.rs # feature creation wizard
+│   ├── browse.rs      # path browser
+│   ├── hooks.rs       # hook/delete-progress handlers
+│   ├── picker.rs      # notification/session/command pickers
+│   ├── search.rs      # search mode
+│   ├── change_reason.rs # diff review prompt
+│   ├── input.rs       # paste handling
+│   └── mouse.rs       # mouse events
 └── ui/
-    ├── dashboard.rs  # top-level draw dispatch
-    ├── list.rs       # project tree rendering
-    ├── header.rs     # header bar
-    ├── status.rs     # status bar + usage meters
-    ├── pane.rs       # embedded tmux ANSI view
-    ├── dialogs.rs    # create/delete/rename overlays
-    └── picker.rs     # notification, session, command pickers
+    ├── mod.rs         # top-level draw dispatch
+    ├── dashboard.rs   # layout, ANSI rendering
+    ├── list.rs        # project tree rendering
+    ├── header.rs      # header bar
+    ├── status.rs      # status bar + usage meters
+    ├── pane.rs        # embedded tmux ANSI view
+    ├── picker.rs      # picker overlays
+    └── dialogs/
+        ├── mod.rs     # re-exports
+        ├── project.rs # create/delete project dialogs
+        ├── feature.rs # feature creation, supervibe confirm
+        ├── session.rs # rename session
+        ├── help.rs    # keybindings help
+        ├── browse.rs  # path browser dialog
+        ├── search.rs  # search dialog
+        └── hooks.rs   # hook/review dialogs
 ```
 
 ### Key Dependencies

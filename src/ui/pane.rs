@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -8,22 +8,21 @@ use ratatui::{
 
 use crate::app::ViewState;
 use crate::project::VibeMode;
+use crate::theme::Theme;
 
-const RAINBOW_COLORS: &[Color] = &[
-    Color::Red,
-    Color::Rgb(255, 127, 0),
-    Color::Yellow,
-    Color::Green,
-    Color::Cyan,
-    Color::Blue,
-    Color::Magenta,
-];
-
-fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let colors = [
+        theme.error.to_color(),
+        theme.warning.to_color(),
+        theme.success.to_color(),
+        theme.accent.to_color(),
+        theme.info.to_color(),
+        theme.accent_alt.to_color(),
+    ];
     text.chars()
         .enumerate()
         .map(|(i, ch)| {
-            let color = RAINBOW_COLORS[i % RAINBOW_COLORS.len()];
+            let color = colors[i % colors.len()];
             Span::styled(
                 ch.to_string(),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -39,6 +38,7 @@ pub fn draw(
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
+    theme: &Theme,
 ) {
     let area = frame.area();
     let header_area = Rect::new(area.x, area.y, area.width, 1);
@@ -50,48 +50,50 @@ pub fn draw(
     );
 
     // Single line header - minimal info
-    let mut header_spans = vec![
-        Span::raw("  "),
-        Span::styled(
+    let mut header_spans = vec![Span::raw("  ")];
+
+    // Hide project/feature/session info when leader or scroll is active
+    if !leader_active && !view.scroll_mode {
+        header_spans.push(Span::styled(
             format!("{} ", view.project_name),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.project_name.to_color())
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
+        ));
+        header_spans.push(Span::styled(
             format!("/{} ", view.feature_name),
             Style::default()
-                .fg(Color::White)
+                .fg(theme.feature_name.to_color())
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("/{} ", view.session_label),
-            Style::default().fg(Color::White),
-        ),
-    ];
-    match view.vibe_mode {
-        VibeMode::Vibeless => header_spans.push(Span::styled(
-            "[vibeless] ",
-            Style::default().fg(Color::Green),
-        )),
-        VibeMode::Vibe => {
-            header_spans.push(Span::styled("[vibe] ", Style::default().fg(Color::Yellow)))
-        }
-        VibeMode::SuperVibe => {
-            header_spans.push(Span::raw("["));
-            header_spans.extend(rainbow_spans("supervibe"));
-            header_spans.push(Span::raw("] "));
-        }
-        VibeMode::Review => header_spans.push(Span::styled(
-            "[review] ",
-            Style::default().fg(Color::Magenta),
-        )),
-    };
-    if view.review {
-        header_spans.push(Span::styled(
-            "[review] ",
-            Style::default().fg(Color::Cyan),
         ));
+        header_spans.push(Span::styled(
+            format!("/{} ", view.session_label),
+            Style::default().fg(theme.fg.to_color()),
+        ));
+        match view.vibe_mode {
+            VibeMode::Vibeless => header_spans.push(Span::styled(
+                "[vibeless] ",
+                Style::default().fg(theme.mode_vibeless.to_color()),
+            )),
+            VibeMode::Vibe => {
+                header_spans.push(Span::styled("[vibe] ", Style::default().fg(theme.mode_vibe.to_color())))
+            }
+            VibeMode::SuperVibe => {
+                header_spans.push(Span::raw("["));
+                header_spans.extend(rainbow_spans("supervibe", theme));
+                header_spans.push(Span::raw("] "));
+            }
+            VibeMode::Review => header_spans.push(Span::styled(
+                "[review] ",
+                Style::default().fg(theme.mode_review.to_color()),
+            )),
+        };
+        if view.review {
+            header_spans.push(Span::styled(
+                "[review] ",
+                Style::default().fg(theme.accent.to_color()),
+            ));
+        }
     }
 
     if view.scroll_mode {
@@ -108,8 +110,8 @@ pub fn draw(
         header_spans.push(Span::styled(
             format!("|SCROLL {} ", mode_label),
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Magenta)
+                .fg(theme.leader_fg.to_color())
+                .bg(theme.accent_alt.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         let help = if view.scroll_passthrough {
@@ -117,31 +119,31 @@ pub fn draw(
         } else {
             "j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
-        header_spans.push(Span::styled(help, Style::default().fg(Color::Magenta)));
+        header_spans.push(Span::styled(help, Style::default().fg(theme.accent_alt.to_color())));
     } else if leader_active {
         header_spans.push(Span::styled(
             "|LEADER ",
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(theme.leader_fg.to_color())
+                .bg(theme.leader_bg.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            "q:exit t/T:cycle w:switcher n/p:feature /:commands i:inputs s:attach o:scroll x:stop f:review ?:help",
-            Style::default().fg(Color::Yellow),
+            " q:exit  t/T:cycle  w:switcher  n/p:feature  /:commands  i:inputs  s:attach  o:scroll  x:stop  f:review  ?:help",
+            Style::default().fg(theme.leader_bg.to_color()),
         ));
     } else {
         header_spans.push(Span::styled(
             "| ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted.to_color()),
         ));
         header_spans.push(Span::styled(
             "Ctrl+Space",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning.to_color()),
         ));
         header_spans.push(Span::styled(
             " commands",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.fg.to_color()),
         ));
     }
 
@@ -152,13 +154,13 @@ pub fn draw(
                 if pending_count == 1 { "" } else { "s" },
             ),
             Style::default()
-                .fg(Color::Red)
+                .fg(theme.error.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
     }
 
     let header = Paragraph::new(Line::from(header_spans))
-        .style(Style::default().bg(Color::Rgb(76, 79, 105)));
+        .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(header, header_area);
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -195,10 +197,7 @@ fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<
     let mut lines = Vec::with_capacity(rows as usize);
     for i in start..end {
         let line_text = all_lines.get(i).unwrap_or(&"");
-        lines.push(Line::styled(
-            strip_ansi_codes(line_text),
-            Style::default().fg(Color::Reset),
-        ));
+        lines.push(Line::raw(strip_ansi_codes(line_text)));
     }
     while lines.len() < rows as usize {
         lines.push(Line::raw(""));
@@ -294,10 +293,10 @@ fn vt100_cell_to_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
+fn vt100_color_to_ratatui(color: vt100::Color) -> ratatui::style::Color {
     match color {
-        vt100::Color::Default => Color::Reset,
-        vt100::Color::Idx(i) => Color::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        vt100::Color::Default => ratatui::style::Color::Reset,
+        vt100::Color::Idx(i) => ratatui::style::Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r, g, b),
     }
 }

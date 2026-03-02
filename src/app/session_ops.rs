@@ -237,39 +237,36 @@ impl App {
             )?;
 
             // Set up status directory and env vars for
-            // the custom session
+            // the custom session, wrapped via env+bash
+            // for shell portability (fish, zsh, etc.)
             let status_dir =
                 workdir.join(".amf").join("session-status");
             let _ = std::fs::create_dir_all(&status_dir);
-            let export_cmd = format!(
-                "export AMF_SESSION_ID='{}' \
-                 AMF_STATUS_DIR='{}'",
+
+            let env_prefix = format!(
+                "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
                 session_id,
                 status_dir.display(),
             );
+            let shell_cmd = if let Some(ref cmd) = command {
+                format!(
+                    "env {} bash -c '{}'",
+                    env_prefix,
+                    cmd.replace('\'', "'\\''"),
+                )
+            } else {
+                format!("env {}", env_prefix)
+            };
             TmuxManager::send_literal(
                 &tmux_session,
                 &window,
-                &export_cmd,
+                &shell_cmd,
             )?;
             TmuxManager::send_key_name(
                 &tmux_session,
                 &window,
                 "Enter",
             )?;
-
-            if let Some(ref cmd) = command {
-                TmuxManager::send_literal(
-                    &tmux_session,
-                    &window,
-                    cmd,
-                )?;
-                TmuxManager::send_key_name(
-                    &tmux_session,
-                    &window,
-                    "Enter",
-                )?;
-            }
         }
 
         self.save()?;

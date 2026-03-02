@@ -60,33 +60,33 @@
       "light": "sky"
     },
     "text": {
-      "dark": "text",
-      "light": "text"
+      "dark": "#cdd6f4",
+      "light": "#1e1e2e"
     },
     "textMuted": {
-      "dark": "subtext0",
-      "light": "subtext0"
+      "dark": "#a6adc8",
+      "light": "#45475a"
     },
     "background": "none",
     "backgroundPanel": {
-      "dark": "mantle",
-      "light": "base"
+      "dark": "#181825",
+      "light": "#1e1e2e"
     },
     "backgroundElement": {
-      "dark": "surface0",
-      "light": "surface1"
+      "dark": "#313244",
+      "light": "#45475a"
     },
     "border": {
-      "dark": "surface0",
-      "light": "surface0"
+      "dark": "#313244",
+      "light": "#313244"
     },
     "borderActive": {
-      "dark": "surface1",
-      "light": "surface1"
+      "dark": "#45475a",
+      "light": "#45475a"
     },
     "borderSubtle": {
-      "dark": "surface0",
-      "light": "surface0"
+      "dark": "#313244",
+      "light": "#313244"
     },
     "diffAdded": {
       "dark": "green",
@@ -137,8 +137,8 @@
       "light": "diff_delete"
     },
     "markdownText": {
-      "dark": "text",
-      "light": "text"
+      "dark": "#cdd6f4",
+      "light": "#1e1e2e"
     },
     "markdownHeading": {
       "dark": "blue",
@@ -225,8 +225,8 @@
       "light": "pink"
     },
     "syntaxPunctuation": {
-      "dark": "overlay2",
-      "light": "overlay2"
+      "dark": "#9399b2",
+      "light": "#545c7e"
     }
   }
 }

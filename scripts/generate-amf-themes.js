@@ -42,14 +42,6 @@ function createAMFTheme(baseTheme) {
     theme: {
       ...baseTheme.theme,
       background: "none",
-      backgroundPanel: "none",
-      backgroundElement: "none",
-      diffAddedBg: "none",
-      diffRemovedBg: "none",
-      diffContextBg: "none",
-      diffAddedLineNumberBg: "none",
-      diffRemovedLineNumberBg: "none",
-      markdownCodeBlock: "none"
     }
   };
 }
@@ -72,14 +64,6 @@ async function main() {
         extends: themeName,
         theme: {
           background: "none",
-          backgroundPanel: "none",
-          backgroundElement: "none",
-          diffAddedBg: "none",
-          diffRemovedBg: "none",
-          diffContextBg: "none",
-          diffAddedLineNumberBg: "none",
-          diffRemovedLineNumberBg: "none",
-          markdownCodeBlock: "none"
         }
       };
       

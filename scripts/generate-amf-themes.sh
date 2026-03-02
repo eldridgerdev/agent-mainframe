@@ -30,14 +30,6 @@ for theme in "${BUILT_IN_THEMES[@]}"; do
   "extends": "${theme}",
   "theme": {
     "background": "none",
-    "backgroundPanel": "none",
-    "backgroundElement": "none",
-    "diffAddedBg": "none",
-    "diffRemovedBg": "none",
-    "diffContextBg": "none",
-    "diffAddedLineNumberBg": "none",
-    "diffRemovedLineNumberBg": "none",
-    "markdownCodeBlock": "none"
   }
 }
 EOF

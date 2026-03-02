@@ -6,7 +6,7 @@ designed to work well when running opencode inside AMF (Agent Mainframe).
 ## Available Themes
 
 - **amf** - Nord-based theme with transparent background
-- **amf-tokyonight** - Tokyo Night with transparent background  
+- **amf-tokyonight** - Tokyo Night with transparent background
 - **amf-catppuccin** - Catppuccin Mocha with transparent background
 
 ## How to Use
@@ -30,14 +30,6 @@ To create your own AMF variant of a built-in theme:
 2. Copy its color definitions
 3. Set these background properties to `"none"`:
    - `background`
-   - `backgroundPanel` (optional - can use a subtle color for contrast)
-   - `backgroundElement`
-   - `diffAddedBg`
-   - `diffRemovedBg`
-   - `diffContextBg`
-   - `diffAddedLineNumberBg`
-   - `diffRemovedLineNumberBg`
-   - `markdownCodeBlock`
 
 ## Theme Priority
 

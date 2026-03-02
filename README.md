@@ -418,6 +418,7 @@ Nvim when creating sessions.
   {
     "name": "Docs",
     "command": "npm run docs:dev",
+    "on_stop": "pkill -f 'docs:dev'",
     "window_name": "docs",
     "working_dir": "packages/docs"
   }
@@ -428,6 +429,7 @@ Nvim when creating sessions.
 | --- | --- | --- |
 | `name` | string | Display name shown in the session list. |
 | `command` | string? | Shell command to run when the session starts. |
+| `on_stop` | string? | Shell command to run when the session is stopped or removed. Runs via `sh -c` in the feature's workdir with `AMF_SESSION_ID` and `AMF_STATUS_DIR` set. Fire-and-forget (non-blocking). |
 | `window_name` | string? | tmux window name (defaults to a slug of `name`). |
 | `working_dir` | path? | Working directory relative to the feature's workdir. |
 

@@ -592,6 +592,7 @@ fn store_with_custom_session(
         claude_session_id: None,
         created_at: now,
         command: Some("./start.sh".to_string()),
+        on_stop: None,
         status_text: None,
     };
     let feature = Feature {
@@ -731,6 +732,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         claude_session_id: None,
         created_at: now,
         command: None,
+        on_stop: None,
         status_text: None,
     };
     let feature = Feature {
@@ -789,6 +791,94 @@ fn sync_session_status_skips_non_custom_sessions() {
         app.store.projects[0].features[0].sessions[0]
             .status_text,
         None,
+    );
+}
+
+#[test]
+fn on_stop_persists_on_feature_session() {
+    let mut feat = crate::project::Feature::new(
+        "test".to_string(),
+        "test".to_string(),
+        PathBuf::from("/tmp/test"),
+        false,
+        VibeMode::default(),
+        false,
+        AgentKind::default(),
+        false,
+        false,
+    );
+    let s = feat.add_custom_session_named(
+        "Dev Servers".to_string(),
+        "devservers".to_string(),
+        Some("docker compose up".to_string()),
+        Some("docker compose down".to_string()),
+    );
+    assert_eq!(s.on_stop, Some("docker compose down".to_string()));
+    assert_eq!(s.command, Some("docker compose up".to_string()));
+}
+
+#[test]
+fn on_stop_none_when_not_provided() {
+    let mut feat = crate::project::Feature::new(
+        "test".to_string(),
+        "test".to_string(),
+        PathBuf::from("/tmp/test"),
+        false,
+        VibeMode::default(),
+        false,
+        AgentKind::default(),
+        false,
+        false,
+    );
+    let s = feat.add_custom_session_named(
+        "Terminal".to_string(),
+        "term".to_string(),
+        None,
+        None,
+    );
+    assert_eq!(s.on_stop, None);
+}
+
+#[test]
+fn status_file_cleanup_during_remove() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "cleanup-test-sess";
+    let status_dir = workdir
+        .path()
+        .join(".amf")
+        .join("session-status");
+    std::fs::create_dir_all(&status_dir).unwrap();
+    let status_file =
+        status_dir.join(format!("{}.txt", session_id));
+    std::fs::write(&status_file, "running").unwrap();
+    assert!(status_file.exists());
+
+    // Build a store with a custom session
+    let store = store_with_custom_session(
+        workdir.path(),
+        session_id,
+    );
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_list_sessions()
+        .returning(|| Ok(vec![]));
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Selecting the session and removing it should clean
+    // up the status file.
+    app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.remove_session().unwrap();
+
+    assert!(
+        !status_file.exists(),
+        "status file should be removed on session removal"
     );
 }
 

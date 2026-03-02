@@ -129,6 +129,7 @@ pub struct AppConfig {
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
     pub theme: crate::theme::ThemeName,
+    pub transparent_background: bool,
 }
 
 impl Default for AppConfig {
@@ -139,6 +140,7 @@ impl Default for AppConfig {
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
             theme: crate::theme::ThemeName::default(),
+            transparent_background: false,
         }
     }
 }
@@ -191,7 +193,8 @@ impl App {
                 )
             })
             .unwrap_or(global_ext);
-        let theme = crate::theme::Theme::load(&config.theme);
+        let mut theme = crate::theme::Theme::load(&config.theme);
+        theme.set_transparent(config.transparent_background);
         Ok(Self {
             store,
             store_path,

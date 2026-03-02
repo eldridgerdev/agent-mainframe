@@ -533,7 +533,7 @@ pub fn draw(
 
             if is_selected {
                 ListItem::new(line).style(
-                    Style::default().bg(theme.selection_bg.to_color()),
+                    Style::default().bg(theme.effective_selection_bg()),
                 )
             } else {
                 ListItem::new(line)

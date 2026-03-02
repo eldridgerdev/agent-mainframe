@@ -9,6 +9,7 @@ use std::path::Path;
 pub enum ThemeName {
     #[default]
     Default,
+    Amf,
     Dracula,
     Nord,
     CatppuccinFrappe,
@@ -18,6 +19,7 @@ impl std::fmt::Display for ThemeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ThemeName::Default => write!(f, "default"),
+            ThemeName::Amf => write!(f, "amf"),
             ThemeName::Dracula => write!(f, "dracula"),
             ThemeName::Nord => write!(f, "nord"),
             ThemeName::CatppuccinFrappe => write!(f, "catppuccin-frappe"),
@@ -31,6 +33,7 @@ impl std::str::FromStr for ThemeName {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "default" => Ok(ThemeName::Default),
+            "amf" => Ok(ThemeName::Amf),
             "dracula" => Ok(ThemeName::Dracula),
             "nord" => Ok(ThemeName::Nord),
             "catppuccin-frappe" | "catppuccin_frappe" => Ok(ThemeName::CatppuccinFrappe),
@@ -118,6 +121,8 @@ pub struct Theme {
     pub usage_low: ColorDef,
     pub usage_medium: ColorDef,
     pub usage_high: ColorDef,
+    #[serde(skip)]
+    pub transparent: bool,
 }
 
 impl Default for Theme {
@@ -130,10 +135,35 @@ impl Theme {
     pub fn load(name: &ThemeName) -> Self {
         match name {
             ThemeName::Default => Self::default_theme(),
+            ThemeName::Amf => Self::amf(),
             ThemeName::Dracula => Self::dracula(),
             ThemeName::Nord => Self::nord(),
             ThemeName::CatppuccinFrappe => Self::catppuccin_frappe(),
         }
+    }
+
+    pub fn set_transparent(&mut self, transparent: bool) {
+        self.transparent = transparent;
+    }
+
+    pub fn effective_bg(&self) -> Color {
+        if self.transparent {
+            Color::Reset
+        } else {
+            self.bg.to_color()
+        }
+    }
+
+    pub fn effective_header_bg(&self) -> Color {
+        if self.transparent {
+            Color::Reset
+        } else {
+            self.header_bg.to_color()
+        }
+    }
+
+    pub fn effective_selection_bg(&self) -> Color {
+        self.selection_bg.to_color()
     }
 
     fn default_theme() -> Self {
@@ -173,6 +203,48 @@ impl Theme {
             usage_low: ColorDef::named("green"),
             usage_medium: ColorDef::named("yellow"),
             usage_high: ColorDef::named("red"),
+            transparent: false,
+        }
+    }
+
+    fn amf() -> Self {
+        Self {
+            name: "amf".to_string(),
+            bg: ColorDef::named("reset"),
+            fg: ColorDef::named("white"),
+            muted: ColorDef::named("darkgray"),
+            accent: ColorDef::named("cyan"),
+            accent_alt: ColorDef::named("magenta"),
+            success: ColorDef::named("green"),
+            warning: ColorDef::named("yellow"),
+            error: ColorDef::named("red"),
+            info: ColorDef::named("cyan"),
+            border: ColorDef::named("white"),
+            border_accent: ColorDef::named("cyan"),
+            selection_bg: ColorDef::rgb(60, 60, 80),
+            header_bg: ColorDef::rgb(40, 40, 60),
+            leader_bg: ColorDef::named("yellow"),
+            leader_fg: ColorDef::named("black"),
+            scrollbar: ColorDef::rgb(60, 60, 60),
+            project_name: ColorDef::named("cyan"),
+            feature_name: ColorDef::named("white"),
+            session_icon_claude: ColorDef::named("magenta"),
+            session_icon_opencode: ColorDef::named("cyan"),
+            session_icon_terminal: ColorDef::named("green"),
+            session_icon_nvim: ColorDef::named("cyan"),
+            session_icon_custom: ColorDef::named("yellow"),
+            status_active: ColorDef::named("green"),
+            status_idle: ColorDef::named("yellow"),
+            status_stopped: ColorDef::named("red"),
+            status_waiting: ColorDef::rgb(255, 165, 0),
+            mode_vibeless: ColorDef::named("green"),
+            mode_vibe: ColorDef::named("yellow"),
+            mode_supervibe: ColorDef::named("magenta"),
+            mode_review: ColorDef::named("magenta"),
+            usage_low: ColorDef::named("green"),
+            usage_medium: ColorDef::named("yellow"),
+            usage_high: ColorDef::named("red"),
+            transparent: false,
         }
     }
 
@@ -213,6 +285,7 @@ impl Theme {
             usage_low: ColorDef::rgb(80, 250, 123),
             usage_medium: ColorDef::rgb(255, 184, 108),
             usage_high: ColorDef::rgb(255, 85, 85),
+            transparent: false,
         }
     }
 
@@ -253,6 +326,7 @@ impl Theme {
             usage_low: ColorDef::rgb(163, 190, 140),
             usage_medium: ColorDef::rgb(235, 203, 139),
             usage_high: ColorDef::rgb(191, 97, 106),
+            transparent: false,
         }
     }
 
@@ -293,12 +367,14 @@ impl Theme {
             usage_low: ColorDef::rgb(166, 218, 149),
             usage_medium: ColorDef::rgb(238, 212, 159),
             usage_high: ColorDef::rgb(231, 130, 132),
+            transparent: false,
         }
     }
 
     pub fn list() -> Vec<ThemeName> {
         vec![
             ThemeName::Default,
+            ThemeName::Amf,
             ThemeName::Dracula,
             ThemeName::Nord,
             ThemeName::CatppuccinFrappe,

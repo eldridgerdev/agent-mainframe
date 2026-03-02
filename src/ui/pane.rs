@@ -160,7 +160,7 @@ pub fn draw(
     }
 
     let header = Paragraph::new(Line::from(header_spans))
-        .style(Style::default().bg(theme.header_bg.to_color()));
+        .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(header, header_area);
 
     if view.scroll_mode && !view.scroll_passthrough {

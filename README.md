@@ -396,6 +396,7 @@ automatically with defaults on first run.
 
 ### `zai` — token usage limits (optional)
 
+_Not currently working. You can put some numbersin the token limits and guess if you want._
 Controls whether ZAI usage is shown in the status bar. Set to `null`
 or omit the key entirely to disable — the status bar will only show
 Claude usage.

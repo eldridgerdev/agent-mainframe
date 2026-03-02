@@ -506,8 +506,11 @@ pub fn draw(
                             ),
                             Span::styled(
                                 text.as_str(),
-                                Style::default()
-                                    .fg(Color::DarkGray),
+                                Style::default().fg(
+                                    theme
+                                        .custom_status_text
+                                        .to_color(),
+                                ),
                             ),
                         ]);
                         return if is_selected {

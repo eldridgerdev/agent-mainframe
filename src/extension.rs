@@ -16,6 +16,52 @@ pub struct CustomSessionConfig {
     pub icon: Option<String>,
     pub icon_nerd: Option<String>,
     pub on_stop: Option<String>,
+    pub autolaunch: Option<bool>,
+    pub pre_check: Option<String>,
+}
+
+impl CustomSessionConfig {
+    /// Run the `pre_check` command (if any) and return
+    /// `Ok(())` on success or `Err(message)` with the
+    /// command output when it fails / is not found.
+    pub fn run_pre_check(
+        &self,
+        workdir: &std::path::Path,
+    ) -> std::result::Result<(), String> {
+        let cmd = match &self.pre_check {
+            Some(c) if !c.is_empty() => c,
+            _ => return Ok(()),
+        };
+        match std::process::Command::new("bash")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(workdir)
+            .output()
+        {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let msg = String::from_utf8_lossy(&output.stdout);
+                let err = String::from_utf8_lossy(&output.stderr);
+                let combined = if !msg.is_empty() && !err.is_empty()
+                {
+                    format!("{}\n{}", msg.trim(), err.trim())
+                } else if !msg.is_empty() {
+                    msg.trim().to_string()
+                } else if !err.is_empty() {
+                    err.trim().to_string()
+                } else {
+                    format!(
+                        "pre_check failed (exit {})",
+                        output.status
+                    )
+                };
+                Err(combined)
+            }
+            Err(e) => {
+                Err(format!("pre_check failed to run: {}", e))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

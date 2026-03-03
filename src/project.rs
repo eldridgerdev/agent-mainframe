@@ -69,6 +69,8 @@ pub struct FeatureSession {
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_stop: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_check: Option<String>,
     #[serde(skip)]
     pub status_text: Option<String>,
 }
@@ -280,6 +282,7 @@ impl Feature {
             created_at: Utc::now(),
             command: None,
             on_stop: None,
+            pre_check: None,
             status_text: None,
         };
         self.sessions.push(session);
@@ -295,6 +298,7 @@ impl Feature {
         window_name_hint: String,
         command: Option<String>,
         on_stop: Option<String>,
+        pre_check: Option<String>,
     ) -> &mut FeatureSession {
         let mut window = window_name_hint.clone();
         let mut n = 2u32;
@@ -311,6 +315,7 @@ impl Feature {
             created_at: Utc::now(),
             command,
             on_stop,
+            pre_check,
             status_text: None,
         };
         self.sessions.push(session);
@@ -554,6 +559,7 @@ impl ProjectStore {
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
+                                pre_check: None,
                                 status_text: None,
                             },
                             FeatureSession {
@@ -565,6 +571,7 @@ impl ProjectStore {
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
+                                pre_check: None,
                                 status_text: None,
                             },
                         ];
@@ -709,6 +716,7 @@ mod tests {
             created_at: Utc::now(),
             command: None,
             on_stop: None,
+            pre_check: None,
             status_text: None,
         }
     }

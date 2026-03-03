@@ -426,6 +426,35 @@ pub fn draw(
             ),
             Span::raw(" close"),
         ]),
+        AppMode::ForkingFeature(_) => Line::from(vec![
+            Span::styled(
+                " Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ThemePicker(_) => Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" apply  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

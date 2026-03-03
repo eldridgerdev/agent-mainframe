@@ -196,7 +196,7 @@ impl App {
         pi: usize,
         fi: usize,
         config: &crate::extension::CustomSessionConfig,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let window_hint = config
             .window_name
             .clone()
@@ -209,7 +209,7 @@ impl App {
             .and_then(|p| p.features.get_mut(fi))
         {
             Some(f) => f,
-            None => return Ok(()),
+            None => return Ok(false),
         };
 
         let tmux_session = feature.tmux_session.clone();
@@ -224,6 +224,7 @@ impl App {
             window_hint,
             config.command.clone(),
             config.on_stop.clone(),
+            config.pre_check.clone(),
         );
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();
@@ -270,7 +271,7 @@ impl App {
         }
 
         self.save()?;
-        Ok(())
+        Ok(config.autolaunch.unwrap_or(false))
     }
 
     pub fn add_builtin_session(

@@ -6,6 +6,29 @@ use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForkFeatureStep {
+    Branch,
+    Agent,
+}
+
+pub struct ForkFeatureState {
+    pub source_pi: usize,
+    pub source_fi: usize,
+    pub project_name: String,
+    pub project_repo: PathBuf,
+    pub source_branch: String,
+    pub new_branch: String,
+    pub step: ForkFeatureStep,
+    pub agent: AgentKind,
+    pub agent_index: usize,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub include_context: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Selection {
     Project(usize),
@@ -120,6 +143,13 @@ pub enum AppMode {
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
     LatestPrompt(String, ViewState),
+    ForkingFeature(ForkFeatureState),
+    ThemePicker(ThemePickerState),
+}
+
+pub struct ThemePickerState {
+    pub selected: usize,
+    pub themes: Vec<crate::theme::ThemeName>,
 }
 
 #[derive(Clone)]

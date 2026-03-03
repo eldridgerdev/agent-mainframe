@@ -144,6 +144,41 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let AppMode::ThemePicker(state) = &mut app.mode
+                && state.selected + 1 < state.themes.len()
+            {
+                state.selected += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let AppMode::ThemePicker(state) = &mut app.mode
+                && state.selected > 0
+            {
+                state.selected -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            let theme_name = match &app.mode {
+                AppMode::ThemePicker(state) => {
+                    state.themes.get(state.selected).copied()
+                }
+                _ => None,
+            };
+            if let Some(name) = theme_name {
+                app.apply_theme(name);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_rename_session_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc => {

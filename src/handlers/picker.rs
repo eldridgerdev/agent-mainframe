@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, AppMode};
+use crate::app::{App, AppMode, Selection};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -175,6 +175,43 @@ pub fn handle_notification_picker_key(
         }
         KeyCode::Enter => {
             app.handle_notification_select()?;
+        }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            if let AppMode::NotificationPicker(ref mut idx, _) =
+                app.mode
+            {
+                let i = *idx;
+                if i < app.pending_inputs.len() {
+                    let input = app.pending_inputs.remove(i);
+                    let _ =
+                        std::fs::remove_file(&input.file_path);
+                    app.message =
+                        Some("Input request deleted".into());
+                    if app.pending_inputs.is_empty() {
+                        let from_view =
+                            match std::mem::replace(
+                                &mut app.mode,
+                                AppMode::Normal,
+                            ) {
+                                AppMode::NotificationPicker(
+                                    _,
+                                    v,
+                                ) => v,
+                                other => {
+                                    app.mode = other;
+                                    return Ok(());
+                                }
+                            };
+                        if let Some(view) = from_view {
+                            app.mode =
+                                AppMode::Viewing(view);
+                        }
+                    } else if *idx >= app.pending_inputs.len()
+                    {
+                        *idx = app.pending_inputs.len() - 1;
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -388,22 +425,58 @@ pub fn handle_session_picker_key(
                     if let Some(cfg) =
                         state.custom_sessions.get(custom_idx).cloned()
                     {
-                        match app.add_custom_session_type(
-                            state.pi,
-                            state.fi,
-                            &cfg,
-                        ) {
-                            Ok(()) => {
-                                app.message = Some(format!(
-                                    "Added '{}'",
-                                    cfg.name
-                                ));
-                            }
-                            Err(e) => {
-                                app.message = Some(format!(
-                                    "Error: {}",
-                                    e
-                                ));
+                        // Resolve working directory for the
+                        // pre_check (same logic as session_ops).
+                        let check_dir = app
+                            .store
+                            .projects
+                            .get(state.pi)
+                            .and_then(|p| p.features.get(state.fi))
+                            .map(|f| {
+                                cfg.working_dir
+                                    .as_ref()
+                                    .map(|rel| f.workdir.join(rel))
+                                    .unwrap_or_else(|| {
+                                        f.workdir.clone()
+                                    })
+                            });
+                        let pre_ok = match &check_dir {
+                            Some(dir) => cfg.run_pre_check(dir),
+                            None => Ok(()),
+                        };
+                        if let Err(reason) = pre_ok {
+                            app.message =
+                                Some(format!("{}: {}", cfg.name, reason));
+                        } else {
+                            match app.add_custom_session_type(
+                                state.pi,
+                                state.fi,
+                                &cfg,
+                            ) {
+                                Ok(autolaunch) => {
+                                    app.message = Some(format!(
+                                        "Added '{}'",
+                                        cfg.name
+                                    ));
+                                    if autolaunch {
+                                        // Point selection to the newly added session
+                                        // (last in the sessions list).
+                                        if let Some(feature) = app.store.projects
+                                            .get(state.pi)
+                                            .and_then(|p| p.features.get(state.fi))
+                                        {
+                                            let si = feature.sessions.len().saturating_sub(1);
+                                            app.selection = Selection::Session(state.pi, state.fi, si);
+                                        }
+                                        let _ = app.enter_view();
+                                    }
+                                }
+                                Err(e) => {
+                                    app.message = Some(format!(
+                                        "Error: {}",
+                                        e
+                                    ));
+                                }
                             }
                         }
                     }

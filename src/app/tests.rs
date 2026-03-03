@@ -812,6 +812,7 @@ fn on_stop_persists_on_feature_session() {
         "devservers".to_string(),
         Some("docker compose up".to_string()),
         Some("docker compose down".to_string()),
+        None,
     );
     assert_eq!(s.on_stop, Some("docker compose down".to_string()));
     assert_eq!(s.command, Some("docker compose up".to_string()));
@@ -833,6 +834,7 @@ fn on_stop_none_when_not_provided() {
     let s = feat.add_custom_session_named(
         "Terminal".to_string(),
         "term".to_string(),
+        None,
         None,
         None,
     );

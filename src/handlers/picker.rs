@@ -425,34 +425,58 @@ pub fn handle_session_picker_key(
                     if let Some(cfg) =
                         state.custom_sessions.get(custom_idx).cloned()
                     {
-                        match app.add_custom_session_type(
-                            state.pi,
-                            state.fi,
-                            &cfg,
-                        ) {
-                            Ok(autolaunch) => {
-                                app.message = Some(format!(
-                                    "Added '{}'",
-                                    cfg.name
-                                ));
-                                if autolaunch {
-                                    // Point selection to the newly added session
-                                    // (last in the sessions list).
-                                    if let Some(feature) = app.store.projects
-                                        .get(state.pi)
-                                        .and_then(|p| p.features.get(state.fi))
-                                    {
-                                        let si = feature.sessions.len().saturating_sub(1);
-                                        app.selection = Selection::Session(state.pi, state.fi, si);
+                        // Resolve working directory for the
+                        // pre_check (same logic as session_ops).
+                        let check_dir = app
+                            .store
+                            .projects
+                            .get(state.pi)
+                            .and_then(|p| p.features.get(state.fi))
+                            .map(|f| {
+                                cfg.working_dir
+                                    .as_ref()
+                                    .map(|rel| f.workdir.join(rel))
+                                    .unwrap_or_else(|| {
+                                        f.workdir.clone()
+                                    })
+                            });
+                        let pre_ok = match &check_dir {
+                            Some(dir) => cfg.run_pre_check(dir),
+                            None => Ok(()),
+                        };
+                        if let Err(reason) = pre_ok {
+                            app.message =
+                                Some(format!("{}: {}", cfg.name, reason));
+                        } else {
+                            match app.add_custom_session_type(
+                                state.pi,
+                                state.fi,
+                                &cfg,
+                            ) {
+                                Ok(autolaunch) => {
+                                    app.message = Some(format!(
+                                        "Added '{}'",
+                                        cfg.name
+                                    ));
+                                    if autolaunch {
+                                        // Point selection to the newly added session
+                                        // (last in the sessions list).
+                                        if let Some(feature) = app.store.projects
+                                            .get(state.pi)
+                                            .and_then(|p| p.features.get(state.fi))
+                                        {
+                                            let si = feature.sessions.len().saturating_sub(1);
+                                            app.selection = Selection::Session(state.pi, state.fi, si);
+                                        }
+                                        let _ = app.enter_view();
                                     }
-                                    let _ = app.enter_view();
                                 }
-                            }
-                            Err(e) => {
-                                app.message = Some(format!(
-                                    "Error: {}",
-                                    e
-                                ));
+                                Err(e) => {
+                                    app.message = Some(format!(
+                                        "Error: {}",
+                                        e
+                                    ));
+                                }
                             }
                         }
                     }

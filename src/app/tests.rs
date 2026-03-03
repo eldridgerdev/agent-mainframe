@@ -1,6 +1,6 @@
-use super::*;
 use super::setup::{ensure_notification_hooks, strip_between_markers};
 use super::util::{shorten_path, slugify};
+use super::*;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -87,8 +87,7 @@ fn strip_between_markers_eats_leading_blank_line() {
 #[test]
 fn strip_between_markers_absent_returns_unchanged() {
     let s = "no markers here";
-    let result =
-        strip_between_markers(s, "<!-- BEGIN -->", "<!-- END -->");
+    let result = strip_between_markers(s, "<!-- BEGIN -->", "<!-- END -->");
     assert_eq!(result, "no markers here");
 }
 
@@ -152,8 +151,8 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 // ── Phase 3: App integration tests using mock trait objects ──
 
+use crate::project::{AgentKind, Feature, Project};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
-use crate::project::{Feature, Project, AgentKind};
 use chrono::Utc;
 use tempfile::NamedTempFile;
 
@@ -178,6 +177,8 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         status,
         created_at: now,
         last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -188,7 +189,10 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         created_at: now,
         is_git: false,
     };
-    ProjectStore { version: 2, projects: vec![project] }
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+    }
 }
 
 // ── sync_statuses ─────────────────────────────────────────────
@@ -201,11 +205,7 @@ fn sync_statuses_stopped_becomes_idle_when_session_live() {
         .returning(|| Ok(vec!["amf-my-feat".to_string()]));
 
     let store = store_with_feature(ProjectStatus::Stopped);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.sync_statuses();
 
     assert_eq!(
@@ -222,11 +222,7 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
         .returning(|| Ok(vec![]));
 
     let store = store_with_feature(ProjectStatus::Active);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.sync_statuses();
 
     assert_eq!(
@@ -243,11 +239,7 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
         .returning(|| Ok(vec!["amf-my-feat".to_string()]));
 
     let store = store_with_feature(ProjectStatus::Idle);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.sync_statuses();
 
     // Already Idle; stays Idle (not overwritten)
@@ -265,9 +257,7 @@ fn app_in_creating_feature_mode(
     branch: &str,
     use_worktree: bool,
 ) -> App {
-    use crate::app::state::{
-        CreateFeatureState, CreateFeatureStep,
-    };
+    use crate::app::state::{CreateFeatureState, CreateFeatureStep};
     let project_repo = store
         .find_project(project_name)
         .map(|p| p.repo.clone())
@@ -306,7 +296,7 @@ fn create_feature_empty_branch_sets_error_no_external_calls() {
     let mut app = app_in_creating_feature_mode(
         store,
         "my-project",
-        "",    // empty branch
+        "", // empty branch
         false,
     );
     app.create_feature().unwrap();
@@ -316,7 +306,8 @@ fn create_feature_empty_branch_sets_error_no_external_calls() {
             .as_deref()
             .unwrap_or("")
             .contains("cannot be empty"),
-        "got: {:?}", app.message
+        "got: {:?}",
+        app.message
     );
 }
 
@@ -324,19 +315,11 @@ fn create_feature_empty_branch_sets_error_no_external_calls() {
 fn create_feature_duplicate_name_sets_error_no_external_calls() {
     let store = store_with_feature(ProjectStatus::Stopped);
     // "my-feat" already exists in the store
-    let mut app = app_in_creating_feature_mode(
-        store,
-        "my-project",
-        "my-feat",
-        false,
-    );
+    let mut app = app_in_creating_feature_mode(store, "my-project", "my-feat", false);
     app.create_feature().unwrap();
 
     let msg = app.message.as_deref().unwrap_or("");
-    assert!(
-        msg.contains("already exists"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("already exists"), "got: {msg}");
 }
 
 #[test]
@@ -352,10 +335,7 @@ fn create_feature_second_non_worktree_sets_error() {
     app.create_feature().unwrap();
 
     let msg = app.message.as_deref().unwrap_or("");
-    assert!(
-        msg.contains("Only one non-worktree"),
-        "got: {msg}"
-    );
+    assert!(msg.contains("Only one non-worktree"), "got: {msg}");
 }
 
 // ── stop_feature ──────────────────────────────────────────────
@@ -371,11 +351,7 @@ fn stop_feature_transitions_idle_to_stopped() {
         .returning(|_| Ok(()));
 
     let store = store_with_feature(ProjectStatus::Idle);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Feature(0, 0);
 
@@ -386,11 +362,9 @@ fn stop_feature_transitions_idle_to_stopped() {
         ProjectStatus::Stopped
     );
     assert!(
+        app.message.as_deref().unwrap_or("").contains("Stopped"),
+        "got: {:?}",
         app.message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Stopped"),
-        "got: {:?}", app.message
     );
 }
 
@@ -400,15 +374,11 @@ use tempfile::TempDir;
 
 fn read_settings(dir: &TempDir) -> serde_json::Value {
     let path = dir.path().join(".claude").join("settings.json");
-    let s = std::fs::read_to_string(&path)
-        .expect("settings.json should exist");
+    let s = std::fs::read_to_string(&path).expect("settings.json should exist");
     serde_json::from_str(&s).expect("valid JSON")
 }
 
-fn hook_commands_for(
-    settings: &serde_json::Value,
-    event: &str,
-) -> Vec<String> {
+fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
     settings["hooks"][event]
         .as_array()
         .into_iter()
@@ -418,9 +388,7 @@ fn hook_commands_for(
                 .as_array()
                 .into_iter()
                 .flatten()
-                .filter_map(|h| {
-                    h["command"].as_str().map(|s| s.to_string())
-                })
+                .filter_map(|h| h["command"].as_str().map(|s| s.to_string()))
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -428,12 +396,7 @@ fn hook_commands_for(
 
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
     let repo = workdir.path(); // repo = workdir in tests
-    ensure_notification_hooks(
-        workdir.path(),
-        repo,
-        &mode,
-        &AgentKind::Claude,
-    );
+    ensure_notification_hooks(workdir.path(), repo, &mode, &AgentKind::Claude);
 }
 
 #[test]
@@ -443,7 +406,8 @@ fn stop_hook_has_thinking_remove_and_notify() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
-        cmds.iter().any(|c| c.contains("amf-thinking") && c.contains("rm")),
+        cmds.iter()
+            .any(|c| c.contains("amf-thinking") && c.contains("rm")),
         "Stop hook missing thinking-remove cmd; got: {cmds:?}"
     );
     assert!(
@@ -459,7 +423,8 @@ fn pre_tool_use_hook_has_thinking_touch_and_clear() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
-        cmds.iter().any(|c| c.contains("amf-thinking") && c.contains("touch")),
+        cmds.iter()
+            .any(|c| c.contains("amf-thinking") && c.contains("touch")),
         "PreToolUse missing thinking-touch cmd; got: {cmds:?}"
     );
     assert!(
@@ -529,10 +494,7 @@ fn vibeless_permissions_include_edit_and_write() {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let strs: Vec<&str> = allow
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
+    let strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
     assert!(strs.contains(&"Edit"), "permissions should allow Edit");
     assert!(strs.contains(&"Write"), "permissions should allow Write");
 }
@@ -546,7 +508,8 @@ fn vibe_mode_strips_edit_write_permissions_left_from_vibeless() {
     std::fs::write(
         claude_dir.join("settings.json"),
         r#"{"permissions":{"allow":["Edit","Write","Bash"]}}"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     call_ensure_hooks(&workdir, VibeMode::Vibe);
 
@@ -555,14 +518,20 @@ fn vibe_mode_strips_edit_write_permissions_left_from_vibeless() {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let strs: Vec<&str> = allow
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
-    assert!(!strs.contains(&"Edit"), "Edit should be removed for Vibe mode");
-    assert!(!strs.contains(&"Write"), "Write should be removed for Vibe mode");
+    let strs: Vec<&str> = allow.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        !strs.contains(&"Edit"),
+        "Edit should be removed for Vibe mode"
+    );
+    assert!(
+        !strs.contains(&"Write"),
+        "Write should be removed for Vibe mode"
+    );
     // Unrelated permissions are preserved.
-    assert!(strs.contains(&"Bash"), "unrelated permissions should remain");
+    assert!(
+        strs.contains(&"Bash"),
+        "unrelated permissions should remain"
+    );
 }
 
 #[test]
@@ -572,17 +541,17 @@ fn ensure_hooks_is_idempotent() {
     let first = read_settings(&workdir);
     call_ensure_hooks(&workdir, VibeMode::Vibe);
     let second = read_settings(&workdir);
-    assert_eq!(first, second, "calling twice should produce identical output");
+    assert_eq!(
+        first, second,
+        "calling twice should produce identical output"
+    );
 }
 
 // ── sync_session_status ──────────────────────────────────────
 
 use crate::project::{FeatureSession, SessionKind};
 
-fn store_with_custom_session(
-    workdir: &std::path::Path,
-    session_id: &str,
-) -> ProjectStore {
+fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> ProjectStore {
     let now = Utc::now();
     let session = FeatureSession {
         id: session_id.to_string(),
@@ -613,6 +582,8 @@ fn store_with_custom_session(
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -633,10 +604,7 @@ fn store_with_custom_session(
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
     let session_id = "test-sess-123";
-    let status_dir = workdir
-        .path()
-        .join(".amf")
-        .join("session-status");
+    let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
     std::fs::write(
         status_dir.join(format!("{}.txt", session_id)),
@@ -644,10 +612,7 @@ fn sync_session_status_reads_first_line() {
     )
     .unwrap();
 
-    let store = store_with_custom_session(
-        workdir.path(),
-        session_id,
-    );
+    let store = store_with_custom_session(workdir.path(), session_id);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
@@ -656,8 +621,7 @@ fn sync_session_status_reads_first_line() {
     app.sync_session_status();
 
     assert_eq!(
-        app.store.projects[0].features[0].sessions[0]
-            .status_text,
+        app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000 | DB :5432".to_string()),
     );
 }
@@ -668,10 +632,7 @@ fn sync_session_status_none_when_file_missing() {
     let session_id = "test-sess-456";
     // No status file created
 
-    let store = store_with_custom_session(
-        workdir.path(),
-        session_id,
-    );
+    let store = store_with_custom_session(workdir.path(), session_id);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
@@ -680,8 +641,7 @@ fn sync_session_status_none_when_file_missing() {
     app.sync_session_status();
 
     assert_eq!(
-        app.store.projects[0].features[0].sessions[0]
-            .status_text,
+        app.store.projects[0].features[0].sessions[0].status_text,
         None,
     );
 }
@@ -690,21 +650,11 @@ fn sync_session_status_none_when_file_missing() {
 fn sync_session_status_none_when_file_empty() {
     let workdir = TempDir::new().unwrap();
     let session_id = "test-sess-789";
-    let status_dir = workdir
-        .path()
-        .join(".amf")
-        .join("session-status");
+    let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
-    std::fs::write(
-        status_dir.join(format!("{}.txt", session_id)),
-        "",
-    )
-    .unwrap();
+    std::fs::write(status_dir.join(format!("{}.txt", session_id)), "").unwrap();
 
-    let store = store_with_custom_session(
-        workdir.path(),
-        session_id,
-    );
+    let store = store_with_custom_session(workdir.path(), session_id);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
@@ -713,8 +663,7 @@ fn sync_session_status_none_when_file_empty() {
     app.sync_session_status();
 
     assert_eq!(
-        app.store.projects[0].features[0].sessions[0]
-            .status_text,
+        app.store.projects[0].features[0].sessions[0].status_text,
         None,
     );
 }
@@ -754,6 +703,8 @@ fn sync_session_status_skips_non_custom_sessions() {
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -771,16 +722,9 @@ fn sync_session_status_skips_non_custom_sessions() {
 
     // Even if a status file exists for this ID, it should
     // be ignored because the session is not Custom.
-    let status_dir = workdir
-        .path()
-        .join(".amf")
-        .join("session-status");
+    let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
-    std::fs::write(
-        status_dir.join("claude-sess.txt"),
-        "should be ignored",
-    )
-    .unwrap();
+    std::fs::write(status_dir.join("claude-sess.txt"), "should be ignored").unwrap();
 
     let mut app = App::new_for_test(
         store,
@@ -790,8 +734,7 @@ fn sync_session_status_skips_non_custom_sessions() {
     app.sync_session_status();
 
     assert_eq!(
-        app.store.projects[0].features[0].sessions[0]
-            .status_text,
+        app.store.projects[0].features[0].sessions[0].status_text,
         None,
     );
 }
@@ -833,13 +776,8 @@ fn on_stop_none_when_not_provided() {
         false,
         false,
     );
-    let s = feat.add_custom_session_named(
-        "Terminal".to_string(),
-        "term".to_string(),
-        None,
-        None,
-        None,
-    );
+    let s =
+        feat.add_custom_session_named("Terminal".to_string(), "term".to_string(), None, None, None);
     assert_eq!(s.on_stop, None);
 }
 
@@ -847,31 +785,19 @@ fn on_stop_none_when_not_provided() {
 fn status_file_cleanup_during_remove() {
     let workdir = TempDir::new().unwrap();
     let session_id = "cleanup-test-sess";
-    let status_dir = workdir
-        .path()
-        .join(".amf")
-        .join("session-status");
+    let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
-    let status_file =
-        status_dir.join(format!("{}.txt", session_id));
+    let status_file = status_dir.join(format!("{}.txt", session_id));
     std::fs::write(&status_file, "running").unwrap();
     assert!(status_file.exists());
 
     // Build a store with a custom session
-    let store = store_with_custom_session(
-        workdir.path(),
-        session_id,
-    );
+    let store = store_with_custom_session(workdir.path(), session_id);
 
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_list_sessions()
-        .returning(|| Ok(vec![]));
+    tmux.expect_list_sessions().returning(|| Ok(vec![]));
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
 
     // Selecting the session and removing it should clean
     // up the status file.
@@ -890,10 +816,7 @@ fn status_file_cleanup_during_remove() {
 fn sync_session_status_trims_whitespace() {
     let workdir = TempDir::new().unwrap();
     let session_id = "test-sess-trim";
-    let status_dir = workdir
-        .path()
-        .join(".amf")
-        .join("session-status");
+    let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
     std::fs::write(
         status_dir.join(format!("{}.txt", session_id)),
@@ -901,10 +824,7 @@ fn sync_session_status_trims_whitespace() {
     )
     .unwrap();
 
-    let store = store_with_custom_session(
-        workdir.path(),
-        session_id,
-    );
+    let store = store_with_custom_session(workdir.path(), session_id);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
@@ -913,8 +833,7 @@ fn sync_session_status_trims_whitespace() {
     app.sync_session_status();
 
     assert_eq!(
-        app.store.projects[0].features[0].sessions[0]
-            .status_text,
+        app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000".to_string()),
     );
 }

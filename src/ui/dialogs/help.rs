@@ -29,6 +29,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("v", "Add nvim session"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
+        ("Z", "Generate session summary"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),
         ("R", "Refresh statuses"),

@@ -5,12 +5,13 @@ mod claude;
 mod extension;
 mod handlers;
 mod project;
+mod summary;
 mod theme;
 mod tmux;
 mod traits;
+mod transcript;
 mod ui;
 mod usage;
-mod transcript;
 mod worktree;
 
 use anyhow::Result;
@@ -268,6 +269,10 @@ fn run_loop<B: Backend>(
         if last_notif_scan.elapsed() >= Duration::from_millis(500) {
             app.scan_notifications();
             last_notif_scan = std::time::Instant::now();
+        }
+
+        if let Err(e) = app.poll_summary_result() {
+            app.show_error(e);
         }
 
         let poll_duration = if is_viewing {

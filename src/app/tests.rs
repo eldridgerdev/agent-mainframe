@@ -593,6 +593,7 @@ fn store_with_custom_session(
         created_at: now,
         command: Some("./start.sh".to_string()),
         on_stop: None,
+        pre_check: None,
         status_text: None,
     };
     let feature = Feature {
@@ -733,6 +734,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         created_at: now,
         command: None,
         on_stop: None,
+        pre_check: None,
         status_text: None,
     };
     let feature = Feature {

@@ -370,6 +370,24 @@ impl App {
                     )?;
                 }
                 SessionKind::Custom => {
+                    // Run pre_check before launching
+                    if let Some(ref check) = session.pre_check {
+                        if !check.is_empty() {
+                            let ok = std::process::Command::new("bash")
+                                .arg("-c")
+                                .arg(check)
+                                .current_dir(&feature.workdir)
+                                .output()
+                                .map(|o| o.status.success())
+                                .unwrap_or(false);
+                            if !ok {
+                                // Skip this session silently
+                                // on restart; the tmux window
+                                // will show a shell prompt.
+                                continue;
+                            }
+                        }
+                    }
                     let status_dir = feature
                         .workdir
                         .join(".amf")

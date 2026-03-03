@@ -224,6 +224,7 @@ impl App {
             window_hint,
             config.command.clone(),
             config.on_stop.clone(),
+            config.pre_check.clone(),
         );
         let session_id = session.id.clone();
         let window = session.tmux_window.clone();

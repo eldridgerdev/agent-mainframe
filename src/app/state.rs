@@ -144,6 +144,12 @@ pub enum AppMode {
     HookPrompt(HookPromptState),
     LatestPrompt(String, ViewState),
     ForkingFeature(ForkFeatureState),
+    ThemePicker(ThemePickerState),
+}
+
+pub struct ThemePickerState {
+    pub selected: usize,
+    pub themes: Vec<crate::theme::ThemeName>,
 }
 
 #[derive(Clone)]

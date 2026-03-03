@@ -239,6 +239,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::ForkingFeature(state) = &app.mode {
         super::dialogs::draw_fork_feature_dialog(frame, state);
     }
+
+    if let AppMode::ThemePicker(state) = &app.mode {
+        super::dialogs::draw_theme_picker(
+            frame, state, &app.config.theme,
+        );
+    }
 }
 
 pub fn centered_rect(

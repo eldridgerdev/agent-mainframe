@@ -271,6 +271,9 @@ pub fn handle_normal_key(
                 app.start_fork_feature();
             }
         }
+        KeyCode::Char('T') => {
+            app.start_theme_picker();
+        }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
             app.message = Some(format!(

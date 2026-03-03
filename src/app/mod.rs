@@ -286,4 +286,34 @@ impl App {
     pub fn save(&self) -> Result<()> {
         self.store.save(&self.store_path)
     }
+
+    pub fn start_theme_picker(&mut self) {
+        let themes = crate::theme::Theme::list();
+        let selected = themes
+            .iter()
+            .position(|t| *t == self.config.theme)
+            .unwrap_or(0);
+        self.mode = AppMode::ThemePicker(ThemePickerState {
+            selected,
+            themes,
+        });
+    }
+
+    pub fn apply_theme(&mut self, theme_name: crate::theme::ThemeName) {
+        self.config.theme = theme_name;
+        let mut theme = crate::theme::Theme::load(&self.config.theme);
+        theme.set_transparent(self.config.transparent_background);
+        self.theme = theme;
+        self.mode = AppMode::Normal;
+
+        let config_path =
+            crate::project::amf_config_dir().join("config.json");
+        let dir = config_path.parent().unwrap();
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&self.config)
+                .unwrap_or_default(),
+        );
+    }
 }

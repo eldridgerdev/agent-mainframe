@@ -262,6 +262,15 @@ pub fn handle_normal_key(
             app.select_prev();
             app.message = None;
         }
+        KeyCode::Char('F') => {
+            if matches!(
+                app.selection,
+                Selection::Feature(_, _)
+                    | Selection::Session(_, _, _)
+            ) {
+                app.start_fork_feature();
+            }
+        }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
             app.message = Some(format!(
@@ -290,6 +299,7 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "search" => Some('/'),
         "refresh" => Some('r'),
         "filter" => Some('f'),
+        "fork_feature" => Some('F'),
         _ => None,
     }
 }

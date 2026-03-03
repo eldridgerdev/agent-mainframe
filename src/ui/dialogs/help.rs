@@ -28,6 +28,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("t", "Add terminal session"),
         ("a", "Add Claude session"),
         ("v", "Add nvim session"),
+        ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),

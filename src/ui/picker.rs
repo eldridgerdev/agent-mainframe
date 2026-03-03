@@ -38,6 +38,11 @@ pub fn draw_notification_picker(frame: &mut Frame, pending: &[PendingInput], sel
         return;
     }
 
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
     let items: Vec<ListItem> = pending
         .iter()
         .enumerate()
@@ -78,7 +83,22 @@ pub fn draw_notification_picker(frame: &mut Frame, pending: &[PendingInput], sel
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, inner);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("x", Style::default().fg(Color::Yellow)),
+        Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }
 
 pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState) {

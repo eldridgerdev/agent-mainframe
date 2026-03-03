@@ -7,6 +7,7 @@ use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Viewing(view) = &app.mode {
+        let area = frame.area();
         super::pane::draw(
             frame,
             view,
@@ -16,6 +17,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
+        // Show transient message (e.g. "Copied N chars") on the bottom line
+        if let Some(ref msg) = app.message {
+            let msg_area = Rect::new(
+                area.x,
+                area.y + area.height.saturating_sub(1),
+                area.width,
+                1,
+            );
+            let color = if msg.starts_with("Error:") {
+                ratatui::style::Color::Red
+            } else {
+                ratatui::style::Color::Green
+            };
+            let paragraph = ratatui::widgets::Paragraph::new(
+                ratatui::text::Span::styled(
+                    format!(" {}", msg),
+                    ratatui::style::Style::default().fg(color),
+                ),
+            );
+            frame.render_widget(paragraph, msg_area);
+        }
         return;
     }
 

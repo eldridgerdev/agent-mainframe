@@ -3,6 +3,7 @@ mod view;
 mod dialog;
 mod browse;
 mod feature_creation;
+mod fork;
 mod hooks;
 mod picker;
 mod input;
@@ -40,6 +41,7 @@ pub use picker::{
     handle_opencode_session_confirm_key,
     handle_session_picker_key,
 };
+pub use fork::handle_fork_feature_key;
 pub use input::handle_paste;
 pub use search::handle_search_key;
 pub use change_reason::handle_change_reason_key;
@@ -109,6 +111,9 @@ pub fn handle_key(
         }
         AppMode::LatestPrompt(_, _) => {
             handle_latest_prompt_key(app, key.code)
+        }
+        AppMode::ForkingFeature(_) => {
+            handle_fork_feature_key(app, key.code)
         }
     }
 }

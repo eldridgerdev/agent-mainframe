@@ -6,7 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState};
+use crate::app::{
+    CreateFeatureState, CreateFeatureStep, DeleteStage,
+    DeletingFeatureState, ForkFeatureState, ForkFeatureStep,
+};
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
 
@@ -791,4 +794,169 @@ pub fn draw_deleting_feature_dialog(
         )))
     };
     frame.render_widget(hints, chunks[3]);
+}
+
+pub fn draw_fork_feature_dialog(
+    frame: &mut Frame,
+    state: &ForkFeatureState,
+) {
+    let area = centered_rect(60, 40, frame.area());
+    frame.render_widget(Clear, area);
+
+    let source_name = &state.source_branch;
+    let title = format!(" Fork Feature: {} ", source_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // branch input
+            Constraint::Length(1), // spacer
+            Constraint::Length(4), // agent picker
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // context checkbox
+            Constraint::Min(0),
+            Constraint::Length(1), // hints
+        ])
+        .split(inner);
+
+    // Branch name input
+    let branch_active =
+        state.step == ForkFeatureStep::Branch;
+    let branch_label_style = if branch_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let cursor = if branch_active {
+        Span::styled(
+            "\u{2588}",
+            Style::default().fg(Color::Cyan),
+        )
+    } else {
+        Span::raw("")
+    };
+
+    let branch_field = Paragraph::new(Line::from(vec![
+        Span::styled(" Branch: ", branch_label_style),
+        Span::styled(
+            &state.new_branch,
+            Style::default().fg(Color::White),
+        ),
+        cursor,
+    ]));
+    frame.render_widget(branch_field, chunks[0]);
+
+    // Agent picker
+    let agent_active =
+        state.step == ForkFeatureStep::Agent;
+    let agent_label_style = if agent_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let mut agent_lines = vec![Line::from(Span::styled(
+        " Agent:",
+        agent_label_style,
+    ))];
+
+    for (i, agent) in AgentKind::ALL.iter().enumerate() {
+        let is_selected = i == state.agent_index;
+        let marker =
+            if is_selected { ">" } else { " " };
+        let style = if agent_active && is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        agent_lines.push(Line::from(Span::styled(
+            format!(
+                "   {} {}",
+                marker,
+                agent.display_name()
+            ),
+            style,
+        )));
+    }
+
+    let agent_widget = Paragraph::new(agent_lines);
+    frame.render_widget(agent_widget, chunks[2]);
+
+    // Context checkbox
+    let context_active =
+        state.step == ForkFeatureStep::Agent;
+    let ctx_check = if state.include_context {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let ctx_style = if context_active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let ctx_label_style = if context_active {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let ctx_line = Paragraph::new(Line::from(vec![
+        Span::styled(" Context: ", ctx_label_style),
+        Span::styled(
+            format!("{} Include session transcript", ctx_check),
+            ctx_style,
+        ),
+    ]));
+    frame.render_widget(ctx_line, chunks[4]);
+
+    // Hints
+    let hints = if branch_active {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" next  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" cancel"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" select  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" confirm  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" back  "),
+            Span::styled(
+                "Tab",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" toggle context"),
+        ]))
+    };
+    frame.render_widget(hints, chunks[6]);
 }

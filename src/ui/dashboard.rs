@@ -235,6 +235,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::HookPrompt(state) = &app.mode {
         super::dialogs::draw_hook_prompt_dialog(frame, state);
     }
+
+    if let AppMode::ForkingFeature(state) = &app.mode {
+        super::dialogs::draw_fork_feature_dialog(frame, state);
+    }
 }
 
 pub fn centered_rect(

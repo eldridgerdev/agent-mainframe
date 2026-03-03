@@ -10,6 +10,7 @@ mod tmux;
 mod traits;
 mod ui;
 mod usage;
+mod transcript;
 mod worktree;
 
 use anyhow::Result;

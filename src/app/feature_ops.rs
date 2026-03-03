@@ -6,6 +6,7 @@ use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
+use state::{ForkFeatureState, ForkFeatureStep};
 
 impl App {
     pub fn start_create_feature(&mut self) {
@@ -788,5 +789,238 @@ impl App {
 
     pub fn cancel_deleting_feature(&mut self) {
         self.mode = AppMode::Normal;
+    }
+
+    pub fn start_fork_feature(&mut self) {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) => (*pi, *fi),
+            Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return,
+        };
+
+        let (project_name, project_repo, feature) =
+            match self.store.projects.get(pi) {
+                Some(p) => match p.features.get(fi) {
+                    Some(f) => (
+                        p.name.clone(),
+                        p.repo.clone(),
+                        f,
+                    ),
+                    None => return,
+                },
+                None => return,
+            };
+
+        let agent_index = AgentKind::ALL
+            .iter()
+            .position(|a| *a == feature.agent)
+            .unwrap_or(0);
+
+        let state = ForkFeatureState {
+            source_pi: pi,
+            source_fi: fi,
+            project_name,
+            project_repo,
+            source_branch: feature.branch.clone(),
+            new_branch: format!("{}-fork", feature.branch),
+            step: ForkFeatureStep::Branch,
+            agent: feature.agent.clone(),
+            agent_index,
+            mode: feature.mode.clone(),
+            review: feature.review,
+            enable_chrome: feature.enable_chrome,
+            enable_notes: feature.has_notes,
+            include_context: true,
+        };
+
+        self.mode = AppMode::ForkingFeature(state);
+        self.message = None;
+    }
+
+    pub fn create_forked_feature(&mut self) -> Result<()> {
+        let state = match &self.mode {
+            AppMode::ForkingFeature(s) => s,
+            _ => return Ok(()),
+        };
+
+        let project_name = state.project_name.clone();
+        let project_repo = state.project_repo.clone();
+        let source_branch = state.source_branch.clone();
+        let new_branch = state.new_branch.clone();
+        let mode = state.mode.clone();
+        let review = state.review;
+        let agent = state.agent.clone();
+        let enable_chrome = state.enable_chrome;
+        let enable_notes = state.enable_notes;
+        let include_context = state.include_context;
+        let source_workdir = self
+            .store
+            .projects
+            .get(state.source_pi)
+            .and_then(|p| p.features.get(state.source_fi))
+            .map(|f| f.workdir.clone());
+
+        if new_branch.is_empty() {
+            self.message =
+                Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        // Check for duplicate feature name
+        if let Some(project) =
+            self.store.find_project(&project_name)
+        {
+            if project
+                .features
+                .iter()
+                .any(|f| f.name == new_branch)
+            {
+                self.message = Some(format!(
+                    "Error: Feature '{}' already exists",
+                    new_branch
+                ));
+                return Ok(());
+            }
+        } else {
+            self.message = Some(format!(
+                "Error: Project '{}' not found",
+                project_name
+            ));
+            return Ok(());
+        }
+
+        // Create worktree from source branch
+        let workdir = self.worktree.create_from(
+            &project_repo,
+            &new_branch,
+            &new_branch,
+            &source_branch,
+        )?;
+
+        // Export transcript context from source session
+        if include_context
+            && let Some(ref src_wd) = source_workdir
+            && let Some(jsonl) =
+                crate::transcript::find_latest_transcript(src_wd)
+            && let Ok(md) =
+                crate::transcript::export_transcript_markdown(&jsonl)
+        {
+            let claude_dir = workdir.join(".claude");
+            let _ = std::fs::create_dir_all(&claude_dir);
+            let _ = std::fs::write(
+                claude_dir.join("context.md"),
+                md,
+            );
+        }
+
+        // Check for lifecycle hooks
+        let global_ext = load_global_extension_config();
+        let ext = merge_project_extension_config(
+            &global_ext,
+            &project_repo,
+        );
+
+        if let Some(ref hook_cfg) =
+            ext.lifecycle_hooks.on_worktree_created
+        {
+            if let Some(prompt) = hook_cfg.prompt() {
+                self.start_hook_prompt(
+                    hook_cfg.script().to_string(),
+                    workdir.clone(),
+                    prompt.title.clone(),
+                    prompt.options.clone(),
+                    HookNext::WorktreeCreated {
+                        project_name,
+                        branch: new_branch,
+                        mode,
+                        review,
+                        agent,
+                        enable_chrome,
+                        enable_notes,
+                    },
+                );
+                return Ok(());
+            }
+
+            self.start_worktree_hook(
+                hook_cfg.script(),
+                workdir.clone(),
+                project_name.clone(),
+                new_branch.clone(),
+                mode.clone(),
+                review,
+                agent.clone(),
+                enable_chrome,
+                enable_notes,
+                None,
+            );
+            return Ok(());
+        }
+
+        if enable_notes {
+            let claude_dir = workdir.join(".claude");
+            if !claude_dir.exists() {
+                let _ = std::fs::create_dir_all(&claude_dir);
+            }
+            let notes_path = claude_dir.join("notes.md");
+            if !notes_path.exists() {
+                let _ = std::fs::write(
+                    &notes_path,
+                    "# Notes\n\nWrite instructions for Claude here.\n",
+                );
+            }
+        }
+
+        let feature = Feature::new(
+            new_branch.clone(),
+            new_branch.clone(),
+            workdir,
+            true,
+            mode,
+            review,
+            agent,
+            enable_chrome,
+            enable_notes,
+        );
+
+        self.store.add_feature(&project_name, feature);
+        self.save()?;
+
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name)
+        {
+            let fi = self.store.projects[pi]
+                .features
+                .len()
+                .saturating_sub(1);
+            self.store.projects[pi].collapsed = false;
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        self.mode = AppMode::Normal;
+
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == project_name)
+        {
+            let fi = self.store.projects[pi]
+                .features
+                .len()
+                .saturating_sub(1);
+            self.ensure_feature_running(pi, fi)?;
+            self.save()?;
+        }
+
+        self.message = Some(format!(
+            "Forked '{}' -> '{}'",
+            source_branch, new_branch
+        ));
+
+        Ok(())
     }
 }

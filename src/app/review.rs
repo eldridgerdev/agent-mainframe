@@ -44,9 +44,6 @@ impl App {
             _ => return Ok(()),
         };
 
-        // Exit view now so any error messages are visible in list mode.
-        self.exit_view();
-
         // Look in workdir (feature worktree), then repo root, then
         // the directory of the running AMF binary (handles the case
         // where final-review.sh hasn't been committed yet but exists
@@ -69,6 +66,7 @@ impl App {
         let script = match script_path {
             Some(p) => p,
             None => {
+                self.exit_view();
                 self.message = Some(format!(
                     "final-review.sh not found in {}, {}, or AMF binary dir",
                     workdir.display(),
@@ -118,6 +116,7 @@ impl App {
         if let Err(e) =
             TmuxManager::send_literal(&target_session, &target_window, &cmd)
         {
+            self.exit_view();
             self.message =
                 Some(format!("Failed to send review command: {e}"));
             return Ok(());
@@ -125,6 +124,7 @@ impl App {
         if let Err(e) =
             TmuxManager::send_key_name(&target_session, &target_window, "Enter")
         {
+            self.exit_view();
             self.message =
                 Some(format!("Failed to start review: {e}"));
             return Ok(());

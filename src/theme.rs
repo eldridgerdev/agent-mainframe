@@ -15,6 +15,18 @@ pub enum ThemeName {
     CatppuccinFrappe,
 }
 
+impl ThemeName {
+    pub fn display_name(&self) -> &str {
+        match self {
+            ThemeName::Default => "Default",
+            ThemeName::Amf => "AMF",
+            ThemeName::Dracula => "Dracula",
+            ThemeName::Nord => "Nord",
+            ThemeName::CatppuccinFrappe => "Catppuccin Frappe",
+        }
+    }
+}
+
 impl std::fmt::Display for ThemeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -25,6 +25,7 @@ pub use dialog::{
     handle_help_key,
     handle_latest_prompt_key,
     handle_rename_session_key,
+    handle_theme_picker_key,
 };
 pub use browse::handle_browse_path_key;
 pub use feature_creation::handle_create_feature_key;
@@ -114,6 +115,9 @@ pub fn handle_key(
         }
         AppMode::ForkingFeature(_) => {
             handle_fork_feature_key(app, key.code)
+        }
+        AppMode::ThemePicker(_) => {
+            handle_theme_picker_key(app, key.code)
         }
     }
 }

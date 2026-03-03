@@ -147,6 +147,30 @@ pub enum AppMode {
     ThemePicker(ThemePickerState),
 }
 
+#[derive(Debug, Clone)]
+pub struct PendingSummary {
+    pub tmux_session: String,
+    pub workdir: PathBuf,
+    pub agent: crate::project::AgentKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SummaryState {
+    pub pending: Vec<PendingSummary>,
+    pub last_status: std::collections::HashMap<String, crate::project::ProjectStatus>,
+    pub generating: std::collections::HashSet<String>,
+}
+
+impl SummaryState {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            last_status: std::collections::HashMap::new(),
+            generating: std::collections::HashSet::new(),
+        }
+    }
+}
+
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,

@@ -281,6 +281,9 @@ pub fn handle_normal_key(
                 app.session_filter.display_name()
             ));
         }
+        KeyCode::Char('Z') => {
+            app.trigger_summary_for_selected()?;
+        }
         _ => {}
     }
     Ok(())

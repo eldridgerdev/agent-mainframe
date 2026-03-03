@@ -167,6 +167,8 @@ pub struct App {
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
     pub last_timer_values: std::collections::HashMap<String, String>,
+    pub summary_state: SummaryState,
+    pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
 }
@@ -217,6 +219,8 @@ impl App {
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
             last_timer_values: std::collections::HashMap::new(),
+            summary_state: SummaryState::new(),
+            summary_rx: None,
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
         })
@@ -256,6 +260,8 @@ impl App {
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
             last_timer_values: std::collections::HashMap::new(),
+            summary_state: SummaryState::new(),
+            summary_rx: None,
             tmux,
             worktree,
         }

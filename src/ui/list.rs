@@ -348,6 +348,23 @@ pub fn draw(
                         ),
                         Style::default().fg(muted),
                     ));
+                    if app.summary_state.generating.contains(&feature.tmux_session) {
+                        let throbber = throbber_widgets_tui::Throbber::default()
+                            .throbber_style(
+                                Style::default()
+                                    .fg(Color::Yellow),
+                            )
+                            .throbber_set(throbber_widgets_tui::CLOCK)
+                            .use_type(throbber_widgets_tui::WhichUse::Spin);
+                        let mut span = throbber.to_symbol_span(&app.throbber_state);
+                        span.content = format!(" — {}", span.content).into();
+                        line_spans.push(span);
+                    } else if let Some(summary) = &feature.summary {
+                        line_spans.push(Span::styled(
+                            format!(" — {}", summary),
+                            Style::default().fg(Color::Yellow),
+                        ));
+                    }
                     Line::from(line_spans)
                 }
                 VisibleItem::Session(pi, fi, si) => {

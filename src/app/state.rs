@@ -36,6 +36,33 @@ pub enum Selection {
     Session(usize, usize, usize),
 }
 
+#[derive(Clone, Default)]
+pub struct TextSelection {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+    pub is_selecting: bool,
+    pub has_selection: bool,
+}
+
+impl TextSelection {
+    pub fn clear(&mut self) {
+        self.has_selection = false;
+        self.is_selecting = false;
+    }
+
+    pub fn normalized(&self) -> (u16, u16, u16, u16) {
+        if self.start_row < self.end_row
+            || (self.start_row == self.end_row && self.start_col <= self.end_col)
+        {
+            (self.start_row, self.start_col, self.end_row, self.end_col)
+        } else {
+            (self.end_row, self.end_col, self.start_row, self.start_col)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ViewState {
     pub project_name: String,
@@ -50,6 +77,7 @@ pub struct ViewState {
     pub scroll_mode: bool,
     pub scroll_total_lines: usize,
     pub scroll_passthrough: bool,
+    pub selection: TextSelection,
 }
 
 impl ViewState {
@@ -75,6 +103,7 @@ impl ViewState {
             scroll_mode: false,
             scroll_total_lines: 0,
             scroll_passthrough: false,
+            selection: TextSelection::default(),
         }
     }
 }

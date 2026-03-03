@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{MouseEvent, MouseEventKind};
+use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
 use std::time::Instant;
 
 use crate::app::{App, AppMode, Selection, VisibleItem};
@@ -17,6 +17,12 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
         }
         MouseEventKind::Down(button) => {
             handle_click(app, mouse.column, mouse.row, button, visible_rows)?;
+        }
+        MouseEventKind::Drag(button) => {
+            handle_drag(app, mouse.column, mouse.row, button)?;
+        }
+        MouseEventKind::Up(button) => {
+            handle_release(app, mouse.column, mouse.row, button)?;
         }
         _ => {}
     }
@@ -41,10 +47,10 @@ fn handle_click(
     app: &mut App,
     col: u16,
     row: u16,
-    _button: crossterm::event::MouseButton,
+    button: crossterm::event::MouseButton,
     visible_rows: u16,
 ) -> Result<()> {
-    if let AppMode::Viewing(view) = &app.mode {
+    if let AppMode::Viewing(view) = &mut app.mode {
         if row == 0 {
             let name_start = 2;
             let name_end = name_start + view.project_name.len() as u16 + 1;
@@ -80,6 +86,18 @@ fn handle_click(
                     return Ok(());
                 }
             }
+            return Ok(());
+        }
+        
+        if button == MouseButton::Left && row > 0 {
+            app.message = None;
+            let content_row = row - 1;
+            view.selection.start_row = content_row;
+            view.selection.start_col = col;
+            view.selection.end_row = content_row;
+            view.selection.end_col = col;
+            view.selection.is_selecting = true;
+            view.selection.has_selection = false;
         }
         return Ok(());
     }
@@ -190,4 +208,118 @@ fn handle_double_click(app: &mut App, item: &VisibleItem, col: u16) -> Result<()
         }
     }
     Ok(())
+}
+
+fn handle_drag(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result<()> {
+    if let AppMode::Viewing(view) = &mut app.mode
+        && button == MouseButton::Left
+        && view.selection.is_selecting
+        && row > 0
+    {
+        let content_row = row - 1;
+        view.selection.end_row = content_row;
+        view.selection.end_col = col;
+        view.selection.has_selection = true;
+    }
+    Ok(())
+}
+
+fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result<()> {
+    if let AppMode::Viewing(view) = &mut app.mode
+        && button == MouseButton::Left
+        && view.selection.is_selecting
+    {
+        view.selection.is_selecting = false;
+
+        if view.selection.has_selection {
+            if row > 0 {
+                let content_row = row - 1;
+                view.selection.end_row = content_row;
+                view.selection.end_col = col;
+            }
+
+            let text = extract_selected_text(
+                &app.pane_content,
+                &view.selection,
+                app.pane_content_rows,
+                app.pane_content_cols,
+            );
+
+            if !text.is_empty() {
+                copy_to_clipboard_osc52(&text);
+                app.message = Some(format!("Copied {} chars", text.len()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy text to clipboard using OSC 52 escape sequence.
+/// This works in terminals that support it (most modern terminals).
+fn copy_to_clipboard_osc52(text: &str) {
+    use std::io::Write;
+    let encoded = base64_encode(text.as_bytes());
+    let _ = std::io::stdout().write_all(format!("\x1b]52;c;{}\x07", encoded).as_bytes());
+    let _ = std::io::stdout().flush();
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn extract_selected_text(content: &str, selection: &crate::app::TextSelection, rows: u16, cols: u16) -> String {
+    let (start_row, start_col, end_row, end_col) = selection.normalized();
+    
+    if rows == 0 || cols == 0 {
+        return String::new();
+    }
+    
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let normalized = content.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    let screen = parser.screen();
+    
+    let mut result = String::new();
+    
+    for row in start_row..=end_row.min(rows.saturating_sub(1)) {
+        let col_start = if row == start_row { start_col } else { 0 };
+        let col_end = if row == end_row { end_col.min(cols) } else { cols };
+        
+        let mut line_text = String::new();
+        for col in col_start..col_end {
+            if let Some(cell) = screen.cell(row, col) {
+                line_text.push_str(&cell.contents());
+            }
+        }
+        
+        let trimmed = line_text.trim_end();
+        if !trimmed.is_empty() || row != end_row.min(rows.saturating_sub(1)) {
+            result.push_str(trimmed);
+            if row != end_row.min(rows.saturating_sub(1)) {
+                result.push('\n');
+            }
+        }
+    }
+    
+    result
 }

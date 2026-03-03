@@ -222,6 +222,11 @@ fn run_loop<B: Backend>(
                         &session, &window,
                     )
                     .unwrap_or_default();
+                // Store the rendering dimensions (content area in pane.rs),
+                // not the tmux capture dimensions, so mouse selection
+                // coordinates align correctly.
+                app.pane_content_cols = size.width;
+                app.pane_content_rows = size.height.saturating_sub(1);
                 app.tmux_cursor =
                     TmuxManager::cursor_position(&session, &window)
                         .ok();

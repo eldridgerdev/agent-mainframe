@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::ViewState;
+use crate::app::{ViewState, TextSelection};
 use crate::project::VibeMode;
 use crate::theme::Theme;
 
@@ -172,7 +172,12 @@ pub fn draw(
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
     } else {
-        let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
+        let text = ansi_to_ratatui_text_with_selection(
+            pane_content, 
+            content_area.width, 
+            content_area.height,
+            &view.selection,
+        );
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
 
@@ -229,11 +234,19 @@ fn strip_ansi_codes(s: &str) -> String {
     result
 }
 
-fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
+fn ansi_to_ratatui_text_with_selection<'a>(
+    raw: &str, 
+    cols: u16, 
+    rows: u16, 
+    selection: &TextSelection,
+) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let normalized = raw.replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
+
+    let (sel_start_row, sel_start_col, sel_end_row, sel_end_col) = selection.normalized();
+    let has_selection = selection.has_selection;
 
     let mut lines = Vec::with_capacity(rows as usize);
 
@@ -241,15 +254,35 @@ fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
         let mut spans: Vec<Span<'a>> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = Style::default();
+        let mut in_selection = false;
 
         for col in 0..cols {
+            let is_selected = has_selection
+                && ((row > sel_start_row && row < sel_end_row)
+                    || (row == sel_start_row && row == sel_end_row && col >= sel_start_col && col < sel_end_col)
+                    || (row == sel_start_row && row < sel_end_row && col >= sel_start_col)
+                    || (row > sel_start_row && row == sel_end_row && col < sel_end_col));
+
+            if is_selected != in_selection && !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style,
+                ));
+            }
+            in_selection = is_selected;
+
             let cell = screen.cell(row, col);
             let cell = match cell {
                 Some(c) => c,
                 None => continue,
             };
 
-            let style = vt100_cell_to_style(cell);
+            let mut style = vt100_cell_to_style(cell);
+            if is_selected {
+                style = style
+                    .bg(ratatui::style::Color::Rgb(70, 100, 140))
+                    .fg(ratatui::style::Color::White);
+            }
 
             if style != current_style && !current_text.is_empty() {
                 spans.push(Span::styled(

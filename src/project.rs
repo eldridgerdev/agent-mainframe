@@ -791,7 +791,7 @@ mod tests {
         store.save(tmp.path()).unwrap();
 
         let loaded = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, 3);
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(loaded.projects[0].name, "my-project");
         assert_eq!(
@@ -826,7 +826,7 @@ mod tests {
         std::fs::write(tmp.path(), v0_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 2);
+        assert_eq!(store.version, 3);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];
@@ -883,7 +883,7 @@ mod tests {
         std::fs::write(tmp.path(), v1_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 2);
+        assert_eq!(store.version, 3);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];

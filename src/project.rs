@@ -716,6 +716,7 @@ mod tests {
             created_at: Utc::now(),
             command: None,
             on_stop: None,
+            pre_check: None,
             status_text: None,
         }
     }

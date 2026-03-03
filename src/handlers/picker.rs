@@ -176,6 +176,43 @@ pub fn handle_notification_picker_key(
         KeyCode::Enter => {
             app.handle_notification_select()?;
         }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            if let AppMode::NotificationPicker(ref mut idx, _) =
+                app.mode
+            {
+                let i = *idx;
+                if i < app.pending_inputs.len() {
+                    let input = app.pending_inputs.remove(i);
+                    let _ =
+                        std::fs::remove_file(&input.file_path);
+                    app.message =
+                        Some("Input request deleted".into());
+                    if app.pending_inputs.is_empty() {
+                        let from_view =
+                            match std::mem::replace(
+                                &mut app.mode,
+                                AppMode::Normal,
+                            ) {
+                                AppMode::NotificationPicker(
+                                    _,
+                                    v,
+                                ) => v,
+                                other => {
+                                    app.mode = other;
+                                    return Ok(());
+                                }
+                            };
+                        if let Some(view) = from_view {
+                            app.mode =
+                                AppMode::Viewing(view);
+                        }
+                    } else if *idx >= app.pending_inputs.len()
+                    {
+                        *idx = app.pending_inputs.len() - 1;
+                    }
+                }
+            }
+        }
         _ => {}
     }
     Ok(())

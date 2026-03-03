@@ -165,8 +165,7 @@ This installs the `amf` binary to `~/.cargo/bin/`.
             └───────────────────────────────────────────────┘
    ```
 
-5. Press `Enter` to view the embedded tmux output, or `s` to switch
-   directly into the tmux session.
+5. Press `Enter` to view the embedded tmux output.
 
 6. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
@@ -180,7 +179,6 @@ This installs the `amf` binary to `~/.cargo/bin/`.
 | `h` | Collapse project / go to parent |
 | `l` | Expand project / view feature |
 | `Enter` | Toggle expand / view feature |
-| `s` | Switch to feature (tmux attach) |
 | `N` | Create new project |
 | `n` | Create new feature |
 | `a` | Add Claude session to feature |
@@ -212,7 +210,6 @@ All keys are forwarded to the tmux session except:
 | `q` | Exit view |
 | `t` / `T` | Cycle between sessions (claude, terminal, nvim) |
 | `w` | Open session switcher |
-| `s` | Switch/attach to tmux session directly |
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
@@ -489,7 +486,7 @@ value is the replacement character.
 ```
 
 Available actions: `quit`, `create_project`, `create_feature`,
-`start_session`, `stop_session`, `delete`, `sessions`, `help`,
+`start_session`, `stop_session`, `delete`, `help`,
 `search`, `refresh`, `filter`.
 
 #### `feature_presets`
@@ -651,8 +648,8 @@ src/
   with actual session state
 - The embedded tmux view captures ANSI output from tmux and renders it
   through a vt100 parser into ratatui spans
-- When running inside tmux, switching uses `switch-client`; outside
-  tmux, the TUI exits and attaches directly
+- The embedded tmux view renders agent output directly in the TUI
+  without leaving the dashboard
 - Hook files are written to the worktree's local `.claude/settings.json`
   only — global settings are never modified. On startup,
   `cleanup_global_hooks()` removes any previously-injected entries.

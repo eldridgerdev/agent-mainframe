@@ -215,20 +215,6 @@ fn handle_leader_key(
         KeyCode::Char('T') => {
             app.view_prev_session();
         }
-        KeyCode::Char('s') => {
-            let session = match &app.mode {
-                AppMode::Viewing(view) => {
-                    view.session.clone()
-                }
-                _ => return Ok(()),
-            };
-            app.exit_view();
-            if TmuxManager::is_inside_tmux() {
-                TmuxManager::switch_client(&session)?;
-            } else {
-                app.should_switch = Some(session);
-            }
-        }
         KeyCode::Char('n') => {
             app.view_next_feature()?;
         }

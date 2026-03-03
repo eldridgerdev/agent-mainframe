@@ -135,9 +135,6 @@ pub fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('s') => {
-            app.open_session_picker()?;
-        }
         KeyCode::Char('S') => {
             let is_opencode = match &app.selection {
                 Selection::Feature(pi, fi) => app
@@ -285,7 +282,6 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "start_session" => Some('c'),
         "stop_session" => Some('x'),
         "delete" => Some('d'),
-        "sessions" => Some('s'),
         "help" => Some('?'),
         "search" => Some('/'),
         "refresh" => Some('r'),
@@ -353,7 +349,6 @@ mod tests {
             Some('x')
         );
         assert_eq!(default_key_for_action("delete"), Some('d'));
-        assert_eq!(default_key_for_action("sessions"), Some('s'));
         assert_eq!(default_key_for_action("help"), Some('?'));
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));

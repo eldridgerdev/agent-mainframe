@@ -16,7 +16,6 @@ pub fn draw_help(frame: &mut Frame) {
         ("h", "Collapse project / go to parent"),
         ("l", "Expand project / view feature"),
         ("Enter", "Toggle expand / view session"),
-        ("s", "Switch to tmux session"),
         ("S", "Pick opencode session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
@@ -75,7 +74,7 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / s n p i r x f ?)",
+            "Leader key (then: q t T w / n p i r x f ?)",
             Style::default().fg(Color::White),
         ),
     ]));

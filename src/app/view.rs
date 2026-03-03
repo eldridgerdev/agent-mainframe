@@ -97,51 +97,6 @@ impl App {
         self.message = Some("Returned to dashboard".into());
     }
 
-    pub fn switch_to_selected(&mut self) -> Result<()> {
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-
-        let window = match &self.selection {
-            Selection::Session(_, _, si) => self
-                .store
-                .projects
-                .get(pi)
-                .and_then(|p| p.features.get(fi))
-                .and_then(|f| f.sessions.get(*si))
-                .map(|s| s.tmux_window.clone()),
-            _ => None,
-        };
-
-        self.ensure_feature_running(pi, fi)?;
-
-        let feature = self.store.projects[pi]
-            .features
-            .get_mut(fi)
-            .unwrap();
-        feature.touch();
-        feature.status = ProjectStatus::Active;
-        let session = feature.tmux_session.clone();
-        self.save()?;
-
-        if let Some(window) = &window {
-            let _ =
-                TmuxManager::select_window(&session, window);
-        }
-
-        if TmuxManager::is_inside_tmux() {
-            TmuxManager::switch_client(&session)?;
-            self.message =
-                Some("Switched back from project".into());
-        } else {
-            self.should_switch = Some(session);
-        }
-
-        Ok(())
-    }
-
     pub fn activate_leader(&mut self) {
         self.leader_active = true;
         self.leader_activated_at = Some(std::time::Instant::now());
@@ -470,45 +425,4 @@ impl App {
         self.pane_content.clear();
     }
 
-    pub fn open_terminal(&mut self) -> Result<()> {
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-
-        let feature = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-
-        let session = feature.tmux_session.clone();
-        if TmuxManager::session_exists(&session) {
-            if let Some(terminal_session) = feature
-                .sessions
-                .iter()
-                .find(|s| s.kind == SessionKind::Terminal)
-            {
-                let _ = TmuxManager::select_window(
-                    &session,
-                    &terminal_session.tmux_window,
-                );
-            }
-            if TmuxManager::is_inside_tmux() {
-                TmuxManager::switch_client(&session)?;
-                self.message = Some(
-                    "Switched back from terminal".into(),
-                );
-            } else {
-                self.should_switch = Some(session);
-            }
-        }
-
-        Ok(())
-    }
 }

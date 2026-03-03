@@ -129,7 +129,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit  t/T:cycle  w:switcher  n/p:feature  /:commands  i:inputs  s:attach  o:scroll  x:stop  f:review  ?:help",
+            " q:exit  t/T:cycle  w:switcher  n/p:feature  /:commands  i:inputs  o:scroll  x:stop  f:review  ?:help",
             Style::default().fg(theme.leader_bg.to_color()),
         ));
     } else {

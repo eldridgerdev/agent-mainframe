@@ -161,7 +161,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
                     } else {
-                        app.start_create_batch_features();
+                        let _ = app.create_batch_features();
                     }
                 }
             }

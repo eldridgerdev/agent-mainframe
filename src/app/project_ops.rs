@@ -50,7 +50,27 @@ impl App {
     }
 
     pub fn start_create_batch_features(&mut self) {
-        self.mode = AppMode::CreatingBatchFeatures(CreateBatchFeaturesState::new());
+        let workspace_path = match &self.selection {
+            Selection::Project(pi) => {
+                if let Some(p) = self.store.projects.get(*pi) {
+                    Some(p.repo.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            }
+            Selection::Feature(pi, _) => {
+                if let Some(p) = self.store.projects.get(*pi) {
+                    Some(p.repo.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        self.mode = AppMode::CreatingBatchFeatures(CreateBatchFeaturesState::with_workspace(
+            workspace_path,
+        ));
         self.message = None;
     }
 

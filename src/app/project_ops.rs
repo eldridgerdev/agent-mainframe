@@ -53,14 +53,14 @@ impl App {
         let workspace_path = match &self.selection {
             Selection::Project(pi) => {
                 if let Some(p) = self.store.projects.get(*pi) {
-                    Some(p.repo.as_os_str().to_string_lossy().into_owned())
+                    Some(p.repo.to_string_lossy().into_owned())
                 } else {
                     None
                 }
             }
             Selection::Feature(pi, _) => {
                 if let Some(p) = self.store.projects.get(*pi) {
-                    Some(p.repo.as_os_str().to_string_lossy().into_owned())
+                    Some(p.repo.to_string_lossy().into_owned())
                 } else {
                     None
                 }

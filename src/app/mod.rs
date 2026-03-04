@@ -15,6 +15,8 @@ mod switcher;
 mod sync;
 pub mod util;
 mod view;
+mod claude_sessions;
+mod claude_session_picker;
 
 #[cfg(test)]
 mod tests;

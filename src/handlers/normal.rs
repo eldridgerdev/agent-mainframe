@@ -139,27 +139,42 @@ pub fn handle_normal_key(
             app.open_session_picker()?;
         }
         KeyCode::Char('S') => {
-            let is_opencode = match &app.selection {
-                Selection::Feature(pi, fi) => app
-                    .store
-                    .projects
-                    .get(*pi)
-                    .and_then(|p| p.features.get(*fi))
-                    .map(|f| f.agent == AgentKind::Opencode),
-                Selection::Session(pi, fi, si) => app
-                    .store
-                    .projects
-                    .get(*pi)
-                    .and_then(|p| p.features.get(*fi))
-                    .and_then(|f| f.sessions.get(*si))
-                    .map(|s| s.kind == SessionKind::Opencode),
-                _ => Some(false),
+            let (is_opencode, is_claude) = match &app.selection {
+                Selection::Feature(pi, fi) => {
+                    let agent = app
+                        .store
+                        .projects
+                        .get(*pi)
+                        .and_then(|p| p.features.get(*fi))
+                        .map(|f| f.agent.clone());
+                    (
+                        agent.as_ref().map(|a| *a == AgentKind::Opencode),
+                        Some(true),
+                    )
+                }
+                Selection::Session(pi, fi, si) => {
+                    let kind = app
+                        .store
+                        .projects
+                        .get(*pi)
+                        .and_then(|p| p.features.get(*fi))
+                        .and_then(|f| f.sessions.get(*si))
+                        .map(|s| s.kind.clone());
+                    (
+                        kind.as_ref().map(|k| *k == SessionKind::Opencode),
+                        kind.as_ref().map(|k| *k == SessionKind::Claude),
+                    )
+                }
+                _ => (Some(false), Some(false)),
             };
+
             if is_opencode.unwrap_or(false) {
-                app.pick_session();
+                app.pick_opencode_session();
+            } else if is_claude.unwrap_or(false) {
+                app.pick_claude_session();
             } else {
                 app.message =
-                    Some("S only works for opencode sessions".into());
+                    Some("S only works for opencode or claude sessions".into());
             }
         }
         KeyCode::Char('m') => {

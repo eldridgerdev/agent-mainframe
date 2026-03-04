@@ -118,6 +118,13 @@ pub struct OpencodeSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct ClaudeSessionPickerState {
+    pub sessions: Vec<super::claude_sessions::ClaudeSessionInfo>,
+    pub selected: usize,
+    pub workdir: PathBuf,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -135,6 +142,11 @@ pub enum AppMode {
     Searching(SearchState),
     OpencodeSessionPicker(OpencodeSessionPickerState),
     ConfirmingOpencodeSession {
+        session_id: String,
+        workdir: PathBuf,
+    },
+    ClaudeSessionPicker(ClaudeSessionPickerState),
+    ConfirmingClaudeSession {
         session_id: String,
         workdir: PathBuf,
     },

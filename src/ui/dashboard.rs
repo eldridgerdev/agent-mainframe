@@ -187,6 +187,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+        AppMode::CreatingBatchFeatures(state) => {
+            super::dialogs::draw_create_batch_features_dialog(frame, state);
+        }
         AppMode::DeletingProject(name) => {
             super::dialogs::draw_delete_project_confirm(frame, name);
         }

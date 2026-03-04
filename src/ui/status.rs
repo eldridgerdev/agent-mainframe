@@ -243,6 +243,7 @@ pub fn draw(
         }
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
+        | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
         | AppMode::BrowsingPath(_) => Line::from(vec![

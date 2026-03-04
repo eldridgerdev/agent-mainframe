@@ -49,6 +49,11 @@ impl App {
         self.message = None;
     }
 
+    pub fn start_create_batch_features(&mut self) {
+        self.mode = AppMode::CreatingBatchFeatures(CreateBatchFeaturesState::new());
+        self.message = None;
+    }
+
     pub fn open_settings_project(&mut self) -> Result<()> {
         let settings_dir = crate::project::amf_config_dir();
 

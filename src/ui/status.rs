@@ -164,21 +164,6 @@ pub fn draw(
                     ),
                     Span::raw(" stop  "),
                     Span::styled(
-                        "t",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +term  "),
-                    Span::styled(
-                        "a",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +claude  "),
-                    Span::styled(
-                        "v",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +nvim  "),
-                    Span::styled(
                         "f",
                         Style::default().fg(Color::Yellow),
                     ),

@@ -1,8 +1,8 @@
 use anyhow::Result;
 
-use super::*;
 use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::util::slugify;
+use super::*;
 use crate::tmux::TmuxManager;
 
 impl App {
@@ -12,8 +12,7 @@ impl App {
         use crate::app::SessionPickerState;
 
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => {
                 self.message = Some("Select a feature first".into());
                 return Ok(());
@@ -70,13 +69,11 @@ impl App {
             },
         ];
 
-        let custom_sessions =
-            self.active_extension.custom_sessions.clone();
+        let custom_sessions = self.active_extension.custom_sessions.clone();
 
         let total_sessions = builtin_sessions.len() + custom_sessions.len();
         if total_sessions == 0 {
-            self.message =
-                Some("No sessions available".into());
+            self.message = Some("No sessions available".into());
             return Ok(());
         }
 
@@ -97,16 +94,13 @@ impl App {
         Ok(())
     }
 
-    pub fn open_session_picker_from_switcher(
-        &mut self,
-    ) -> Result<()> {
+    pub fn open_session_picker_from_switcher(&mut self) -> Result<()> {
         use crate::app::{BuiltinSessionOption, SessionPickerState};
 
         let (project_name, feature_name) = match &self.mode {
-            AppMode::SessionSwitcher(state) => (
-                state.project_name.clone(),
-                state.feature_name.clone(),
-            ),
+            AppMode::SessionSwitcher(state) => {
+                (state.project_name.clone(), state.feature_name.clone())
+            }
             _ => return Ok(()),
         };
 
@@ -129,8 +123,7 @@ impl App {
             None => return Ok(()),
         };
 
-        let feature =
-            self.store.projects[pi].features[fi].clone();
+        let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
         let vscode_available = std::process::Command::new("code")
@@ -144,12 +137,8 @@ impl App {
             BuiltinSessionOption {
                 kind: SessionKind::Claude,
                 label: match agent {
-                    AgentKind::Claude => {
-                        "Claude".to_string()
-                    }
-                    AgentKind::Opencode => {
-                        "Opencode (Claude)".to_string()
-                    }
+                    AgentKind::Claude => "Claude".to_string(),
+                    AgentKind::Opencode => "Opencode (Claude)".to_string(),
                 },
                 disabled: None,
             },
@@ -174,8 +163,7 @@ impl App {
             },
         ];
 
-        let custom_sessions =
-            self.active_extension.custom_sessions.clone();
+        let custom_sessions = self.active_extension.custom_sessions.clone();
 
         self.mode = AppMode::SessionPicker(SessionPickerState {
             builtin_sessions,
@@ -231,17 +219,12 @@ impl App {
         let command = session.command.clone();
 
         if TmuxManager::session_exists(&tmux_session) {
-            TmuxManager::create_window(
-                &tmux_session,
-                &window,
-                &workdir,
-            )?;
+            TmuxManager::create_window(&tmux_session, &window, &workdir)?;
 
             // Set up status directory and env vars for
             // the custom session, wrapped via env+bash
             // for shell portability (fish, zsh, etc.)
-            let status_dir =
-                workdir.join(".amf").join("session-status");
+            let status_dir = workdir.join(".amf").join("session-status");
             let _ = std::fs::create_dir_all(&status_dir);
 
             let env_prefix = format!(
@@ -258,54 +241,28 @@ impl App {
             } else {
                 format!("env {}", env_prefix)
             };
-            TmuxManager::send_literal(
-                &tmux_session,
-                &window,
-                &shell_cmd,
-            )?;
-            TmuxManager::send_key_name(
-                &tmux_session,
-                &window,
-                "Enter",
-            )?;
+            TmuxManager::send_literal(&tmux_session, &window, &shell_cmd)?;
+            TmuxManager::send_key_name(&tmux_session, &window, "Enter")?;
         }
 
         self.save()?;
         Ok(config.autolaunch.unwrap_or(false))
     }
 
-    pub fn add_builtin_session(
-        &mut self,
-        pi: usize,
-        fi: usize,
-        kind: SessionKind,
-    ) -> Result<()> {
+    pub fn add_builtin_session(&mut self, pi: usize, fi: usize, kind: SessionKind) -> Result<()> {
         match kind {
-            SessionKind::Terminal => {
-                self.add_terminal_session_for_picker(pi, fi)
-            }
-            SessionKind::Nvim => {
-                self.add_nvim_session_for_picker(pi, fi)
-            }
-            SessionKind::Claude => {
-                self.add_claude_session_for_picker(pi, fi)
-            }
-            SessionKind::Vscode => {
-                self.add_vscode_session_for_picker(pi, fi)
-            }
+            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi),
+            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi),
+            SessionKind::Claude => self.add_claude_session_for_picker(pi, fi),
+            SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => {
-                self.message =
-                    Some("Unsupported session type".into());
+                self.message = Some("Unsupported session type".into());
                 Ok(())
             }
         }
     }
 
-    fn add_terminal_session_for_picker(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    fn add_terminal_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
         let feature = match self
             .store
             .projects
@@ -317,10 +274,7 @@ impl App {
         };
 
         if !TmuxManager::session_exists(&feature.tmux_session) {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
+            self.message = Some("Error: Feature must be running to add a session".into());
             return Ok(());
         }
 
@@ -330,11 +284,7 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
+        TmuxManager::create_window(&tmux_session, &window, &workdir)?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
@@ -353,9 +303,7 @@ impl App {
             .status()
             .is_err()
         {
-            self.message = Some(
-                "Error: nvim is not installed".into(),
-            );
+            self.message = Some("Error: nvim is not installed".into());
             return Ok(());
         }
 
@@ -370,10 +318,7 @@ impl App {
         };
 
         if !TmuxManager::session_exists(&feature.tmux_session) {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
+            self.message = Some("Error: Feature must be running to add a session".into());
             return Ok(());
         }
 
@@ -383,16 +328,8 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
-        TmuxManager::send_keys(
-            &tmux_session,
-            &window,
-            "nvim",
-        )?;
+        TmuxManager::create_window(&tmux_session, &window, &workdir)?;
+        TmuxManager::send_keys(&tmux_session, &window, "nvim")?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
@@ -411,18 +348,11 @@ impl App {
             .status()
             .is_err()
         {
-            self.message = Some(
-                "Error: code (VSCode CLI) is not installed".into(),
-            );
+            self.message = Some("Error: code (VSCode CLI) is not installed".into());
             return Ok(());
         }
 
-        let feature = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        let feature = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(f) => f,
             None => return Ok(()),
         };
@@ -452,25 +382,16 @@ impl App {
         };
 
         if !TmuxManager::session_exists(&feature.tmux_session) {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
+            self.message = Some("Error: Feature must be running to add a session".into());
             return Ok(());
         }
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
         let mode = feature.mode.clone();
-        let extra_args: Vec<String> =
-            feature.mode.cli_flags(feature.enable_chrome);
+        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(
-            &workdir,
-            &repo,
-            &mode,
-            &agent,
-        );
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
@@ -480,143 +401,16 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
-        let extra_refs: Vec<&str> =
-            extra_args.iter().map(|s| s.as_str()).collect();
+        TmuxManager::create_window(&tmux_session, &window, &workdir)?;
+        let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
         match feature.agent {
             AgentKind::Claude => {
-                TmuxManager::launch_claude(
-                    &tmux_session,
-                    &window,
-                    None,
-                    &extra_refs,
-                )?;
+                TmuxManager::launch_claude(&tmux_session, &window, None, &extra_refs)?;
             }
             AgentKind::Opencode => {
-                TmuxManager::launch_opencode(
-                    &tmux_session,
-                    &window,
-                )?;
+                TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
         }
-
-        feature.collapsed = false;
-        let si = feature.sessions.len() - 1;
-        self.selection = Selection::Session(pi, fi, si);
-        self.save()?;
-        self.message = Some(format!("Added '{}'", label));
-
-        Ok(())
-    }
-
-    pub fn add_terminal_session(&mut self) -> Result<()> {
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-
-        let feature = match self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-
-        if !TmuxManager::session_exists(&feature.tmux_session)
-        {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
-            return Ok(());
-        }
-
-        let workdir = feature.workdir.clone();
-        let tmux_session = feature.tmux_session.clone();
-        let session =
-            feature.add_session(SessionKind::Terminal);
-        let window = session.tmux_window.clone();
-        let label = session.label.clone();
-
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
-
-        feature.collapsed = false;
-        let si = feature.sessions.len() - 1;
-        self.selection = Selection::Session(pi, fi, si);
-        self.save()?;
-        self.message = Some(format!("Added '{}'", label));
-
-        Ok(())
-    }
-
-    pub fn add_nvim_session(&mut self) -> Result<()> {
-        if std::process::Command::new("nvim")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
-            self.message = Some(
-                "Error: nvim is not installed".into(),
-            );
-            return Ok(());
-        }
-
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-
-        let feature = match self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-
-        if !TmuxManager::session_exists(&feature.tmux_session)
-        {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
-            return Ok(());
-        }
-
-        let workdir = feature.workdir.clone();
-        let tmux_session = feature.tmux_session.clone();
-        let session =
-            feature.add_session(SessionKind::Nvim);
-        let window = session.tmux_window.clone();
-        let label = session.label.clone();
-
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
-        TmuxManager::send_keys(
-            &tmux_session,
-            &window,
-            "nvim",
-        )?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
@@ -629,8 +423,7 @@ impl App {
 
     pub fn create_memo(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
 
@@ -645,8 +438,7 @@ impl App {
         };
 
         if feature.has_notes {
-            self.message =
-                Some("Memo already exists".into());
+            self.message = Some("Memo already exists".into());
             return Ok(());
         }
 
@@ -664,27 +456,15 @@ impl App {
 
         feature.has_notes = true;
 
-        if TmuxManager::session_exists(
-            &feature.tmux_session,
-        ) {
+        if TmuxManager::session_exists(&feature.tmux_session) {
             let workdir = feature.workdir.clone();
-            let tmux_session =
-                feature.tmux_session.clone();
-            let session =
-                feature.add_session(SessionKind::Nvim);
+            let tmux_session = feature.tmux_session.clone();
+            let session = feature.add_session(SessionKind::Nvim);
             session.label = "Memo".into();
             let window = session.tmux_window.clone();
 
-            TmuxManager::create_window(
-                &tmux_session,
-                &window,
-                &workdir,
-            )?;
-            TmuxManager::send_keys(
-                &tmux_session,
-                &window,
-                "nvim .claude/notes.md",
-            )?;
+            TmuxManager::create_window(&tmux_session, &window, &workdir)?;
+            TmuxManager::send_keys(&tmux_session, &window, "nvim .claude/notes.md")?;
 
             feature.collapsed = false;
         }
@@ -697,13 +477,11 @@ impl App {
 
     pub fn add_claude_session(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
 
-        let repo =
-            self.store.projects[pi].repo.clone();
+        let repo = self.store.projects[pi].repo.clone();
 
         let feature = match self
             .store
@@ -715,12 +493,8 @@ impl App {
             None => return Ok(()),
         };
 
-        if !TmuxManager::session_exists(&feature.tmux_session)
-        {
-            self.message = Some(
-                "Error: Feature must be running to add a session"
-                    .into(),
-            );
+        if !TmuxManager::session_exists(&feature.tmux_session) {
+            self.message = Some("Error: Feature must be running to add a session".into());
             return Ok(());
         }
 
@@ -729,12 +503,7 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(
-            &workdir,
-            &repo,
-            &mode,
-            &agent,
-        );
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
@@ -744,27 +513,14 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        TmuxManager::create_window(
-            &tmux_session,
-            &window,
-            &workdir,
-        )?;
-        let extra_refs: Vec<&str> =
-            extra_args.iter().map(|s| s.as_str()).collect();
+        TmuxManager::create_window(&tmux_session, &window, &workdir)?;
+        let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
         match feature.agent {
             AgentKind::Claude => {
-                TmuxManager::launch_claude(
-                    &tmux_session,
-                    &window,
-                    None,
-                    &extra_refs,
-                )?;
+                TmuxManager::launch_claude(&tmux_session, &window, None, &extra_refs)?;
             }
             AgentKind::Opencode => {
-                TmuxManager::launch_opencode(
-                    &tmux_session,
-                    &window,
-                )?;
+                TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
         }
 
@@ -779,9 +535,7 @@ impl App {
 
     pub fn remove_session(&mut self) -> Result<()> {
         let (pi, fi, si) = match &self.selection {
-            Selection::Session(pi, fi, si) => {
-                (*pi, *fi, *si)
-            }
+            Selection::Session(pi, fi, si) => (*pi, *fi, *si),
             _ => return Ok(()),
         };
 
@@ -818,9 +572,7 @@ impl App {
                     .env("AMF_SESSION_ID", &session_id)
                     .env(
                         "AMF_STATUS_DIR",
-                        workdir
-                            .join(".amf")
-                            .join("session-status"),
+                        workdir.join(".amf").join("session-status"),
                     )
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -836,10 +588,7 @@ impl App {
         }
 
         if TmuxManager::session_exists(&tmux_session) {
-            let _ = TmuxManager::kill_window(
-                &tmux_session,
-                &window,
-            );
+            let _ = TmuxManager::kill_window(&tmux_session, &window);
         }
 
         feature.sessions.remove(si);

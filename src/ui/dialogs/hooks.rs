@@ -236,10 +236,10 @@ pub fn draw_running_hook_dialog(
     frame.render_widget(output_para, chunks[2]);
 
     let hints = if is_running {
-        Paragraph::new(Line::from(Span::styled(
-            " Please wait...",
-            Style::default().fg(Color::DarkGray),
-        )))
+        Paragraph::new(Line::from(vec![
+            Span::styled(" h", Style::default().fg(Color::Yellow)),
+            Span::styled(" hide  ", Style::default().fg(Color::DarkGray)),
+        ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),

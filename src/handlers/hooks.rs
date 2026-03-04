@@ -10,6 +10,9 @@ pub fn handle_running_hook_key(app: &mut App, key: KeyCode) -> Result<()> {
     };
 
     if is_running {
+        if let KeyCode::Char('h') = key {
+            app.hide_running_hook();
+        }
         return Ok(());
     }
 
@@ -24,17 +27,24 @@ pub fn handle_running_hook_key(app: &mut App, key: KeyCode) -> Result<()> {
 
 pub fn handle_deleting_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     let (is_running, is_completed) = match &app.mode {
-        AppMode::DeletingFeatureInProgress(state) => {
-            (state.child.is_some(), state.stage == crate::app::DeleteStage::Completed)
-        }
+        AppMode::DeletingFeatureInProgress(state) => (
+            state.child.is_some(),
+            state.stage == crate::app::DeleteStage::Completed,
+        ),
         _ => return Ok(()),
     };
 
     if is_running {
+        if let KeyCode::Char('h') = key {
+            app.hide_deleting_feature();
+        }
         return Ok(());
     }
 
     match key {
+        KeyCode::Char('h') => {
+            app.hide_deleting_feature();
+        }
         KeyCode::Enter | KeyCode::Esc => {
             if is_completed {
                 app.complete_deleting_feature()?;
@@ -51,10 +61,7 @@ pub fn handle_deleting_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_hook_prompt_key(
-    app: &mut App,
-    key: KeyCode,
-) -> Result<()> {
+pub fn handle_hook_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc => {
             app.mode = AppMode::Normal;

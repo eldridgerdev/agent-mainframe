@@ -8,21 +8,10 @@ impl App {
     /// Expands leading `~/` to the home directory.
     /// If `choice` is provided it is set as `AMF_HOOK_CHOICE`
     /// in the child environment.
-    pub fn run_lifecycle_hook(
-        &self,
-        script: &str,
-        workdir: &Path,
-        choice: Option<&str>,
-    ) {
+    pub fn run_lifecycle_hook(&self, script: &str, workdir: &Path, choice: Option<&str>) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
-                .map(|h| {
-                    format!(
-                        "{}/{}",
-                        h.display(),
-                        &script[2..]
-                    )
-                })
+                .map(|h| format!("{}/{}", h.display(), &script[2..]))
                 .unwrap_or_else(|| script.to_string())
         } else {
             script.to_string()
@@ -60,10 +49,7 @@ impl App {
 
     /// Called when the user presses Enter in `HookPrompt` mode.
     pub fn confirm_hook_prompt(&mut self) -> Result<()> {
-        let state = match std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        ) {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::HookPrompt(s) => s,
             other => {
                 self.mode = other;
@@ -101,19 +87,11 @@ impl App {
                 );
             }
             HookNext::StartFeature { pi, fi } => {
-                self.run_lifecycle_hook(
-                    &state.script,
-                    &state.workdir,
-                    Some(&choice),
-                );
+                self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));
                 self.do_start_feature(pi, fi)?;
             }
             HookNext::StopFeature { pi, fi } => {
-                self.run_lifecycle_hook(
-                    &state.script,
-                    &state.workdir,
-                    Some(&choice),
-                );
+                self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));
                 self.do_stop_feature(pi, fi)?;
             }
         }
@@ -135,13 +113,7 @@ impl App {
     ) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
-                .map(|h| {
-                    format!(
-                        "{}/{}",
-                        h.display(),
-                        &script[2..]
-                    )
-                })
+                .map(|h| format!("{}/{}", h.display(), &script[2..]))
                 .unwrap_or_else(|| script.to_string())
         } else {
             script.to_string()
@@ -156,8 +128,7 @@ impl App {
         if let Some(ref c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-        let (tx, rx) =
-            std::sync::mpsc::channel::<String>();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
         let mut child = cmd.spawn().ok();
 
         if let Some(ref mut c) = child {
@@ -165,9 +136,7 @@ impl App {
                 let tx2 = tx.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in
-                        std::io::BufReader::new(stdout).lines()
-                    {
+                    for line in std::io::BufReader::new(stdout).lines() {
                         if let Ok(l) = line {
                             let _ = tx2.send(l);
                         }
@@ -177,9 +146,7 @@ impl App {
             if let Some(stderr) = c.stderr.take() {
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in
-                        std::io::BufReader::new(stderr).lines()
-                    {
+                    for line in std::io::BufReader::new(stderr).lines() {
                         if let Ok(l) = line {
                             let _ = tx.send(l);
                         }
@@ -224,19 +191,16 @@ impl App {
                 Ok(Some(status)) => {
                     state.success = Some(status.success());
                     if let Some(code) = status.code() {
-                        state.output.push_str(&format!(
-                            "\nProcess exited with code: {}",
-                            code
-                        ));
+                        state
+                            .output
+                            .push_str(&format!("\nProcess exited with code: {}", code));
                     }
                     state.child = None;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.success = Some(false);
-                    state
-                        .output
-                        .push_str(&format!("\nError: {}", e));
+                    state.output.push_str(&format!("\nError: {}", e));
                     state.child = None;
                 }
             }
@@ -246,7 +210,17 @@ impl App {
     }
 
     pub fn complete_running_hook(&mut self) -> Result<()> {
-        let (workdir, project_name, branch, mode, review, agent, enable_chrome, enable_notes, success) = {
+        let (
+            workdir,
+            project_name,
+            branch,
+            mode,
+            review,
+            agent,
+            enable_chrome,
+            enable_notes,
+            success,
+        ) = {
             match &self.mode {
                 AppMode::RunningHook(s) => (
                     s.workdir.clone(),
@@ -263,9 +237,12 @@ impl App {
             }
         };
 
-        let is_worktree = workdir != self.store.find_project(&project_name)
-            .map(|p| p.repo.clone())
-            .unwrap_or_default();
+        let is_worktree = workdir
+            != self
+                .store
+                .find_project(&project_name)
+                .map(|p| p.repo.clone())
+                .unwrap_or_default();
 
         if enable_notes {
             let claude_dir = workdir.join(".claude");
@@ -302,10 +279,7 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
@@ -318,10 +292,7 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
         }
@@ -339,5 +310,65 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub fn hide_running_hook(&mut self) {
+        if let AppMode::RunningHook(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
+            let key = state.key();
+            let bg = BackgroundHook::from_running_state(state);
+            self.background_hooks.insert(key, bg);
+            self.message = Some("Hook moved to background".to_string());
+        }
+    }
+
+    pub fn poll_background_hooks(&mut self) -> Result<()> {
+        let mut completed = Vec::new();
+
+        for (key, hook) in self.background_hooks.iter_mut() {
+            if let Some(ref rx) = hook.output_rx {
+                while let Ok(line) = rx.try_recv() {
+                    hook.output.push_str(&line);
+                    hook.output.push('\n');
+                }
+            }
+
+            if let Some(ref mut child) = hook.child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        hook.success = Some(status.success());
+                        hook.child = None;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        hook.success = Some(false);
+                        hook.output.push_str(&format!("\nError: {}", e));
+                        hook.child = None;
+                    }
+                }
+            }
+
+            if hook.child.is_none() {
+                completed.push(key.clone());
+            }
+        }
+
+        for key in completed {
+            if let Some(hook) = self.background_hooks.remove(&key) {
+                if hook.success.unwrap_or(false) {
+                    let _ = self.save();
+                    self.message = Some("Hook completed".to_string());
+                } else {
+                    self.message = Some("Hook failed".to_string());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn is_hook_running(&self, workdir: &PathBuf) -> bool {
+        self.background_hooks
+            .values()
+            .any(|hook| &hook.workdir == workdir)
     }
 }

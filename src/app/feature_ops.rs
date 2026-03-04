@@ -6,7 +6,7 @@ use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
-use state::{ForkFeatureState, ForkFeatureStep};
+use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
     pub fn start_create_feature(&mut self) {
@@ -807,6 +807,106 @@ impl App {
 
     pub fn cancel_deleting_feature(&mut self) {
         self.mode = AppMode::Normal;
+    }
+
+    pub fn hide_deleting_feature(&mut self) {
+        if let AppMode::DeletingFeatureInProgress(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        {
+            let key = state.key();
+            let bg = BackgroundDeletion::from_deleting_state(state);
+            self.background_deletions.insert(key, bg);
+            self.message = Some("Deletion moved to background".to_string());
+        }
+    }
+
+    pub fn is_feature_being_deleted(
+        &self,
+        project_name: &str,
+        feature_name: &str,
+    ) -> bool {
+        let key = format!("{}/{}", project_name, feature_name);
+        self.background_deletions.contains_key(&key)
+    }
+
+    pub fn poll_background_deletions(&mut self) -> Result<()> {
+        let mut completed = Vec::new();
+
+        for (key, deletion) in self.background_deletions.iter_mut() {
+            if let Some(ref mut child) = deletion.child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            deletion.error = Some(format!(
+                                "Command failed with code: {:?}",
+                                status.code()
+                            ));
+                        }
+                        deletion.child = None;
+                    }
+                    Ok(None) => continue,
+                    Err(e) => {
+                        deletion.error = Some(e.to_string());
+                        deletion.child = None;
+                    }
+                }
+            }
+
+            match deletion.stage {
+                DeleteStage::KillingTmux => {
+                    if deletion.child.is_none() {
+                        if deletion.is_worktree {
+                            match WorktreeManager::spawn_remove(
+                                &deletion.repo,
+                                &deletion.workdir,
+                            ) {
+                                Ok(child) => {
+                                    deletion.child = Some(child);
+                                    deletion.stage = DeleteStage::RemovingWorktree;
+                                }
+                                Err(e) => {
+                                    deletion.error = Some(e.to_string());
+                                }
+                            }
+                        } else {
+                            deletion.stage = DeleteStage::Completed;
+                        }
+                    }
+                }
+                DeleteStage::RemovingWorktree => {
+                    if deletion.child.is_none() {
+                        deletion.stage = DeleteStage::Completed;
+                    }
+                }
+                DeleteStage::Completed => {}
+            }
+
+            if deletion.stage == DeleteStage::Completed && deletion.child.is_none() {
+                completed.push(key.clone());
+            }
+        }
+
+        for key in completed {
+            if let Some(deletion) = self.background_deletions.remove(&key) {
+                if deletion.error.is_some() {
+                    self.message = Some(format!(
+                        "Error deleting feature '{}': {}",
+                        deletion.feature_name,
+                        deletion.error.unwrap_or_else(|| "Unknown error".to_string())
+                    ));
+                } else {
+                    self.store
+                        .remove_feature(&deletion.project_name, &deletion.feature_name);
+                    let _ = self.save();
+                    self.message = Some(format!(
+                        "Deleted feature '{}'",
+                        deletion.feature_name
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn start_fork_feature(&mut self) {

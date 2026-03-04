@@ -21,6 +21,8 @@ mod claude_session_picker;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -177,6 +179,8 @@ pub struct App {
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
     pub debug_log: DebugLog,
+    pub background_deletions: HashMap<String, BackgroundDeletion>,
+    pub background_hooks: HashMap<String, BackgroundHook>,
 }
 
 impl App {
@@ -232,6 +236,8 @@ impl App {
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
             debug_log: DebugLog::default(),
+            background_deletions: HashMap::new(),
+            background_hooks: HashMap::new(),
         })
     }
 
@@ -282,7 +288,9 @@ impl App {
             tmux,
             worktree,
             debug_log: DebugLog::default(),
-        }
+            background_deletions: HashMap::new(),
+            background_hooks: HashMap::new(),
+        })
     }
 
     /// Re-merge extension config for the currently selected

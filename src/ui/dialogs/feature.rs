@@ -778,10 +778,10 @@ pub fn draw_deleting_feature_dialog(
     frame.render_widget(project_line, chunks[2]);
 
     let hints = if is_running {
-        Paragraph::new(Line::from(Span::styled(
-            " Please wait...",
-            Style::default().fg(Color::DarkGray),
-        )))
+        Paragraph::new(Line::from(vec![
+            Span::styled(" h", Style::default().fg(Color::Yellow)),
+            Span::styled(" hide  ", Style::default().fg(Color::DarkGray)),
+        ]))
     } else if state.error.is_some() {
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),

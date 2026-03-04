@@ -247,6 +247,18 @@ fn run_loop<B: Backend>(
             app.show_error(e);
         }
 
+        if !app.background_deletions.is_empty()
+            && let Err(e) = app.poll_background_deletions()
+        {
+            app.show_error(e);
+        }
+
+        if !app.background_hooks.is_empty()
+            && let Err(e) = app.poll_background_hooks()
+        {
+            app.show_error(e);
+        }
+
         terminal.draw(|frame| ui::draw(frame, app))?;
 
         if app.should_quit || app.should_switch.is_some() {

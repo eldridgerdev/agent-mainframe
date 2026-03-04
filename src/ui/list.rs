@@ -202,7 +202,35 @@ pub fn draw(
                         app.is_feature_waiting_for_input(&feature.name);
                     let is_thinking =
                         app.is_feature_thinking(&feature.tmux_session);
-                    let status_dot = if is_waiting_for_input {
+                    let is_being_deleted =
+                        app.is_feature_being_deleted(&project.name, &feature.name);
+                    let is_hook_running =
+                        app.is_hook_running(&feature.workdir);
+                    let status_dot = if is_being_deleted {
+                        let throbber = throbber_widgets_tui::Throbber::default()
+                            .throbber_style(
+                                Style::default()
+                                    .fg(Color::Red)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+                            .use_type(throbber_widgets_tui::WhichUse::Spin);
+                        let mut span = throbber.to_symbol_span(&app.throbber_state);
+                        span.content = format!(" {} ", span.content).into();
+                        span
+                    } else if is_hook_running {
+                        let throbber = throbber_widgets_tui::Throbber::default()
+                            .throbber_style(
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+                            .use_type(throbber_widgets_tui::WhichUse::Spin);
+                        let mut span = throbber.to_symbol_span(&app.throbber_state);
+                        span.content = format!(" {} ", span.content).into();
+                        span
+                    } else if is_waiting_for_input {
                         Span::styled(
                             " ? ",
                             Style::default()
@@ -256,7 +284,11 @@ pub fn draw(
                             "v"
                         };
 
-                    let name_style = if is_selected {
+                    let name_style = if is_being_deleted {
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::CROSSED_OUT)
+                    } else if is_selected {
                         Style::default()
                             .fg(theme.feature_name.to_color())
                             .add_modifier(Modifier::BOLD)
@@ -321,6 +353,18 @@ pub fn draw(
                         ),
                     ];
                     line_spans.extend(mode_badge_spans);
+                    if is_being_deleted {
+                        line_spans.push(Span::styled(
+                            " [deleting...]",
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    if is_hook_running {
+                        line_spans.push(Span::styled(
+                            " [hook running...]",
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     line_spans.push(Span::styled(
                         format!(
                             " {}",

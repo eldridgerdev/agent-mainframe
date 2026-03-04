@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    CreateFeatureState, CreateFeatureStep, DeleteStage,
-    DeletingFeatureState, ForkFeatureState, ForkFeatureStep,
+    CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
+    ForkFeatureStep,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -778,10 +778,10 @@ pub fn draw_deleting_feature_dialog(
     frame.render_widget(project_line, chunks[2]);
 
     let hints = if is_running {
-        Paragraph::new(Line::from(Span::styled(
-            " Please wait...",
-            Style::default().fg(Color::DarkGray),
-        )))
+        Paragraph::new(Line::from(vec![
+            Span::styled(" h", Style::default().fg(Color::Yellow)),
+            Span::styled(" hide  ", Style::default().fg(Color::DarkGray)),
+        ]))
     } else if state.error.is_some() {
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter", Style::default().fg(Color::Yellow)),
@@ -796,10 +796,7 @@ pub fn draw_deleting_feature_dialog(
     frame.render_widget(hints, chunks[3]);
 }
 
-pub fn draw_fork_feature_dialog(
-    frame: &mut Frame,
-    state: &ForkFeatureState,
-) {
+pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
 
@@ -827,50 +824,38 @@ pub fn draw_fork_feature_dialog(
         .split(inner);
 
     // Branch name input
-    let branch_active =
-        state.step == ForkFeatureStep::Branch;
+    let branch_active = state.step == ForkFeatureStep::Branch;
     let branch_label_style = if branch_active {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
     };
     let cursor = if branch_active {
-        Span::styled(
-            "\u{2588}",
-            Style::default().fg(Color::Cyan),
-        )
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan))
     } else {
         Span::raw("")
     };
 
     let branch_field = Paragraph::new(Line::from(vec![
         Span::styled(" Branch: ", branch_label_style),
-        Span::styled(
-            &state.new_branch,
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(&state.new_branch, Style::default().fg(Color::White)),
         cursor,
     ]));
     frame.render_widget(branch_field, chunks[0]);
 
     // Agent picker
-    let agent_active =
-        state.step == ForkFeatureStep::Agent;
+    let agent_active = state.step == ForkFeatureStep::Agent;
     let agent_label_style = if agent_active {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let mut agent_lines = vec![Line::from(Span::styled(
-        " Agent:",
-        agent_label_style,
-    ))];
+    let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
 
     for (i, agent) in AgentKind::ALL.iter().enumerate() {
         let is_selected = i == state.agent_index;
-        let marker =
-            if is_selected { ">" } else { " " };
+        let marker = if is_selected { ">" } else { " " };
         let style = if agent_active && is_selected {
             Style::default()
                 .fg(Color::Cyan)
@@ -881,11 +866,7 @@ pub fn draw_fork_feature_dialog(
             Style::default().fg(Color::DarkGray)
         };
         agent_lines.push(Line::from(Span::styled(
-            format!(
-                "   {} {}",
-                marker,
-                agent.display_name()
-            ),
+            format!("   {} {}", marker, agent.display_name()),
             style,
         )));
     }
@@ -894,13 +875,8 @@ pub fn draw_fork_feature_dialog(
     frame.render_widget(agent_widget, chunks[2]);
 
     // Context checkbox
-    let context_active =
-        state.step == ForkFeatureStep::Agent;
-    let ctx_check = if state.include_context {
-        "[x]"
-    } else {
-        "[ ]"
-    };
+    let context_active = state.step == ForkFeatureStep::Agent;
+    let ctx_check = if state.include_context { "[x]" } else { "[ ]" };
     let ctx_style = if context_active {
         Style::default().fg(Color::White)
     } else {
@@ -923,15 +899,9 @@ pub fn draw_fork_feature_dialog(
     // Hints
     let hints = if branch_active {
         Paragraph::new(Line::from(vec![
-            Span::styled(
-                " Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" next  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ]))
     } else {
@@ -941,20 +911,11 @@ pub fn draw_fork_feature_dialog(
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" select  "),
-            Span::styled(
-                "Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" confirm  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" back  "),
-            Span::styled(
-                "Tab",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Tab", Style::default().fg(Color::Yellow)),
             Span::raw(" toggle context"),
         ]))
     };

@@ -280,6 +280,12 @@ pub struct RunningHookState {
     pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
 }
 
+impl RunningHookState {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.workdir.display(), self.script)
+    }
+}
+
 pub struct DeletingFeatureState {
     pub project_name: String,
     pub feature_name: String,
@@ -290,6 +296,84 @@ pub struct DeletingFeatureState {
     pub stage: DeleteStage,
     pub child: Option<Child>,
     pub error: Option<String>,
+}
+
+impl DeletingFeatureState {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.project_name, self.feature_name)
+    }
+}
+
+pub struct BackgroundDeletion {
+    pub project_name: String,
+    pub feature_name: String,
+    pub tmux_session: String,
+    pub is_worktree: bool,
+    pub repo: PathBuf,
+    pub workdir: PathBuf,
+    pub stage: DeleteStage,
+    pub child: Option<Child>,
+    pub error: Option<String>,
+}
+
+impl BackgroundDeletion {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.project_name, self.feature_name)
+    }
+
+    pub fn from_deleting_state(state: DeletingFeatureState) -> Self {
+        Self {
+            project_name: state.project_name,
+            feature_name: state.feature_name,
+            tmux_session: state.tmux_session,
+            is_worktree: state.is_worktree,
+            repo: state.repo,
+            workdir: state.workdir,
+            stage: state.stage,
+            child: state.child,
+            error: state.error,
+        }
+    }
+}
+
+pub struct BackgroundHook {
+    pub script: String,
+    pub workdir: PathBuf,
+    pub project_name: String,
+    pub branch: String,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub agent: AgentKind,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub child: Option<Child>,
+    pub output: String,
+    pub success: Option<bool>,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+impl BackgroundHook {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.workdir.display(), self.script)
+    }
+
+    pub fn from_running_state(state: RunningHookState) -> Self {
+        Self {
+            script: state.script,
+            workdir: state.workdir,
+            project_name: state.project_name,
+            branch: state.branch,
+            mode: state.mode,
+            review: state.review,
+            agent: state.agent,
+            enable_chrome: state.enable_chrome,
+            enable_notes: state.enable_notes,
+            child: state.child,
+            output: state.output,
+            success: state.success,
+            output_rx: state.output_rx,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

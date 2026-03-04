@@ -19,6 +19,8 @@ mod view;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -173,6 +175,8 @@ pub struct App {
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
+    pub background_deletions: HashMap<String, BackgroundDeletion>,
+    pub background_hooks: HashMap<String, BackgroundHook>,
 }
 
 impl App {
@@ -227,6 +231,8 @@ impl App {
             summary_rx: None,
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
+            background_deletions: HashMap::new(),
+            background_hooks: HashMap::new(),
         })
     }
 
@@ -270,6 +276,7 @@ impl App {
             summary_rx: None,
             tmux,
             worktree,
+            background_deletions: HashMap::new(),
         }
     }
 

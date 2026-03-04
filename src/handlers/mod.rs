@@ -40,6 +40,8 @@ pub use picker::{
     handle_session_switcher_key,
     handle_opencode_session_picker_key,
     handle_opencode_session_confirm_key,
+    handle_claude_session_picker_key,
+    handle_claude_session_confirm_key,
     handle_session_picker_key,
 };
 pub use fork::handle_fork_feature_key;
@@ -94,6 +96,12 @@ pub fn handle_key(
         }
         AppMode::ConfirmingOpencodeSession { .. } => {
             handle_opencode_session_confirm_key(app, key.code)
+        }
+        AppMode::ClaudeSessionPicker(_) => {
+            handle_claude_session_picker_key(app, key.code)
+        }
+        AppMode::ConfirmingClaudeSession { .. } => {
+            handle_claude_session_confirm_key(app, key.code)
         }
         AppMode::SessionPicker(_) => {
             handle_session_picker_key(app, key.code)

@@ -17,7 +17,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("l", "Expand project / view feature"),
         ("Enter", "Toggle expand / view session"),
         ("s", "Add session (picker)"),
-        ("S", "Pick opencode session to resume"),
+        ("S", "Pick session to resume"),
         ("N", "Create new project"),
         ("n", "Create new feature"),
         ("O", "Open AMF settings project"),

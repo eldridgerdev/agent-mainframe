@@ -58,7 +58,6 @@ NOTE: I'll add real screenshots eventually
 
 ### Required
 
-- **Rust** (edition 2024, requires rustc 1.85+)
 - **tmux** — must be installed and in `PATH`
   ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
 - **claude** CLI — the

@@ -36,6 +36,7 @@ use crate::tmux::TmuxManager;
 use crate::traits::{TmuxOps, WorktreeOps};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
+use crate::debug::DebugLog;
 
 pub use self::setup::load_config;
 pub use state::*;
@@ -173,6 +174,7 @@ pub struct App {
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
+    pub debug_log: DebugLog,
 }
 
 impl App {
@@ -227,7 +229,14 @@ impl App {
             summary_rx: None,
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
+            debug_log: DebugLog::default(),
         })
+    }
+
+    pub fn log_startup(&mut self) {
+        self.debug_log.info("amf", "AMF started".to_string());
+        self.debug_log.debug("amf", format!("Store path: {}", self.store_path.display()));
+        self.debug_log.debug("amf", format!("Projects loaded: {}", self.store.projects.len()));
     }
 
     /// Lightweight constructor for unit/integration tests.
@@ -270,6 +279,7 @@ impl App {
             summary_rx: None,
             tmux,
             worktree,
+            debug_log: DebugLog::default(),
         }
     }
 
@@ -327,5 +337,21 @@ impl App {
             serde_json::to_string_pretty(&self.config)
                 .unwrap_or_default(),
         );
+    }
+
+    pub fn log_debug(&mut self, context: &str, message: String) {
+        self.debug_log.debug(context, message);
+    }
+
+    pub fn log_info(&mut self, context: &str, message: String) {
+        self.debug_log.info(context, message);
+    }
+
+    pub fn log_warn(&mut self, context: &str, message: String) {
+        self.debug_log.warn(context, message);
+    }
+
+    pub fn log_error(&mut self, context: &str, message: String) {
+        self.debug_log.error(context, message);
     }
 }

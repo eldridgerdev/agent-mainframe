@@ -174,6 +174,7 @@ pub enum AppMode {
     LatestPrompt(String, ViewState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
+    DebugLog(DebugLogState),
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +204,11 @@ impl SummaryState {
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,
+}
+
+pub struct DebugLogState {
+    pub scroll_offset: usize,
+    pub from_view: Option<ViewState>,
 }
 
 #[derive(Clone)]

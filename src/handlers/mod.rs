@@ -26,6 +26,7 @@ pub use dialog::{
     handle_latest_prompt_key,
     handle_rename_session_key,
     handle_theme_picker_key,
+    handle_debug_log_key,
 };
 pub use browse::handle_browse_path_key;
 pub use feature_creation::handle_create_feature_key;
@@ -118,6 +119,9 @@ pub fn handle_key(
         }
         AppMode::ThemePicker(_) => {
             handle_theme_picker_key(app, key.code)
+        }
+        AppMode::DebugLog(_) => {
+            handle_debug_log_key(app, key.code)
         }
     }
 }

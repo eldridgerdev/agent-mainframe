@@ -22,6 +22,7 @@ pub fn draw_help(frame: &mut Frame) {
         ("n", "Create new feature"),
         ("O", "Open AMF settings project"),
         ("d", "Delete project/feature/session"),
+        ("D", "View debug log"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
@@ -77,7 +78,7 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / n p i r x f ?)",
+            "Leader key (then: q t T w / n p i r x f D ?)",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -110,6 +111,16 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled("Custom commands picker", Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "D"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Debug log", Style::default().fg(Color::White)),
     ]));
 
     let help = Paragraph::new(lines).block(

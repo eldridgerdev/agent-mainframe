@@ -10,11 +10,7 @@ use crate::theme::ThemeName;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_theme_picker(
-    frame: &mut Frame,
-    state: &ThemePickerState,
-    current_theme: &ThemeName,
-) {
+pub fn draw_theme_picker(frame: &mut Frame, state: &ThemePickerState, current_theme: &ThemeName) {
     let area = centered_rect(40, 40, frame.area());
     frame.render_widget(Clear, area);
 
@@ -30,22 +26,16 @@ pub fn draw_theme_picker(
         .map(|(i, theme)| {
             let is_current = theme == current_theme;
             let marker = if is_current { " *" } else { "" };
-            let label = format!(
-                " {}{}",
-                theme.display_name(),
-                marker,
-            );
+            let label = format!(" {}{}", theme.display_name(), marker,);
             let style = if i == state.selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else if is_current {
-                Style::default()
-                    .fg(Color::Cyan)
+                Style::default().fg(Color::Cyan)
             } else {
-                Style::default()
-                    .fg(Color::White)
+                Style::default().fg(Color::White)
             };
             Line::from(Span::styled(label, style))
         })

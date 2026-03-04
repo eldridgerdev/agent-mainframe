@@ -292,6 +292,22 @@ fn handle_leader_key(
         KeyCode::Char('f') => {
             app.trigger_final_review()?;
         }
+        KeyCode::Char('D') => {
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+                scroll_offset: 0,
+                from_view: Some(view),
+            });
+        }
         KeyCode::Char('l') => {
             let view = match std::mem::replace(
                 &mut app.mode,

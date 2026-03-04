@@ -267,6 +267,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame, state, &app.config.theme,
         );
     }
+
+    if let AppMode::DebugLog(state) = &app.mode {
+        super::dialogs::draw_debug_log(frame, &app.debug_log, state.scroll_offset);
+    }
 }
 
 pub fn centered_rect(

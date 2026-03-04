@@ -92,7 +92,9 @@ pub fn draw_delete_project_confirm(frame: &mut Frame, name: &str) {
             Span::raw(" Delete project "),
             Span::styled(
                 name,
-                Style::default().fg(Color::Red).add_modifier(ratatui::style::Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
             ),
             Span::raw("?"),
         ]),

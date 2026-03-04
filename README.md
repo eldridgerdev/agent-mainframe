@@ -90,12 +90,36 @@ Download the latest binary from the
 | Linux aarch64 | `amf-aarch64-unknown-linux-gnu` |
 | macOS (Apple Silicon) | `amf-aarch64-apple-darwin` |
 
-Quick install (Linux x86_64 musl — most portable):
+Quick install:
+
+Linux x86_64 (most portable):
 
 ```bash
-curl -L \
-  https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl \
-  -o amf
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+macOS (Apple Silicon):
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+Linux x86_64 (gnu):
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-gnu -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+Linux aarch64:
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-unknown-linux-gnu -o amf
 chmod +x amf
 sudo mv amf /usr/local/bin/
 ```

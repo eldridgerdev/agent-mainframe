@@ -188,7 +188,12 @@ pub fn draw(
             let max_y = content_area.height.saturating_sub(1);
             let abs_x = content_area.x + cursor_x.min(max_x);
             let abs_y = content_area.y + cursor_y.min(max_y);
-            frame.set_cursor_position(Position::new(abs_x, abs_y));
+            let frame_max_x = frame.area().width.saturating_sub(1);
+            let frame_max_y = frame.area().height.saturating_sub(1);
+            frame.set_cursor_position(Position::new(
+                abs_x.min(frame_max_x),
+                abs_y.min(frame_max_y),
+            ));
         }
     }
 }

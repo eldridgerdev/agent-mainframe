@@ -1015,6 +1015,11 @@ impl App {
             &source_branch,
         )?;
 
+        // Copy uncommitted changes from source worktree
+        if let Some(ref src_wd) = source_workdir {
+            let _ = WorktreeManager::copy_uncommitted_changes(src_wd, &workdir);
+        }
+
         // Export transcript context from source session
         if include_context
             && let Some(ref src_wd) = source_workdir

@@ -41,6 +41,7 @@ fn main() -> Result<()> {
     }
 
     cleanup_global_hooks();
+    app::App::cleanup_stale_thinking_files();
 
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;

@@ -353,10 +353,11 @@ pub fn ensure_notification_hooks(
         "hooks": pre_tool_hooks
     }]));
 
-    // UserPromptSubmit: save the latest prompt text.
+    // UserPromptSubmit: touch thinking sentinel + save latest prompt text.
     hooks_obj.insert("UserPromptSubmit".to_string(), serde_json::json!([{
         "matcher": "",
         "hooks": [
+            { "type": "command", "command": thinking_touch_cmd },
             { "type": "command", "command": save_prompt_cmd }
         ]
     }]));

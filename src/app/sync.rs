@@ -50,9 +50,6 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) {
-        use regex::Regex;
-        let timer_re = Regex::new(r"\((\d+m\s+)?\d+s\)").unwrap();
-
         self.thinking_features.clear();
         for project in &self.store.projects {
             for feature in &project.features {
@@ -60,29 +57,7 @@ impl App {
                     continue;
                 }
                 let thinking = match feature.agent {
-                    AgentKind::Claude => {
-                        let session = feature
-                            .sessions
-                            .iter()
-                            .find(|s| s.kind == SessionKind::Claude);
-                        let timer_changed = session
-                            .and_then(|s| {
-                                TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
-                                    .ok()
-                            })
-                            .and_then(|content| {
-                                timer_re.find(&content).map(|m| {
-                                    let current = m.as_str().to_string();
-                                    let prev =
-                                        self.last_timer_values.get(&feature.tmux_session).cloned();
-                                    self.last_timer_values
-                                        .insert(feature.tmux_session.clone(), current.clone());
-                                    prev.map(|p| p != current).unwrap_or(false)
-                                })
-                            })
-                            .unwrap_or(false);
-                        timer_changed || Self::is_claude_thinking(&feature.tmux_session)
-                    }
+                    AgentKind::Claude => Self::is_claude_thinking(&feature.tmux_session),
                     AgentKind::Opencode => {
                         let session = feature
                             .sessions
@@ -108,7 +83,40 @@ impl App {
     }
 
     fn is_claude_thinking(tmux_session: &str) -> bool {
-        std::path::Path::new(&format!("/tmp/amf-thinking/{}", tmux_session)).exists()
+        let path_str = format!("/tmp/amf-thinking/{}", tmux_session);
+        let path = std::path::Path::new(&path_str);
+        if !path.exists() {
+            return false;
+        }
+
+        match std::fs::metadata(path) {
+            Ok(metadata) => match metadata.modified() {
+                Ok(modified) => match modified.elapsed() {
+                    Ok(elapsed) => elapsed < std::time::Duration::from_secs(2),
+                    Err(_) => false,
+                },
+                Err(_) => false,
+            },
+            Err(_) => false,
+        }
+    }
+
+    pub fn cleanup_stale_thinking_files() {
+        let Ok(entries) = std::fs::read_dir("/tmp/amf-thinking") else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    if let Ok(elapsed) = modified.elapsed() {
+                        if elapsed > std::time::Duration::from_secs(10) {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {
@@ -228,5 +236,23 @@ impl App {
             .iter()
             .find(|s| s.kind == target_kind)
             .map(|s| s.tmux_window.clone())
+    }
+}
+
+pub fn cleanup_stale_thinking_files() {
+    let Ok(entries) = std::fs::read_dir("/tmp/amf-thinking") else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        if let Ok(metadata) = entry.metadata() {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(elapsed) = modified.elapsed() {
+                    if elapsed > std::time::Duration::from_secs(10) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
 }

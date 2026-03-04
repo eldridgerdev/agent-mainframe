@@ -60,10 +60,18 @@ NOTE: I'll add real screenshots eventually
 
 - **tmux** — must be installed and in `PATH`
   ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
-- **claude** CLI — the
-  [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-  CLI must be installed and authenticated
-- **git** — used for worktree management
+
+### Agent (choose one)
+
+- **Claude CLI** — required for Claude Code sessions
+  ([Claude Code docs](https://docs.anthropic.com/en/docs/claude-code))
+- **Opencode** — optional alternative agent
+  ([opencode.ai](https://opencode.ai))
+
+### Git (optional)
+
+- **git** — required only for git projects with worktree features
+  (non-git projects are supported without git)
 
 ### Optional
 

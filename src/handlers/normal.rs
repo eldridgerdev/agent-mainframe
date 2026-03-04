@@ -251,16 +251,19 @@ pub fn handle_normal_key(
             }
         }
         KeyCode::Char('r') => {
-            if matches!(
-                app.selection,
-                Selection::Session(_, _, _)
-            ) {
-                app.start_rename_session();
-            } else {
-                app.sync_statuses();
-                app.scan_notifications();
-                app.message =
-                    Some("Refreshed statuses".into());
+            match &app.selection {
+                Selection::Session(_, _, _) => {
+                    app.start_rename_session();
+                }
+                Selection::Feature(_, _) => {
+                    app.start_rename_feature();
+                }
+                _ => {
+                    app.sync_statuses();
+                    app.scan_notifications();
+                    app.message =
+                        Some("Refreshed statuses".into());
+                }
             }
         }
         KeyCode::Char('R') => {

@@ -21,5 +21,5 @@ pub use hooks::{
 };
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use search::draw_search_dialog;
-pub use session::draw_rename_session_dialog;
+pub use session::{draw_rename_feature_dialog, draw_rename_session_dialog};
 pub use theme::draw_theme_picker;

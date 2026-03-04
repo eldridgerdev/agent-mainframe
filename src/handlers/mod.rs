@@ -25,6 +25,7 @@ pub use dialog::{
     handle_help_key,
     handle_latest_prompt_key,
     handle_rename_session_key,
+    handle_rename_feature_key,
     handle_theme_picker_key,
     handle_debug_log_key,
 };
@@ -85,6 +86,9 @@ pub fn handle_key(
         }
         AppMode::RenamingSession(_) => {
             handle_rename_session_key(app, key.code)
+        }
+        AppMode::RenamingFeature(_) => {
+            handle_rename_feature_key(app, key.code)
         }
         AppMode::CommandPicker(_) => {
             handle_command_picker_key(app, key.code)

@@ -1141,4 +1141,64 @@ impl App {
 
         Ok(())
     }
+
+    pub fn start_rename_feature(&mut self) {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) => (*pi, *fi),
+            _ => return,
+        };
+
+        let current_nickname = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(f) => f.nickname.clone().unwrap_or_default(),
+            None => return,
+        };
+
+        self.mode = AppMode::RenamingFeature(state::RenameFeatureState {
+            project_idx: pi,
+            feature_idx: fi,
+            input: current_nickname,
+        });
+    }
+
+    pub fn apply_rename_feature(&mut self) -> Result<()> {
+        let (pi, fi, input) = match &self.mode {
+            AppMode::RenamingFeature(state) => {
+                (state.project_idx, state.feature_idx, state.input.clone())
+            }
+            _ => return Ok(()),
+        };
+
+        if let Some(feature) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            if input.is_empty() {
+                feature.nickname = None;
+            } else {
+                feature.nickname = Some(input.clone());
+            }
+        }
+
+        self.save()?;
+        self.mode = AppMode::Normal;
+
+        self.message = if input.is_empty() {
+            Some("Nickname cleared".into())
+        } else {
+            Some(format!("Renamed to '{}'", input))
+        };
+
+        Ok(())
+    }
+
+    pub fn cancel_rename_feature(&mut self) {
+        self.mode = AppMode::Normal;
+    }
 }

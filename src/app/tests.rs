@@ -179,6 +179,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         last_accessed: now,
         summary: None,
         summary_updated_at: None,
+        nickname: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -584,6 +585,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         last_accessed: now,
         summary: None,
         summary_updated_at: None,
+        nickname: None,
     };
     let project = Project {
         id: "proj-1".to_string(),
@@ -705,6 +707,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         last_accessed: now,
         summary: None,
         summary_updated_at: None,
+        nickname: None,
     };
     let project = Project {
         id: "proj-1".to_string(),

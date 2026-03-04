@@ -136,6 +136,7 @@ fn handle_click(
             | AppMode::SessionPicker(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
+            | AppMode::RenamingFeature(_)
             | AppMode::NotificationPicker(_, _)
             | AppMode::ChangeReasonPrompt(_)
             | AppMode::RunningHook(_)

@@ -168,6 +168,8 @@ pub struct Feature {
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_updated_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
 }
 
 impl Feature {
@@ -204,6 +206,7 @@ impl Feature {
             last_accessed: now,
             summary: None,
             summary_updated_at: None,
+            nickname: None,
         }
     }
 
@@ -425,7 +428,7 @@ impl ProjectStore {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self {
-                version: 3,
+                version: 4,
                 projects: Vec::new(),
             });
         }
@@ -446,14 +449,15 @@ impl ProjectStore {
 
         match version {
             0 => {
-                // Old flat format -> v1 -> v2 -> v3
+                // Old flat format -> v1 -> v2 -> v3 -> v4
                 let old: OldProjectStore =
                     serde_json::from_value(raw).with_context(|| {
                         "Failed to parse old project store"
                     })?;
                 let v1 = Self::migrate_from_old(old);
                 let v2 = Self::migrate_from_v1(v1);
-                let store = Self::migrate_from_v2(v2);
+                let v3 = Self::migrate_from_v2(v2);
+                let store = Self::migrate_from_v3(v3);
                 store.save(path)?;
                 Ok(store)
             }
@@ -463,7 +467,8 @@ impl ProjectStore {
                         "Failed to parse v1 project store"
                     })?;
                 let v2 = Self::migrate_from_v1(v1);
-                let store = Self::migrate_from_v2(v2);
+                let v3 = Self::migrate_from_v2(v2);
+                let store = Self::migrate_from_v3(v3);
                 store.save(path)?;
                 Ok(store)
             }
@@ -472,14 +477,24 @@ impl ProjectStore {
                     serde_json::from_value(raw).with_context(|| {
                         "Failed to parse project store"
                     })?;
-                let store = Self::migrate_from_v2(v2);
+                let v3 = Self::migrate_from_v2(v2);
+                let store = Self::migrate_from_v3(v3);
                 store.save(path)?;
                 Ok(store)
             }
             3 => {
-                let store: ProjectStore =
+                let v3: ProjectStore =
                     serde_json::from_value(raw).with_context(|| {
                         "Failed to parse v3 project store"
+                    })?;
+                let store = Self::migrate_from_v3(v3);
+                store.save(path)?;
+                Ok(store)
+            }
+            4 => {
+                let store: ProjectStore =
+                    serde_json::from_value(raw).with_context(|| {
+                        "Failed to parse v4 project store"
                     })?;
                 Ok(store)
             }
@@ -497,6 +512,14 @@ impl ProjectStore {
         Self {
             version: 3,
             projects: v2.projects,
+        }
+    }
+
+    fn migrate_from_v3(v3: ProjectStore) -> Self {
+        // Add nickname field to features (serde default handles this)
+        Self {
+            version: 4,
+            projects: v3.projects,
         }
     }
 
@@ -619,6 +642,7 @@ impl ProjectStore {
                             last_accessed: f.last_accessed,
                             summary: None,
                             summary_updated_at: None,
+                            nickname: None,
                         }
                     })
                     .collect();
@@ -768,6 +792,7 @@ mod tests {
             last_accessed: Utc::now(),
             summary: None,
             summary_updated_at: None,
+            nickname: None,
         }
     }
 
@@ -776,7 +801,7 @@ mod tests {
     #[test]
     fn projectstore_roundtrip() {
         let store = ProjectStore {
-            version: 3,
+            version: 4,
             projects: vec![Project {
                 id: "proj-id".to_string(),
                 name: "my-project".to_string(),
@@ -791,7 +816,7 @@ mod tests {
         store.save(tmp.path()).unwrap();
 
         let loaded = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.version, 4);
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(loaded.projects[0].name, "my-project");
         assert_eq!(
@@ -826,7 +851,7 @@ mod tests {
         std::fs::write(tmp.path(), v0_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 3);
+        assert_eq!(store.version, 4);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];
@@ -883,7 +908,7 @@ mod tests {
         std::fs::write(tmp.path(), v1_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 3);
+        assert_eq!(store.version, 4);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];

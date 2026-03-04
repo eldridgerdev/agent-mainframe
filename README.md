@@ -61,7 +61,7 @@ NOTE: I'll add real screenshots eventually
 - **tmux** — must be installed and in `PATH`
   ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
 
-### Agent (choose one)
+### Agent (choose one or both)
 
 - **Claude CLI** — required for Claude Code sessions
   ([Claude Code docs](https://docs.anthropic.com/en/docs/claude-code))

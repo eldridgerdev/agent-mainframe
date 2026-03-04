@@ -3,6 +3,7 @@ mod view;
 mod dialog;
 mod browse;
 mod feature_creation;
+mod batch_creation;
 mod fork;
 mod hooks;
 mod picker;
@@ -31,6 +32,7 @@ pub use dialog::{
 };
 pub use browse::handle_browse_path_key;
 pub use feature_creation::handle_create_feature_key;
+pub use batch_creation::handle_create_batch_features_key;
 pub use hooks::{
     handle_running_hook_key,
     handle_deleting_feature_key,
@@ -69,6 +71,9 @@ pub fn handle_key(
         }
         AppMode::CreatingFeature(_) => {
             handle_create_feature_key(app, key.code)
+        }
+        AppMode::CreatingBatchFeatures(_) => {
+            handle_create_batch_features_key(app, key.code)
         }
         AppMode::DeletingProject(_) => {
             handle_delete_project_key(app, key.code)

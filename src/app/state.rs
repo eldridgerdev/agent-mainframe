@@ -195,6 +195,7 @@ pub enum AppMode {
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     DebugLog(DebugLogState),
+    CreatingBatchFeatures(CreateBatchFeaturesState),
 }
 
 #[derive(Debug, Clone)]
@@ -455,6 +456,15 @@ pub enum CreateFeatureStep {
     ConfirmSuperVibe,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateBatchFeaturesStep {
+    WorkspacePath,
+    ProjectName,
+    FeatureCount,
+    FeatureBaseName,
+    FeatureSettings,
+}
+
 pub struct CreateFeatureState {
     pub project_name: String,
     pub project_repo: PathBuf,
@@ -511,6 +521,54 @@ impl CreateFeatureState {
             enable_chrome: false,
             enable_notes: false,
             preset_index: 0,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct CreateBatchFeaturesState {
+    pub workspace_path: String,
+    pub project_name: String,
+    pub feature_count: usize,
+    pub feature_prefix: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
+    pub mode: VibeMode,
+    pub mode_index: usize,
+    pub mode_focus: usize,
+    pub review: bool,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub step: CreateBatchFeaturesStep,
+}
+
+impl CreateBatchFeaturesState {
+    pub fn new() -> Self {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let repo_path = crate::worktree::WorktreeManager::repo_root(&cwd)
+            .unwrap_or(cwd)
+            .to_string_lossy()
+            .into_owned();
+        let workspace_name = std::path::Path::new(&repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+
+        Self {
+            workspace_path: repo_path,
+            project_name: workspace_name,
+            feature_count: 3,
+            feature_prefix: "feature".to_string(),
+            agent: AgentKind::default(),
+            agent_index: 0,
+            mode: VibeMode::default(),
+            mode_index: 0,
+            mode_focus: 0,
+            review: false,
+            enable_chrome: false,
+            enable_notes: false,
+            step: CreateBatchFeaturesStep::WorkspacePath,
         }
     }
 }

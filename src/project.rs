@@ -862,7 +862,7 @@ mod tests {
         let feat = &proj.features[0];
         assert_eq!(feat.name, "my-feature");
         assert_eq!(feat.branch, "main");
-        // v0 → v1 → v2 adds Claude + Terminal sessions
+        // v0 → v1 → v2 → v3 → v4 adds Claude + Terminal sessions + summary + nickname
         assert_eq!(feat.sessions.len(), 2);
         assert!(feat
             .sessions

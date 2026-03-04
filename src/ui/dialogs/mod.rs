@@ -1,3 +1,4 @@
+mod batch_creation;
 mod browse;
 mod debug;
 mod feature;
@@ -8,6 +9,7 @@ mod search;
 mod session;
 mod theme;
 
+pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
 pub use debug::draw_debug_log;
 pub use feature::{

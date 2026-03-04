@@ -290,7 +290,7 @@ impl App {
             debug_log: DebugLog::default(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
-        })
+        }
     }
 
     /// Re-merge extension config for the currently selected

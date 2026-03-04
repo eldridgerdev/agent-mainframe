@@ -127,7 +127,7 @@ pub fn draw(
                         "S",
                         Style::default().fg(Color::Yellow),
                     ),
-                    Span::raw(" opencode  "),
+                    Span::raw(" resume  "),
                     Span::styled(
                         "f",
                         Style::default().fg(Color::Yellow),
@@ -177,7 +177,7 @@ pub fn draw(
                         "S",
                         Style::default().fg(Color::Yellow),
                     ),
-                    Span::raw(" opencode  "),
+                    Span::raw(" resume  "),
                     Span::styled(
                         "d",
                         Style::default().fg(Color::Yellow),
@@ -283,6 +283,7 @@ pub fn draw(
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
+        | AppMode::ClaudeSessionPicker(_)
         | AppMode::SessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k or \u{2191}/\u{2193}",
@@ -300,7 +301,8 @@ pub fn draw(
             ),
             Span::raw(" cancel"),
         ]),
-        AppMode::ConfirmingOpencodeSession { .. } => Line::from(vec![
+        AppMode::ConfirmingOpencodeSession { .. }
+        | AppMode::ConfirmingClaudeSession { .. } => Line::from(vec![
             Span::styled(
                 "y",
                 Style::default().fg(Color::Yellow),

@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    CommandPickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
-    SessionSwitcherState,
+    ClaudeSessionPickerState, CommandPickerState, OpencodeSessionPickerState, PendingInput,
+    SessionPickerState, SessionSwitcherState,
 };
 use crate::project::SessionKind;
 
@@ -371,6 +371,128 @@ pub fn draw_opencode_session_picker(frame: &mut Frame, state: &OpencodeSessionPi
         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
     ]));
     frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_claude_session_picker(frame: &mut Frame, state: &ClaudeSessionPickerState) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Claude Sessions ({}) ", state.sessions.len());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.sessions.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No sessions for this worktree.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, session)| {
+            let is_selected = i == state.selected;
+            let title_preview = if session.title.len() > 60 {
+                format!("{}...", &session.title[..57])
+            } else {
+                session.title.clone()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(
+                    title_preview,
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(Color::DarkGray))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_claude_session_confirm(frame: &mut Frame) {
+    let area = centered_rect(50, 35, frame.area());
+    frame.render_widget(Clear, area);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Feature is already running.",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Restart with selected claude session?",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  This will kill the current tmux session",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  and start a new one with the session restored.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  y", Style::default().fg(Color::Yellow)),
+            Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ])
+    .block(
+        Block::default()
+            .title(" Confirm Restart ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+
+    frame.render_widget(text, area);
 }
 
 pub fn draw_opencode_session_confirm(frame: &mut Frame) {

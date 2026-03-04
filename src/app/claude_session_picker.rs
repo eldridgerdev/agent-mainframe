@@ -1,11 +1,8 @@
-use anyhow::Result;
-
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::*;
 use crate::tmux::TmuxManager;
 
 impl App {
-    pub fn pick_opencode_session(&mut self) {
+    pub fn pick_claude_session(&mut self) {
         let workdir = match &self.selection {
             Selection::Feature(pi, fi) => self
                 .store
@@ -29,7 +26,7 @@ impl App {
             }
         };
 
-        let sessions = match fetch_opencode_sessions(&workdir) {
+        let sessions = match claude_sessions::fetch_claude_sessions(&workdir) {
             Ok(s) => s,
             Err(e) => {
                 self.message = Some(format!("Failed to fetch sessions: {}", e));
@@ -38,24 +35,24 @@ impl App {
         };
 
         if sessions.is_empty() {
-            self.message = Some("No opencode sessions for this worktree".into());
+            self.message = Some("No claude sessions for this worktree".into());
             return;
         }
 
-        self.mode = AppMode::OpencodeSessionPicker(OpencodeSessionPickerState {
+        self.mode = AppMode::ClaudeSessionPicker(ClaudeSessionPickerState {
             sessions,
             selected: 0,
             workdir,
         });
     }
 
-    pub fn cancel_opencode_session_picker(&mut self) {
+    pub fn cancel_claude_session_picker(&mut self) {
         self.mode = AppMode::Normal;
     }
 
-    pub fn confirm_opencode_session(&mut self) {
+    pub fn confirm_claude_session(&mut self) {
         let session_id = match &self.mode {
-            AppMode::OpencodeSessionPicker(state) => {
+            AppMode::ClaudeSessionPicker(state) => {
                 state.sessions.get(state.selected).map(|s| s.id.clone())
             }
             _ => return,
@@ -72,45 +69,45 @@ impl App {
 
         if feature_running {
             let workdir = match &self.mode {
-                AppMode::OpencodeSessionPicker(state) => state.workdir.clone(),
+                AppMode::ClaudeSessionPicker(state) => state.workdir.clone(),
                 _ => return,
             };
-            self.mode = AppMode::ConfirmingOpencodeSession {
+            self.mode = AppMode::ConfirmingClaudeSession {
                 session_id,
                 workdir,
             };
         } else {
             self.mode = AppMode::Normal;
-            if let Err(e) = self.restart_feature_with_opencode_session(&session_id) {
+            if let Err(e) = self.restart_feature_with_claude_session(&session_id) {
                 self.message = Some(format!("Error: {}", e));
             }
         }
     }
 
-    pub fn cancel_opencode_session_confirm(&mut self) {
+    pub fn cancel_claude_session_confirm(&mut self) {
         let workdir = match &self.mode {
-            AppMode::ConfirmingOpencodeSession { workdir, .. } => workdir.clone(),
+            AppMode::ConfirmingClaudeSession { workdir, .. } => workdir.clone(),
             _ => return,
         };
 
-        self.mode = AppMode::OpencodeSessionPicker(OpencodeSessionPickerState {
-            sessions: fetch_opencode_sessions(&workdir).unwrap_or_default(),
+        self.mode = AppMode::ClaudeSessionPicker(ClaudeSessionPickerState {
+            sessions: claude_sessions::fetch_claude_sessions(&workdir).unwrap_or_default(),
             selected: 0,
             workdir,
         });
     }
 
-    pub fn confirm_and_start_opencode(&mut self) -> Result<()> {
+    pub fn confirm_and_start_claude(&mut self) -> Result<()> {
         let session_id = match &self.mode {
-            AppMode::ConfirmingOpencodeSession { session_id, .. } => session_id.clone(),
+            AppMode::ConfirmingClaudeSession { session_id, .. } => session_id.clone(),
             _ => return Ok(()),
         };
 
         self.mode = AppMode::Normal;
-        self.restart_feature_with_opencode_session(&session_id)
+        self.restart_feature_with_claude_session(&session_id)
     }
 
-    fn restart_feature_with_opencode_session(&mut self, opencode_session_id: &str) -> Result<()> {
+    fn restart_feature_with_claude_session(&mut self, claude_session_id: &str) -> Result<()> {
         let (pi, fi) = match self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
             _ => return Ok(()),
@@ -132,7 +129,7 @@ impl App {
             TmuxManager::kill_session(&tmux_session)?;
         }
 
-        self.ensure_feature_running_with_opencode_session(pi, fi, opencode_session_id)?;
+        self.ensure_feature_running_with_claude_session(pi, fi, claude_session_id)?;
 
         let (
             project_name,
@@ -149,7 +146,7 @@ impl App {
             let si = feature
                 .sessions
                 .iter()
-                .position(|s| s.kind == SessionKind::Opencode)
+                .position(|s| s.kind == SessionKind::Claude)
                 .unwrap_or(0);
 
             let session = &feature.sessions[si];
@@ -182,16 +179,16 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
-        self.message = Some("Restored opencode session".into());
+        self.message = Some("Restored claude session".into());
 
         Ok(())
     }
 
-    fn ensure_feature_running_with_opencode_session(
+    fn ensure_feature_running_with_claude_session(
         &mut self,
         pi: usize,
         fi: usize,
-        opencode_session_id: &str,
+        claude_session_id: &str,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
         let feature = match self
@@ -204,11 +201,11 @@ impl App {
             None => return Ok(()),
         };
 
-        ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
-        ensure_review_claude_md(&feature.workdir, feature.review);
+        setup::ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        setup::ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
-            feature.add_session(SessionKind::Opencode);
+            feature.add_session(SessionKind::Claude);
             feature.add_session(SessionKind::Terminal);
             if feature.has_notes {
                 let s = feature.add_session(SessionKind::Nvim);
@@ -237,21 +234,21 @@ impl App {
 
         for session in &feature.sessions {
             match session.kind {
-                SessionKind::Opencode => {
-                    TmuxManager::launch_opencode_with_session(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                        Some(opencode_session_id),
-                    )?;
-                }
                 SessionKind::Claude => {
                     let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
                     let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
                     TmuxManager::launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
-                        session.claude_session_id.as_deref(),
+                        Some(claude_session_id),
                         &extra_refs,
+                    )?;
+                }
+                SessionKind::Opencode => {
+                    TmuxManager::launch_opencode_with_session(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        None,
                     )?;
                 }
                 SessionKind::Nvim => {
@@ -301,45 +298,4 @@ impl App {
 
         Ok(())
     }
-}
-
-pub fn fetch_opencode_sessions(workdir: &std::path::Path) -> Result<Vec<OpencodeSessionInfo>> {
-    use std::process::Command;
-
-    let output = Command::new("opencode")
-        .args(["session", "list", "--format", "json"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err(anyhow::anyhow!(
-            "opencode session list failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let sessions: Vec<serde_json::Value> = serde_json::from_str(&json_str)?;
-
-    let dir_str = workdir.to_string_lossy();
-    let filtered: Vec<OpencodeSessionInfo> = sessions
-        .into_iter()
-        .filter(|s| {
-            s.get("directory")
-                .and_then(|d| d.as_str())
-                .map(|d| d == dir_str)
-                .unwrap_or(false)
-        })
-        .filter_map(|s| {
-            let id = s.get("id")?.as_str()?.to_string();
-            let title = s
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or("Untitled")
-                .to_string();
-            let updated = s.get("updated").and_then(|t| t.as_i64()).unwrap_or(0);
-            Some(OpencodeSessionInfo { id, title, updated })
-        })
-        .collect();
-
-    Ok(filtered)
 }

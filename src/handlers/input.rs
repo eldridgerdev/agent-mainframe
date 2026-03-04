@@ -34,6 +34,11 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 state.input.push_str(text);
             }
         }
+        AppMode::RenamingFeature(_) => {
+            if let AppMode::RenamingFeature(state) = &mut app.mode {
+                state.input.push_str(text);
+            }
+        }
         AppMode::Searching(_) => {
             if let AppMode::Searching(state) = &mut app.mode {
                 state.query.push_str(text);

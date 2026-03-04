@@ -202,6 +202,29 @@ pub fn handle_rename_session_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_rename_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc => {
+            app.cancel_rename_feature();
+        }
+        KeyCode::Enter => {
+            app.apply_rename_feature()?;
+        }
+        KeyCode::Backspace => {
+            if let AppMode::RenamingFeature(state) = &mut app.mode {
+                state.input.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::RenamingFeature(state) = &mut app.mode {
+                state.input.push(c);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
  pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {

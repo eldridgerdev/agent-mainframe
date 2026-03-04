@@ -337,6 +337,7 @@ pub fn draw(
                                     != "diff-review"
                         });
 
+                    let display_name = feature.nickname.as_ref().unwrap_or(&feature.name);
                     let mut line_spans = vec![
                         Span::styled(
                             connector,
@@ -348,10 +349,16 @@ pub fn draw(
                             Style::default().fg(muted),
                         ),
                         Span::styled(
-                            &feature.name,
+                            display_name,
                             name_style,
                         ),
                     ];
+                    if feature.nickname.is_some() {
+                        line_spans.push(Span::styled(
+                            format!(" ({})", feature.branch),
+                            Style::default().fg(Color::Rgb(100, 100, 100)),
+                        ));
+                    }
                     line_spans.extend(mode_badge_spans);
                     if is_being_deleted {
                         line_spans.push(Span::styled(

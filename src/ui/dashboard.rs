@@ -210,6 +210,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_rename_session_dialog(frame, state);
     }
 
+    if let AppMode::RenamingFeature(state) = &app.mode {
+        super::dialogs::draw_rename_feature_dialog(frame, state);
+    }
+
     if matches!(app.mode, AppMode::Help(None)) {
         super::dialogs::draw_help(frame);
     }

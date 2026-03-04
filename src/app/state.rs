@@ -134,6 +134,13 @@ pub struct RenameSessionState {
 }
 
 #[derive(Debug, Clone)]
+pub struct RenameFeatureState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub input: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
     pub title: String,
@@ -166,6 +173,7 @@ pub enum AppMode {
     NotificationPicker(usize, Option<ViewState>),
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
+    RenamingFeature(RenameFeatureState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),

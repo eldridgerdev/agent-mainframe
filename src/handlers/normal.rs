@@ -284,6 +284,12 @@ pub fn handle_normal_key(
         KeyCode::Char('Z') => {
             app.trigger_summary_for_selected()?;
         }
+        KeyCode::Char('D') => {
+            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+                scroll_offset: 0,
+                from_view: None,
+            });
+        }
         _ => {}
     }
     Ok(())

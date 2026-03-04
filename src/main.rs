@@ -2,6 +2,7 @@
 
 mod app;
 mod claude;
+mod debug;
 mod extension;
 mod handlers;
 mod project;
@@ -43,6 +44,7 @@ fn main() -> Result<()> {
 
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
+    app.log_startup();
     app.sync_statuses();
     app.sync_session_status();
     app.scan_notifications();

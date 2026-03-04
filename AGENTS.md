@@ -200,6 +200,46 @@ Key dispatch is split across focused modules:
 - `handlers/change_reason.rs` - diff review prompt
 - `handlers/mouse.rs` - mouse event handling
 
+### Debug Logging
+
+**NEVER use `println!` or `eprintln!` in TUI code** - it corrupts
+the terminal display. Use the built-in debug log instead.
+
+To view the debug log at runtime, press `D` from the dashboard.
+
+**Log file location:** `~/.local/state/amf/debug.log`
+
+You can tail this file in a separate terminal:
+```bash
+tail -f ~/.local/state/amf/debug.log
+```
+
+**Usage in code:**
+
+```rust
+// From anywhere with access to `app`:
+app.log_debug("context", format!("value: {}", value));
+app.log_info("context", "operation completed".to_string());
+app.log_warn("context", "something unexpected".to_string());
+app.log_error("context", format!("failed: {}", err));
+```
+
+**Log levels** (color-coded in UI):
+- `DEBUG` (gray) - detailed tracing
+- `INFO` (green) - normal operations
+- `WARN` (yellow) - unexpected but handled
+- `ERROR` (red) - failures
+
+**Context strings** should be short identifiers like:
+- `"amf"` - app lifecycle
+- `"sync"` - status sync operations
+- `"tmux"` - tmux interactions
+- `"worktree"` - git worktree operations
+- `"hooks"` - lifecycle hooks
+
+Errors from `show_error()` are automatically logged to the
+debug log with level ERROR.
+
 ### Key Design Patterns
 
 - All external tool interaction (tmux, git, claude) goes

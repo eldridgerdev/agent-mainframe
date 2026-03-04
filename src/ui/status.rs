@@ -455,6 +455,23 @@ pub fn draw(
             ),
             Span::raw(" cancel"),
         ]),
+        AppMode::DebugLog(_) => Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" scroll  "),
+            Span::styled(
+                "c",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" clear  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" close"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

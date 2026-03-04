@@ -12,9 +12,7 @@ impl App {
         match &self.selection {
             Selection::Project(pi) => {
                 let pi = *pi;
-                if let Some(project) =
-                    self.store.projects.get_mut(pi)
-                {
+                if let Some(project) = self.store.projects.get_mut(pi) {
                     project.collapsed = !project.collapsed;
                 }
             }
@@ -47,9 +45,7 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        self.mode = AppMode::CreatingProject(
-            CreateProjectState::auto_detect(),
-        );
+        self.mode = AppMode::CreatingProject(CreateProjectState::auto_detect());
         self.message = None;
     }
 
@@ -60,7 +56,13 @@ impl App {
             std::fs::create_dir_all(&settings_dir)?;
         }
 
-        if let Some((pi, _)) = self.store.projects.iter().enumerate().find(|(_, p)| p.repo == settings_dir) {
+        if let Some((pi, _)) = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.repo == settings_dir)
+        {
             self.selection = Selection::Project(pi);
             self.store.projects[pi].collapsed = false;
             self.message = Some("Opened AMF settings project".into());
@@ -83,26 +85,22 @@ impl App {
     }
 
     pub fn show_error(&mut self, error: anyhow::Error) {
-        self.message = Some(format!("Error: {}", error));
+        let msg = format!("Error: {}", error);
+        self.message = Some(msg.clone());
+        self.debug_log.error("app", msg);
         match &self.mode {
-            AppMode::Normal
-            | AppMode::Help(_)
-            | AppMode::Viewing(_) => {}
+            AppMode::Normal | AppMode::Help(_) | AppMode::Viewing(_) => {}
             _ => {
                 self.mode = AppMode::Normal;
             }
         }
     }
 
-    pub fn start_browse_path(
-        &mut self,
-        create_state: CreateProjectState,
-    ) {
+    pub fn start_browse_path(&mut self, create_state: CreateProjectState) {
         let mut explorer = match FileExplorer::new() {
             Ok(e) => e,
             Err(_) => {
-                self.message =
-                    Some("Failed to open file browser".into());
+                self.message = Some("Failed to open file browser".into());
                 return;
             }
         };
@@ -116,53 +114,42 @@ impl App {
 
         let _ = explorer.set_cwd(start_dir);
 
-        self.mode = AppMode::BrowsingPath(Box::new(
-            BrowsePathState {
-                explorer,
-                create_state,
-                new_folder_name: String::new(),
-                creating_folder: false,
-            },
-        ));
+        self.mode = AppMode::BrowsingPath(Box::new(BrowsePathState {
+            explorer,
+            create_state,
+            new_folder_name: String::new(),
+            creating_folder: false,
+        }));
         self.message = None;
     }
 
     pub fn confirm_browse_path(&mut self) {
         let path = match &self.mode {
-            AppMode::BrowsingPath(state) => {
-                state.explorer.cwd().to_string_lossy().into_owned()
-            }
+            AppMode::BrowsingPath(state) => state.explorer.cwd().to_string_lossy().into_owned(),
             _ => return,
         };
 
-        let browse = std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        );
+        let browse = std::mem::replace(&mut self.mode, AppMode::Normal);
         if let AppMode::BrowsingPath(mut state) = browse {
             state.create_state.path = path;
             state.create_state.step = CreateProjectStep::Path;
-            self.mode =
-                AppMode::CreatingProject(state.create_state);
+            self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
 
     pub fn cancel_browse_path(&mut self) {
-        let browse = std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        );
+        let browse = std::mem::replace(&mut self.mode, AppMode::Normal);
         if let AppMode::BrowsingPath(state) = browse {
-            self.mode =
-                AppMode::CreatingProject(state.create_state);
+            self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
 
     pub fn create_folder_in_browse(&mut self) -> Result<()> {
         let (cwd, folder_name) = match &self.mode {
-            AppMode::BrowsingPath(state) => {
-                (state.explorer.cwd().to_path_buf(), state.new_folder_name.clone())
-            }
+            AppMode::BrowsingPath(state) => (
+                state.explorer.cwd().to_path_buf(),
+                state.new_folder_name.clone(),
+            ),
             _ => return Ok(()),
         };
 
@@ -173,10 +160,7 @@ impl App {
 
         let new_path = cwd.join(&folder_name);
         if let Err(e) = std::fs::create_dir_all(&new_path) {
-            self.message = Some(format!(
-                "Error: Failed to create folder: {}",
-                e
-            ));
+            self.message = Some(format!("Error: Failed to create folder: {}", e));
             return Ok(());
         }
 
@@ -200,8 +184,7 @@ impl App {
         let path = PathBuf::from(&state.path);
 
         if name.is_empty() {
-            self.message =
-                Some("Error: Project name cannot be empty".into());
+            self.message = Some("Error: Project name cannot be empty".into());
             return Ok(());
         }
 
@@ -214,30 +197,23 @@ impl App {
         }
 
         if self.store.find_project(&name).is_some() {
-            self.message = Some(format!(
-                "Error: Project '{}' already exists",
-                name
-            ));
+            self.message = Some(format!("Error: Project '{}' already exists", name));
             return Ok(());
         }
 
-        let (project_path, is_git) =
-            match WorktreeManager::repo_root(&path) {
-                Ok(r) => (r, true),
-                Err(_) => (path.clone(), false),
-            };
-        let project =
-            Project::new(name.clone(), project_path, is_git);
+        let (project_path, is_git) = match WorktreeManager::repo_root(&path) {
+            Ok(r) => (r, true),
+            Err(_) => (path.clone(), false),
+        };
+        let project = Project::new(name.clone(), project_path, is_git);
 
         self.store.add_project(project);
         self.save()?;
 
-        let pi =
-            self.store.projects.len().saturating_sub(1);
+        let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
         self.mode = AppMode::Normal;
-        self.message =
-            Some(format!("Created project '{}'", name));
+        self.message = Some(format!("Created project '{}'", name));
 
         Ok(())
     }
@@ -248,27 +224,18 @@ impl App {
             _ => return Ok(()),
         };
 
-        if let Some(project) =
-            self.store.find_project(&project_name)
-        {
+        if let Some(project) = self.store.find_project(&project_name) {
             let features: Vec<(String, PathBuf, bool)> = project
                 .features
                 .iter()
-                .map(|f| {
-                    (
-                        f.tmux_session.clone(),
-                        f.workdir.clone(),
-                        f.is_worktree,
-                    )
-                })
+                .map(|f| (f.tmux_session.clone(), f.workdir.clone(), f.is_worktree))
                 .collect();
             let repo = project.repo.clone();
 
             for (session, workdir, is_worktree) in features {
                 let _ = TmuxManager::kill_session(&session);
                 if is_worktree {
-                    let _ =
-                        WorktreeManager::remove(&repo, &workdir);
+                    let _ = WorktreeManager::remove(&repo, &workdir);
                 }
             }
         }
@@ -284,24 +251,15 @@ impl App {
             if idx >= items.len() {
                 let last = &items[items.len() - 1];
                 self.selection = match last {
-                    VisibleItem::Project(pi) => {
-                        Selection::Project(*pi)
-                    }
-                    VisibleItem::Feature(pi, fi) => {
-                        Selection::Feature(*pi, *fi)
-                    }
-                    VisibleItem::Session(pi, fi, si) => {
-                        Selection::Session(*pi, *fi, *si)
-                    }
+                    VisibleItem::Project(pi) => Selection::Project(*pi),
+                    VisibleItem::Feature(pi, fi) => Selection::Feature(*pi, *fi),
+                    VisibleItem::Session(pi, fi, si) => Selection::Session(*pi, *fi, *si),
                 };
             }
         }
 
         self.mode = AppMode::Normal;
-        self.message = Some(format!(
-            "Deleted project '{}'",
-            project_name
-        ));
+        self.message = Some(format!("Deleted project '{}'", project_name));
         Ok(())
     }
 }

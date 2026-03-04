@@ -201,3 +201,38 @@ pub fn handle_rename_session_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
     Ok(())
 }
+
+ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::DebugLog(state) => state.from_view,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_add(1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            }
+        }
+        KeyCode::Char('c') => {
+            app.debug_log.clear();
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = 0;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}

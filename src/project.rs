@@ -470,7 +470,7 @@ impl ProjectStore {
             2 => {
                 let v2: ProjectStore =
                     serde_json::from_value(raw).with_context(|| {
-                        "Failed to parse v2 project store"
+                        "Failed to parse project store"
                     })?;
                 let store = Self::migrate_from_v2(v2);
                 store.save(path)?;

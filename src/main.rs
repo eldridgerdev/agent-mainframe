@@ -12,10 +12,12 @@ mod tmux;
 mod traits;
 mod transcript;
 mod ui;
+mod upgrade;
 mod usage;
 mod worktree;
 
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste,
@@ -34,7 +36,36 @@ use std::time::Duration;
 use app::App;
 use tmux::TmuxManager;
 
+#[derive(Parser, Debug)]
+#[command(name = "amf")]
+#[command(version, disable_version_flag = true)]
+#[command(about = "Run many AI coding agents in parallel", long_about = None)]
+struct Cli {
+    #[arg(short = 'V', long = "version")]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Upgrade amf to the latest release
+    Upgrade,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.version && cli.command.is_none() {
+        println!("amf {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if let Some(Commands::Upgrade) = cli.command {
+        return upgrade::upgrade();
+    }
+
     if let Err(e) = TmuxManager::check_available() {
         eprintln!("Error: {e}");
         std::process::exit(1);

@@ -44,6 +44,7 @@ use crate::debug::DebugLog;
 
 pub use self::setup::load_config;
 pub use state::*;
+pub use state::SettingsState;
 
 pub struct CommandEntry {
     pub name: String,
@@ -363,6 +364,37 @@ impl App {
             serde_json::to_string_pretty(&self.config)
                 .unwrap_or_default(),
         );
+    }
+
+    pub fn start_settings(&mut self) {
+        self.mode = AppMode::Settings(SettingsState {
+            nerd_font: self.config.nerd_font,
+            transparent_background: self.config.transparent_background,
+            opencode_theme: self.config.opencode_theme.clone(),
+            selected_setting: 0,
+        });
+    }
+
+    pub fn save_settings(&mut self) {
+        if let AppMode::Settings(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
+            self.config.nerd_font = state.nerd_font;
+            self.config.transparent_background = state.transparent_background;
+            self.config.opencode_theme = state.opencode_theme;
+
+            let config_path =
+                crate::project::amf_config_dir().join("config.json");
+            let dir = config_path.parent().unwrap();
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(&self.config)
+                    .unwrap_or_default(),
+            );
+
+            let mut theme = crate::theme::Theme::load(&self.config.theme);
+            theme.set_transparent(self.config.transparent_background);
+            self.theme = theme;
+        }
     }
 
     pub fn log_debug(&mut self, context: &str, message: String) {

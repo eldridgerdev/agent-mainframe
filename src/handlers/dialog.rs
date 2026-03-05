@@ -259,3 +259,36 @@ pub fn handle_rename_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn handle_settings_key(app: &mut App, key: KeyCode) -> Result<()> {
+    const NUM_SETTINGS: usize = 3;
+
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let AppMode::Settings(state) = &mut app.mode {
+                state.selected_setting = (state.selected_setting + 1).min(NUM_SETTINGS - 1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let AppMode::Settings(state) = &mut app.mode {
+                state.selected_setting = state.selected_setting.saturating_sub(1);
+            }
+        }
+        KeyCode::Enter => {
+            if let AppMode::Settings(state) = &mut app.mode {
+                match state.selected_setting {
+                    0 => state.nerd_font = !state.nerd_font,
+                    1 => state.transparent_background = !state.transparent_background,
+                    2 => {}
+                    _ => {}
+                }
+            }
+            app.save_settings();
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.mode = AppMode::Normal;
+        }
+        _ => {}
+    }
+    Ok(())
+}

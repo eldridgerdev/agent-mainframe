@@ -295,6 +295,9 @@ pub fn handle_normal_key(
         KeyCode::Char('T') => {
             app.start_theme_picker();
         }
+        KeyCode::Char('C') => {
+            app.start_settings();
+        }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
             app.message = Some(format!(
@@ -333,6 +336,7 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "refresh" => Some('r'),
         "filter" => Some('f'),
         "fork_feature" => Some('F'),
+        "settings" => Some('C'),
         _ => None,
     }
 }

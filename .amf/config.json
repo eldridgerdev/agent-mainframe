@@ -1,0 +1,23 @@
+{
+  "custom_sessions": [
+    {
+      "name": "Test Session",
+      "description": "A test custom session for testing purposes",
+      "command": "echo 'Hello from custom session!' && sleep 5",
+      "window_name": "test",
+      "working_dir": null,
+      "icon": "T",
+      "icon_nerd": "🧪",
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    }
+  ],
+  "lifecycle_hooks": {
+    "on_start": null,
+    "on_stop": null,
+    "on_worktree_created": null
+  },
+  "keybindings": {},
+  "feature_presets": []
+}

@@ -291,13 +291,11 @@ impl App {
     }
 
     /// Re-merge extension config for the currently selected
-    /// project. Call this whenever the selected project changes.
+    /// project/feature. Call this whenever the selection changes.
     pub fn reload_extension_config(&mut self) {
         let global_ext = load_global_extension_config();
         self.active_extension = match &self.selection {
-            Selection::Project(pi)
-            | Selection::Feature(pi, _)
-            | Selection::Session(pi, _, _) => {
+            Selection::Project(pi) => {
                 if let Some(project) =
                     self.store.projects.get(*pi)
                 {
@@ -305,6 +303,27 @@ impl App {
                         &global_ext,
                         &project.repo,
                     )
+                } else {
+                    global_ext
+                }
+            }
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => {
+                if let Some(project) =
+                    self.store.projects.get(*pi)
+                {
+                    if let Some(feature) = project.features.get(*fi)
+                    {
+                        merge_project_extension_config(
+                            &global_ext,
+                            &feature.workdir,
+                        )
+                    } else {
+                        merge_project_extension_config(
+                            &global_ext,
+                            &project.repo,
+                        )
+                    }
                 } else {
                     global_ext
                 }

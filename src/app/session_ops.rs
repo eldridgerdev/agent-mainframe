@@ -29,6 +29,25 @@ impl App {
             return Ok(());
         }
 
+        self.reload_extension_config();
+
+        let session_names: Vec<(usize, String)> = self
+            .active_extension
+            .custom_sessions
+            .iter()
+            .enumerate()
+            .map(|(i, cs)| (i, cs.name.clone()))
+            .collect();
+        let sessions_count = session_names.len();
+
+        self.log_debug(
+            "session_picker",
+            format!("Active custom sessions count: {}", sessions_count),
+        );
+        for (i, name) in session_names {
+            self.log_debug("session_picker", format!("  [{}] {}", i, name));
+        }
+
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
@@ -122,6 +141,8 @@ impl App {
             Some(fi) => fi,
             None => return Ok(()),
         };
+
+        self.reload_extension_config();
 
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();

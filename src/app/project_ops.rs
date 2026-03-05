@@ -80,7 +80,6 @@ impl App {
                     None
                 }
             }
-            _ => None,
         };
 
         self.mode = AppMode::CreatingBatchFeatures(CreateBatchFeaturesState::with_workspace(

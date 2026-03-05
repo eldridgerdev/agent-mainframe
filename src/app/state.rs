@@ -544,11 +544,19 @@ pub struct CreateBatchFeaturesState {
 
 impl CreateBatchFeaturesState {
     pub fn new() -> Self {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let repo_path = crate::worktree::WorktreeManager::repo_root(&cwd)
-            .unwrap_or(cwd)
-            .to_string_lossy()
-            .into_owned();
+        Self::with_workspace(None)
+    }
+
+    pub fn with_workspace(workspace_path: Option<String>) -> Self {
+        let repo_path = if let Some(ws) = workspace_path {
+            ws
+        } else {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            crate::worktree::WorktreeManager::repo_root(&cwd)
+                .unwrap_or(cwd)
+                .to_string_lossy()
+                .into_owned()
+        };
         let workspace_name = std::path::Path::new(&repo_path)
             .file_name()
             .and_then(|n| n.to_str())

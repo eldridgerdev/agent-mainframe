@@ -1206,4 +1206,140 @@ impl App {
     pub fn cancel_rename_feature(&mut self) {
         self.mode = AppMode::Normal;
     }
+
+    pub fn create_batch_features(&mut self) -> Result<()> {
+        let state = match &self.mode {
+            AppMode::CreatingBatchFeatures(s) => s.clone(),
+            _ => return Ok(()),
+        };
+
+        let workspace_path = if state.workspace_path.is_empty() {
+            PathBuf::new()
+        } else {
+            PathBuf::from(&state.workspace_path)
+        };
+        let project_name = state.project_name.clone();
+        let feature_count = state.feature_count;
+        let feature_prefix = state.feature_prefix.clone();
+        let mode = state.mode.clone();
+        let review = state.review;
+        let agent = state.agent.clone();
+        let enable_chrome = state.enable_chrome;
+        let enable_notes = state.enable_notes;
+
+        if state.workspace_path.is_empty() || !workspace_path.exists() {
+            self.message = Some("Error: Workspace path is invalid".into());
+            return Ok(());
+        }
+
+        if project_name.is_empty() {
+            self.message = Some("Error: Project name cannot be empty".into());
+            return Ok(());
+        }
+
+        if self.store.find_project(&project_name).is_some() {
+            self.message = Some(format!("Error: Project '{}' already exists", project_name));
+            return Ok(());
+        }
+
+        if feature_count == 0 {
+            self.message = Some("Error: Feature count must be at least 1".into());
+            return Ok(());
+        }
+
+        if feature_prefix.is_empty() {
+            self.message = Some("Error: Feature prefix cannot be empty".into());
+            return Ok(());
+        }
+
+        let (project_repo, is_git) = match WorktreeManager::repo_root(&workspace_path) {
+            Ok(r) => (r, true),
+            Err(_) => (workspace_path.clone(), false),
+        };
+
+        if !is_git {
+            self.message = Some("Error: Batch features require a git repository".into());
+            return Ok(());
+        }
+
+        let project = Project::new(project_name.clone(), project_repo.clone(), is_git);
+        self.store.add_project(project);
+        self.save()?;
+
+        let pi = self.store.projects.len().saturating_sub(1);
+        self.store.projects[pi].collapsed = false;
+        self.selection = Selection::Project(pi);
+        self.mode = AppMode::Normal;
+
+        let mut created_features = Vec::new();
+        for i in 1..=feature_count {
+            let branch = format!("{}{}", feature_prefix, i);
+
+            if self.store.projects[pi]
+                .features
+                .iter()
+                .any(|f| f.name == branch)
+            {
+                self.message = Some(format!(
+                    "Error: Feature '{}' already exists",
+                    branch
+                ));
+                return Ok(());
+            }
+
+            let workdir = self.worktree.create(
+                &project_repo,
+                &branch,
+                &branch,
+            )?;
+
+            if enable_notes {
+                let claude_dir = workdir.join(".claude");
+                if !claude_dir.exists() {
+                    let _ = std::fs::create_dir_all(&claude_dir);
+                }
+                let notes_path = claude_dir.join("notes.md");
+                if !notes_path.exists() {
+                    let _ = std::fs::write(
+                        &notes_path,
+                        "# Notes\n\nWrite instructions for Claude here.\n",
+                    );
+                }
+            }
+
+            let feature = Feature::new(
+                branch.clone(),
+                branch.clone(),
+                workdir,
+                true,
+                mode.clone(),
+                review,
+                agent.clone(),
+                enable_chrome,
+                enable_notes,
+            );
+
+            self.store.add_feature(&project_name, feature);
+            created_features.push(branch);
+            self.save()?;
+        }
+
+        for (_idx, branch) in created_features.iter().enumerate() {
+            let fi = self.store.projects[pi]
+                .features
+                .iter()
+                .position(|f| f.name == *branch)
+                .unwrap();
+
+            self.ensure_feature_running(pi, fi)?;
+            self.save()?;
+        }
+
+        self.message = Some(format!(
+            "Created project '{}' with {} features",
+            project_name, feature_count
+        ));
+
+        Ok(())
+    }
 }

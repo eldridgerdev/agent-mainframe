@@ -58,9 +58,24 @@ impl App {
                     None
                 }
             }
-            Selection::Feature(pi, _) => {
+            Selection::Feature(pi, fi) => {
                 if let Some(p) = self.store.projects.get(*pi) {
-                    Some(p.repo.to_string_lossy().into_owned())
+                    if let Some(f) = p.features.get(*fi) {
+                        Some(f.workdir.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            Selection::Session(pi, fi, _) => {
+                if let Some(p) = self.store.projects.get(*pi) {
+                    if let Some(f) = p.features.get(*fi) {
+                        Some(f.workdir.to_string_lossy().into_owned())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }

@@ -194,6 +194,7 @@ pub enum AppMode {
     LatestPrompt(String, ViewState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
+    Settings(SettingsState),
     DebugLog(DebugLogState),
     CreatingBatchFeatures(CreateBatchFeaturesState),
 }
@@ -225,6 +226,14 @@ impl SummaryState {
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,
+}
+
+#[derive(Clone)]
+pub struct SettingsState {
+    pub nerd_font: bool,
+    pub transparent_background: bool,
+    pub opencode_theme: Option<String>,
+    pub selected_setting: usize,
 }
 
 pub struct DebugLogState {

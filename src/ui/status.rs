@@ -444,6 +444,23 @@ pub fn draw(
             ),
             Span::raw(" cancel"),
         ]),
+        AppMode::Settings(_) => Line::from(vec![
+            Span::styled(
+                " j/k",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled(
+                "Enter",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" toggle  "),
+            Span::styled(
+                "Esc",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" close"),
+        ]),
         AppMode::DebugLog(_) => Line::from(vec![
             Span::styled(
                 " j/k",

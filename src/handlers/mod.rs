@@ -28,6 +28,7 @@ pub use dialog::{
     handle_rename_session_key,
     handle_rename_feature_key,
     handle_theme_picker_key,
+    handle_settings_key,
     handle_debug_log_key,
 };
 pub use browse::handle_browse_path_key;
@@ -136,6 +137,9 @@ pub fn handle_key(
         }
         AppMode::ThemePicker(_) => {
             handle_theme_picker_key(app, key.code)
+        }
+        AppMode::Settings(_) => {
+            handle_settings_key(app, key.code)
         }
         AppMode::DebugLog(_) => {
             handle_debug_log_key(app, key.code)

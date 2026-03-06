@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
 };
 
 use crate::app::{
@@ -222,6 +222,7 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
             let icon = match entry.kind {
                 SessionKind::Claude => Span::styled("  * ", Style::default().fg(Color::Magenta)),
                 SessionKind::Opencode => Span::styled("  * ", Style::default().fg(Color::Cyan)),
+                SessionKind::Codex => Span::styled("  * ", Style::default().fg(Color::Green)),
                 SessionKind::Terminal => Span::styled("  > ", Style::default().fg(Color::Green)),
                 SessionKind::Nvim => {
                     let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
@@ -582,6 +583,12 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
             let icon = match session.kind {
                 crate::project::SessionKind::Claude => {
                     Span::styled("  * ", Style::default().fg(Color::Magenta))
+                }
+                crate::project::SessionKind::Opencode => {
+                    Span::styled("  * ", Style::default().fg(Color::Cyan))
+                }
+                crate::project::SessionKind::Codex => {
+                    Span::styled("  * ", Style::default().fg(Color::Green))
                 }
                 crate::project::SessionKind::Terminal => {
                     Span::styled("  > ", Style::default().fg(Color::Green))

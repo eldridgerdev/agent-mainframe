@@ -1,13 +1,25 @@
 use std::path::{Path, PathBuf};
 
-use crate::project::{AgentKind, VibeMode};
+use crate::project::{AgentKind, ProjectStore, VibeMode};
 
 use super::AppConfig;
 
-const NOTIFY_SH: &str = include_str!("../../scripts/notify.sh");
-const CLEAR_NOTIFY_SH: &str = include_str!("../../scripts/clear-notify.sh");
-const SAVE_PROMPT_SH: &str = include_str!("../../scripts/save-prompt.sh");
-const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
+const NOTIFY_SH: &str =
+    include_str!("../../scripts/notify.sh");
+const CLEAR_NOTIFY_SH: &str =
+    include_str!("../../scripts/clear-notify.sh");
+const SAVE_PROMPT_SH: &str =
+    include_str!("../../scripts/save-prompt.sh");
+const THINKING_START_SH: &str =
+    include_str!("../../scripts/thinking-start.sh");
+const THINKING_STOP_SH: &str =
+    include_str!("../../scripts/thinking-stop.sh");
+const TOOL_START_SH: &str =
+    include_str!("../../scripts/tool-start.sh");
+const TOOL_STOP_SH: &str =
+    include_str!("../../scripts/tool-stop.sh");
+const INPUT_REQUEST_JS: &str =
+    include_str!("../../.opencode/plugins/input-request.js");
 
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
@@ -27,16 +39,72 @@ pub fn ensure_notify_scripts() {
         let _ = std::fs::set_permissions(&clear_path, std::fs::Permissions::from_mode(0o755));
     }
     let save_prompt_path = config_dir.join("save-prompt.sh");
+    let thinking_start_path =
+        config_dir.join("thinking-start.sh");
+    let thinking_stop_path =
+        config_dir.join("thinking-stop.sh");
+    let tool_start_path = config_dir.join("tool-start.sh");
+    let tool_stop_path = config_dir.join("tool-stop.sh");
     let _ = std::fs::write(&save_prompt_path, SAVE_PROMPT_SH);
+    let _ = std::fs::write(
+        &thinking_start_path,
+        THINKING_START_SH,
+    );
+    let _ =
+        std::fs::write(&thinking_stop_path, THINKING_STOP_SH);
+    let _ = std::fs::write(&tool_start_path, TOOL_START_SH);
+    let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&save_prompt_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(
+            &save_prompt_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &thinking_start_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &thinking_stop_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &tool_start_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &tool_stop_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
     }
     let plugins_dir = config_dir.join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
     let input_request_path = plugins_dir.join("input-request.js");
     let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
+}
+
+/// Refresh opencode plugin files in all known opencode feature
+/// workdirs, so existing sessions/worktrees pick up plugin fixes
+/// without requiring feature recreation.
+pub fn refresh_opencode_plugins_for_store(
+    store: &ProjectStore,
+) -> usize {
+    let mut refreshed = 0usize;
+    for project in &store.projects {
+        for feature in &project.features {
+            if !matches!(feature.agent, AgentKind::Opencode) {
+                continue;
+            }
+            ensure_opencode_plugins(
+                &feature.workdir,
+                &project.repo,
+                &feature.mode,
+            );
+            refreshed += 1;
+        }
+    }
+    refreshed
 }
 
 pub fn load_config() -> AppConfig {
@@ -230,14 +298,22 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         .join("save-prompt.sh")
         .to_string_lossy()
         .into_owned();
-
-    let thinking_touch_cmd = "[ -n \"$AMF_SESSION\" ] \
-         && mkdir -p /tmp/amf-thinking \
-         && touch \"/tmp/amf-thinking/$AMF_SESSION\" \
-         || true";
-    let thinking_remove_cmd = "[ -n \"$AMF_SESSION\" ] \
-         && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" \
-         || true";
+    let thinking_start_cmd = config_dir
+        .join("thinking-start.sh")
+        .to_string_lossy()
+        .into_owned();
+    let thinking_stop_cmd = config_dir
+        .join("thinking-stop.sh")
+        .to_string_lossy()
+        .into_owned();
+    let tool_start_cmd = config_dir
+        .join("tool-start.sh")
+        .to_string_lossy()
+        .into_owned();
+    let tool_stop_cmd = config_dir
+        .join("tool-stop.sh")
+        .to_string_lossy()
+        .into_owned();
 
     let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
     let amf_root = std::env::current_exe()
@@ -272,27 +348,28 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         .or_insert_with(|| serde_json::json!({}));
     let hooks_obj = hooks.as_object_mut().unwrap();
 
-    // Stop: remove thinking sentinel + write notification.
-    hooks_obj.insert(
-        "Stop".to_string(),
-        serde_json::json!([{
-            "matcher": "",
-            "hooks": [
-                { "type": "command", "command": thinking_remove_cmd },
-                { "type": "command", "command": notify_cmd }
-            ]
-        }]),
-    );
+    // Stop: clear active thinking + write stop notification.
+    hooks_obj.insert("Stop".to_string(), serde_json::json!([{
+        "matcher": "",
+        "hooks": [
+            { "type": "command", "command": thinking_stop_cmd },
+            { "type": "command", "command": notify_cmd }
+        ]
+    }]));
 
     // Remove legacy Notification hook (replaced by Stop above).
     hooks_obj.remove("Notification");
 
-    // PreToolUse: touch thinking sentinel + clear notification,
+    // PreToolUse: set thinking + tool-running + clear notification,
     // plus diff-review for vibeless mode.
     let mut pre_tool_hooks: Vec<serde_json::Value> = vec![
         serde_json::json!({
             "type": "command",
-            "command": thinking_touch_cmd
+            "command": thinking_start_cmd
+        }),
+        serde_json::json!({
+            "type": "command",
+            "command": tool_start_cmd
         }),
         serde_json::json!({
             "type": "command",
@@ -320,17 +397,21 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         }]),
     );
 
-    // UserPromptSubmit: touch thinking sentinel + save latest prompt text.
-    hooks_obj.insert(
-        "UserPromptSubmit".to_string(),
-        serde_json::json!([{
-            "matcher": "",
-            "hooks": [
-                { "type": "command", "command": thinking_touch_cmd },
-                { "type": "command", "command": save_prompt_cmd }
-            ]
-        }]),
-    );
+    hooks_obj.insert("PostToolUse".to_string(), serde_json::json!([{
+        "matcher": "",
+        "hooks": [
+            { "type": "command", "command": tool_stop_cmd }
+        ]
+    }]));
+
+    // UserPromptSubmit: set thinking + persist latest prompt.
+    hooks_obj.insert("UserPromptSubmit".to_string(), serde_json::json!([{
+        "matcher": "",
+        "hooks": [
+            { "type": "command", "command": thinking_start_cmd },
+            { "type": "command", "command": save_prompt_cmd }
+        ]
+    }]));
 
     if wants_diff_review {
         let perms = settings

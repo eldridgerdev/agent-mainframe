@@ -222,23 +222,35 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = Some("No pending input requests".into());
             }
         }
-        KeyCode::Char('r') => match &app.selection {
-            Selection::Session(_, _, _) => {
-                app.start_rename_session();
+        KeyCode::Char('r') => {
+            match &app.selection {
+                Selection::Session(_, _, _) => {
+                    app.start_rename_session();
+                }
+                Selection::Feature(_, _) => {
+                    app.start_rename_feature();
+                }
+                _ => {
+                    app.sync_statuses();
+                    if app.ipc.is_some() {
+                        app.drain_ipc_messages();
+                    } else {
+                        app.scan_notifications();
+                    }
+                    app.message =
+                        Some("Refreshed statuses".into());
+                }
             }
-            Selection::Feature(_, _) => {
-                app.start_rename_feature();
-            }
-            _ => {
-                app.sync_statuses();
-                app.scan_notifications();
-                app.message = Some("Refreshed statuses".into());
-            }
-        },
+        }
         KeyCode::Char('R') => {
             app.sync_statuses();
-            app.scan_notifications();
-            app.message = Some("Refreshed statuses".into());
+            if app.ipc.is_some() {
+                app.drain_ipc_messages();
+            } else {
+                app.scan_notifications();
+            }
+            app.message =
+                Some("Refreshed statuses".into());
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
@@ -317,8 +329,13 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
-            app.scan_notifications();
-            app.message = Some("Refreshed statuses".into());
+            if app.ipc.is_some() {
+                app.drain_ipc_messages();
+            } else {
+                app.scan_notifications();
+            }
+            app.message =
+                Some("Refreshed statuses".into());
         }
         _ => {}
     }

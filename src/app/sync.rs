@@ -38,11 +38,7 @@ impl App {
                             .ok()
                             .and_then(|content| {
                                 let line = content.lines().next()?.trim().to_string();
-                                if line.is_empty() {
-                                    None
-                                } else {
-                                    Some(line)
-                                }
+                                if line.is_empty() { None } else { Some(line) }
                             });
                 }
             }
@@ -88,6 +84,7 @@ impl App {
                             })
                             .unwrap_or(false)
                     }
+                    AgentKind::Codex => false,
                 };
                 if thinking {
                     self.thinking_features.insert(feature.tmux_session.clone());
@@ -341,6 +338,7 @@ impl App {
         let target_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         feature
             .sessions

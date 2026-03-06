@@ -2,6 +2,7 @@
 
 mod app;
 mod claude;
+mod codex;
 mod debug;
 mod extension;
 mod handlers;
@@ -21,14 +22,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste,
-        DisableMouseCapture, EnableMouseCapture, Event,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event,
     },
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode,
-        EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::*;
 use std::io;
@@ -169,7 +167,12 @@ fn main() -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -211,10 +214,8 @@ fn cleanup_global_hooks() {
     let settings_path = std::path::PathBuf::from(&home)
         .join(".claude")
         .join("settings.json");
-    let extra_cmds =
-        [format!("{home}/.config/amf/notify.sh")];
-    let extra: Vec<&str> =
-        extra_cmds.iter().map(|s| s.as_str()).collect();
+    let extra_cmds = [format!("{home}/.config/amf/notify.sh")];
+    let extra: Vec<&str> = extra_cmds.iter().map(|s| s.as_str()).collect();
     cleanup_hooks_at(&settings_path, &extra);
 }
 
@@ -222,25 +223,18 @@ fn cleanup_global_hooks() {
 /// testability.  `extra_cmds` are host-specific command
 /// strings (e.g. absolute paths) to remove in addition to
 /// the static AMF commands.
-pub fn cleanup_hooks_at(
-    settings_path: &std::path::Path,
-    extra_cmds: &[&str],
-) {
+pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
     use serde_json::Value;
 
-    let mut root: Value =
-        match std::fs::read_to_string(settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            Some(v) => v,
-            None => return,
-        };
+    let mut root: Value = match std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(v) => v,
+        None => return,
+    };
 
-    let Some(hooks_obj) = root
-        .get_mut("hooks")
-        .and_then(|h| h.as_object_mut())
-    else {
+    let Some(hooks_obj) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
     };
 
@@ -260,10 +254,9 @@ pub fn cleanup_hooks_at(
         arr.retain(|entry| {
             !entry["hooks"].as_array().is_some_and(|hs| {
                 hs.iter().any(|h| {
-                    h["command"].as_str().is_some_and(|c| {
-                        static_cmds.contains(&c)
-                            || extra_cmds.contains(&c)
-                    })
+                    h["command"]
+                        .as_str()
+                        .is_some_and(|c| static_cmds.contains(&c) || extra_cmds.contains(&c))
                 })
             })
         });
@@ -273,38 +266,26 @@ pub fn cleanup_hooks_at(
     }
 
     // Drop empty event arrays.
-    hooks_obj.retain(|_, v| {
-        v.as_array().is_none_or(|a| !a.is_empty())
-    });
+    hooks_obj.retain(|_, v| v.as_array().is_none_or(|a| !a.is_empty()));
 
     if !changed {
         return;
     }
 
-    if let Ok(serialized) =
-        serde_json::to_string_pretty(&root)
-    {
-        let _ = std::fs::write(
-            settings_path,
-            serialized + "\n",
-        );
+    if let Ok(serialized) = serde_json::to_string_pretty(&root) {
+        let _ = std::fs::write(settings_path, serialized + "\n");
     }
 }
 
-fn run_loop<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
     // Only used when no IPC socket is available (fallback).
     let mut last_notif_scan = std::time::Instant::now();
-    let mut last_resize: Option<(u16, u16, String, String)> =
-        None;
+    let mut last_resize: Option<(u16, u16, String, String)> = None;
 
     loop {
-        let is_viewing =
-            matches!(app.mode, app::AppMode::Viewing(_));
+        let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
 
         let size = terminal.size()?;
         let visible_rows = size.height.saturating_sub(3);
@@ -312,8 +293,7 @@ fn run_loop<B: Backend>(
         if is_viewing {
             let content_rows = visible_rows;
             let content_cols = size.width;
-            if let app::AppMode::Viewing(ref view) = app.mode
-            {
+            if let app::AppMode::Viewing(ref view) = app.mode {
                 let current_resize = (
                     content_cols,
                     content_rows,
@@ -321,9 +301,7 @@ fn run_loop<B: Backend>(
                     view.window.clone(),
                 );
 
-                if last_resize.as_ref()
-                    != Some(&current_resize)
-                {
+                if last_resize.as_ref() != Some(&current_resize) {
                     let _ = TmuxManager::resize_pane(
                         &view.session,
                         &view.window,
@@ -338,18 +316,13 @@ fn run_loop<B: Backend>(
                 let session = view.session.clone();
                 let window = view.window.clone();
                 app.pane_content =
-                    TmuxManager::capture_pane_ansi(
-                        &session, &window,
-                    )
-                    .unwrap_or_default();
+                    TmuxManager::capture_pane_ansi(&session, &window).unwrap_or_default();
                 // Store the rendering dimensions (content area in pane.rs),
                 // not the tmux capture dimensions, so mouse selection
                 // coordinates align correctly.
                 app.pane_content_cols = size.width;
                 app.pane_content_rows = size.height.saturating_sub(1);
-                app.tmux_cursor =
-                    TmuxManager::cursor_position(&session, &window)
-                        .ok();
+                app.tmux_cursor = TmuxManager::cursor_position(&session, &window).ok();
             }
         }
 
@@ -455,9 +428,7 @@ fn run_loop<B: Backend>(
                         }
                     }
                     Event::Paste(text) => {
-                        if let Err(e) =
-                            handlers::handle_paste(app, &text)
-                        {
+                        if let Err(e) = handlers::handle_paste(app, &text) {
                             app.show_error(e);
                         }
                     }
@@ -491,7 +462,9 @@ mod tests {
     #[test]
     fn removes_static_amf_thinking_commands() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "PreToolUse": [{"matcher":"","hooks":[
                     {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && mkdir -p /tmp/amf-thinking && touch \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
@@ -500,7 +473,8 @@ mod tests {
                     {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 
@@ -509,22 +483,22 @@ mod tests {
             s["hooks"].get("PreToolUse").is_none(),
             "PreToolUse should be gone"
         );
-        assert!(
-            s["hooks"].get("Stop").is_none(),
-            "Stop should be gone"
-        );
+        assert!(s["hooks"].get("Stop").is_none(), "Stop should be gone");
     }
 
     #[test]
     fn removes_extra_cmd_path() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [{"matcher":"","hooks":[
                     {"type":"command","command":"/home/user/.config/amf/notify.sh"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &["/home/user/.config/amf/notify.sh"]);
 
@@ -538,14 +512,17 @@ mod tests {
     #[test]
     fn preserves_non_amf_hooks() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [
                     {"matcher":"","hooks":[{"type":"command","command":"/my/custom/hook.sh"}]},
                     {"matcher":"","hooks":[{"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}]}
                 ]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 
@@ -584,13 +561,16 @@ mod tests {
     #[test]
     fn removes_debug_hook() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [{"matcher":"","hooks":[
                     {"type":"command","command":"/tmp/debug-hook.sh"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 

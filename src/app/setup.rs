@@ -30,19 +30,13 @@ pub fn ensure_notify_scripts() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &notify_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&notify_path, std::fs::Permissions::from_mode(0o755));
     }
     let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &clear_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&clear_path, std::fs::Permissions::from_mode(0o755));
     }
     let save_prompt_path = config_dir.join("save-prompt.sh");
     let thinking_start_path =
@@ -127,8 +121,7 @@ pub fn load_config() -> AppConfig {
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(
             &config_path,
-            serde_json::to_string_pretty(&config)
-                .unwrap_or_default(),
+            serde_json::to_string_pretty(&config).unwrap_or_default(),
         );
         config
     };
@@ -172,28 +165,23 @@ pub fn update_opencode_theme(theme: &str) -> anyhow::Result<()> {
 }
 
 pub fn remove_old_diff_review_plugin(repo: &Path) {
-    let settings_path =
-        repo.join(".claude").join("settings.local.json");
+    let settings_path = repo.join(".claude").join("settings.local.json");
     if !settings_path.exists() {
         return;
     }
 
-    let mut settings: serde_json::Value =
-        match std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            Some(v) => v,
-            None => return,
-        };
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(v) => v,
+        None => return,
+    };
 
     let changed = settings
         .get_mut("enabledPlugins")
         .and_then(|p| p.as_object_mut())
-        .map(|obj| {
-            obj.remove("diff-review@claude_vibeless")
-                .is_some()
-        })
+        .map(|obj| obj.remove("diff-review@claude_vibeless").is_some())
         .unwrap_or(false);
 
     if !changed {
@@ -205,30 +193,20 @@ pub fn remove_old_diff_review_plugin(repo: &Path) {
         .and_then(|p| p.as_object())
         .is_some_and(|obj| obj.is_empty())
     {
-        settings
-            .as_object_mut()
-            .unwrap()
-            .remove("enabledPlugins");
+        settings.as_object_mut().unwrap().remove("enabledPlugins");
     }
 
-    if settings.as_object().is_some_and(|obj| obj.is_empty())
-    {
+    if settings.as_object().is_some_and(|obj| obj.is_empty()) {
         let _ = std::fs::remove_file(&settings_path);
     } else {
         let _ = std::fs::write(
             &settings_path,
-            serde_json::to_string_pretty(&settings)
-                .unwrap_or_default()
-                + "\n",
+            serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n",
         );
     }
 }
 
-fn ensure_opencode_plugins(
-    workdir: &Path,
-    repo: &Path,
-    mode: &VibeMode,
-) {
+fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
 
@@ -288,10 +266,7 @@ fn ensure_opencode_plugins(
             let _ = std::fs::copy(&src_feedback_prompt, &dst_feedback_prompt);
         }
 
-        let src_explain = repo
-            .join(".opencode")
-            .join("plugins")
-            .join("explain.sh");
+        let src_explain = repo.join(".opencode").join("plugins").join("explain.sh");
 
         if src_explain.exists() {
             let _ = std::fs::copy(&src_explain, &dst_explain);
@@ -299,16 +274,14 @@ fn ensure_opencode_plugins(
     }
 }
 
-pub fn ensure_notification_hooks(
-    workdir: &Path,
-    repo: &Path,
-    mode: &VibeMode,
-    agent: &AgentKind,
-) {
+pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, agent: &AgentKind) {
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Opencode) {
         ensure_opencode_plugins(workdir, repo, mode);
+        return;
+    }
+    if matches!(agent, AgentKind::Codex) {
         return;
     }
 
@@ -316,8 +289,7 @@ pub fn ensure_notification_hooks(
     let settings_path = claude_dir.join("settings.json");
 
     let config_dir = crate::project::amf_config_dir();
-    let notify_cmd =
-        config_dir.join("notify.sh").to_string_lossy().into_owned();
+    let notify_cmd = config_dir.join("notify.sh").to_string_lossy().into_owned();
     let clear_cmd = config_dir
         .join("clear-notify.sh")
         .to_string_lossy()
@@ -343,11 +315,10 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .into_owned();
 
-    let script_suffix =
-        ["plugins", "diff-review", "scripts", "diff-review.sh"];
-    let amf_root = std::env::current_exe().ok().and_then(|exe| {
-        exe.parent()?.parent()?.parent().map(PathBuf::from)
-    });
+    let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
+    let amf_root = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent()?.parent().map(PathBuf::from));
     let diff_review_cmd = [
         Some(workdir.to_path_buf()),
         Some(repo.to_path_buf()),
@@ -361,15 +332,14 @@ pub fn ensure_notification_hooks(
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
 
-    let mut settings: serde_json::Value =
-        if settings_path.exists() {
-            std::fs::read_to_string(&settings_path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            serde_json::json!({})
-        };
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
 
     let hooks = settings
         .as_object_mut()
@@ -415,14 +385,17 @@ pub fn ensure_notification_hooks(
             }));
         }
     }
-    hooks_obj.insert("PreToolUse".to_string(), serde_json::json!([{
-        "matcher": if wants_diff_review && diff_review_cmd.is_some() {
-            "Edit|Write"
-        } else {
-            ""
-        },
-        "hooks": pre_tool_hooks
-    }]));
+    hooks_obj.insert(
+        "PreToolUse".to_string(),
+        serde_json::json!([{
+            "matcher": if wants_diff_review && diff_review_cmd.is_some() {
+                "Edit|Write"
+            } else {
+                ""
+            },
+            "hooks": pre_tool_hooks
+        }]),
+    );
 
     hooks_obj.insert("PostToolUse".to_string(), serde_json::json!([{
         "matcher": "",
@@ -455,25 +428,20 @@ pub fn ensure_notification_hooks(
         if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
             arr.push(serde_json::json!("Edit"));
         }
-        if !arr.iter().any(|v| v.as_str() == Some("Write"))
-        {
+        if !arr.iter().any(|v| v.as_str() == Some("Write")) {
             arr.push(serde_json::json!("Write"));
         }
     } else if let Some(arr) = settings
         .pointer_mut("/permissions/allow")
         .and_then(|v| v.as_array_mut())
     {
-        arr.retain(|v| {
-            v.as_str() != Some("Edit")
-                && v.as_str() != Some("Write")
-        });
+        arr.retain(|v| v.as_str() != Some("Edit") && v.as_str() != Some("Write"));
     }
 
     let _ = std::fs::create_dir_all(&claude_dir);
     let _ = std::fs::write(
         &settings_path,
-        serde_json::to_string_pretty(&settings)
-            .unwrap_or_default(),
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
     );
 
     // Ensure notifications/ is gitignored within .claude/
@@ -494,10 +462,9 @@ pub fn ensure_notification_hooks(
     }
 
     // Ensure review-notes.md is gitignored within .claude/
-    let needs_review_entry =
-        std::fs::read_to_string(&claude_gitignore)
-            .map(|s| !s.contains("review-notes.md"))
-            .unwrap_or(true);
+    let needs_review_entry = std::fs::read_to_string(&claude_gitignore)
+        .map(|s| !s.contains("review-notes.md"))
+        .unwrap_or(true);
     if needs_review_entry
         && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -509,10 +476,9 @@ pub fn ensure_notification_hooks(
     }
 
     // Ensure latest-prompt.txt is gitignored within .claude/
-    let needs_prompt_entry =
-        std::fs::read_to_string(&claude_gitignore)
-            .map(|s| !s.contains("latest-prompt.txt"))
-            .unwrap_or(true);
+    let needs_prompt_entry = std::fs::read_to_string(&claude_gitignore)
+        .map(|s| !s.contains("latest-prompt.txt"))
+        .unwrap_or(true);
     if needs_prompt_entry
         && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -571,16 +537,14 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
     // CLAUDE.local.md is Claude Code's designated gitignored variant of
     // CLAUDE.md — it is read automatically but never committed.
     let md_path = workdir.join("CLAUDE.local.md");
-    let current =
-        std::fs::read_to_string(&md_path).unwrap_or_default();
+    let current = std::fs::read_to_string(&md_path).unwrap_or_default();
     let has_block = current.contains(BEGIN);
 
     // Ensure CLAUDE.local.md is gitignored at the workdir root.
     let gitignore_path = workdir.join(".gitignore");
-    let needs_ignore =
-        std::fs::read_to_string(&gitignore_path)
-            .map(|s| !s.contains("CLAUDE.local.md"))
-            .unwrap_or(true);
+    let needs_ignore = std::fs::read_to_string(&gitignore_path)
+        .map(|s| !s.contains("CLAUDE.local.md"))
+        .unwrap_or(true);
     if needs_ignore
         && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -602,15 +566,11 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
         };
         let _ = std::fs::write(&md_path, content);
     } else if has_block {
-        let stripped =
-            strip_between_markers(&current, BEGIN, END);
+        let stripped = strip_between_markers(&current, BEGIN, END);
         if stripped.trim().is_empty() {
             let _ = std::fs::remove_file(&md_path);
         } else {
-            let _ = std::fs::write(
-                &md_path,
-                format!("{}\n", stripped.trim_end()),
-            );
+            let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
         }
     }
 }

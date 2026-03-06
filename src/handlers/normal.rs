@@ -263,7 +263,11 @@ pub fn handle_normal_key(
                 }
                 _ => {
                     app.sync_statuses();
-                    app.scan_notifications();
+                    if app.ipc.is_some() {
+                        app.drain_ipc_messages();
+                    } else {
+                        app.scan_notifications();
+                    }
                     app.message =
                         Some("Refreshed statuses".into());
                 }
@@ -271,7 +275,11 @@ pub fn handle_normal_key(
         }
         KeyCode::Char('R') => {
             app.sync_statuses();
-            app.scan_notifications();
+            if app.ipc.is_some() {
+                app.drain_ipc_messages();
+            } else {
+                app.scan_notifications();
+            }
             app.message =
                 Some("Refreshed statuses".into());
         }
@@ -360,7 +368,11 @@ fn handle_normal_leader_key(
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
-            app.scan_notifications();
+            if app.ipc.is_some() {
+                app.drain_ipc_messages();
+            } else {
+                app.scan_notifications();
+            }
             app.message =
                 Some("Refreshed statuses".into());
         }

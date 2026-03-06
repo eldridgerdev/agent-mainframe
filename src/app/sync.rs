@@ -50,14 +50,28 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) {
+        let old_thinking = self.thinking_features.clone();
         self.thinking_features.clear();
+        let ipc_mode = self.ipc.is_some();
         for project in &self.store.projects {
             for feature in &project.features {
                 if feature.status == ProjectStatus::Stopped {
                     continue;
                 }
                 let thinking = match feature.agent {
-                    AgentKind::Claude => Self::is_claude_thinking(&feature.tmux_session),
+                    AgentKind::Claude => {
+                        if ipc_mode {
+                            self.ipc_thinking_sessions
+                                .contains(&feature.tmux_session)
+                                || self
+                                    .ipc_tool_sessions
+                                    .contains(&feature.tmux_session)
+                        } else {
+                            Self::is_claude_thinking(
+                                &feature.tmux_session,
+                            )
+                        }
+                    }
                     AgentKind::Opencode => {
                         let session = feature
                             .sessions
@@ -77,6 +91,103 @@ impl App {
                 };
                 if thinking {
                     self.thinking_features.insert(feature.tmux_session.clone());
+                }
+            }
+        }
+
+        // Agent-agnostic fallback: if a feature transitions from
+        // thinking to not-thinking, treat it as waiting for user
+        // input unless another pending notification already exists.
+        let active_features: Vec<(
+            String,
+            String,
+            String,
+            String,
+            AgentKind,
+        )> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project.features.iter().filter_map(|feature| {
+                    if feature.status == ProjectStatus::Stopped {
+                        return None;
+                    }
+                    Some((
+                        project.name.clone(),
+                        feature.name.clone(),
+                        feature.tmux_session.clone(),
+                        feature
+                            .workdir
+                            .to_string_lossy()
+                            .into_owned(),
+                        feature.agent.clone(),
+                    ))
+                })
+            })
+            .collect();
+
+        for (project_name, feature_name, sid, cwd, agent) in active_features {
+            let was_thinking = old_thinking.contains(&sid);
+            let is_thinking = self.thinking_features.contains(&sid);
+
+            if is_thinking {
+                let before = self.pending_inputs.len();
+                self.pending_inputs.retain(|p| {
+                    !(p.notification_type == "input-request"
+                        && p.project_name.as_deref()
+                            == Some(&project_name)
+                        && p.feature_name.as_deref()
+                            == Some(&feature_name))
+                });
+                let removed =
+                    before.saturating_sub(self.pending_inputs.len());
+                if removed > 0 {
+                    self.log_debug(
+                        "sync",
+                        format!(
+                            "Cleared {removed} input notification(s) for {} (agent={}, session={})",
+                            feature_name,
+                            agent.display_name(),
+                            sid
+                        ),
+                    );
+                }
+                continue;
+            }
+
+            if was_thinking && !is_thinking {
+                let any_pending_for_feature =
+                    self.pending_inputs.iter().any(|p| {
+                        p.project_name.as_deref()
+                                == Some(&project_name)
+                            && p.feature_name.as_deref()
+                                == Some(&feature_name)
+                    });
+                if !any_pending_for_feature {
+                    self.pending_inputs.push(PendingInput {
+                        session_id: sid.clone(),
+                        cwd,
+                        message:
+                            "Agent finished and is waiting for input"
+                                .to_string(),
+                        notification_type: "input-request".to_string(),
+                        file_path: std::path::PathBuf::new(),
+                        project_name: Some(project_name),
+                        feature_name: Some(feature_name.clone()),
+                        proceed_signal: None,
+                        request_id: None,
+                        reply_socket: None,
+                    });
+                    self.log_info(
+                        "sync",
+                        format!(
+                            "Detected waiting-for-input for {} (agent={}, session={})",
+                            feature_name,
+                            agent.display_name(),
+                            sid
+                        ),
+                    );
                 }
             }
         }

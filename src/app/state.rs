@@ -118,6 +118,8 @@ pub struct PendingInput {
     pub project_name: Option<String>,
     pub feature_name: Option<String>,
     pub proceed_signal: Option<String>,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
 }
 
 pub enum RenameReturnTo {
@@ -260,6 +262,8 @@ pub struct ChangeReasonState {
     pub reason: String,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
 }
 
 pub enum HookNext {

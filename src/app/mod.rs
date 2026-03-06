@@ -173,6 +173,8 @@ pub struct App {
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
+    pub ipc_thinking_sessions: std::collections::HashSet<String>,
+    pub ipc_tool_sessions: std::collections::HashSet<String>,
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
@@ -180,6 +182,9 @@ pub struct App {
     pub debug_log: DebugLog,
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
+    pub ipc: Option<crate::ipc::IpcGuard>,
+    pub ipc_fallback_logged: bool,
+    pub last_file_notification_count: usize,
 }
 
 impl App {
@@ -229,6 +234,8 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            ipc_thinking_sessions: std::collections::HashSet::new(),
+            ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux: Box::new(TmuxManager),
@@ -236,6 +243,9 @@ impl App {
             debug_log: DebugLog::default(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
+            ipc: None,
+            ipc_fallback_logged: false,
+            last_file_notification_count: 0,
         })
     }
 
@@ -280,6 +290,8 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            ipc_thinking_sessions: std::collections::HashSet::new(),
+            ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,
@@ -287,6 +299,9 @@ impl App {
             debug_log: DebugLog::default(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
+            ipc: None,
+            ipc_fallback_logged: false,
+            last_file_notification_count: 0,
         }
     }
 

@@ -401,15 +401,15 @@ fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
 }
 
 #[test]
-fn stop_hook_has_thinking_remove_and_notify() {
+fn stop_hook_has_thinking_stop_and_notify() {
     let workdir = TempDir::new().unwrap();
     call_ensure_hooks(&workdir, VibeMode::Vibe);
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
         cmds.iter()
-            .any(|c| c.contains("amf-thinking") && c.contains("rm")),
-        "Stop hook missing thinking-remove cmd; got: {cmds:?}"
+            .any(|c| c.contains("thinking-stop.sh")),
+        "Stop hook missing thinking-stop.sh; got: {cmds:?}"
     );
     assert!(
         cmds.iter().any(|c| c.contains("notify.sh")),
@@ -418,19 +418,36 @@ fn stop_hook_has_thinking_remove_and_notify() {
 }
 
 #[test]
-fn pre_tool_use_hook_has_thinking_touch_and_clear() {
+fn pre_tool_use_hook_has_thinking_tool_and_clear() {
     let workdir = TempDir::new().unwrap();
     call_ensure_hooks(&workdir, VibeMode::Vibe);
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
         cmds.iter()
-            .any(|c| c.contains("amf-thinking") && c.contains("touch")),
-        "PreToolUse missing thinking-touch cmd; got: {cmds:?}"
+            .any(|c| c.contains("thinking-start.sh")),
+        "PreToolUse missing thinking-start.sh; got: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| c.contains("tool-start.sh")),
+        "PreToolUse missing tool-start.sh; got: {cmds:?}"
     );
     assert!(
         cmds.iter().any(|c| c.contains("clear-notify.sh")),
         "PreToolUse missing clear-notify.sh; got: {cmds:?}"
+    );
+}
+
+#[test]
+fn post_tool_use_hook_has_tool_stop() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "PostToolUse");
+    assert!(
+        cmds.iter().any(|c| c.contains("tool-stop.sh")),
+        "PostToolUse missing tool-stop.sh; got: {cmds:?}"
     );
 }
 

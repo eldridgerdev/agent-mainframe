@@ -5,6 +5,7 @@ mod claude;
 mod debug;
 mod extension;
 mod handlers;
+mod ipc;
 mod project;
 mod summary;
 mod theme;
@@ -52,6 +53,18 @@ struct Cli {
 enum Commands {
     /// Upgrade amf to the latest release
     Upgrade,
+    /// Send a notification to the running AMF instance via the
+    /// IPC socket. Reads JSON from stdin. Used by hook scripts.
+    #[command(hide = true)]
+    Notify,
+    /// Send a notification and wait for an IPC response JSON.
+    /// Used by review hooks that require a decision.
+    #[command(hide = true)]
+    NotifyWait {
+        /// Timeout in milliseconds while waiting for reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -66,6 +79,44 @@ fn main() -> Result<()> {
         return upgrade::upgrade();
     }
 
+    if let Some(Commands::Notify) = cli.command {
+        use std::io::Read;
+        let mut payload = String::new();
+        std::io::stdin().read_to_string(&mut payload)?;
+        let payload = payload.trim();
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let socket = ipc::socket_path();
+        // Propagate error so hook scripts get a non-zero exit
+        // code and can fall back to file-based delivery.
+        ipc::send(&socket, payload)?;
+        return Ok(());
+    }
+
+    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command
+    {
+        use std::io::Read;
+        let mut payload = String::new();
+        std::io::stdin().read_to_string(&mut payload)?;
+        let payload = payload.trim();
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let socket = ipc::socket_path();
+        let reply = ipc::send_wait(
+            &socket,
+            payload,
+            Duration::from_millis(timeout_ms),
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string(&reply)
+                .unwrap_or_else(|_| "{}".to_string())
+        );
+        return Ok(());
+    }
+
     if let Err(e) = TmuxManager::check_available() {
         eprintln!("Error: {e}");
         std::process::exit(1);
@@ -77,8 +128,42 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
+    let refreshed =
+        app::setup::refresh_opencode_plugins_for_store(
+            &app.store,
+        );
+    app.log_info(
+        "setup",
+        format!(
+            "Refreshed opencode plugins for {refreshed} feature(s)"
+        ),
+    );
+
+    // Start IPC socket server for push-based hook notifications.
+    let socket = ipc::socket_path();
+    match ipc::start(&socket) {
+        Ok(guard) => {
+            app.log_info(
+                "ipc",
+                format!("Socket listening at {}", socket.display()),
+            );
+            app.ipc = Some(guard);
+        }
+        Err(e) => {
+            app.log_warn(
+                "ipc",
+                format!(
+                    "Could not start IPC socket, \
+                     falling back to file polling: {e}"
+                ),
+            );
+        }
+    }
+
     app.sync_statuses();
     app.sync_session_status();
+    // One-time file scan on startup to pick up any notifications
+    // written while AMF was not running.
     app.scan_notifications();
     app.usage.refresh();
 
@@ -212,6 +297,7 @@ fn run_loop<B: Backend>(
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
+    // Only used when no IPC socket is available (fallback).
     let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> =
         None;
@@ -312,14 +398,29 @@ fn run_loop<B: Backend>(
             last_sync = std::time::Instant::now();
         }
 
-        if last_thinking_sync.elapsed() >= Duration::from_millis(500) {
-            app.sync_thinking_status();
-            last_thinking_sync = std::time::Instant::now();
+        if app.ipc.is_some() {
+            // Drain all buffered socket messages each iteration.
+            app.drain_ipc_messages();
         }
 
         if last_notif_scan.elapsed() >= Duration::from_millis(500) {
+            if app.ipc.is_none() && !app.ipc_fallback_logged {
+                app.log_warn(
+                    "ipc",
+                    "IPC unavailable; using file-based notification polling".to_string(),
+                );
+                app.ipc_fallback_logged = true;
+            }
+            // Always scan file notifications as compatibility fallback.
+            // Some producers (for example plugin runtimes) may not be
+            // able to call `amf notify` even while IPC is available.
             app.scan_notifications();
             last_notif_scan = std::time::Instant::now();
+        }
+
+        if last_thinking_sync.elapsed() >= Duration::from_millis(500) {
+            app.sync_thinking_status();
+            last_thinking_sync = std::time::Instant::now();
         }
 
         if let Err(e) = app.poll_summary_result() {

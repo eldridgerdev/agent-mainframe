@@ -6,9 +6,7 @@ use crate::tmux::TmuxManager;
 impl App {
     pub fn enter_view(&mut self) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
-            Selection::Session(pi, fi, si) => {
-                (*pi, *fi, Some(*si))
-            }
+            Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
             Selection::Feature(pi, fi) => (*pi, *fi, None),
             _ => return Ok(()),
         };
@@ -32,7 +30,10 @@ impl App {
                     .sessions
                     .iter()
                     .position(|s| {
-                        s.kind == SessionKind::Claude
+                        matches!(
+                            s.kind,
+                            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                        )
                     })
                     .unwrap_or(0)
             });
@@ -49,23 +50,17 @@ impl App {
             )
         };
 
-        let feature = self.store.projects[pi]
-            .features
-            .get_mut(fi)
-            .unwrap();
+        let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
-            if input.project_name.as_deref()
-                == Some(&project_name)
-                && input.feature_name.as_deref()
-                    == Some(&feature_name)
+            if input.project_name.as_deref() == Some(&project_name)
+                && input.feature_name.as_deref() == Some(&feature_name)
                 && input.notification_type != "diff-review"
             {
-                let _ =
-                    std::fs::remove_file(&input.file_path);
+                let _ = std::fs::remove_file(&input.file_path);
                 false
             } else {
                 true
@@ -109,10 +104,7 @@ impl App {
 
     pub fn leader_timed_out(&self) -> bool {
         self.leader_activated_at
-            .map(|t| {
-                t.elapsed()
-                    >= std::time::Duration::from_secs(2)
-            })
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(2))
             .unwrap_or(false)
     }
 
@@ -124,12 +116,9 @@ impl App {
                 view.scroll_passthrough = is_alternate;
 
                 if !is_alternate {
-                    let (content, lines) = TmuxManager::capture_pane_with_history(
-                        &view.session,
-                        &view.window,
-                        10000,
-                    )
-                    .unwrap_or((String::new(), 0));
+                    let (content, lines) =
+                        TmuxManager::capture_pane_with_history(&view.session, &view.window, 10000)
+                            .unwrap_or((String::new(), 0));
                     view.scroll_content = content;
                     view.scroll_total_lines = lines;
                     let max_offset = lines.saturating_sub(visible_rows as usize);
@@ -160,7 +149,9 @@ impl App {
             && view.scroll_mode
             && !view.scroll_passthrough
         {
-            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            let max_offset = view
+                .scroll_total_lines
+                .saturating_sub(visible_rows as usize);
             view.scroll_offset = (view.scroll_offset + amount).min(max_offset);
         }
     }
@@ -179,7 +170,9 @@ impl App {
             && view.scroll_mode
             && !view.scroll_passthrough
         {
-            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            let max_offset = view
+                .scroll_total_lines
+                .saturating_sub(visible_rows as usize);
             view.scroll_offset = max_offset;
         }
     }
@@ -191,9 +184,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return Ok(()),
@@ -201,9 +192,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return Ok(()),
@@ -235,9 +224,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return Ok(()),
@@ -245,9 +232,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return Ok(()),
@@ -272,11 +257,7 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn switch_view_to_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub(crate) fn switch_view_to_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         self.ensure_feature_running(pi, fi)?;
 
         let project = &self.store.projects[pi];
@@ -290,19 +271,20 @@ impl App {
         let si = feature
             .sessions
             .iter()
-            .position(|s| s.kind == SessionKind::Claude)
+            .position(|s| {
+                matches!(
+                    s.kind,
+                    SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                )
+            })
             .unwrap_or(0);
-        let (session_window, session_label) =
-            if let Some(s) = feature.sessions.get(si) {
-                (s.tmux_window.clone(), s.label.clone())
-            } else {
-                ("claude".into(), "Claude 1".into())
-            };
+        let (session_window, session_label) = if let Some(s) = feature.sessions.get(si) {
+            (s.tmux_window.clone(), s.label.clone())
+        } else {
+            ("terminal".into(), "Terminal 1".into())
+        };
 
-        let feature = self.store.projects[pi]
-            .features
-            .get_mut(fi)
-            .unwrap();
+        let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
 
@@ -329,9 +311,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return,
@@ -339,9 +319,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return,
@@ -361,8 +339,7 @@ impl App {
             .iter()
             .position(|s| s.tmux_window == current_window)
             .unwrap_or(0);
-        let next_si =
-            (current_si + 1) % feature.sessions.len();
+        let next_si = (current_si + 1) % feature.sessions.len();
         let next = &feature.sessions[next_si];
 
         if let AppMode::Viewing(ref mut view) = self.mode {
@@ -379,9 +356,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return,
@@ -389,9 +364,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return,
@@ -424,5 +397,4 @@ impl App {
         }
         self.pane_content.clear();
     }
-
 }

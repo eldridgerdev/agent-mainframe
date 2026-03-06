@@ -60,10 +60,15 @@ impl App {
 
         let builtin_sessions = vec![
             BuiltinSessionOption {
-                kind: SessionKind::Claude,
+                kind: match agent {
+                    AgentKind::Claude => SessionKind::Claude,
+                    AgentKind::Opencode => SessionKind::Opencode,
+                    AgentKind::Codex => SessionKind::Codex,
+                },
                 label: match agent {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
+                    AgentKind::Codex => "Codex".to_string(),
                 },
                 disabled: None,
             },
@@ -156,10 +161,15 @@ impl App {
 
         let builtin_sessions = vec![
             BuiltinSessionOption {
-                kind: SessionKind::Claude,
+                kind: match agent {
+                    AgentKind::Claude => SessionKind::Claude,
+                    AgentKind::Opencode => SessionKind::Opencode,
+                    AgentKind::Codex => SessionKind::Codex,
+                },
                 label: match agent {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
+                    AgentKind::Codex => "Codex".to_string(),
                 },
                 disabled: None,
             },
@@ -274,7 +284,9 @@ impl App {
         match kind {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi),
             SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi),
-            SessionKind::Claude => self.add_claude_session_for_picker(pi, fi),
+            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex => {
+                self.add_claude_session_for_picker(pi, fi)
+            }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => {
                 self.message = Some("Unsupported session type".into());
@@ -417,6 +429,7 @@ impl App {
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         let session = feature.add_session(session_kind);
         let window = session.tmux_window.clone();
@@ -430,6 +443,9 @@ impl App {
             }
             AgentKind::Opencode => {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
+            }
+            AgentKind::Codex => {
+                TmuxManager::launch_codex(&tmux_session, &window)?;
             }
         }
 
@@ -529,6 +545,7 @@ impl App {
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         let session = feature.add_session(session_kind);
         let window = session.tmux_window.clone();
@@ -542,6 +559,9 @@ impl App {
             }
             AgentKind::Opencode => {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
+            }
+            AgentKind::Codex => {
+                TmuxManager::launch_codex(&tmux_session, &window)?;
             }
         }
 

@@ -251,6 +251,9 @@ impl App {
                         None,
                     )?;
                 }
+                SessionKind::Codex => {
+                    TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window)?;
+                }
                 SessionKind::Nvim => {
                     if feature.has_notes {
                         TmuxManager::send_keys(

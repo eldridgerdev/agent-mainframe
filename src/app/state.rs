@@ -344,6 +344,8 @@ pub struct DeletingFeatureState {
     pub workdir: PathBuf,
     pub stage: DeleteStage,
     pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub error: Option<String>,
 }
 
@@ -362,6 +364,8 @@ pub struct BackgroundDeletion {
     pub workdir: PathBuf,
     pub stage: DeleteStage,
     pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub error: Option<String>,
 }
 
@@ -380,6 +384,8 @@ impl BackgroundDeletion {
             workdir: state.workdir,
             stage: state.stage,
             child: state.child,
+            output: state.output,
+            output_rx: state.output_rx,
             error: state.error,
         }
     }

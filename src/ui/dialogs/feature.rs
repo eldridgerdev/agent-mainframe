@@ -165,7 +165,7 @@ fn draw_create_feature_preset_picker(
                     " {} | {}{}",
                     agent_str,
                     mode_str,
-                    if preset.review { " | review" } else { "" }
+                    if preset.review { " | review log" } else { "" }
                 );
                 let line = Line::from(vec![
                     Span::styled(
@@ -318,18 +318,18 @@ fn draw_create_feature_branch_mode(
         .constraints([
             Constraint::Length(2), // branch
             Constraint::Length(1), // spacer
-            Constraint::Length(4), // worktree
+            Constraint::Length(3), // worktree
             Constraint::Length(1), // spacer
             Constraint::Length(4), // agent
             Constraint::Length(1), // spacer
-            Constraint::Length(4), // mode (3 variants)
+            Constraint::Length(5), // mode
             Constraint::Length(1), // spacer
-            Constraint::Length(2), // review checkbox
+            Constraint::Length(1), // review checkbox
             Constraint::Length(1), // spacer
-            Constraint::Length(2), // chrome checkbox
+            Constraint::Length(1), // chrome checkbox
             Constraint::Length(1), // spacer
-            Constraint::Length(2), // notes checkbox
-            Constraint::Length(2), // extra space
+            Constraint::Length(1), // notes checkbox
+            Constraint::Length(1), // extra space
             Constraint::Min(0),
             Constraint::Length(1), // hints
         ])
@@ -436,7 +436,7 @@ fn draw_create_feature_branch_mode(
     for (i, m) in VibeMode::ALL.iter().enumerate() {
         let is_selected = i == state.mode_index;
         let marker = if is_selected { ">" } else { " " };
-        let style = if mode_active && is_selected {
+        let name_style = if mode_active && is_selected {
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
@@ -445,10 +445,18 @@ fn draw_create_feature_branch_mode(
         } else {
             Style::default().fg(theme.text_muted.to_color())
         };
-        mode_lines.push(Line::from(Span::styled(
-            format!("   {} {}", marker, m.display_name()),
-            style,
-        )));
+        let desc_style = if mode_active && is_selected {
+            Style::default().fg(theme.text.to_color())
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        };
+        mode_lines.push(Line::from(vec![
+            Span::styled(
+                format!("   {} {:<10}", marker, m.display_name()),
+                name_style,
+            ),
+            Span::styled(m.description(), desc_style),
+        ]));
     }
 
     let mode_widget = Paragraph::new(mode_lines);
@@ -472,7 +480,7 @@ fn draw_create_feature_branch_mode(
             },
         ),
         Span::styled(
-            format!("{} Approve each edit before apply", review_check),
+            format!("{} Log changes for final code review", review_check),
             review_style,
         ),
     ])];

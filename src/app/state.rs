@@ -163,6 +163,13 @@ pub struct ClaudeSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct CodexSessionPickerState {
+    pub sessions: Vec<super::codex_sessions::CodexSessionInfo>,
+    pub selected: usize,
+    pub workdir: PathBuf,
+}
+
 #[derive(Clone)]
 pub struct BookmarkPickerState {
     pub selected: usize,
@@ -192,6 +199,11 @@ pub enum AppMode {
     },
     ClaudeSessionPicker(ClaudeSessionPickerState),
     ConfirmingClaudeSession {
+        session_id: String,
+        workdir: PathBuf,
+    },
+    CodexSessionPicker(CodexSessionPickerState),
+    ConfirmingCodexSession {
         session_id: String,
         workdir: PathBuf,
     },

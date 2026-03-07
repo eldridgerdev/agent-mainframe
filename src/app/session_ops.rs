@@ -424,13 +424,7 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(
-            &workdir,
-            &repo,
-            &mode,
-            &agent,
-            feature.is_worktree,
-        );
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
@@ -451,7 +445,7 @@ impl App {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
             AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window)?;
+                TmuxManager::launch_codex(&tmux_session, &window, None)?;
             }
         }
 
@@ -546,13 +540,7 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(
-            &workdir,
-            &repo,
-            &mode,
-            &agent,
-            feature.is_worktree,
-        );
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
@@ -573,7 +561,7 @@ impl App {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
             AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window)?;
+                TmuxManager::launch_codex(&tmux_session, &window, None)?;
             }
         }
 

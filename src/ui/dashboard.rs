@@ -271,6 +271,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_claude_session_confirm(frame, &app.theme);
     }
 
+    if let AppMode::CodexSessionPicker(state) = &app.mode {
+        super::picker::draw_codex_session_picker(frame, state, &app.theme);
+    }
+
+    if matches!(app.mode, AppMode::ConfirmingCodexSession { .. }) {
+        super::picker::draw_codex_session_confirm(frame, &app.theme);
+    }
+
     if let AppMode::SessionPicker(state) = &app.mode {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }
@@ -298,7 +306,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::ForkingFeature(state) = &app.mode {
         let allowed_agents = app.active_extension.allowed_agents();
-        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice(), &app.theme);
+        super::dialogs::draw_fork_feature_dialog(
+            frame,
+            state,
+            allowed_agents.as_slice(),
+            &app.theme,
+        );
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {

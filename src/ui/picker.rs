@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    BookmarkPickerState, ClaudeSessionPickerState, CommandPickerState, OpencodeSessionPickerState,
-    PendingInput, SessionPickerState, SessionSwitcherState,
+    BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
+    OpencodeSessionPickerState, PendingInput, SessionPickerState, SessionSwitcherState,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -280,13 +280,22 @@ pub fn draw_bookmark_picker(
             "  j/k or \u{2191}/\u{2193}",
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::styled(" navigate  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(" jump  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("d", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" remove  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " remove  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("1-9", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" quick jump  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " quick jump  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
     ]));
@@ -622,6 +631,98 @@ pub fn draw_claude_session_picker(
     frame.render_widget(hints, chunks[1]);
 }
 
+pub fn draw_codex_session_picker(
+    frame: &mut Frame,
+    state: &CodexSessionPickerState,
+    theme: &Theme,
+) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Codex Sessions ({}) ", state.sessions.len());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.session_icon_codex.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.sessions.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No sessions for this worktree.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, session)| {
+            let is_selected = i == state.selected;
+            let title_preview = if session.title.len() > 60 {
+                format!("{}...", &session.title[..57])
+            } else {
+                session.title.clone()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(theme.session_icon_codex.to_color()),
+                ),
+                Span::styled(
+                    title_preview,
+                    if is_selected {
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text.to_color())
+                    },
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " select  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
 pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(50, 35, frame.area());
     frame.render_widget(Clear, area);
@@ -635,6 +736,51 @@ pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
         Line::from(""),
         Line::from(Span::styled(
             "  Restart with selected claude session?",
+            Style::default().fg(theme.text.to_color()),
+        )),
+        Line::from(Span::styled(
+            "  This will kill the current tmux session",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(Span::styled(
+            "  and start a new one with the session restored.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  y", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " restart  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("n/Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+        ]),
+    ])
+    .block(
+        Block::default()
+            .title(" Confirm Restart ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.warning.to_color())),
+    );
+
+    frame.render_widget(text, area);
+}
+
+pub fn draw_codex_session_confirm(frame: &mut Frame, theme: &Theme) {
+    let area = centered_rect(50, 35, frame.area());
+    frame.render_widget(Clear, area);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Feature is already running.",
+            Style::default().fg(theme.warning.to_color()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Restart with selected codex session?",
             Style::default().fg(theme.text.to_color()),
         )),
         Line::from(Span::styled(

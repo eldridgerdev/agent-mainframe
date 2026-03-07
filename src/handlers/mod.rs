@@ -32,9 +32,11 @@ pub use input::handle_paste;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
 pub use picker::{
-    handle_bookmark_picker_key, handle_claude_session_confirm_key, handle_claude_session_picker_key,
-    handle_command_picker_key, handle_notification_picker_key, handle_opencode_session_confirm_key,
-    handle_opencode_session_picker_key, handle_session_picker_key, handle_session_switcher_key,
+    handle_bookmark_picker_key, handle_claude_session_confirm_key,
+    handle_claude_session_picker_key, handle_codex_session_confirm_key,
+    handle_codex_session_picker_key, handle_command_picker_key, handle_notification_picker_key,
+    handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
+    handle_session_picker_key, handle_session_switcher_key,
 };
 pub use search::handle_search_key;
 pub use view::handle_view_key;
@@ -64,6 +66,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         }
         AppMode::ClaudeSessionPicker(_) => handle_claude_session_picker_key(app, key.code),
         AppMode::ConfirmingClaudeSession { .. } => handle_claude_session_confirm_key(app, key.code),
+        AppMode::CodexSessionPicker(_) => handle_codex_session_picker_key(app, key.code),
+        AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
         AppMode::ChangeReasonPrompt(_) => handle_change_reason_key(app, key),

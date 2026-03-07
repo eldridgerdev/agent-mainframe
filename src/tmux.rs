@@ -256,9 +256,16 @@ impl TmuxManager {
     }
 
     /// Launch codex in a specific window of a session
-    pub fn launch_codex(session: &str, window: &str) -> Result<()> {
+    pub fn launch_codex(
+        session: &str,
+        window: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<()> {
         let target = format!("{}:{}", session, window);
-        let cmd = format!("env AMF_SESSION={} codex", session);
+        let cmd = match resume_session_id {
+            Some(id) => format!("env AMF_SESSION={} codex resume {}", session, id),
+            None => format!("env AMF_SESSION={} codex", session),
+        };
 
         Command::new("tmux")
             .args(["send-keys", "-t", &target, &cmd, "Enter"])
@@ -611,8 +618,8 @@ impl TmuxOps for TmuxManager {
         TmuxManager::launch_opencode(session, window)
     }
 
-    fn launch_codex(&self, session: &str, window: &str) -> Result<()> {
-        TmuxManager::launch_codex(session, window)
+    fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()> {
+        TmuxManager::launch_codex(session, window, resume_id.as_deref())
     }
 
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()> {

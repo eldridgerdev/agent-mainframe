@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 use crate::app::{App, AppMode, Selection, SessionFilter};
@@ -20,36 +20,33 @@ fn utilization_color(pct: f64) -> Color {
     }
 }
 
-fn usage_bar_spans<'a>(
-    label: &'a str,
-    pct: f64,
-    bar_width: usize,
-) -> Vec<Span<'a>> {
+fn usage_bar_spans<'a>(label: &'a str, pct: f64, bar_width: usize) -> Vec<Span<'a>> {
     let color = utilization_color(pct);
-    let filled =
-        ((pct / 100.0) * bar_width as f64).round() as usize;
+    let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
     let empty = bar_width.saturating_sub(filled);
 
     vec![
-        Span::styled(
-            format!("{} ", label),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            "┃".repeat(filled),
-            Style::default().fg(color),
-        ),
+        Span::styled(format!("{} ", label), Style::default().fg(Color::DarkGray)),
+        Span::styled("┃".repeat(filled), Style::default().fg(color)),
         Span::styled(
             "░".repeat(empty),
             Style::default().fg(Color::Rgb(60, 60, 60)),
         ),
         Span::styled(
             format!(" {:.0}%", pct),
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ),
     ]
+}
+
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn shorten_path(path: &std::path::Path) -> String {
@@ -61,25 +58,15 @@ fn shorten_path(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-pub fn draw(
-    frame: &mut Frame,
-    app: &App,
-    area: Rect,
-) {
+pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let filter_spans = if app.session_filter != SessionFilter::All {
         vec![
-            Span::styled(
-                " [",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(" [", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 app.session_filter.display_name(),
                 Style::default().fg(Color::Cyan),
             ),
-            Span::styled(
-                "] ",
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled("] ", Style::default().fg(Color::DarkGray)),
         ]
     } else {
         vec![]
@@ -87,170 +74,74 @@ pub fn draw(
 
     let keybinds = match &app.mode {
         AppMode::Normal => {
-            let on_session = matches!(
-                app.selection,
-                Selection::Session(_, _, _)
-            );
-            let on_feature = matches!(
-                app.selection,
-                Selection::Feature(_, _)
-            );
+            let on_session = matches!(app.selection, Selection::Session(_, _, _));
+            let on_feature = matches!(app.selection, Selection::Feature(_, _));
             if on_session {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(
-                        " Enter",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(" Enter", Style::default().fg(Color::Yellow)),
                     Span::raw(" view  "),
-                    Span::styled(
-                        "r",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("r", Style::default().fg(Color::Yellow)),
                     Span::raw(" rename  "),
-                    Span::styled(
-                        "x",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("x", Style::default().fg(Color::Yellow)),
                     Span::raw(" remove  "),
-                    Span::styled(
-                        "d",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("d", Style::default().fg(Color::Yellow)),
                     Span::raw(" delete  "),
-                    Span::styled(
-                        "s",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("s", Style::default().fg(Color::Yellow)),
                     Span::raw(" switch  "),
-                    Span::styled(
-                        "S",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" opencode  "),
-                    Span::styled(
-                        "f",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("S", Style::default().fg(Color::Yellow)),
+                    Span::raw(" resume  "),
+                    Span::styled("f", Style::default().fg(Color::Yellow)),
                     Span::raw(" filter  "),
-                    Span::styled(
-                        "q",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
                     Span::raw(" quit"),
                 ]);
                 Line::from(spans)
             } else if on_feature {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(
-                        " n",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(" n", Style::default().fg(Color::Yellow)),
                     Span::raw(" feature  "),
-                    Span::styled(
-                        "Enter",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
                     Span::raw(" expand  "),
-                    Span::styled(
-                        "c",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("c", Style::default().fg(Color::Yellow)),
                     Span::raw(" start  "),
-                    Span::styled(
-                        "x",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("x", Style::default().fg(Color::Yellow)),
                     Span::raw(" stop  "),
-                    Span::styled(
-                        "t",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +term  "),
-                    Span::styled(
-                        "a",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +claude  "),
-                    Span::styled(
-                        "v",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" +nvim  "),
-                    Span::styled(
-                        "f",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("f", Style::default().fg(Color::Yellow)),
                     Span::raw(" filter  "),
-                    Span::styled(
-                        "s",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("s", Style::default().fg(Color::Yellow)),
                     Span::raw(" switch  "),
-                    Span::styled(
-                        "S",
-                        Style::default().fg(Color::Yellow),
-                    ),
-                    Span::raw(" opencode  "),
-                    Span::styled(
-                        "d",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("S", Style::default().fg(Color::Yellow)),
+                    Span::raw(" resume  "),
+                    Span::styled("d", Style::default().fg(Color::Yellow)),
                     Span::raw(" delete  "),
                 ]);
                 if !app.active_extension.custom_sessions.is_empty() {
-                    spans.push(Span::styled(
-                        "p",
-                        Style::default().fg(Color::Yellow),
-                    ));
+                    spans.push(Span::styled("p", Style::default().fg(Color::Yellow)));
                     spans.push(Span::raw(" sessions  "));
                 }
                 spans.extend(vec![
-                    Span::styled(
-                        "q",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
                     Span::raw(" quit"),
                 ]);
                 Line::from(spans)
             } else {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(
-                        " n",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled(" n", Style::default().fg(Color::Yellow)),
                     Span::raw(" feature  "),
-                    Span::styled(
-                        "N",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("N", Style::default().fg(Color::Yellow)),
                     Span::raw(" project  "),
-                    Span::styled(
-                        "Enter",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
                     Span::raw(" expand  "),
-                    Span::styled(
-                        "f",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("f", Style::default().fg(Color::Yellow)),
                     Span::raw(" filter  "),
-                    Span::styled(
-                        "d",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("d", Style::default().fg(Color::Yellow)),
                     Span::raw(" delete  "),
-                    Span::styled(
-                        "R",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("R", Style::default().fg(Color::Yellow)),
                     Span::raw(" refresh  "),
-                    Span::styled(
-                        "q",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("q", Style::default().fg(Color::Yellow)),
                     Span::raw(" quit"),
                 ]);
                 Line::from(spans)
@@ -258,39 +149,23 @@ pub fn draw(
         }
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
+        | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
+        | AppMode::RenamingFeature(_)
         | AppMode::BrowsingPath(_) => Line::from(vec![
-            Span::styled(
-                "Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" confirm  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ]),
-        AppMode::DeletingProject(_)
-        | AppMode::DeletingFeature(_, _) => {
-            Line::from(vec![
-                Span::styled(
-                    "y",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(" confirm  "),
-                Span::styled(
-                    "n/Esc",
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(" cancel"),
-            ])
-        }
+        AppMode::DeletingProject(_) | AppMode::DeletingFeature(_, _) => Line::from(vec![
+            Span::styled("y", Style::default().fg(Color::Yellow)),
+            Span::raw(" confirm  "),
+            Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ]),
         AppMode::Help(_) => Line::from(vec![
-            Span::styled(
-                "Esc/q/?",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc/q/?", Style::default().fg(Color::Yellow)),
             Span::raw(" close help"),
         ]),
         AppMode::CommandPicker(_)
@@ -298,62 +173,38 @@ pub fn draw(
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
+        | AppMode::ClaudeSessionPicker(_)
         | AppMode::SessionPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k or \u{2191}/\u{2193}",
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" navigate  "),
-            Span::styled(
-                "Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" select  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ]),
-        AppMode::ConfirmingOpencodeSession { .. } => Line::from(vec![
-            Span::styled(
-                "y",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" restart  "),
-            Span::styled(
-                "n/Esc",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(" cancel"),
-        ]),
+        AppMode::ConfirmingOpencodeSession { .. } | AppMode::ConfirmingClaudeSession { .. } => {
+            Line::from(vec![
+                Span::styled("y", Style::default().fg(Color::Yellow)),
+                Span::raw(" restart  "),
+                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel"),
+            ])
+        }
         AppMode::ChangeReasonPrompt(_) => Line::from(vec![
-            Span::styled(
-                "Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" accept  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" skip  "),
-            Span::styled(
-                "r",
-                Style::default().fg(Color::Red),
-            ),
+            Span::styled("r", Style::default().fg(Color::Red)),
             Span::raw(" reject"),
         ]),
         AppMode::Viewing(_) => Line::from(vec![
-            Span::styled(
-                "Ctrl+Space",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Ctrl+Space", Style::default().fg(Color::Yellow)),
             Span::raw(" commands  "),
-            Span::styled(
-                "Ctrl+Q",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
             Span::raw(" exit view"),
         ]),
         AppMode::RunningHook(state) => {
@@ -364,15 +215,9 @@ pub fn draw(
                 ))
             } else {
                 Line::from(vec![
-                    Span::styled(
-                        "Enter",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
                     Span::raw(" continue  "),
-                    Span::styled(
-                        "Esc",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
                     Span::raw(" skip"),
                 ])
             }
@@ -385,10 +230,7 @@ pub fn draw(
                 ))
             } else if state.error.is_some() {
                 Line::from(vec![
-                    Span::styled(
-                        "Enter",
-                        Style::default().fg(Color::Yellow),
-                    ),
+                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
                     Span::raw(" acknowledge"),
                 ])
             } else {
@@ -399,31 +241,38 @@ pub fn draw(
             }
         }
         AppMode::HookPrompt(_) => Line::from(vec![
-            Span::styled(
-                " j/k",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
             Span::raw(" move  "),
-            Span::styled(
-                "Enter",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
             Span::raw(" confirm  "),
-            Span::styled(
-                "Esc",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" cancel"),
         ]),
         AppMode::LatestPrompt(_, _) => Line::from(vec![
-            Span::styled(
-                " Esc",
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled(
-                "/q",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(" Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("/q", Style::default().fg(Color::Yellow)),
+            Span::raw(" close"),
+        ]),
+        AppMode::ForkingFeature(_) => Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::ThemePicker(_) => Line::from(vec![
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::raw(" apply  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::DebugLog(_) => Line::from(vec![
+            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::raw(" scroll  "),
+            Span::styled("c", Style::default().fg(Color::Yellow)),
+            Span::raw(" clear  "),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
             Span::raw(" close"),
         ]),
     };
@@ -434,15 +283,10 @@ pub fn draw(
         } else {
             Color::Green
         };
-        Line::from(Span::styled(
-            msg.as_str(),
-            Style::default().fg(color),
-        ))
+        Line::from(Span::styled(msg.as_str(), Style::default().fg(color)))
     } else {
         match &app.selection {
-            Selection::Project(pi)
-                if *pi < app.store.projects.len() =>
-            {
+            Selection::Project(pi) if *pi < app.store.projects.len() => {
                 let project = &app.store.projects[*pi];
                 Line::from(vec![
                     Span::styled(
@@ -452,30 +296,21 @@ pub fn draw(
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!(
-                            "  {}",
-                            shorten_path(&project.repo)
-                        ),
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        format!("  {}", shorten_path(&project.repo)),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ])
             }
             Selection::Feature(pi, fi)
                 if *pi < app.store.projects.len()
-                    && *fi
-                        < app.store.projects[*pi]
-                            .features
-                            .len() =>
+                    && *fi < app.store.projects[*pi].features.len() =>
             {
-                let feature =
-                    &app.store.projects[*pi].features[*fi];
-                let branch_info =
-                    if feature.branch.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", feature.branch)
-                    };
+                let feature = &app.store.projects[*pi].features[*fi];
+                let branch_info = if feature.branch.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", feature.branch)
+                };
                 Line::from(vec![
                     Span::styled(
                         format!(" {}", feature.name),
@@ -483,39 +318,24 @@ pub fn draw(
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(branch_info, Style::default().fg(Color::Yellow)),
                     Span::styled(
-                        branch_info,
-                        Style::default()
-                            .fg(Color::Yellow),
-                    ),
-                    Span::styled(
-                        format!(
-                            "  {}",
-                            shorten_path(&feature.workdir)
-                        ),
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        format!("  {}", shorten_path(&feature.workdir)),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ])
             }
             Selection::Session(pi, fi, si)
                 if *pi < app.store.projects.len()
-                    && *fi
-                        < app.store.projects[*pi]
-                            .features
-                            .len()
-                    && *si
-                        < app.store.projects[*pi]
-                            .features[*fi]
-                            .sessions
-                            .len() =>
+                    && *fi < app.store.projects[*pi].features.len()
+                    && *si < app.store.projects[*pi].features[*fi].sessions.len() =>
             {
-                let feature =
-                    &app.store.projects[*pi].features[*fi];
+                let feature = &app.store.projects[*pi].features[*fi];
                 let session = &feature.sessions[*si];
                 let kind_label = match session.kind {
                     SessionKind::Claude => "claude",
                     SessionKind::Opencode => "opencode",
+                    SessionKind::Codex => "codex",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
                     SessionKind::Vscode => "vscode",
@@ -523,53 +343,32 @@ pub fn draw(
                 };
                 Line::from(vec![
                     Span::styled(
-                        format!(
-                            " {} ({})",
-                            session.label, kind_label
-                        ),
+                        format!(" {} ({})", session.label, kind_label),
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("  {}", feature.name),
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
-                        format!(
-                            "  {}",
-                            shorten_path(&feature.workdir)
-                        ),
-                        Style::default()
-                            .fg(Color::DarkGray),
+                        format!("  {}", shorten_path(&feature.workdir)),
+                        Style::default().fg(Color::DarkGray),
                     ),
                 ])
             }
             _ => {
-                let project_count =
-                    app.store.projects.len();
-                let feature_count: usize = app
-                    .store
-                    .projects
-                    .iter()
-                    .map(|p| p.features.len())
-                    .sum();
+                let project_count = app.store.projects.len();
+                let feature_count: usize =
+                    app.store.projects.iter().map(|p| p.features.len()).sum();
                 Line::from(Span::styled(
                     format!(
                         " {} project{}, {} feature{}",
                         project_count,
-                        if project_count == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
+                        if project_count == 1 { "" } else { "s" },
                         feature_count,
-                        if feature_count == 1 {
-                            ""
-                        } else {
-                            "s"
-                        },
+                        if feature_count == 1 { "" } else { "s" },
                     ),
                     Style::default().fg(Color::DarkGray),
                 ))
@@ -579,14 +378,10 @@ pub fn draw(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(
-            Style::default().fg(Color::DarkGray),
-        );
+        .border_style(Style::default().fg(Color::DarkGray));
     let inner = block.inner(area);
 
-    let status =
-        Paragraph::new(vec![message_line, keybinds])
-            .block(block);
+    let status = Paragraph::new(vec![message_line, keybinds]).block(block);
     frame.render_widget(status, area);
 
     let usage = app.usage.get_data();
@@ -632,23 +427,38 @@ pub fn draw(
                 } else {
                     format!("{} tok ", tok)
                 };
+                right_spans.push(Span::styled(tok_str, Style::default().fg(Color::Cyan)));
+            }
+        }
+        Model::Codex => {
+            if let Some(pct5) = usage.codex.five_hour_usage_pct {
+                right_spans.extend(usage_bar_spans("5h", pct5, 15));
+                right_spans.push(Span::raw(" "));
+            }
+
+            if let Some(pct7) = usage.codex.weekly_usage_pct {
+                right_spans.extend(usage_bar_spans("7d", pct7, 15));
+                right_spans.push(Span::raw(" "));
+            } else if usage.codex.five_hour_tokens > 0 {
                 right_spans.push(Span::styled(
-                    tok_str,
+                    format!("5h {} ", format_tokens(usage.codex.five_hour_tokens)),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
+            if usage.codex.today_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!("{} tok ", format_tokens(usage.codex.today_tokens)),
                     Style::default().fg(Color::Cyan),
                 ));
             }
+
+            right_spans.push(Span::styled(
+                format!("{} calls ", usage.codex.today_calls),
+                Style::default().fg(Color::DarkGray),
+            ));
         }
         Model::Zai => {
-            let format_tokens = |n: u64| {
-                if n >= 1_000_000 {
-                    format!("{:.1}M", n as f64 / 1_000_000.0)
-                } else if n >= 1_000 {
-                    format!("{:.1}K", n as f64 / 1_000.0)
-                } else {
-                    n.to_string()
-                }
-            };
-
             if let Some(pct) = usage.zai.five_hour_usage_pct {
                 right_spans.extend(usage_bar_spans("5h", pct, 15));
                 right_spans.push(Span::raw(" "));

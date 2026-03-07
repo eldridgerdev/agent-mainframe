@@ -48,33 +48,41 @@ State persisted as JSON at
 `~/.config/amf/projects.json`.
 Tmux sessions are prefixed `amf-` (e.g., `amf-mybranch`).
 
-### App State & Modes (app.rs)
+### App State & Modes (app/)
+
+The `app/` directory is split into focused submodules:
 
 ```text
-App {
-    store: ProjectStore,
-    store_path: PathBuf,
-    selection: Selection,   // Project(usize) | Feature(usize, usize)
-    mode: AppMode,
-    message: Option<String>,
-    should_quit: bool,
-    should_switch: Option<String>,
-    pane_content: String,
-    leader_active: bool,
-    leader_activated_at: Option<Instant>,
-}
-
-AppMode:
-    Normal
-    CreatingProject(CreateProjectState)  // step: Name | Path
-    CreatingFeature(CreateFeatureState)  // branch input
-    DeletingProject(String)
-    DeletingFeature(String, String)
-    Viewing(ViewState)                   // embedded tmux view
-    Help
+app/
+├── mod.rs           # App struct, AppConfig, ZaiPlanConfig,
+│                    # new(), save(), re-exports
+├── state.rs         # AppMode, Selection, ViewState,
+│                    # CreateProjectState, etc.
+├── navigation.rs    # visible_items(), select_next/prev(),
+│                    # selected_project/feature/session()
+├── sync.rs          # sync_statuses(), thinking status
+├── project_ops.rs   # toggle_collapse(), create/delete project,
+│                    # browse path
+├── feature_ops.rs   # create/start/stop/delete feature
+├── session_ops.rs   # session picker, add/remove sessions
+├── view.rs          # enter/exit view, leader key, scroll,
+│                    # view navigation
+├── switcher.rs      # session switcher
+├── notifications.rs # scan_notifications(), handle select
+├── hooks.rs         # lifecycle hooks
+├── opencode.rs      # opencode session management
+├── search.rs        # search and jump
+├── commands.rs      # command picker
+├── rename.rs        # session renaming
+├── review.rs        # trigger_final_review()
+├── setup.rs         # ensure_notification_hooks(),
+│                    # ensure_notify_scripts(), load_config()
+├── util.rs          # shorten_path(), slugify(),
+│                    # detect_repo_path(), detect_branch()
+└── tests.rs         # all #[cfg(test)] tests
 ```
 
-Key App methods:
+Key App methods (spread across submodules):
 
 - `new(store_path) -> Result<Self>`
 - `save() -> Result<()>`
@@ -151,20 +159,85 @@ Key dispatch per mode:
 - `run_headless(workdir, prompt) -> Result<String>`
 - `run_headless_json(workdir, prompt) -> Result<String>`
 
-### UI Rendering (ui/dashboard.rs)
+### UI Rendering (ui/)
 
-`draw(frame, app)` dispatches to:
+`draw(frame, app)` in `ui/dashboard.rs` dispatches to:
 
 - `draw_pane_view()` - full-screen embedded tmux with ANSI
   rendering via vt100 parser
 - `draw_header()`, `draw_project_list()`,
   `draw_status_bar()`
-- Dialog overlays: `draw_create_project_dialog()`,
-  `draw_create_feature_dialog()`,
-  `draw_delete_project_confirm()`,
-  `draw_delete_feature_confirm()`, `draw_help()`
+- Dialog overlays in `ui/dialogs/`:
+   - `project.rs` - create/delete project dialogs
+   - `feature.rs` - create/delete feature, supervibe
+     confirm, deleting feature progress
+   - `session.rs` - rename session dialog
+   - `help.rs` - keybindings help overlay
+   - `browse.rs` - path browser dialog
+   - `search.rs` - search dialog
+   - `hooks.rs` - change reason, running hook, hook
+     prompt dialogs
 - `centered_rect(percent_x, percent_y, area) -> Rect`
 - `ansi_to_ratatui_text(raw, cols, rows) -> Vec<Line>`
+
+### Key Handlers (handlers/)
+
+Key dispatch is split across focused modules:
+
+- `handlers/normal.rs` - dashboard normal mode
+- `handlers/view.rs` - embedded tmux view mode
+- `handlers/dialog.rs` - project creation, help, delete
+  confirms, rename
+- `handlers/feature_creation.rs` - multi-step feature
+  creation wizard
+- `handlers/browse.rs` - path browser key handling
+- `handlers/hooks.rs` - running hook, deleting feature,
+  hook prompt handlers
+- `handlers/picker.rs` - notification, session, command,
+  opencode pickers
+- `handlers/search.rs` - search mode
+- `handlers/change_reason.rs` - diff review prompt
+- `handlers/mouse.rs` - mouse event handling
+
+### Debug Logging
+
+**NEVER use `println!` or `eprintln!` in TUI code** - it corrupts
+the terminal display. Use the built-in debug log instead.
+
+To view the debug log at runtime, press `D` from the dashboard.
+
+**Log file location:** `~/.local/state/amf/debug.log`
+
+You can tail this file in a separate terminal:
+```bash
+tail -f ~/.local/state/amf/debug.log
+```
+
+**Usage in code:**
+
+```rust
+// From anywhere with access to `app`:
+app.log_debug("context", format!("value: {}", value));
+app.log_info("context", "operation completed".to_string());
+app.log_warn("context", "something unexpected".to_string());
+app.log_error("context", format!("failed: {}", err));
+```
+
+**Log levels** (color-coded in UI):
+- `DEBUG` (gray) - detailed tracing
+- `INFO` (green) - normal operations
+- `WARN` (yellow) - unexpected but handled
+- `ERROR` (red) - failures
+
+**Context strings** should be short identifiers like:
+- `"amf"` - app lifecycle
+- `"sync"` - status sync operations
+- `"tmux"` - tmux interactions
+- `"worktree"` - git worktree operations
+- `"hooks"` - lifecycle hooks
+
+Errors from `show_error()` are automatically logged to the
+debug log with level ERROR.
 
 ### Key Design Patterns
 

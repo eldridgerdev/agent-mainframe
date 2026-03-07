@@ -15,6 +15,44 @@ pub struct CustomSessionConfig {
     pub working_dir: Option<PathBuf>,
     pub icon: Option<String>,
     pub icon_nerd: Option<String>,
+    pub on_stop: Option<String>,
+    pub autolaunch: Option<bool>,
+    pub pre_check: Option<String>,
+}
+
+impl CustomSessionConfig {
+    /// Run the `pre_check` command (if any) and return
+    /// `Ok(())` on success or `Err(message)` with the
+    /// command output when it fails / is not found.
+    pub fn run_pre_check(&self, workdir: &std::path::Path) -> std::result::Result<(), String> {
+        let cmd = match &self.pre_check {
+            Some(c) if !c.is_empty() => c,
+            _ => return Ok(()),
+        };
+        match std::process::Command::new("bash")
+            .arg("-c")
+            .arg(cmd)
+            .current_dir(workdir)
+            .output()
+        {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let msg = String::from_utf8_lossy(&output.stdout);
+                let err = String::from_utf8_lossy(&output.stderr);
+                let combined = if !msg.is_empty() && !err.is_empty() {
+                    format!("{}\n{}", msg.trim(), err.trim())
+                } else if !msg.is_empty() {
+                    msg.trim().to_string()
+                } else if !err.is_empty() {
+                    err.trim().to_string()
+                } else {
+                    format!("pre_check failed (exit {})", output.status)
+                };
+                Err(combined)
+            }
+            Err(e) => Err(format!("pre_check failed to run: {}", e)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,7 +196,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         keybindings.insert(action.clone(), *key);
     }
 
-    ExtensionConfig {
+    return ExtensionConfig {
         custom_sessions,
         lifecycle_hooks: LifecycleHooks {
             on_start,
@@ -167,7 +205,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         },
         keybindings,
         feature_presets,
-    }
+    };
 }
 
 #[cfg(test)]
@@ -195,8 +233,7 @@ mod tests {
             ..Default::default()
         };
         let tmp = TempDir::new().unwrap(); // no .amf/config.json
-        let merged =
-            merge_project_extension_config(&global, tmp.path());
+        let merged = merge_project_extension_config(&global, tmp.path());
         assert_eq!(merged.custom_sessions.len(), 1);
         assert_eq!(merged.custom_sessions[0].name, "test");
     }
@@ -205,18 +242,14 @@ mod tests {
     fn project_hook_overrides_global_hook() {
         let global = ExtensionConfig {
             lifecycle_hooks: LifecycleHooks {
-                on_start: Some(HookConfig::Script(
-                    "global-start.sh".to_string(),
-                )),
+                on_start: Some(HookConfig::Script("global-start.sh".to_string())),
                 ..Default::default()
             },
             ..Default::default()
         };
         let project_config = ExtensionConfig {
             lifecycle_hooks: LifecycleHooks {
-                on_start: Some(HookConfig::Script(
-                    "project-start.sh".to_string(),
-                )),
+                on_start: Some(HookConfig::Script("project-start.sh".to_string())),
                 ..Default::default()
             },
             ..Default::default()
@@ -224,10 +257,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_extension_config(&tmp, &project_config);
 
-        let merged =
-            merge_project_extension_config(&global, tmp.path());
-        let on_start =
-            merged.lifecycle_hooks.on_start.unwrap();
+        let merged = merge_project_extension_config(&global, tmp.path());
+        let on_start = merged.lifecycle_hooks.on_start.unwrap();
         assert_eq!(on_start.script(), "project-start.sh");
     }
 
@@ -235,9 +266,7 @@ mod tests {
     fn global_hook_used_when_project_does_not_set_it() {
         let global = ExtensionConfig {
             lifecycle_hooks: LifecycleHooks {
-                on_start: Some(HookConfig::Script(
-                    "global-start.sh".to_string(),
-                )),
+                on_start: Some(HookConfig::Script("global-start.sh".to_string())),
                 ..Default::default()
             },
             ..Default::default()
@@ -247,10 +276,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_extension_config(&tmp, &project_config);
 
-        let merged =
-            merge_project_extension_config(&global, tmp.path());
-        let on_start =
-            merged.lifecycle_hooks.on_start.unwrap();
+        let merged = merge_project_extension_config(&global, tmp.path());
+        let on_start = merged.lifecycle_hooks.on_start.unwrap();
         assert_eq!(on_start.script(), "global-start.sh");
     }
 
@@ -287,8 +314,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_extension_config(&tmp, &project_config);
 
-        let merged =
-            merge_project_extension_config(&global, tmp.path());
+        let merged = merge_project_extension_config(&global, tmp.path());
         // "shared" must appear exactly once (project version)
         let shared: Vec<_> = merged
             .custom_sessions
@@ -296,10 +322,7 @@ mod tests {
             .filter(|s| s.name == "shared")
             .collect();
         assert_eq!(shared.len(), 1);
-        assert_eq!(
-            shared[0].command.as_deref(),
-            Some("project-cmd")
-        );
+        assert_eq!(shared[0].command.as_deref(), Some("project-cmd"));
         // Both unique entries should be present
         assert!(merged
             .custom_sessions
@@ -333,13 +356,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_extension_config(&tmp, &project_config);
 
-        let merged =
-            merge_project_extension_config(&global, tmp.path());
+        let merged = merge_project_extension_config(&global, tmp.path());
         assert_eq!(merged.keybindings.get("quit"), Some(&'Q'));
         // Global key preserved when not overridden
-        assert_eq!(
-            merged.keybindings.get("delete"),
-            Some(&'d')
-        );
+        assert_eq!(merged.keybindings.get("delete"), Some(&'d'));
     }
 }

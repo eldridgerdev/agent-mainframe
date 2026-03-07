@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::{Child, Command};
 
@@ -255,6 +255,19 @@ impl TmuxManager {
         Ok(())
     }
 
+    /// Launch codex in a specific window of a session
+    pub fn launch_codex(session: &str, window: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        let cmd = format!("env AMF_SESSION={} codex", session);
+
+        Command::new("tmux")
+            .args(["send-keys", "-t", &target, &cmd, "Enter"])
+            .status()
+            .context("Failed to send codex command to tmux")?;
+
+        Ok(())
+    }
+
     /// Check if we're currently running inside a tmux session
     pub fn is_inside_tmux() -> bool {
         std::env::var("TMUX").is_ok()
@@ -268,11 +281,7 @@ impl TmuxManager {
             .ok()?;
         if output.status.success() {
             let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if name.is_empty() {
-                None
-            } else {
-                Some(name)
-            }
+            if name.is_empty() { None } else { Some(name) }
         } else {
             None
         }
@@ -576,28 +585,14 @@ impl TmuxOps for TmuxManager {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()> {
-        TmuxManager::create_session_with_window(
-            session,
-            first_window,
-            workdir,
-        )
+        TmuxManager::create_session_with_window(session, first_window, workdir)
     }
 
-    fn set_session_env(
-        &self,
-        session: &str,
-        key: &str,
-        value: &str,
-    ) -> Result<()> {
+    fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()> {
         TmuxManager::set_session_env(session, key, value)
     }
 
-    fn create_window(
-        &self,
-        session: &str,
-        window: &str,
-        workdir: &Path,
-    ) -> Result<()> {
+    fn create_window(&self, session: &str, window: &str, workdir: &Path) -> Result<()> {
         TmuxManager::create_window(session, window, workdir)
     }
 
@@ -608,56 +603,31 @@ impl TmuxOps for TmuxManager {
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()> {
-        let refs: Vec<&str> =
-            extra_args.iter().map(|s| s.as_str()).collect();
-        TmuxManager::launch_claude(
-            session,
-            window,
-            resume_id.as_deref(),
-            &refs,
-        )
+        let refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+        TmuxManager::launch_claude(session, window, resume_id.as_deref(), &refs)
     }
 
-    fn launch_opencode(
-        &self,
-        session: &str,
-        window: &str,
-    ) -> Result<()> {
+    fn launch_opencode(&self, session: &str, window: &str) -> Result<()> {
         TmuxManager::launch_opencode(session, window)
     }
 
-    fn send_keys(
-        &self,
-        session: &str,
-        window: &str,
-        keys: &str,
-    ) -> Result<()> {
+    fn launch_codex(&self, session: &str, window: &str) -> Result<()> {
+        TmuxManager::launch_codex(session, window)
+    }
+
+    fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()> {
         TmuxManager::send_keys(session, window, keys)
     }
 
-    fn send_literal(
-        &self,
-        session: &str,
-        window: &str,
-        text: &str,
-    ) -> Result<()> {
+    fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()> {
         TmuxManager::send_literal(session, window, text)
     }
 
-    fn send_key_name(
-        &self,
-        session: &str,
-        window: &str,
-        key_name: &str,
-    ) -> Result<()> {
+    fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()> {
         TmuxManager::send_key_name(session, window, key_name)
     }
 
-    fn select_window(
-        &self,
-        session: &str,
-        window: &str,
-    ) -> Result<()> {
+    fn select_window(&self, session: &str, window: &str) -> Result<()> {
         TmuxManager::select_window(session, window)
     }
 

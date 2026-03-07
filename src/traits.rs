@@ -17,18 +17,8 @@ pub trait TmuxOps: Send + Sync {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()>;
-    fn set_session_env(
-        &self,
-        session: &str,
-        key: &str,
-        value: &str,
-    ) -> Result<()>;
-    fn create_window(
-        &self,
-        session: &str,
-        window: &str,
-        workdir: &Path,
-    ) -> Result<()>;
+    fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()>;
+    fn create_window(&self, session: &str, window: &str, workdir: &Path) -> Result<()>;
     fn launch_claude(
         &self,
         session: &str,
@@ -36,34 +26,12 @@ pub trait TmuxOps: Send + Sync {
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()>;
-    fn launch_opencode(
-        &self,
-        session: &str,
-        window: &str,
-    ) -> Result<()>;
-    fn send_keys(
-        &self,
-        session: &str,
-        window: &str,
-        keys: &str,
-    ) -> Result<()>;
-    fn send_literal(
-        &self,
-        session: &str,
-        window: &str,
-        text: &str,
-    ) -> Result<()>;
-    fn send_key_name(
-        &self,
-        session: &str,
-        window: &str,
-        key_name: &str,
-    ) -> Result<()>;
-    fn select_window(
-        &self,
-        session: &str,
-        window: &str,
-    ) -> Result<()>;
+    fn launch_opencode(&self, session: &str, window: &str) -> Result<()>;
+    fn launch_codex(&self, session: &str, window: &str) -> Result<()>;
+    fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
+    fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
+    fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()>;
+    fn select_window(&self, session: &str, window: &str) -> Result<()>;
     fn kill_session(&self, session: &str) -> Result<()>;
 }
 
@@ -71,10 +39,16 @@ pub trait TmuxOps: Send + Sync {
 #[cfg_attr(test, mockall::automock)]
 pub trait WorktreeOps: Send + Sync {
     fn repo_root(&self, path: &Path) -> Result<PathBuf>;
-    fn create(
+    fn create(&self, repo: &Path, name: &str, branch: &str) -> Result<PathBuf>;
+    fn create_from(
         &self,
         repo: &Path,
         name: &str,
-        branch: &str,
-    ) -> Result<PathBuf>;
+        new_branch: &str,
+        base: &str,
+    ) -> Result<PathBuf> {
+        // Default: fall back to create() ignoring base
+        let _ = base;
+        self.create(repo, name, new_branch)
+    }
 }

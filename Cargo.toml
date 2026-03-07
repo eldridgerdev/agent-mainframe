@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.1.1"
+version = "0.5.0"
 edition = "2024"
 
 [[bin]]
@@ -23,6 +23,7 @@ ratatui-explorer = "0.2"
 ureq = "3"
 unicode-width = "0.1"
 regex = "1"
+toml = "0.8"
 
 [dev-dependencies]
 mockall = "0.13"

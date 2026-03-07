@@ -1,14 +1,14 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
-    Frame,
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::{
-    CommandPickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
-    SessionSwitcherState,
+    ClaudeSessionPickerState, CommandPickerState, OpencodeSessionPickerState, PendingInput,
+    SessionPickerState, SessionSwitcherState,
 };
 use crate::project::SessionKind;
 
@@ -37,6 +37,11 @@ pub fn draw_notification_picker(frame: &mut Frame, pending: &[PendingInput], sel
         frame.render_widget(empty, inner);
         return;
     }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
 
     let items: Vec<ListItem> = pending
         .iter()
@@ -78,7 +83,22 @@ pub fn draw_notification_picker(frame: &mut Frame, pending: &[PendingInput], sel
         .collect();
 
     let list = List::new(items);
-    frame.render_widget(list, inner);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("x", Style::default().fg(Color::Yellow)),
+        Span::styled(" delete  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }
 
 pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState) {
@@ -202,6 +222,7 @@ pub fn draw_session_switcher(frame: &mut Frame, state: &SessionSwitcherState, ne
             let icon = match entry.kind {
                 SessionKind::Claude => Span::styled("  * ", Style::default().fg(Color::Magenta)),
                 SessionKind::Opencode => Span::styled("  * ", Style::default().fg(Color::Cyan)),
+                SessionKind::Codex => Span::styled("  * ", Style::default().fg(Color::Green)),
                 SessionKind::Terminal => Span::styled("  > ", Style::default().fg(Color::Green)),
                 SessionKind::Nvim => {
                     let icon = if nerd_font { "  \u{e6ae} " } else { "  ~ " };
@@ -353,6 +374,128 @@ pub fn draw_opencode_session_picker(frame: &mut Frame, state: &OpencodeSessionPi
     frame.render_widget(hints, chunks[1]);
 }
 
+pub fn draw_claude_session_picker(frame: &mut Frame, state: &ClaudeSessionPickerState) {
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Claude Sessions ({}) ", state.sessions.len());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.sessions.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No sessions for this worktree.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, inner);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .sessions
+        .iter()
+        .enumerate()
+        .map(|(i, session)| {
+            let is_selected = i == state.selected;
+            let title_preview = if session.title.len() > 60 {
+                format!("{}...", &session.title[..57])
+            } else {
+                session.title.clone()
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(Color::Green),
+                ),
+                Span::styled(
+                    title_preview,
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(Color::DarkGray))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_claude_session_confirm(frame: &mut Frame) {
+    let area = centered_rect(50, 35, frame.area());
+    frame.render_widget(Clear, area);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Feature is already running.",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Restart with selected claude session?",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  This will kill the current tmux session",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "  and start a new one with the session restored.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  y", Style::default().fg(Color::Yellow)),
+            Span::styled(" restart  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ])
+    .block(
+        Block::default()
+            .title(" Confirm Restart ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow)),
+    );
+
+    frame.render_widget(text, area);
+}
+
 pub fn draw_opencode_session_confirm(frame: &mut Frame) {
     let area = centered_rect(50, 35, frame.area());
     frame.render_widget(Clear, area);
@@ -395,7 +538,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame) {
 }
 
 pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_font: bool) {
-    let area = centered_rect(55, 50, frame.area());
+    let area = centered_rect(55, 60, frame.area());
     frame.render_widget(Clear, area);
 
     let total = state.builtin_sessions.len() + state.custom_sessions.len();
@@ -423,6 +566,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
         .split(inner);
 
     let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_item_idx: Option<usize> = None;
 
     if !state.builtin_sessions.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
@@ -440,6 +584,12 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
             let icon = match session.kind {
                 crate::project::SessionKind::Claude => {
                     Span::styled("  * ", Style::default().fg(Color::Magenta))
+                }
+                crate::project::SessionKind::Opencode => {
+                    Span::styled("  * ", Style::default().fg(Color::Cyan))
+                }
+                crate::project::SessionKind::Codex => {
+                    Span::styled("  * ", Style::default().fg(Color::Green))
                 }
                 crate::project::SessionKind::Terminal => {
                     Span::styled("  > ", Style::default().fg(Color::Green))
@@ -490,6 +640,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
             let line = Line::from(spans);
 
             if is_selected && !is_disabled {
+                selected_item_idx = Some(items.len());
                 items.push(ListItem::new(line).style(Style::default().bg(Color::DarkGray)));
             } else {
                 items.push(ListItem::new(line));
@@ -562,6 +713,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
 
             let item = ListItem::new(lines);
             if is_selected {
+                selected_item_idx = Some(items.len());
                 items.push(item.style(Style::default().bg(Color::DarkGray)));
             } else {
                 items.push(item);
@@ -570,7 +722,9 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
     }
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default();
+    list_state.select(selected_item_idx);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(

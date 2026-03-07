@@ -49,7 +49,10 @@
       "dark": "nord8",
       "light": "nord10"
     },
-    "text": "none",
+    "text": {
+      "dark": "nord4",
+      "light": "nord0"
+    },
     "textMuted": {
       "dark": "nord3",
       "light": "nord1"
@@ -123,7 +126,10 @@
       "dark": "diff_delete",
       "light": "diff_delete"
     },
-    "markdownText": "none",
+    "markdownText": {
+      "dark": "nord4",
+      "light": "nord0"
+    },
     "markdownHeading": {
       "dark": "nord8",
       "light": "nord10"
@@ -208,6 +214,9 @@
       "dark": "nord9",
       "light": "nord9"
     },
-    "syntaxPunctuation": "none"
+    "syntaxPunctuation": {
+      "dark": "nord4",
+      "light": "nord0"
+    }
   }
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Claude Code Notification hook script
-# Reads JSON from stdin and writes a notification file
-# for the Agent Mainframe dashboard.
+# Claude Code Stop hook script
+# Sends a notification to the AMF dashboard via IPC socket,
+# falling back to writing a file if amf is not in PATH.
 
 INPUT=$(cat)
 
@@ -12,7 +12,12 @@ if [ -z "$SESSION_ID" ] || [ -z "$CWD" ]; then
     exit 0
 fi
 
+# Prefer socket-based push notification (no polling required).
+if command -v amf >/dev/null 2>&1; then
+    echo "$INPUT" | amf notify 2>/dev/null && exit 0
+fi
+
+# Fallback: write notification file for AMF to poll.
 NOTIFY_DIR="$CWD/.claude/notifications"
 mkdir -p "$NOTIFY_DIR"
-
 echo "$INPUT" > "$NOTIFY_DIR/${SESSION_ID}.json"

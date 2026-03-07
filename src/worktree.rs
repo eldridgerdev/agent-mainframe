@@ -135,6 +135,125 @@ impl WorktreeManager {
         Ok(worktree_path)
     }
 
+    /// Create a new worktree branched off a specific base branch/commit.
+    /// Runs `git worktree add -b {new_branch} {path} {base}`.
+    pub fn create_from(repo: &Path, name: &str, new_branch: &str, base: &str) -> Result<PathBuf> {
+        let worktree_dir = repo.join(".worktrees");
+        std::fs::create_dir_all(&worktree_dir)?;
+
+        let worktree_path = worktree_dir.join(name);
+
+        if worktree_path.exists() {
+            bail!("Worktree path already exists: {}", worktree_path.display());
+        }
+
+        let output = Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                new_branch,
+                &worktree_path.to_string_lossy(),
+                base,
+            ])
+            .current_dir(repo)
+            .output()
+            .context("Failed to create worktree from base")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("git worktree add failed: {}", stderr.trim());
+        }
+
+        // Merge .claude/settings.local.json into new worktree
+        let src_settings = repo.join(".claude").join("settings.local.json");
+        if src_settings.exists() {
+            let dest_dir = worktree_path.join(".claude");
+            let dest_settings = dest_dir.join("settings.local.json");
+            std::fs::create_dir_all(&dest_dir)?;
+
+            let src: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&src_settings)?)?;
+
+            let mut dest: serde_json::Value = if dest_settings.exists() {
+                std::fs::read_to_string(&dest_settings)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
+
+            if let (Some(src_obj), Some(dest_obj)) = (src.as_object(), dest.as_object_mut()) {
+                for (key, src_val) in src_obj {
+                    let entry = dest_obj
+                        .entry(key.clone())
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let (Some(sv), Some(ev)) = (src_val.as_object(), entry.as_object_mut()) {
+                        for (k, v) in sv {
+                            ev.insert(k.clone(), v.clone());
+                        }
+                    } else {
+                        *entry = src_val.clone();
+                    }
+                }
+            }
+
+            std::fs::write(&dest_settings, serde_json::to_string_pretty(&dest)? + "\n")?;
+        }
+
+        Ok(worktree_path)
+    }
+
+    /// Copy uncommitted changes from source worktree to destination worktree
+    pub fn copy_uncommitted_changes(source: &Path, dest: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain", "-uall"])
+            .current_dir(source)
+            .output()
+            .context("Failed to get git status")?;
+
+        if !output.status.success() {
+            return Ok(());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.is_empty() {
+                continue;
+            }
+
+            let status_code = &line[..2];
+            let file_path = line[3..].trim();
+
+            if file_path.is_empty() {
+                continue;
+            }
+
+            let source_file = source.join(file_path);
+            let dest_file = dest.join(file_path);
+
+            let first_char = status_code.chars().next().unwrap_or(' ');
+            let second_char = status_code.chars().nth(1).unwrap_or(' ');
+
+            match (first_char, second_char) {
+                (_, 'D') | ('D', _) => {
+                    let _ = std::fs::remove_file(&dest_file);
+                }
+                _ => {
+                    if source_file.exists() {
+                        if let Some(parent) = dest_file.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::copy(&source_file, &dest_file);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Remove a worktree
     pub fn remove(repo: &Path, worktree_path: &Path) -> Result<()> {
         let output = Command::new("git")
@@ -250,12 +369,17 @@ impl WorktreeOps for WorktreeManager {
         WorktreeManager::repo_root(path)
     }
 
-    fn create(
+    fn create(&self, repo: &Path, name: &str, branch: &str) -> Result<PathBuf> {
+        WorktreeManager::create(repo, name, branch)
+    }
+
+    fn create_from(
         &self,
         repo: &Path,
         name: &str,
-        branch: &str,
+        new_branch: &str,
+        base: &str,
     ) -> Result<PathBuf> {
-        WorktreeManager::create(repo, name, branch)
+        WorktreeManager::create_from(repo, name, new_branch, base)
     }
 }

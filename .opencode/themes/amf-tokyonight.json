@@ -78,7 +78,10 @@
       "dark": "info",
       "light": "info"
     },
-    "text": "none",
+    "text": {
+      "dark": "fg",
+      "light": "fg_dark"
+    },
     "textMuted": {
       "dark": "comment",
       "light": "comment"
@@ -152,7 +155,10 @@
       "dark": "diff_delete",
       "light": "diff_delete"
     },
-    "markdownText": "none",
+    "markdownText": {
+      "dark": "fg",
+      "light": "fg_dark"
+    },
     "markdownHeading": {
       "dark": "blue",
       "light": "blue"
@@ -237,6 +243,9 @@
       "dark": "magenta2",
       "light": "magenta2"
     },
-    "syntaxPunctuation": "none"
+    "syntaxPunctuation": {
+      "dark": "fg",
+      "light": "fg_dark"
+    }
   }
 }

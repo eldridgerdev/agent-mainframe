@@ -1,23 +1,14 @@
 use ratatui::{
     layout::{Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
-use crate::app::ViewState;
+use crate::app::{ViewState, TextSelection};
 use crate::project::VibeMode;
-
-const RAINBOW_COLORS: &[Color] = &[
-    Color::Red,
-    Color::Rgb(255, 127, 0),
-    Color::Yellow,
-    Color::Green,
-    Color::Cyan,
-    Color::Blue,
-    Color::Magenta,
-];
+use crate::theme::Theme;
 
 const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("q", "Exit view"),
@@ -27,18 +18,27 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("/", "Command picker"),
     ("i", "Pending inputs"),
     ("l", "Latest prompt"),
-    ("s", "Attach to session"),
     ("o", "Scroll mode"),
+    ("r", "Refresh statuses"),
     ("x", "Stop session"),
     ("f", "Final review"),
+    ("D", "Debug log"),
     ("?", "Help"),
 ];
 
-fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
+fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let colors = [
+        theme.error.to_color(),
+        theme.warning.to_color(),
+        theme.success.to_color(),
+        theme.accent.to_color(),
+        theme.info.to_color(),
+        theme.accent_alt.to_color(),
+    ];
     text.chars()
         .enumerate()
         .map(|(i, ch)| {
-            let color = RAINBOW_COLORS[i % RAINBOW_COLORS.len()];
+            let color = colors[i % colors.len()];
             Span::styled(
                 ch.to_string(),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -54,6 +54,7 @@ pub fn draw(
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
+    theme: &Theme,
 ) {
     let area = frame.area();
     let header_area = Rect::new(area.x, area.y, area.width, 1);
@@ -72,41 +73,41 @@ pub fn draw(
         header_spans.push(Span::styled(
             format!("{} ", view.project_name),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.project_name.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
             format!("/{} ", view.feature_name),
             Style::default()
-                .fg(Color::White)
+                .fg(theme.feature_name.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
             format!("/{} ", view.session_label),
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.fg.to_color()),
         ));
         match view.vibe_mode {
             VibeMode::Vibeless => header_spans.push(Span::styled(
                 "[vibeless] ",
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme.mode_vibeless.to_color()),
             )),
             VibeMode::Vibe => {
-                header_spans.push(Span::styled("[vibe] ", Style::default().fg(Color::Yellow)))
+                header_spans.push(Span::styled("[vibe] ", Style::default().fg(theme.mode_vibe.to_color())))
             }
             VibeMode::SuperVibe => {
                 header_spans.push(Span::raw("["));
-                header_spans.extend(rainbow_spans("supervibe"));
+                header_spans.extend(rainbow_spans("supervibe", theme));
                 header_spans.push(Span::raw("] "));
             }
             VibeMode::Review => header_spans.push(Span::styled(
                 "[review] ",
-                Style::default().fg(Color::Magenta),
+                Style::default().fg(theme.mode_review.to_color()),
             )),
         };
         if view.review {
             header_spans.push(Span::styled(
                 "[review] ",
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.accent.to_color()),
             ));
         }
     }
@@ -125,8 +126,8 @@ pub fn draw(
         header_spans.push(Span::styled(
             format!("|SCROLL {} ", mode_label),
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Magenta)
+                .fg(theme.leader_fg.to_color())
+                .bg(theme.accent_alt.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         let help = if view.scroll_passthrough {
@@ -134,31 +135,31 @@ pub fn draw(
         } else {
             "j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
-        header_spans.push(Span::styled(help, Style::default().fg(Color::Magenta)));
+        header_spans.push(Span::styled(help, Style::default().fg(theme.accent_alt.to_color())));
     } else if leader_active {
         header_spans.push(Span::styled(
             "|LEADER ",
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(theme.leader_fg.to_color())
+                .bg(theme.leader_bg.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
             "press a command key",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.leader_bg.to_color()),
         ));
     } else {
         header_spans.push(Span::styled(
             "| ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.muted.to_color()),
         ));
         header_spans.push(Span::styled(
             "Ctrl+Space",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning.to_color()),
         ));
         header_spans.push(Span::styled(
             " commands",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.fg.to_color()),
         ));
     }
 
@@ -169,13 +170,13 @@ pub fn draw(
                 if pending_count == 1 { "" } else { "s" },
             ),
             Style::default()
-                .fg(Color::Red)
+                .fg(theme.error.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
     }
 
     let header = Paragraph::new(Line::from(header_spans))
-        .style(Style::default().bg(Color::Rgb(76, 79, 105)));
+        .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(header, header_area);
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -187,7 +188,12 @@ pub fn draw(
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
     } else {
-        let text = ansi_to_ratatui_text(pane_content, content_area.width, content_area.height);
+        let text = ansi_to_ratatui_text_with_selection(
+            pane_content, 
+            content_area.width, 
+            content_area.height,
+            &view.selection,
+        );
         let paragraph = Paragraph::new(text);
         frame.render_widget(paragraph, content_area);
 
@@ -198,16 +204,25 @@ pub fn draw(
             let max_y = content_area.height.saturating_sub(1);
             let abs_x = content_area.x + cursor_x.min(max_x);
             let abs_y = content_area.y + cursor_y.min(max_y);
-            frame.set_cursor_position(Position::new(abs_x, abs_y));
+            let frame_max_x = frame.area().width.saturating_sub(1);
+            let frame_max_y = frame.area().height.saturating_sub(1);
+            frame.set_cursor_position(Position::new(
+                abs_x.min(frame_max_x),
+                abs_y.min(frame_max_y),
+            ));
         }
     }
 
     if leader_active {
-        draw_leader_menu(frame, content_area);
+        draw_leader_menu(frame, content_area, theme);
     }
 }
 
-fn draw_leader_menu(frame: &mut Frame, content_area: Rect) {
+fn draw_leader_menu(
+    frame: &mut Frame,
+    content_area: Rect,
+    theme: &Theme,
+) {
     if content_area.width < 30 || content_area.height < 8 {
         return;
     }
@@ -217,10 +232,14 @@ fn draw_leader_menu(frame: &mut Frame, content_area: Rect) {
         .map(|(key, desc)| key.len() + desc.len() + 4)
         .max()
         .unwrap_or(24) as u16;
-    let width = (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
-    let height = (LEADER_COMMANDS.len() as u16 + 2).min(content_area.height.saturating_sub(1));
-    let x = content_area.x + content_area.width.saturating_sub(width + 1);
-    let y = content_area.y + content_area.height.saturating_sub(height + 1);
+    let width =
+        (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
+    let height = (LEADER_COMMANDS.len() as u16 + 2)
+        .min(content_area.height.saturating_sub(1));
+    let x = content_area.x
+        + content_area.width.saturating_sub(width + 1);
+    let y = content_area.y
+        + content_area.height.saturating_sub(height + 1);
     let area = Rect::new(x, y, width, height);
 
     let lines: Vec<Line<'static>> = LEADER_COMMANDS
@@ -230,11 +249,14 @@ fn draw_leader_menu(frame: &mut Frame, content_area: Rect) {
                 Span::styled(
                     format!("{:<6}", key),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme.info.to_color())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(*desc, Style::default().fg(Color::White)),
+                Span::styled(
+                    *desc,
+                    Style::default().fg(theme.fg.to_color()),
+                ),
             ])
         })
         .collect();
@@ -243,8 +265,8 @@ fn draw_leader_menu(frame: &mut Frame, content_area: Rect) {
         Block::default()
             .title(" Ctrl+Space commands ")
             .borders(Borders::ALL)
-            .style(Style::default().bg(Color::Rgb(36, 39, 58)))
-            .border_style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.info.to_color())),
     );
 
     frame.render_widget(Clear, area);
@@ -260,10 +282,7 @@ fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<
     let mut lines = Vec::with_capacity(rows as usize);
     for i in start..end {
         let line_text = all_lines.get(i).unwrap_or(&"");
-        lines.push(Line::styled(
-            strip_ansi_codes(line_text),
-            Style::default().fg(Color::Reset),
-        ));
+        lines.push(Line::raw(strip_ansi_codes(line_text)));
     }
     while lines.len() < rows as usize {
         lines.push(Line::raw(""));
@@ -295,11 +314,19 @@ fn strip_ansi_codes(s: &str) -> String {
     result
 }
 
-fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
+fn ansi_to_ratatui_text_with_selection<'a>(
+    raw: &str, 
+    cols: u16, 
+    rows: u16, 
+    selection: &TextSelection,
+) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let normalized = raw.replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
+
+    let (sel_start_row, sel_start_col, sel_end_row, sel_end_col) = selection.normalized();
+    let has_selection = selection.has_selection;
 
     let mut lines = Vec::with_capacity(rows as usize);
 
@@ -307,15 +334,35 @@ fn ansi_to_ratatui_text<'a>(raw: &str, cols: u16, rows: u16) -> Vec<Line<'a>> {
         let mut spans: Vec<Span<'a>> = Vec::new();
         let mut current_text = String::new();
         let mut current_style = Style::default();
+        let mut in_selection = false;
 
         for col in 0..cols {
+            let is_selected = has_selection
+                && ((row > sel_start_row && row < sel_end_row)
+                    || (row == sel_start_row && row == sel_end_row && col >= sel_start_col && col < sel_end_col)
+                    || (row == sel_start_row && row < sel_end_row && col >= sel_start_col)
+                    || (row > sel_start_row && row == sel_end_row && col < sel_end_col));
+
+            if is_selected != in_selection && !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style,
+                ));
+            }
+            in_selection = is_selected;
+
             let cell = screen.cell(row, col);
             let cell = match cell {
                 Some(c) => c,
                 None => continue,
             };
 
-            let style = vt100_cell_to_style(cell);
+            let mut style = vt100_cell_to_style(cell);
+            if is_selected {
+                style = style
+                    .bg(ratatui::style::Color::Rgb(70, 100, 140))
+                    .fg(ratatui::style::Color::White);
+            }
 
             if style != current_style && !current_text.is_empty() {
                 spans.push(Span::styled(
@@ -359,10 +406,10 @@ fn vt100_cell_to_style(cell: &vt100::Cell) -> Style {
     style
 }
 
-fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
+fn vt100_color_to_ratatui(color: vt100::Color) -> ratatui::style::Color {
     match color {
-        vt100::Color::Default => Color::Reset,
-        vt100::Color::Idx(i) => Color::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        vt100::Color::Default => ratatui::style::Color::Reset,
+        vt100::Color::Idx(i) => ratatui::style::Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r, g, b),
     }
 }

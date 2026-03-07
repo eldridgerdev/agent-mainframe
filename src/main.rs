@@ -2,26 +2,31 @@
 
 mod app;
 mod claude;
+mod codex;
+mod debug;
 mod extension;
 mod handlers;
+mod ipc;
 mod project;
+mod summary;
+mod theme;
 mod tmux;
 mod traits;
+mod transcript;
 mod ui;
+mod upgrade;
 mod usage;
 mod worktree;
 
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste,
-        DisableMouseCapture, EnableMouseCapture, Event,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event,
     },
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode,
-        EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::prelude::*;
 use std::io;
@@ -30,23 +35,130 @@ use std::time::Duration;
 use app::App;
 use tmux::TmuxManager;
 
+#[derive(Parser, Debug)]
+#[command(name = "amf")]
+#[command(version, disable_version_flag = true)]
+#[command(about = "Run many AI coding agents in parallel", long_about = None)]
+struct Cli {
+    #[arg(short = 'V', long = "version")]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Upgrade amf to the latest release
+    Upgrade,
+    /// Send a notification to the running AMF instance via the
+    /// IPC socket. Reads JSON from stdin. Used by hook scripts.
+    #[command(hide = true)]
+    Notify,
+    /// Send a notification and wait for an IPC response JSON.
+    /// Used by review hooks that require a decision.
+    #[command(hide = true)]
+    NotifyWait {
+        /// Timeout in milliseconds while waiting for reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    if cli.version && cli.command.is_none() {
+        println!("amf {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if let Some(Commands::Upgrade) = cli.command {
+        return upgrade::upgrade();
+    }
+
+    if let Some(Commands::Notify) = cli.command {
+        use std::io::Read;
+        let mut payload = String::new();
+        std::io::stdin().read_to_string(&mut payload)?;
+        let payload = payload.trim();
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let socket = ipc::socket_path();
+        // Propagate error so hook scripts get a non-zero exit
+        // code and can fall back to file-based delivery.
+        ipc::send(&socket, payload)?;
+        return Ok(());
+    }
+
+    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command {
+        use std::io::Read;
+        let mut payload = String::new();
+        std::io::stdin().read_to_string(&mut payload)?;
+        let payload = payload.trim();
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let socket = ipc::socket_path();
+        let reply = ipc::send_wait(&socket, payload, Duration::from_millis(timeout_ms))?;
+        println!(
+            "{}",
+            serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())
+        );
+        return Ok(());
+    }
+
     if let Err(e) = TmuxManager::check_available() {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
 
     cleanup_global_hooks();
+    app::App::cleanup_stale_thinking_files();
 
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
+    app.log_startup();
+    let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
+    app.log_info(
+        "setup",
+        format!("Refreshed opencode plugins for {refreshed} feature(s)"),
+    );
+
+    // Start IPC socket server for push-based hook notifications.
+    let socket = ipc::socket_path();
+    match ipc::start(&socket) {
+        Ok(guard) => {
+            app.log_info("ipc", format!("Socket listening at {}", socket.display()));
+            app.ipc = Some(guard);
+        }
+        Err(e) => {
+            app.log_warn(
+                "ipc",
+                format!(
+                    "Could not start IPC socket, \
+                     falling back to file polling: {e}"
+                ),
+            );
+        }
+    }
+
     app.sync_statuses();
+    app.sync_session_status();
+    // One-time file scan on startup to pick up any notifications
+    // written while AMF was not running.
     app.scan_notifications();
     app.usage.refresh();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -88,10 +200,8 @@ fn cleanup_global_hooks() {
     let settings_path = std::path::PathBuf::from(&home)
         .join(".claude")
         .join("settings.json");
-    let extra_cmds =
-        [format!("{home}/.config/amf/notify.sh")];
-    let extra: Vec<&str> =
-        extra_cmds.iter().map(|s| s.as_str()).collect();
+    let extra_cmds = [format!("{home}/.config/amf/notify.sh")];
+    let extra: Vec<&str> = extra_cmds.iter().map(|s| s.as_str()).collect();
     cleanup_hooks_at(&settings_path, &extra);
 }
 
@@ -99,25 +209,18 @@ fn cleanup_global_hooks() {
 /// testability.  `extra_cmds` are host-specific command
 /// strings (e.g. absolute paths) to remove in addition to
 /// the static AMF commands.
-pub fn cleanup_hooks_at(
-    settings_path: &std::path::Path,
-    extra_cmds: &[&str],
-) {
+pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
     use serde_json::Value;
 
-    let mut root: Value =
-        match std::fs::read_to_string(settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-        {
-            Some(v) => v,
-            None => return,
-        };
+    let mut root: Value = match std::fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(v) => v,
+        None => return,
+    };
 
-    let Some(hooks_obj) = root
-        .get_mut("hooks")
-        .and_then(|h| h.as_object_mut())
-    else {
+    let Some(hooks_obj) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
         return;
     };
 
@@ -137,10 +240,9 @@ pub fn cleanup_hooks_at(
         arr.retain(|entry| {
             !entry["hooks"].as_array().is_some_and(|hs| {
                 hs.iter().any(|h| {
-                    h["command"].as_str().is_some_and(|c| {
-                        static_cmds.contains(&c)
-                            || extra_cmds.contains(&c)
-                    })
+                    h["command"]
+                        .as_str()
+                        .is_some_and(|c| static_cmds.contains(&c) || extra_cmds.contains(&c))
                 })
             })
         });
@@ -150,37 +252,28 @@ pub fn cleanup_hooks_at(
     }
 
     // Drop empty event arrays.
-    hooks_obj.retain(|_, v| {
-        v.as_array().is_none_or(|a| !a.is_empty())
-    });
+    hooks_obj.retain(|_, v| v.as_array().is_none_or(|a| !a.is_empty()));
 
     if !changed {
         return;
     }
 
-    if let Ok(serialized) =
-        serde_json::to_string_pretty(&root)
-    {
-        let _ = std::fs::write(
-            settings_path,
-            serialized + "\n",
-        );
+    if let Ok(serialized) = serde_json::to_string_pretty(&root) {
+        let _ = std::fs::write(settings_path, serialized + "\n");
     }
 }
 
-fn run_loop<B: Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
+    let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
+    let mut last_claude_usage_debug: Option<String> = None;
+    // Only used when no IPC socket is available (fallback).
     let mut last_notif_scan = std::time::Instant::now();
-    let mut last_resize: Option<(u16, u16, String, String)> =
-        None;
+    let mut last_resize: Option<(u16, u16, String, String)> = None;
 
     loop {
-        let is_viewing =
-            matches!(app.mode, app::AppMode::Viewing(_));
+        let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
 
         let size = terminal.size()?;
         let visible_rows = size.height.saturating_sub(3);
@@ -188,8 +281,7 @@ fn run_loop<B: Backend>(
         if is_viewing {
             let content_rows = visible_rows;
             let content_cols = size.width;
-            if let app::AppMode::Viewing(ref view) = app.mode
-            {
+            if let app::AppMode::Viewing(ref view) = app.mode {
                 let current_resize = (
                     content_cols,
                     content_rows,
@@ -197,9 +289,7 @@ fn run_loop<B: Backend>(
                     view.window.clone(),
                 );
 
-                if last_resize.as_ref()
-                    != Some(&current_resize)
-                {
+                if last_resize.as_ref() != Some(&current_resize) {
                     let _ = TmuxManager::resize_pane(
                         &view.session,
                         &view.window,
@@ -214,13 +304,13 @@ fn run_loop<B: Backend>(
                 let session = view.session.clone();
                 let window = view.window.clone();
                 app.pane_content =
-                    TmuxManager::capture_pane_ansi(
-                        &session, &window,
-                    )
-                    .unwrap_or_default();
-                app.tmux_cursor =
-                    TmuxManager::cursor_position(&session, &window)
-                        .ok();
+                    TmuxManager::capture_pane_ansi(&session, &window).unwrap_or_default();
+                // Store the rendering dimensions (content area in pane.rs),
+                // not the tmux capture dimensions, so mouse selection
+                // coordinates align correctly.
+                app.pane_content_cols = size.width;
+                app.pane_content_rows = size.height.saturating_sub(1);
+                app.tmux_cursor = TmuxManager::cursor_position(&session, &window).ok();
             }
         }
 
@@ -234,6 +324,18 @@ fn run_loop<B: Backend>(
 
         if matches!(app.mode, app::AppMode::DeletingFeatureInProgress(_))
             && let Err(e) = app.poll_deleting_feature()
+        {
+            app.show_error(e);
+        }
+
+        if !app.background_deletions.is_empty()
+            && let Err(e) = app.poll_background_deletions()
+        {
+            app.show_error(e);
+        }
+
+        if !app.background_hooks.is_empty()
+            && let Err(e) = app.poll_background_hooks()
         {
             app.show_error(e);
         }
@@ -252,8 +354,68 @@ fn run_loop<B: Backend>(
             if !is_viewing {
                 app.sync_statuses();
             }
+            app.sync_session_status();
             app.usage.refresh();
+            let usage = app.usage.get_data();
+            let key = (
+                usage.codex.five_hour_usage_pct.map(|v| v.round() as i64),
+                usage.codex.weekly_usage_pct.map(|v| v.round() as i64),
+                usage.codex.today_tokens,
+                usage.codex.today_calls,
+            );
+            if last_usage_debug != Some(key) {
+                app.log_debug(
+                    "usage",
+                    format!(
+                        "codex 5h_pct={:?} 7d_pct={:?} today_tokens={} calls={} 5h_tokens={}",
+                        usage.codex.five_hour_usage_pct,
+                        usage.codex.weekly_usage_pct,
+                        usage.codex.today_tokens,
+                        usage.codex.today_calls,
+                        usage.codex.five_hour_tokens
+                    ),
+                );
+                last_usage_debug = Some(key);
+            }
+            let claude_summary = format!(
+                "claude 5h_pct={:?} 7d_pct={:?} 5h_reset={:?} 7d_reset={:?} sub={:?} err={:?} today_msgs={} today_tokens={}",
+                usage.claude.five_hour_pct,
+                usage.claude.seven_day_pct,
+                usage.claude.five_hour_resets,
+                usage.claude.seven_day_resets,
+                usage.claude.subscription_type,
+                usage.claude.last_error,
+                usage.claude.today_messages,
+                usage.claude.today_tokens
+            );
+            if last_claude_usage_debug.as_ref() != Some(&claude_summary) {
+                app.log_debug("usage", claude_summary.clone());
+                if let Some(err) = &usage.claude.last_error {
+                    app.log_warn("usage", format!("claude usage error: {err}"));
+                }
+                last_claude_usage_debug = Some(claude_summary);
+            }
             last_sync = std::time::Instant::now();
+        }
+
+        if app.ipc.is_some() {
+            // Drain all buffered socket messages each iteration.
+            app.drain_ipc_messages();
+        }
+
+        if last_notif_scan.elapsed() >= Duration::from_millis(500) {
+            if app.ipc.is_none() && !app.ipc_fallback_logged {
+                app.log_warn(
+                    "ipc",
+                    "IPC unavailable; using file-based notification polling".to_string(),
+                );
+                app.ipc_fallback_logged = true;
+            }
+            // Always scan file notifications as compatibility fallback.
+            // Some producers (for example plugin runtimes) may not be
+            // able to call `amf notify` even while IPC is available.
+            app.scan_notifications();
+            last_notif_scan = std::time::Instant::now();
         }
 
         if last_thinking_sync.elapsed() >= Duration::from_millis(500) {
@@ -261,9 +423,8 @@ fn run_loop<B: Backend>(
             last_thinking_sync = std::time::Instant::now();
         }
 
-        if last_notif_scan.elapsed() >= Duration::from_millis(500) {
-            app.scan_notifications();
-            last_notif_scan = std::time::Instant::now();
+        if let Err(e) = app.poll_summary_result() {
+            app.show_error(e);
         }
 
         let poll_duration = if is_viewing {
@@ -294,9 +455,7 @@ fn run_loop<B: Backend>(
                         }
                     }
                     Event::Paste(text) => {
-                        if let Err(e) =
-                            handlers::handle_paste(app, &text)
-                        {
+                        if let Err(e) = handlers::handle_paste(app, &text) {
                             app.show_error(e);
                         }
                     }
@@ -330,7 +489,9 @@ mod tests {
     #[test]
     fn removes_static_amf_thinking_commands() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "PreToolUse": [{"matcher":"","hooks":[
                     {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && mkdir -p /tmp/amf-thinking && touch \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
@@ -339,7 +500,8 @@ mod tests {
                     {"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 
@@ -348,22 +510,22 @@ mod tests {
             s["hooks"].get("PreToolUse").is_none(),
             "PreToolUse should be gone"
         );
-        assert!(
-            s["hooks"].get("Stop").is_none(),
-            "Stop should be gone"
-        );
+        assert!(s["hooks"].get("Stop").is_none(), "Stop should be gone");
     }
 
     #[test]
     fn removes_extra_cmd_path() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [{"matcher":"","hooks":[
                     {"type":"command","command":"/home/user/.config/amf/notify.sh"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &["/home/user/.config/amf/notify.sh"]);
 
@@ -377,14 +539,17 @@ mod tests {
     #[test]
     fn preserves_non_amf_hooks() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [
                     {"matcher":"","hooks":[{"type":"command","command":"/my/custom/hook.sh"}]},
                     {"matcher":"","hooks":[{"type":"command","command":"[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true"}]}
                 ]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 
@@ -423,13 +588,16 @@ mod tests {
     #[test]
     fn removes_debug_hook() {
         let dir = TempDir::new().unwrap();
-        let path = write_settings(&dir, r#"{
+        let path = write_settings(
+            &dir,
+            r#"{
             "hooks": {
                 "Stop": [{"matcher":"","hooks":[
                     {"type":"command","command":"/tmp/debug-hook.sh"}
                 ]}]
             }
-        }"#);
+        }"#,
+        );
 
         cleanup_hooks_at(&path, &[]);
 

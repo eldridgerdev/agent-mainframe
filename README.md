@@ -4,7 +4,8 @@ Run many AI coding agents in parallel — each on its own branch,
 each in its own terminal — without losing track of any of them.
 
 `amf` is a terminal dashboard for managing concurrent
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+[Codex](https://github.com/openai/codex), and
 [Opencode](https://opencode.ai) agent sessions. Each feature gets its
 own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
@@ -58,13 +59,20 @@ NOTE: I'll add real screenshots eventually
 
 ### Required
 
-- **Rust** (edition 2024, requires rustc 1.85+)
 - **tmux** — must be installed and in `PATH`
   ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
-- **claude** CLI — the
-  [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-  CLI must be installed and authenticated
-- **git** — used for worktree management
+
+### Agent (choose one or both)
+
+- **Claude CLI** — required for Claude Code sessions
+  ([Claude Code docs](https://docs.anthropic.com/en/docs/claude-code))
+- **Opencode** — optional alternative agent
+  ([opencode.ai](https://opencode.ai))
+
+### Git (optional)
+
+- **git** — required only for git projects with worktree features
+  (non-git projects are supported without git)
 
 ### Optional
 
@@ -90,12 +98,36 @@ Download the latest binary from the
 | Linux aarch64 | `amf-aarch64-unknown-linux-gnu` |
 | macOS (Apple Silicon) | `amf-aarch64-apple-darwin` |
 
-Quick install (Linux x86_64 musl — most portable):
+Quick install:
+
+Linux x86_64 (most portable):
 
 ```bash
-curl -L \
-  https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl \
-  -o amf
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+macOS (Apple Silicon):
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+Linux x86_64 (gnu):
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-gnu -o amf
+chmod +x amf
+sudo mv amf /usr/local/bin/
+```
+
+Linux aarch64:
+
+```bash
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-unknown-linux-gnu -o amf
 chmod +x amf
 sudo mv amf /usr/local/bin/
 ```
@@ -123,13 +155,6 @@ cargo install --path .
 ```
 
 This installs the `amf` binary to `~/.cargo/bin/`.
-
-Or build without installing:
-
-```bash
-cargo build --release
-# binary at target/release/amf
-```
 
 ## Quick Start
 
@@ -172,8 +197,7 @@ cargo build --release
             └───────────────────────────────────────────────┘
    ```
 
-5. Press `Enter` to view the embedded tmux output, or `s` to switch
-   directly into the tmux session.
+5. Press `Enter` to view the embedded tmux output.
 
 6. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
@@ -187,7 +211,6 @@ cargo build --release
 | `h` | Collapse project / go to parent |
 | `l` | Expand project / view feature |
 | `Enter` | Toggle expand / view feature |
-| `s` | Switch to feature (tmux attach) |
 | `N` | Create new project |
 | `n` | Create new feature |
 | `a` | Add Claude session to feature |
@@ -219,7 +242,6 @@ All keys are forwarded to the tmux session except:
 | `q` | Exit view |
 | `t` / `T` | Cycle between sessions (claude, terminal, nvim) |
 | `w` | Open session switcher |
-| `s` | Switch/attach to tmux session directly |
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
@@ -360,9 +382,6 @@ Claude Code. When creating a feature, choose **Opencode** as the
 agent. `amf` launches it in the same tmux session structure and
 monitors it the same way.
 
-> **Note:** Opencode integration is functional but has some minor
-> visual rendering quirks in the embedded view.
-
 ## Configuration
 
 The config file lives at `~/.config/amf/config.json` and is created
@@ -378,6 +397,7 @@ automatically with defaults on first run.
 
 ### `zai` — token usage limits (optional)
 
+_Not currently working. You can put some numbersin the token limits and guess if you want._
 Controls whether ZAI usage is shown in the status bar. Set to `null`
 or omit the key entirely to disable — the status bar will only show
 Claude usage.
@@ -418,6 +438,7 @@ Nvim when creating sessions.
   {
     "name": "Docs",
     "command": "npm run docs:dev",
+    "on_stop": "pkill -f 'docs:dev'",
     "window_name": "docs",
     "working_dir": "packages/docs"
   }
@@ -428,8 +449,42 @@ Nvim when creating sessions.
 | --- | --- | --- |
 | `name` | string | Display name shown in the session list. |
 | `command` | string? | Shell command to run when the session starts. |
+| `on_stop` | string? | Shell command to run when the session is stopped or removed. Runs via `sh -c` in the feature's workdir with `AMF_SESSION_ID` and `AMF_STATUS_DIR` set. Fire-and-forget (non-blocking). |
 | `window_name` | string? | tmux window name (defaults to a slug of `name`). |
 | `working_dir` | path? | Working directory relative to the feature's workdir. |
+
+##### Session Status Text
+
+Custom sessions can relay runtime information back to the
+dashboard. When a custom session starts, two environment
+variables are exported into its tmux window:
+
+| Variable | Description |
+| --- | --- |
+| `AMF_SESSION_ID` | The session's unique ID. |
+| `AMF_STATUS_DIR` | Path to the status directory (`{workdir}/.amf/session-status/`). |
+
+Write a status file to display text under the session
+entry in the project tree:
+
+```bash
+echo "API :3000 | DB :5432" \
+  > "$AMF_STATUS_DIR/$AMF_SESSION_ID.txt"
+```
+
+AMF polls the status file every 5 seconds and displays the
+first line in the dashboard. The text appears in a muted
+style below the session name:
+
+```text
+  │   ├─ $ Dev Servers
+  │   │   API :3000 | DB :5432
+  │   └─ > terminal
+```
+
+To clear the status, delete the file or write an empty
+string. The `.amf/` directory is local to the worktree and
+should be added to `.gitignore`.
 
 #### `lifecycle_hooks`
 
@@ -463,7 +518,7 @@ value is the replacement character.
 ```
 
 Available actions: `quit`, `create_project`, `create_feature`,
-`start_session`, `stop_session`, `delete`, `sessions`, `help`,
+`start_session`, `stop_session`, `delete`, `help`,
 `search`, `refresh`, `filter`.
 
 #### `feature_presets`
@@ -495,6 +550,35 @@ pre-filling the vibe mode, agent, and other settings.
 | `enable_chrome` | bool | Enable browser/Chrome integration. |
 | `enable_notes` | bool | Enable session notes. |
 
+## Built-in OpenCode Themes
+
+AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
+
+NOTE: Normal opencode themes don't look right in the embedded tmux view so I have to extend and modify them. I will port other more themes to amf-themes as I go
+
+### Available Themes
+
+- **amf** - Nord-based theme with transparent background
+- **amf-tokyonight** - Tokyo Night with transparent background
+- **amf-catppuccin** - Catppuccin Mocha with transparent background
+
+### Using the Themes
+
+When you start a feature in AMF, these themes are automatically added to `.opencode/themes/` in your worktree. You can then:
+
+1. Use the `/theme` command in opencode to select a theme
+2. Edit `.opencode/tui.json` in the worktree to set your preferred theme
+
+The themes are embedded in the AMF binary, so they're always available without any external dependencies.
+
+Or build without installing:
+
+```bash
+cargo build --release
+# binary at target/release/amf
+```
+
+
 ## Development
 
 ### Build Commands
@@ -511,25 +595,66 @@ cargo clippy           # lint
 
 ```text
 src/
-├── main.rs          # entry point, event loop, key handling
-├── app.rs           # App state, modes, CRUD, notification hooks
-├── project.rs       # ProjectStore / Project / Feature models,
-│                    # JSON persistence
-├── extension.rs     # extension config (presets, hooks, sessions)
-├── tmux.rs          # TmuxManager — all tmux interaction
-├── worktree.rs      # WorktreeManager — git worktree ops
-├── claude.rs        # ClaudeLauncher — claude CLI wrapper
-├── usage.rs         # token usage tracking (Claude / ZAI)
-├── traits.rs        # shared traits
-├── handlers/        # key event handlers per mode
+├── main.rs            # entry point, event loop
+├── app/
+│   ├── mod.rs         # App struct, config types, new/save
+│   ├── state.rs       # AppMode, Selection, dialog states
+│   ├── navigation.rs  # tree navigation, selection getters
+│   ├── sync.rs        # status polling, thinking detection
+│   ├── project_ops.rs # project CRUD, path browsing
+│   ├── feature_ops.rs # feature create/start/stop/delete
+│   ├── session_ops.rs # session picker, add/remove sessions
+│   ├── view.rs        # embedded tmux view, leader key
+│   ├── switcher.rs    # session switcher
+│   ├── notifications.rs # notification scanning
+│   ├── hooks.rs       # lifecycle hook execution
+│   ├── opencode.rs    # opencode session management
+│   ├── search.rs      # search and jump
+│   ├── commands.rs    # command picker
+│   ├── rename.rs      # session renaming
+│   ├── review.rs      # final review trigger
+│   ├── setup.rs       # notification hooks, config loading
+│   ├── util.rs        # path/string helpers
+│   └── tests.rs       # unit tests
+├── project.rs         # ProjectStore / Project / Feature models,
+│                      # JSON persistence
+├── extension.rs       # extension config (presets, hooks,
+│                      # sessions)
+├── tmux.rs            # TmuxManager — all tmux interaction
+├── worktree.rs        # WorktreeManager — git worktree ops
+├── claude.rs          # ClaudeLauncher — claude CLI wrapper
+├── usage.rs           # token usage tracking (Claude / Codex / ZAI)
+├── traits.rs          # shared traits (TmuxOps, WorktreeOps)
+├── handlers/
+│   ├── mod.rs         # top-level key dispatch
+│   ├── normal.rs      # dashboard normal mode
+│   ├── view.rs        # embedded tmux view mode
+│   ├── dialog.rs      # project/delete/rename handlers
+│   ├── feature_creation.rs # feature creation wizard
+│   ├── browse.rs      # path browser
+│   ├── hooks.rs       # hook/delete-progress handlers
+│   ├── picker.rs      # notification/session/command pickers
+│   ├── search.rs      # search mode
+│   ├── change_reason.rs # diff review prompt
+│   ├── input.rs       # paste handling
+│   └── mouse.rs       # mouse events
 └── ui/
-    ├── dashboard.rs  # top-level draw dispatch
-    ├── list.rs       # project tree rendering
-    ├── header.rs     # header bar
-    ├── status.rs     # status bar + usage meters
-    ├── pane.rs       # embedded tmux ANSI view
-    ├── dialogs.rs    # create/delete/rename overlays
-    └── picker.rs     # notification, session, command pickers
+    ├── mod.rs         # top-level draw dispatch
+    ├── dashboard.rs   # layout, ANSI rendering
+    ├── list.rs        # project tree rendering
+    ├── header.rs      # header bar
+    ├── status.rs      # status bar + usage meters
+    ├── pane.rs        # embedded tmux ANSI view
+    ├── picker.rs      # picker overlays
+    └── dialogs/
+        ├── mod.rs     # re-exports
+        ├── project.rs # create/delete project dialogs
+        ├── feature.rs # feature creation, supervibe confirm
+        ├── session.rs # rename session
+        ├── help.rs    # keybindings help
+        ├── browse.rs  # path browser dialog
+        ├── search.rs  # search dialog
+        └── hooks.rs   # hook/review dialogs
 ```
 
 ### Key Dependencies
@@ -555,8 +680,8 @@ src/
   with actual session state
 - The embedded tmux view captures ANSI output from tmux and renders it
   through a vt100 parser into ratatui spans
-- When running inside tmux, switching uses `switch-client`; outside
-  tmux, the TUI exits and attaches directly
+- The embedded tmux view renders agent output directly in the TUI
+  without leaving the dashboard
 - Hook files are written to the worktree's local `.claude/settings.json`
   only — global settings are never modified. On startup,
   `cleanup_global_hooks()` removes any previously-injected entries.

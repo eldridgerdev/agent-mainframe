@@ -1,10 +1,29 @@
 {
   "hooks": {
-    "Notification": [
+    "PostToolUse": [
       {
         "hooks": [
           {
-            "command": "/home/eldridger/.config/amf/notify.sh",
+            "command": "/home/eldridger/.config/amf/tool-stop.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/home/eldridger/.config/amf/thinking-start.sh",
+            "type": "command"
+          },
+          {
+            "command": "/home/eldridger/.config/amf/tool-start.sh",
+            "type": "command"
+          },
+          {
+            "command": "/home/eldridger/.config/amf/clear-notify.sh",
             "type": "command"
           }
         ],
@@ -15,7 +34,26 @@
       {
         "hooks": [
           {
-            "command": "/home/eldridger/.config/amf/clear-notify.sh",
+            "command": "/home/eldridger/.config/amf/thinking-stop.sh",
+            "type": "command"
+          },
+          {
+            "command": "/home/eldridger/.config/amf/notify.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "/home/eldridger/.config/amf/thinking-start.sh",
+            "type": "command"
+          },
+          {
+            "command": "/home/eldridger/.config/amf/save-prompt.sh",
             "type": "command"
           }
         ],

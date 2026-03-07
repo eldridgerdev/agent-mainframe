@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: ["master", "testing"]
+    branches: ["main", "master", "testing"]
     tags-ignore:
       - "v*"
   pull_request:
-    branches: ["master"]
+    branches: ["main", "master"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,7 +33,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo test
-        run: cargo test --locked
+        run: |
+          rustc --version && cargo --version |  # Print version info for debugging
+          cargo test --workspace --verbose
+
 
   lint:
     name: Lint

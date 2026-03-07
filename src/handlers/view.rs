@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::AppMode;
 use crate::app::App;
+use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
 enum TmuxKey {
@@ -116,6 +117,21 @@ pub fn handle_view_key(
         };
         if let Err(e) = result {
             app.show_error(e);
+        } else if key.code == KeyCode::Enter
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            let is_codex_window = app
+                .store
+                .projects
+                .iter()
+                .flat_map(|p| p.features.iter())
+                .filter(|f| f.tmux_session == session)
+                .flat_map(|f| f.sessions.iter())
+                .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
+            if is_codex_window {
+                app.note_codex_prompt_submit(&session, &window);
+            }
         }
     }
 
@@ -215,20 +231,6 @@ fn handle_leader_key(
         KeyCode::Char('T') => {
             app.view_prev_session();
         }
-        KeyCode::Char('s') => {
-            let session = match &app.mode {
-                AppMode::Viewing(view) => {
-                    view.session.clone()
-                }
-                _ => return Ok(()),
-            };
-            app.exit_view();
-            if TmuxManager::is_inside_tmux() {
-                TmuxManager::switch_client(&session)?;
-            } else {
-                app.should_switch = Some(session);
-            }
-        }
         KeyCode::Char('n') => {
             app.view_next_feature()?;
         }
@@ -305,6 +307,22 @@ fn handle_leader_key(
         }
         KeyCode::Char('f') => {
             app.trigger_final_review()?;
+        }
+        KeyCode::Char('D') => {
+            let view = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+                scroll_offset: 0,
+                from_view: Some(view),
+            });
         }
         KeyCode::Char('l') => {
             let view = match std::mem::replace(

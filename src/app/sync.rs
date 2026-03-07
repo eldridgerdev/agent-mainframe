@@ -68,15 +68,10 @@ impl App {
                 let thinking = match feature.agent {
                     AgentKind::Claude => {
                         if ipc_mode {
-                            self.ipc_thinking_sessions
-                                .contains(&feature.tmux_session)
-                                || self
-                                    .ipc_tool_sessions
-                                    .contains(&feature.tmux_session)
+                            self.ipc_thinking_sessions.contains(&feature.tmux_session)
+                                || self.ipc_tool_sessions.contains(&feature.tmux_session)
                         } else {
-                            Self::is_session_marked_thinking(
-                                &feature.tmux_session,
-                            )
+                            Self::is_session_marked_thinking(&feature.tmux_session)
                         }
                     }
                     AgentKind::Opencode => {
@@ -111,13 +106,7 @@ impl App {
         // Agent-agnostic fallback: if a feature transitions from
         // thinking to not-thinking, treat it as waiting for user
         // input unless another pending notification already exists.
-        let active_features: Vec<(
-            String,
-            String,
-            String,
-            String,
-            AgentKind,
-        )> = self
+        let active_features: Vec<(String, String, String, String, AgentKind)> = self
             .store
             .projects
             .iter()
@@ -130,10 +119,7 @@ impl App {
                         project.name.clone(),
                         feature.name.clone(),
                         feature.tmux_session.clone(),
-                        feature
-                            .workdir
-                            .to_string_lossy()
-                            .into_owned(),
+                        feature.workdir.to_string_lossy().into_owned(),
                         feature.agent.clone(),
                     ))
                 })
@@ -148,13 +134,10 @@ impl App {
                 let before = self.pending_inputs.len();
                 self.pending_inputs.retain(|p| {
                     !(p.notification_type == "input-request"
-                        && p.project_name.as_deref()
-                            == Some(&project_name)
-                        && p.feature_name.as_deref()
-                            == Some(&feature_name))
+                        && p.project_name.as_deref() == Some(&project_name)
+                        && p.feature_name.as_deref() == Some(&feature_name))
                 });
-                let removed =
-                    before.saturating_sub(self.pending_inputs.len());
+                let removed = before.saturating_sub(self.pending_inputs.len());
                 if removed > 0 {
                     self.log_debug(
                         "sync",
@@ -170,20 +153,15 @@ impl App {
             }
 
             if was_thinking && !is_thinking {
-                let any_pending_for_feature =
-                    self.pending_inputs.iter().any(|p| {
-                        p.project_name.as_deref()
-                                == Some(&project_name)
-                            && p.feature_name.as_deref()
-                                == Some(&feature_name)
-                    });
+                let any_pending_for_feature = self.pending_inputs.iter().any(|p| {
+                    p.project_name.as_deref() == Some(&project_name)
+                        && p.feature_name.as_deref() == Some(&feature_name)
+                });
                 if !any_pending_for_feature {
                     self.pending_inputs.push(PendingInput {
                         session_id: sid.clone(),
                         cwd,
-                        message:
-                            "Agent finished and is waiting for input"
-                                .to_string(),
+                        message: "Agent finished and is waiting for input".to_string(),
                         notification_type: "input-request".to_string(),
                         file_path: std::path::PathBuf::new(),
                         project_name: Some(project_name),

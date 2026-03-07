@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::AppMode;
 use crate::app::App;
+use crate::app::AppMode;
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -13,75 +13,49 @@ enum TmuxKey {
 
 fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     if key.modifiers.contains(KeyModifiers::CONTROL)
-        && let KeyCode::Char(c) = key.code {
-            return Some(TmuxKey::Named(format!("C-{}", c)));
-        }
+        && let KeyCode::Char(c) = key.code
+    {
+        return Some(TmuxKey::Named(format!("C-{}", c)));
+    }
 
     if key.modifiers.contains(KeyModifiers::ALT)
-        && let KeyCode::Char(c) = key.code {
-            return Some(TmuxKey::Named(format!("M-{}", c)));
-        }
+        && let KeyCode::Char(c) = key.code
+    {
+        return Some(TmuxKey::Named(format!("M-{}", c)));
+    }
 
     match key.code {
-        KeyCode::Char(c) => {
-            Some(TmuxKey::Literal(c.to_string()))
-        }
-        KeyCode::Enter => {
-            Some(TmuxKey::Named("Enter".into()))
-        }
-        KeyCode::Backspace => {
-            Some(TmuxKey::Named("BSpace".into()))
-        }
+        KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),
+        KeyCode::Enter => Some(TmuxKey::Named("Enter".into())),
+        KeyCode::Backspace => Some(TmuxKey::Named("BSpace".into())),
         KeyCode::Tab => Some(TmuxKey::Named("Tab".into())),
-        KeyCode::Esc => {
-            Some(TmuxKey::Named("Escape".into()))
-        }
+        KeyCode::Esc => Some(TmuxKey::Named("Escape".into())),
         KeyCode::Up => Some(TmuxKey::Named("Up".into())),
         KeyCode::Down => Some(TmuxKey::Named("Down".into())),
         KeyCode::Left => Some(TmuxKey::Named("Left".into())),
-        KeyCode::Right => {
-            Some(TmuxKey::Named("Right".into()))
-        }
+        KeyCode::Right => Some(TmuxKey::Named("Right".into())),
         KeyCode::Home => Some(TmuxKey::Named("Home".into())),
         KeyCode::End => Some(TmuxKey::Named("End".into())),
-        KeyCode::PageUp => {
-            Some(TmuxKey::Named("PPage".into()))
-        }
-        KeyCode::PageDown => {
-            Some(TmuxKey::Named("NPage".into()))
-        }
-        KeyCode::Delete => {
-            Some(TmuxKey::Named("DC".into()))
-        }
-        KeyCode::Insert => {
-            Some(TmuxKey::Named("IC".into()))
-        }
-        KeyCode::F(n) => {
-            Some(TmuxKey::Named(format!("F{}", n)))
-        }
+        KeyCode::PageUp => Some(TmuxKey::Named("PPage".into())),
+        KeyCode::PageDown => Some(TmuxKey::Named("NPage".into())),
+        KeyCode::Delete => Some(TmuxKey::Named("DC".into())),
+        KeyCode::Insert => Some(TmuxKey::Named("IC".into())),
+        KeyCode::F(n) => Some(TmuxKey::Named(format!("F{}", n))),
         _ => None,
     }
 }
 
-pub fn handle_view_key(
-    app: &mut App,
-    key: KeyEvent,
-    visible_rows: u16,
-) -> Result<()> {
+pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     if app.leader_active {
         return handle_leader_key(app, key, visible_rows);
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL)
-        && key.code == KeyCode::Char('q')
-    {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         app.exit_view();
         return Ok(());
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL)
-        && key.code == KeyCode::Char(' ')
-    {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(' ') {
         app.activate_leader();
         return Ok(());
     }
@@ -96,24 +70,14 @@ pub fn handle_view_key(
     }
 
     let (session, window) = match &app.mode {
-        AppMode::Viewing(view) => {
-            (view.session.clone(), view.window.clone())
-        }
+        AppMode::Viewing(view) => (view.session.clone(), view.window.clone()),
         _ => return Ok(()),
     };
 
     if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
         let result = match tmux_key {
-            TmuxKey::Literal(text) => {
-                TmuxManager::send_literal(
-                    &session, &window, &text,
-                )
-            }
-            TmuxKey::Named(name) => {
-                TmuxManager::send_key_name(
-                    &session, &window, &name,
-                )
-            }
+            TmuxKey::Literal(text) => TmuxManager::send_literal(&session, &window, &text),
+            TmuxKey::Named(name) => TmuxManager::send_key_name(&session, &window, &name),
         };
         if let Err(e) = result {
             app.show_error(e);
@@ -138,15 +102,13 @@ pub fn handle_view_key(
     Ok(())
 }
 
-fn handle_scroll_key(
-    app: &mut App,
-    key: KeyEvent,
-    visible_rows: u16,
-) -> Result<()> {
+fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     let (session, window, passthrough) = match &app.mode {
-        AppMode::Viewing(view) => {
-            (view.session.clone(), view.window.clone(), view.scroll_passthrough)
-        }
+        AppMode::Viewing(view) => (
+            view.session.clone(),
+            view.window.clone(),
+            view.scroll_passthrough,
+        ),
         _ => return Ok(()),
     };
 
@@ -197,16 +159,10 @@ fn handle_scroll_key(
             }
         }
         _ => {
-            if passthrough
-                && let Some(tmux_key) = crossterm_key_to_tmux(&key)
-            {
+            if passthrough && let Some(tmux_key) = crossterm_key_to_tmux(&key) {
                 let _ = match tmux_key {
-                    TmuxKey::Literal(text) => {
-                        TmuxManager::send_literal(&session, &window, &text)
-                    }
-                    TmuxKey::Named(name) => {
-                        TmuxManager::send_key_name(&session, &window, &name)
-                    }
+                    TmuxKey::Literal(text) => TmuxManager::send_literal(&session, &window, &text),
+                    TmuxKey::Named(name) => TmuxManager::send_key_name(&session, &window, &name),
                 };
             }
         }
@@ -214,11 +170,7 @@ fn handle_scroll_key(
     Ok(())
 }
 
-fn handle_leader_key(
-    app: &mut App,
-    key: KeyEvent,
-    visible_rows: u16,
-) -> Result<()> {
+fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     app.deactivate_leader();
 
     match key.code {
@@ -239,14 +191,11 @@ fn handle_leader_key(
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
-            app.message =
-                Some("Refreshed statuses".into());
+            app.message = Some("Refreshed statuses".into());
         }
         KeyCode::Char('x') => {
             let session = match &app.mode {
-                AppMode::Viewing(view) => {
-                    view.session.clone()
-                }
+                AppMode::Viewing(view) => view.session.clone(),
                 _ => return Ok(()),
             };
             let _ = TmuxManager::kill_session(&session);
@@ -256,21 +205,16 @@ fn handle_leader_key(
         }
         KeyCode::Char('i') => {
             if app.pending_inputs.is_empty() {
-                app.message =
-                    Some("No pending input requests".into());
+                app.message = Some("No pending input requests".into());
             } else {
-                let view = match std::mem::replace(
-                    &mut app.mode,
-                    AppMode::Normal,
-                ) {
+                let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                     AppMode::Viewing(v) => v,
                     other => {
                         app.mode = other;
                         return Ok(());
                     }
                 };
-                app.mode =
-                    AppMode::NotificationPicker(0, Some(view));
+                app.mode = AppMode::NotificationPicker(0, Some(view));
             }
         }
         KeyCode::Char('w') => {
@@ -300,10 +244,7 @@ fn handle_leader_key(
             app.jump_to_bookmark(slot)?;
         }
         KeyCode::Char('/') => {
-            let view_state = match std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            ) {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
                     app.mode = other;
@@ -313,10 +254,7 @@ fn handle_leader_key(
             app.open_command_picker(Some(view_state));
         }
         KeyCode::Char('?') => {
-            let view = match std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            ) {
+            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
                     app.mode = other;
@@ -332,10 +270,7 @@ fn handle_leader_key(
             app.trigger_final_review()?;
         }
         KeyCode::Char('D') => {
-            let view = match std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            ) {
+            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
                     app.mode = other;
@@ -348,10 +283,7 @@ fn handle_leader_key(
             });
         }
         KeyCode::Char('l') => {
-            let view = match std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            ) {
+            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
                     app.mode = other;
@@ -363,19 +295,11 @@ fn handle_leader_key(
                 .projects
                 .iter()
                 .find(|p| p.name == view.project_name)
-                .and_then(|p| {
-                    p.features
-                        .iter()
-                        .find(|f| f.name == view.feature_name)
-                })
+                .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
                 .map(|f| f.workdir.clone());
             let prompt = if let Some(wd) = workdir {
-                std::fs::read_to_string(
-                    wd.join(".claude").join("latest-prompt.txt"),
-                )
-                .unwrap_or_else(|_| {
-                    "(No prompt saved yet)".to_string()
-                })
+                std::fs::read_to_string(wd.join(".claude").join("latest-prompt.txt"))
+                    .unwrap_or_else(|_| "(No prompt saved yet)".to_string())
             } else {
                 "(No prompt saved yet)".to_string()
             };

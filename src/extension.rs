@@ -324,14 +324,18 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].command.as_deref(), Some("project-cmd"));
         // Both unique entries should be present
-        assert!(merged
-            .custom_sessions
-            .iter()
-            .any(|s| s.name == "global-only"));
-        assert!(merged
-            .custom_sessions
-            .iter()
-            .any(|s| s.name == "project-only"));
+        assert!(
+            merged
+                .custom_sessions
+                .iter()
+                .any(|s| s.name == "global-only")
+        );
+        assert!(
+            merged
+                .custom_sessions
+                .iter()
+                .any(|s| s.name == "project-only")
+        );
         assert_eq!(merged.custom_sessions.len(), 3);
     }
 

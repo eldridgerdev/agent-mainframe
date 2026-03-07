@@ -1,10 +1,10 @@
 mod dashboard;
+mod dialogs;
 mod header;
 mod list;
-mod status;
-mod dialogs;
 mod pane;
 mod picker;
+mod status;
 
 use ratatui::Frame;
 

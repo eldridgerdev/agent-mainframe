@@ -30,10 +30,8 @@ impl App {
                         return Ok(());
                     }
                 };
-                let feature =
-                    &self.store.projects[pi].features[fi];
-                let repo =
-                    self.store.projects[pi].repo.clone();
+                let feature = &self.store.projects[pi].features[fi];
+                let repo = self.store.projects[pi].repo.clone();
                 (
                     feature.workdir.clone(),
                     repo,
@@ -53,15 +51,11 @@ impl App {
             // exe is at <root>/target/{debug,release}/amf — go up 3
             exe.parent()?.parent()?.parent().map(PathBuf::from)
         });
-        let script_path = [
-            Some(workdir.clone()),
-            Some(repo.clone()),
-            amf_root,
-        ]
-        .into_iter()
-        .flatten()
-        .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
-        .find(|p| p.exists());
+        let script_path = [Some(workdir.clone()), Some(repo.clone()), amf_root]
+            .into_iter()
+            .flatten()
+            .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
+            .find(|p| p.exists());
 
         let script = match script_path {
             Some(p) => p,
@@ -86,11 +80,7 @@ impl App {
         } else {
             let review_session = format!("amf-{}-Review", feature_name);
             if !TmuxManager::session_exists(&review_session) {
-                TmuxManager::create_session_with_window(
-                    &review_session,
-                    "review",
-                    &workdir,
-                )?;
+                TmuxManager::create_session_with_window(&review_session, "review", &workdir)?;
             }
             (review_session, "review".to_string())
         };
@@ -100,8 +90,7 @@ impl App {
         // since final-review.sh opens its own popups for vimdiff/notes.
         // After the script exits, switch back to the AMF session so the
         // user doesn't get stranded in the feature's terminal.
-        let amf_session = TmuxManager::current_session()
-            .unwrap_or_default();
+        let amf_session = TmuxManager::current_session().unwrap_or_default();
         let switch_back = if amf_session.is_empty() {
             String::new()
         } else {
@@ -113,20 +102,14 @@ impl App {
             workdir.to_string_lossy(),
             switch_back,
         );
-        if let Err(e) =
-            TmuxManager::send_literal(&target_session, &target_window, &cmd)
-        {
+        if let Err(e) = TmuxManager::send_literal(&target_session, &target_window, &cmd) {
             self.exit_view();
-            self.message =
-                Some(format!("Failed to send review command: {e}"));
+            self.message = Some(format!("Failed to send review command: {e}"));
             return Ok(());
         }
-        if let Err(e) =
-            TmuxManager::send_key_name(&target_session, &target_window, "Enter")
-        {
+        if let Err(e) = TmuxManager::send_key_name(&target_session, &target_window, "Enter") {
             self.exit_view();
-            self.message =
-                Some(format!("Failed to start review: {e}"));
+            self.message = Some(format!("Failed to start review: {e}"));
             return Ok(());
         }
 

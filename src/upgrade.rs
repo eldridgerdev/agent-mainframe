@@ -1,3 +1,4 @@
+use crate::http_client;
 use anyhow::{Context, Result};
 use std::env;
 use std::fs;
@@ -96,10 +97,10 @@ fn check_write_permission(exe_path: &Path) -> Result<()> {
 }
 
 fn fetch_latest_version() -> Result<String> {
-    let mut response =
-        ureq::get("https://api.github.com/repos/eldridgerdev/agent-mainframe/releases/latest")
-            .call()
-            .context("Failed to fetch latest release info")?;
+    let mut response = http_client::https_agent()
+        .get("https://api.github.com/repos/eldridgerdev/agent-mainframe/releases/latest")
+        .call()
+        .context("Failed to fetch latest release info")?;
 
     let body = response
         .body_mut()
@@ -118,7 +119,8 @@ fn fetch_latest_version() -> Result<String> {
 }
 
 fn download_binary(url: &str, dest: &Path) -> Result<()> {
-    let mut response = ureq::get(url)
+    let mut response = http_client::https_agent()
+        .get(url)
         .call()
         .with_context(|| format!("Failed to download from {}", url))?;
 

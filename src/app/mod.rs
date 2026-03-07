@@ -1,8 +1,8 @@
 mod claude_session_picker;
 mod claude_sessions;
 pub mod commands;
-mod harpoon;
 mod feature_ops;
+mod harpoon;
 mod hooks;
 mod navigation;
 mod notifications;

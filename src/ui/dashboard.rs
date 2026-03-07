@@ -195,8 +195,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame);
             } else {
-                let presets = app.active_extension.feature_presets.as_slice();
-                super::dialogs::draw_create_feature_dialog(frame, state, presets);
+                let presets = app.active_extension.allowed_feature_presets();
+                let allowed_agents = app.active_extension.allowed_agents();
+                super::dialogs::draw_create_feature_dialog(
+                    frame,
+                    state,
+                    presets.as_slice(),
+                    allowed_agents.as_slice(),
+                );
             }
         }
         AppMode::CreatingBatchFeatures(state) => {
@@ -282,7 +288,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::ForkingFeature(state) = &app.mode {
-        super::dialogs::draw_fork_feature_dialog(frame, state);
+        let allowed_agents = app.active_extension.allowed_agents();
+        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice());
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {

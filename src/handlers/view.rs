@@ -221,10 +221,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.open_session_switcher();
         }
         KeyCode::Char('h') => {
-            let view_state = match std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            ) {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
                     app.mode = other;

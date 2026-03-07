@@ -2,7 +2,6 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 
 use crate::app::{App, AppMode, ForkFeatureStep};
-use crate::project::AgentKind;
 
 pub fn handle_fork_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     let step = match &app.mode {
@@ -43,19 +42,21 @@ pub fn handle_fork_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::ForkingFeature(state) = &mut app.mode
                     && state.agent_index > 0
                 {
                     state.agent_index -= 1;
-                    state.agent = AgentKind::ALL[state.agent_index].clone();
+                    state.agent = allowed_agents[state.agent_index].clone();
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::ForkingFeature(state) = &mut app.mode
-                    && state.agent_index + 1 < AgentKind::ALL.len()
+                    && state.agent_index + 1 < allowed_agents.len()
                 {
                     state.agent_index += 1;
-                    state.agent = AgentKind::ALL[state.agent_index].clone();
+                    state.agent = allowed_agents[state.agent_index].clone();
                 }
             }
             KeyCode::Tab => {

@@ -166,11 +166,12 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     match state.mode_focus {
                         0 => {
-                            state.agent_index = (state.agent_index + 1) % AgentKind::ALL.len();
-                            state.agent = AgentKind::ALL[state.agent_index].clone();
+                            state.agent_index = (state.agent_index + 1) % allowed_agents.len();
+                            state.agent = allowed_agents[state.agent_index].clone();
                         }
                         1 => {
                             state.mode_index = (state.mode_index + 1) % VibeMode::ALL.len();
@@ -194,15 +195,16 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     match state.mode_focus {
                         0 => {
                             state.agent_index = if state.agent_index == 0 {
-                                AgentKind::ALL.len() - 1
+                                allowed_agents.len() - 1
                             } else {
                                 state.agent_index - 1
                             };
-                            state.agent = AgentKind::ALL[state.agent_index].clone();
+                            state.agent = allowed_agents[state.agent_index].clone();
                         }
                         1 => {
                             state.mode_index = if state.mode_index == 0 {

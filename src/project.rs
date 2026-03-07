@@ -57,6 +57,20 @@ impl AgentKind {
     }
 
     pub const ALL: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Opencode, AgentKind::Codex];
+
+    pub fn allowed_list(configured: Option<&[AgentKind]>) -> Vec<AgentKind> {
+        Self::ALL
+            .iter()
+            .filter(|agent| {
+                configured.is_none_or(|allowed| allowed.is_empty() || allowed.contains(agent))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn index_in(agents: &[AgentKind], target: &AgentKind) -> usize {
+        agents.iter().position(|agent| agent == target).unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

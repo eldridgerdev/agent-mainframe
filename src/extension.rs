@@ -111,6 +111,25 @@ pub struct ExtensionConfig {
     pub lifecycle_hooks: LifecycleHooks,
     pub keybindings: HashMap<String, char>,
     pub feature_presets: Vec<FeaturePreset>,
+    pub allowed_agents: Option<Vec<AgentKind>>,
+}
+
+impl ExtensionConfig {
+    pub fn allowed_agents(&self) -> Vec<AgentKind> {
+        AgentKind::allowed_list(self.allowed_agents.as_deref())
+    }
+
+    pub fn allows_agent(&self, agent: &AgentKind) -> bool {
+        self.allowed_agents().contains(agent)
+    }
+
+    pub fn allowed_feature_presets(&self) -> Vec<FeaturePreset> {
+        self.feature_presets
+            .iter()
+            .filter(|preset| self.allows_agent(&preset.agent))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Thin wrapper used only for deserializing the
@@ -205,6 +224,10 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         },
         keybindings,
         feature_presets,
+        allowed_agents: project
+            .allowed_agents
+            .clone()
+            .or_else(|| base.allowed_agents.clone()),
     };
 }
 
@@ -364,5 +387,32 @@ mod tests {
         assert_eq!(merged.keybindings.get("quit"), Some(&'Q'));
         // Global key preserved when not overridden
         assert_eq!(merged.keybindings.get("delete"), Some(&'d'));
+    }
+
+    #[test]
+    fn project_allowed_agents_override_global_allowed_agents() {
+        let global = ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude]),
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Opencode]),
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(merged.allowed_agents(), vec![AgentKind::Opencode]);
+    }
+
+    #[test]
+    fn empty_allowed_agents_means_allow_all() {
+        let config = ExtensionConfig {
+            allowed_agents: Some(vec![]),
+            ..Default::default()
+        };
+
+        assert_eq!(config.allowed_agents(), AgentKind::ALL.to_vec());
     }
 }

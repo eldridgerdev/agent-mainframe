@@ -26,12 +26,12 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::debug::DebugLog;
 use crate::extension::{
-    ExtensionConfig, load_global_extension_config, merge_project_extension_config,
+    ExtensionConfig, FeaturePreset, load_global_extension_config, merge_project_extension_config,
 };
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
@@ -328,6 +328,38 @@ impl App {
                 }
             }
         };
+    }
+
+    pub(crate) fn extension_for_repo(&self, repo: &Path) -> ExtensionConfig {
+        let global_ext = load_global_extension_config();
+        merge_project_extension_config(&global_ext, repo)
+    }
+
+    pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
+        self.extension_for_repo(repo).allowed_agents()
+    }
+
+    pub(crate) fn allows_agent_for_repo(&self, repo: &Path, agent: &AgentKind) -> bool {
+        self.extension_for_repo(repo).allows_agent(agent)
+    }
+
+    pub(crate) fn allowed_feature_presets_for_repo(&self, repo: &Path) -> Vec<FeaturePreset> {
+        self.extension_for_repo(repo).allowed_feature_presets()
+    }
+
+    pub(crate) fn normalize_agent_for_repo(
+        &self,
+        repo: &Path,
+        preferred: &AgentKind,
+    ) -> (AgentKind, usize) {
+        let allowed = self.allowed_agents_for_repo(repo);
+        let selected = allowed
+            .iter()
+            .find(|agent| *agent == preferred)
+            .cloned()
+            .unwrap_or_else(|| allowed[0].clone());
+        let index = AgentKind::index_in(&allowed, &selected);
+        (selected, index)
     }
 
     pub fn save(&self) -> Result<()> {

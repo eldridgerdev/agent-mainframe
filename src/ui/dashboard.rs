@@ -121,6 +121,26 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::BookmarkPicker(state) = &app.mode
+        && state.from_view.is_some()
+    {
+        let view = state.from_view.as_ref().unwrap();
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        let rows = app.bookmark_picker_rows();
+        super::picker::draw_bookmark_picker(
+            frame, state, &rows,
+        );
+        return;
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode
         && let RenameReturnTo::SessionSwitcher(ref sw) = state.return_to
     {
@@ -203,7 +223,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if matches!(app.mode, AppMode::Help(None)) {
-        super::dialogs::draw_help(frame);
+        super::dialogs::draw_help_bottom_right(frame);
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {
@@ -236,6 +256,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::SessionPicker(state) = &app.mode {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font);
+    }
+
+    if let AppMode::BookmarkPicker(state) = &app.mode {
+        let rows = app.bookmark_picker_rows();
+        super::picker::draw_bookmark_picker(
+            frame, state, &rows,
+        );
     }
 
     if let AppMode::ChangeReasonPrompt(state) = &app.mode {

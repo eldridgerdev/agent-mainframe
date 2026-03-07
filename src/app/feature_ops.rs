@@ -9,6 +9,35 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    pub fn toggle_feature_ready(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        feature.ready = !feature.ready;
+        let name = feature.name.clone();
+        let ready = feature.ready;
+        self.save()?;
+        self.message = Some(if ready {
+            format!("Marked '{}' as ready", name)
+        } else {
+            format!("Marked '{}' as not ready", name)
+        });
+
+        Ok(())
+    }
+
     pub fn start_create_feature(&mut self) {
         let (project_name, project_repo, is_first, used_workdirs) = match &self.selection {
             Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
@@ -225,7 +254,13 @@ impl App {
             None => return Ok(()),
         };
 
-        ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        ensure_notification_hooks(
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
+            feature.is_worktree,
+        );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {

@@ -11,6 +11,7 @@ const THINKING_START_SH: &str = include_str!("../../scripts/thinking-start.sh");
 const THINKING_STOP_SH: &str = include_str!("../../scripts/thinking-stop.sh");
 const TOOL_START_SH: &str = include_str!("../../scripts/tool-start.sh");
 const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
+const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 
 pub fn ensure_notify_scripts() {
@@ -241,7 +242,80 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     }
 }
 
-pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, agent: &AgentKind) {
+fn ensure_codex_notify_hook(workdir: &Path) {
+    let codex_dir = workdir.join(".codex");
+    let _ = std::fs::create_dir_all(&codex_dir);
+
+    let hook_path = codex_dir.join("amf-codex-notify.sh");
+    let original_notify_path =
+        codex_dir.join("amf-codex-notify-original.json");
+    let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &hook_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+
+    let config_path = codex_dir.join("config.toml");
+    let mut config = if config_path.exists() {
+        match std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        {
+            Some(v) => v,
+            None => return,
+        }
+    } else {
+        toml::Value::Table(Default::default())
+    };
+
+    let Some(table) = config.as_table_mut() else {
+        return;
+    };
+    let hook_cmd = hook_path.to_string_lossy().to_string();
+    let existing_notify = table.get("notify").and_then(|notify| {
+        if let Some(arr) = notify.as_array() {
+            let values: Option<Vec<String>> = arr
+                .iter()
+                .map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            values.filter(|v| !v.is_empty())
+        } else {
+            notify.as_str().map(|s| vec![s.to_string()])
+        }
+    });
+
+    if let Some(existing) = existing_notify {
+        if existing != vec![hook_cmd.clone()] {
+            if let Ok(rendered) = serde_json::to_string_pretty(&existing) {
+                let _ = std::fs::write(&original_notify_path, rendered);
+            }
+        } else {
+            let _ = std::fs::remove_file(&original_notify_path);
+        }
+    } else {
+        let _ = std::fs::remove_file(&original_notify_path);
+    }
+    table.insert(
+        "notify".to_string(),
+        toml::Value::Array(vec![toml::Value::String(hook_cmd)]),
+    );
+
+    if let Ok(rendered) = toml::to_string_pretty(&config) {
+        let _ = std::fs::write(&config_path, rendered);
+    }
+}
+
+pub fn ensure_notification_hooks(
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+    agent: &AgentKind,
+    is_worktree: bool,
+) {
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Opencode) {
@@ -249,6 +323,9 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         return;
     }
     if matches!(agent, AgentKind::Codex) {
+        if is_worktree {
+            ensure_codex_notify_hook(workdir);
+        }
         return;
     }
 

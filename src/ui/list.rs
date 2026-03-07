@@ -208,19 +208,26 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = format!(" {} ", span.content).into();
                         span
                     } else {
-                        match feature.status {
-                            ProjectStatus::Active => Span::styled(
-                                " ● ",
-                                Style::default().fg(theme.status_active.to_color()),
-                            ),
-                            ProjectStatus::Idle => Span::styled(
-                                " ○ ",
-                                Style::default().fg(theme.status_idle.to_color()),
-                            ),
-                            ProjectStatus::Stopped => Span::styled(
-                                " ■ ",
-                                Style::default().fg(theme.status_stopped.to_color()),
-                            ),
+                        if feature.ready {
+                            Span::styled(
+                                " ✓ ",
+                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                            )
+                        } else {
+                            match feature.status {
+                                ProjectStatus::Active => Span::styled(
+                                    " ● ",
+                                    Style::default().fg(theme.status_active.to_color()),
+                                ),
+                                ProjectStatus::Idle => Span::styled(
+                                    " ○ ",
+                                    Style::default().fg(theme.status_idle.to_color()),
+                                ),
+                                ProjectStatus::Stopped => Span::styled(
+                                    " ■ ",
+                                    Style::default().fg(theme.status_stopped.to_color()),
+                                ),
+                            }
                         }
                     };
 

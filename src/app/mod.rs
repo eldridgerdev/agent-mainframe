@@ -1,6 +1,7 @@
 mod claude_session_picker;
 mod claude_sessions;
 pub mod commands;
+mod harpoon;
 mod feature_ops;
 mod hooks;
 mod navigation;
@@ -128,6 +129,7 @@ impl ZaiPlanConfig {
 #[serde(default)]
 pub struct AppConfig {
     pub nerd_font: bool,
+    pub leader_timeout_seconds: u64,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
@@ -139,6 +141,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nerd_font: true,
+            leader_timeout_seconds: 5,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),

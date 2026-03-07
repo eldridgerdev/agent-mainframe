@@ -142,6 +142,7 @@ fn handle_click(
             | AppMode::OpencodeSessionPicker(_)
             | AppMode::ConfirmingOpencodeSession { .. }
             | AppMode::SessionPicker(_)
+            | AppMode::BookmarkPicker(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)

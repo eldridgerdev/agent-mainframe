@@ -39,6 +39,16 @@ fn usage_bar_spans<'a>(label: &'a str, pct: f64, bar_width: usize) -> Vec<Span<'
     ]
 }
 
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 fn shorten_path(path: &std::path::Path) -> String {
     if let Some(home) = dirs::home_dir()
         && let Ok(rest) = path.strip_prefix(&home)
@@ -98,6 +108,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" start  "),
                     Span::styled("x", Style::default().fg(Color::Yellow)),
                     Span::raw(" stop  "),
+                    Span::styled("y", Style::default().fg(Color::Yellow)),
+                    Span::raw(" ready  "),
                     Span::styled("f", Style::default().fg(Color::Yellow)),
                     Span::raw(" filter  "),
                     Span::styled("s", Style::default().fg(Color::Yellow)),
@@ -164,7 +176,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
-        | AppMode::SessionPicker(_) => Line::from(vec![
+        | AppMode::SessionPicker(_)
+        | AppMode::BookmarkPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k or \u{2191}/\u{2193}",
                 Style::default().fg(Color::Yellow),
@@ -191,12 +204,38 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("r", Style::default().fg(Color::Red)),
             Span::raw(" reject"),
         ]),
-        AppMode::Viewing(_) => Line::from(vec![
-            Span::styled("Ctrl+Space", Style::default().fg(Color::Yellow)),
-            Span::raw(" commands  "),
-            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
-            Span::raw(" exit view"),
-        ]),
+        AppMode::Viewing(_) => {
+            let mut spans = vec![
+                Span::styled(
+                    "Ctrl+Space",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" commands  "),
+                Span::styled(
+                    "Ctrl+Q",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" exit view"),
+            ];
+            let labels = app.bookmark_status_labels();
+            if !labels.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    "marks ",
+                    Style::default().fg(Color::DarkGray),
+                ));
+                for (idx, label) in labels.iter().enumerate() {
+                    spans.push(Span::styled(
+                        label.clone(),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    if idx + 1 < labels.len() {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+            }
+            Line::from(spans)
+        }
         AppMode::RunningHook(state) => {
             if state.child.is_some() {
                 Line::from(Span::styled(
@@ -420,17 +459,35 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 right_spans.push(Span::styled(tok_str, Style::default().fg(Color::Cyan)));
             }
         }
-        Model::Zai => {
-            let format_tokens = |n: u64| {
-                if n >= 1_000_000 {
-                    format!("{:.1}M", n as f64 / 1_000_000.0)
-                } else if n >= 1_000 {
-                    format!("{:.1}K", n as f64 / 1_000.0)
-                } else {
-                    n.to_string()
-                }
-            };
+        Model::Codex => {
+            if let Some(pct5) = usage.codex.five_hour_usage_pct {
+                right_spans.extend(usage_bar_spans("5h", pct5, 15));
+                right_spans.push(Span::raw(" "));
+            }
 
+            if let Some(pct7) = usage.codex.weekly_usage_pct {
+                right_spans.extend(usage_bar_spans("7d", pct7, 15));
+                right_spans.push(Span::raw(" "));
+            } else if usage.codex.five_hour_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!("5h {} ", format_tokens(usage.codex.five_hour_tokens)),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
+            if usage.codex.today_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!("{} tok ", format_tokens(usage.codex.today_tokens)),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+
+            right_spans.push(Span::styled(
+                format!("{} calls ", usage.codex.today_calls),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Model::Zai => {
             if let Some(pct) = usage.zai.five_hour_usage_pct {
                 right_spans.extend(usage_bar_spans("5h", pct, 15));
                 right_spans.push(Span::raw(" "));

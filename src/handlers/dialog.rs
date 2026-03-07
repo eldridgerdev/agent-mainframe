@@ -225,7 +225,7 @@ pub fn handle_rename_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
- pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
+pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {

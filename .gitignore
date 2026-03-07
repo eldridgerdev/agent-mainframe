@@ -4,5 +4,7 @@ TODO.md
 IDEAS.md
 .worktrees/
 .claude/settings.local.json
+.claude/settings.json
+.codex/
 
 CLAUDE.local.md

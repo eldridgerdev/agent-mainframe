@@ -1,4 +1,5 @@
 use super::setup::{ensure_notification_hooks, strip_between_markers};
+use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
 
@@ -52,6 +53,21 @@ fn shorten_path_outside_home() {
     assert_eq!(result, "/tmp/some/path");
 }
 
+// ── AppConfig defaults ───────────────────────────────────
+
+#[test]
+fn app_config_default_leader_timeout_is_five_seconds() {
+    let config = AppConfig::default();
+    assert_eq!(config.leader_timeout_seconds, 5);
+}
+
+#[test]
+fn app_config_missing_leader_timeout_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.leader_timeout_seconds, 5);
+    assert!(!config.nerd_font);
+}
+
 // ── strip_between_markers ─────────────────────────────────
 
 #[test]
@@ -99,6 +115,21 @@ fn strip_between_markers_adjacent_markers() {
         "<!-- END -->",
     );
     assert_eq!(result, "");
+}
+
+// ── thinking hint parsing ─────────────────────────────────
+
+#[test]
+fn pane_shows_thinking_hint_detects_supported_markers() {
+    assert!(pane_shows_thinking_hint("Esc to interrupt"));
+    assert!(pane_shows_thinking_hint("press ESC interrupt to stop"));
+    assert!(pane_shows_thinking_hint("Ctrl+C to interrupt"));
+}
+
+#[test]
+fn pane_shows_thinking_hint_ignores_unrelated_text() {
+    assert!(!pane_shows_thinking_hint("waiting for input"));
+    assert!(!pane_shows_thinking_hint("all done"));
 }
 
 // ── ZaiPlanConfig::get_monthly_limit ─────────────────────
@@ -174,6 +205,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status,
         created_at: now,
         last_accessed: now,
@@ -396,21 +428,36 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
-fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
+fn call_ensure_hooks_for(
+    workdir: &TempDir,
+    mode: VibeMode,
+    agent: AgentKind,
+    is_worktree: bool,
+) {
     let repo = workdir.path(); // repo = workdir in tests
-    ensure_notification_hooks(workdir.path(), repo, &mode, &AgentKind::Claude);
+    ensure_notification_hooks(
+        workdir.path(),
+        repo,
+        &mode,
+        &agent,
+        is_worktree,
+    );
+}
+
+fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
+    call_ensure_hooks_for(workdir, mode, AgentKind::Claude, true);
 }
 
 #[test]
-fn stop_hook_has_thinking_remove_and_notify() {
+fn stop_hook_has_thinking_stop_and_notify() {
     let workdir = TempDir::new().unwrap();
     call_ensure_hooks(&workdir, VibeMode::Vibe);
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
         cmds.iter()
-            .any(|c| c.contains("amf-thinking") && c.contains("rm")),
-        "Stop hook missing thinking-remove cmd; got: {cmds:?}"
+            .any(|c| c.contains("thinking-stop.sh")),
+        "Stop hook missing thinking-stop.sh; got: {cmds:?}"
     );
     assert!(
         cmds.iter().any(|c| c.contains("notify.sh")),
@@ -419,19 +466,36 @@ fn stop_hook_has_thinking_remove_and_notify() {
 }
 
 #[test]
-fn pre_tool_use_hook_has_thinking_touch_and_clear() {
+fn pre_tool_use_hook_has_thinking_tool_and_clear() {
     let workdir = TempDir::new().unwrap();
     call_ensure_hooks(&workdir, VibeMode::Vibe);
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
         cmds.iter()
-            .any(|c| c.contains("amf-thinking") && c.contains("touch")),
-        "PreToolUse missing thinking-touch cmd; got: {cmds:?}"
+            .any(|c| c.contains("thinking-start.sh")),
+        "PreToolUse missing thinking-start.sh; got: {cmds:?}"
+    );
+    assert!(
+        cmds.iter()
+            .any(|c| c.contains("tool-start.sh")),
+        "PreToolUse missing tool-start.sh; got: {cmds:?}"
     );
     assert!(
         cmds.iter().any(|c| c.contains("clear-notify.sh")),
         "PreToolUse missing clear-notify.sh; got: {cmds:?}"
+    );
+}
+
+#[test]
+fn post_tool_use_hook_has_tool_stop() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "PostToolUse");
+    assert!(
+        cmds.iter().any(|c| c.contains("tool-stop.sh")),
+        "PostToolUse missing tool-stop.sh; got: {cmds:?}"
     );
 }
 
@@ -549,6 +613,93 @@ fn ensure_hooks_is_idempotent() {
     );
 }
 
+#[test]
+fn codex_hooks_are_injected_for_worktree_only() {
+    let workdir = TempDir::new().unwrap();
+
+    call_ensure_hooks_for(
+        &workdir,
+        VibeMode::Vibe,
+        AgentKind::Codex,
+        false,
+    );
+    assert!(
+        !workdir.path().join(".codex").join("config.toml").exists(),
+        "non-worktree codex feature should not get local codex config"
+    );
+
+    call_ensure_hooks_for(
+        &workdir,
+        VibeMode::Vibe,
+        AgentKind::Codex,
+        true,
+    );
+    assert!(
+        workdir.path().join(".codex").join("config.toml").exists(),
+        "worktree codex feature should get local codex config"
+    );
+    assert!(
+        workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "worktree codex feature should get local notify hook script"
+    );
+}
+
+#[test]
+fn codex_hook_merges_existing_notify_entries() {
+    let workdir = TempDir::new().unwrap();
+    let codex_dir = workdir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let cfg = codex_dir.join("config.toml");
+    std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
+
+    call_ensure_hooks_for(
+        &workdir,
+        VibeMode::Vibe,
+        AgentKind::Codex,
+        true,
+    );
+
+    let rendered = std::fs::read_to_string(&cfg).unwrap();
+    let parsed: toml::Value = toml::from_str(&rendered).unwrap();
+    let notify = parsed
+        .get("notify")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let entries: Vec<String> = notify
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.ends_with("/.codex/amf-codex-notify.sh")),
+        "amf codex notify hook should be added"
+    );
+    assert_eq!(
+        entries.len(),
+        1,
+        "notify should be rewritten to AMF wrapper command"
+    );
+
+    let original = codex_dir.join("amf-codex-notify-original.json");
+    assert!(
+        original.exists(),
+        "existing notify command should be preserved in sidecar file"
+    );
+    let original_cmds: Vec<String> =
+        serde_json::from_str(&std::fs::read_to_string(&original).unwrap()).unwrap();
+    assert_eq!(
+        original_cmds,
+        vec!["/tmp/existing-hook.sh".to_string()],
+        "sidecar file should preserve original notify command argv"
+    );
+}
+
 // ── sync_session_status ──────────────────────────────────────
 
 use crate::project::{FeatureSession, SessionKind};
@@ -581,6 +732,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
@@ -704,6 +856,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,

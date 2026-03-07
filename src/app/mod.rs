@@ -131,6 +131,7 @@ impl ZaiPlanConfig {
 #[serde(default)]
 pub struct AppConfig {
     pub nerd_font: bool,
+    pub leader_timeout_seconds: u64,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
@@ -142,6 +143,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nerd_font: true,
+            leader_timeout_seconds: 5,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
@@ -174,6 +176,8 @@ pub struct App {
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
+    pub ipc_thinking_sessions: std::collections::HashSet<String>,
+    pub ipc_tool_sessions: std::collections::HashSet<String>,
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
@@ -181,6 +185,9 @@ pub struct App {
     pub debug_log: DebugLog,
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
+    pub ipc: Option<crate::ipc::IpcGuard>,
+    pub ipc_fallback_logged: bool,
+    pub last_file_notification_count: usize,
 }
 
 impl App {
@@ -230,6 +237,8 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            ipc_thinking_sessions: std::collections::HashSet::new(),
+            ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux: Box::new(TmuxManager),
@@ -237,6 +246,9 @@ impl App {
             debug_log: DebugLog::default(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
+            ipc: None,
+            ipc_fallback_logged: false,
+            last_file_notification_count: 0,
         })
     }
 
@@ -281,6 +293,8 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            ipc_thinking_sessions: std::collections::HashSet::new(),
+            ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,
@@ -288,17 +302,18 @@ impl App {
             debug_log: DebugLog::default(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
+            ipc: None,
+            ipc_fallback_logged: false,
+            last_file_notification_count: 0,
         }
     }
 
     /// Re-merge extension config for the currently selected
-    /// project. Call this whenever the selected project changes.
+    /// project/feature. Call this whenever the selection changes.
     pub fn reload_extension_config(&mut self) {
         let global_ext = load_global_extension_config();
         self.active_extension = match &self.selection {
-            Selection::Project(pi)
-            | Selection::Feature(pi, _)
-            | Selection::Session(pi, _, _) => {
+            Selection::Project(pi) => {
                 if let Some(project) =
                     self.store.projects.get(*pi)
                 {
@@ -306,6 +321,27 @@ impl App {
                         &global_ext,
                         &project.repo,
                     )
+                } else {
+                    global_ext
+                }
+            }
+            Selection::Feature(pi, fi)
+            | Selection::Session(pi, fi, _) => {
+                if let Some(project) =
+                    self.store.projects.get(*pi)
+                {
+                    if let Some(feature) = project.features.get(*fi)
+                    {
+                        merge_project_extension_config(
+                            &global_ext,
+                            &feature.workdir,
+                        )
+                    } else {
+                        merge_project_extension_config(
+                            &global_ext,
+                            &project.repo,
+                        )
+                    }
                 } else {
                     global_ext
                 }

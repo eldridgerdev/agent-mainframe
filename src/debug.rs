@@ -142,3 +142,25 @@ impl DebugLog {
         &self.log_file
     }
 }
+
+/// Write a log entry directly to the log file without going through
+/// an `App` instance. Intended for background threads (e.g. IPC
+/// server) that cannot borrow `App`.
+pub fn log_to_file(level: LogLevel, context: &str, message: &str) {
+    let path = global_log_path();
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let line = format!(
+            "{} [{:<5}] {}: {}\n",
+            time,
+            level.display(),
+            context,
+            message,
+        );
+        let _ = file.write_all(line.as_bytes());
+    }
+}

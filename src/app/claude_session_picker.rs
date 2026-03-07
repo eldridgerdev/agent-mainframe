@@ -201,7 +201,13 @@ impl App {
             None => return Ok(()),
         };
 
-        setup::ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        setup::ensure_notification_hooks(
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
+            feature.is_worktree,
+        );
         setup::ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
@@ -250,6 +256,9 @@ impl App {
                         &session.tmux_window,
                         None,
                     )?;
+                }
+                SessionKind::Codex => {
+                    TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {

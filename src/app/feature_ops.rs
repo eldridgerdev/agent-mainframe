@@ -1,57 +1,67 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use super::*;
 use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use super::*;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    pub fn toggle_feature_ready(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        feature.ready = !feature.ready;
+        let name = feature.name.clone();
+        let ready = feature.ready;
+        self.save()?;
+        self.message = Some(if ready {
+            format!("Marked '{}' as ready", name)
+        } else {
+            format!("Marked '{}' as not ready", name)
+        });
+
+        Ok(())
+    }
+
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, is_first, used_workdirs) =
-            match &self.selection {
-                Selection::Project(pi)
-                | Selection::Feature(pi, _)
-                | Selection::Session(pi, _, _) => {
-                    if let Some(p) =
-                        self.store.projects.get(*pi)
-                    {
-                        let used: Vec<PathBuf> = p
-                            .features
-                            .iter()
-                            .map(|f| f.workdir.clone())
-                            .collect();
-                        (
-                            p.name.clone(),
-                            p.repo.clone(),
-                            p.features.is_empty(),
-                            used,
-                        )
-                    } else {
-                        return;
-                    }
+        let (project_name, project_repo, is_first, used_workdirs) = match &self.selection {
+            Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
+                if let Some(p) = self.store.projects.get(*pi) {
+                    let used: Vec<PathBuf> = p.features.iter().map(|f| f.workdir.clone()).collect();
+                    (p.name.clone(), p.repo.clone(), p.features.is_empty(), used)
+                } else {
+                    return;
                 }
-            };
+            }
+        };
 
         let worktrees = WorktreeManager::list(&project_repo)
             .unwrap_or_default()
             .into_iter()
-            .filter(|wt| {
-                wt.path != project_repo
-                    && !used_workdirs.contains(&wt.path)
-            })
+            .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
-        self.mode = AppMode::CreatingFeature(
-            CreateFeatureState::new(
-                project_name,
-                project_repo,
-                worktrees,
-                is_first,
-            ),
-        );
+        self.mode = AppMode::CreatingFeature(CreateFeatureState::new(
+            project_name,
+            project_repo,
+            worktrees,
+            is_first,
+        ));
         self.message = None;
     }
 
@@ -66,8 +76,7 @@ impl App {
         let branch = state.branch.clone();
         let mode = state.mode.clone();
         let review = state.review;
-        let use_existing_worktree = state.source_index == 1
-            && !state.worktrees.is_empty();
+        let use_existing_worktree = state.source_index == 1 && !state.worktrees.is_empty();
         let selected_worktree = if use_existing_worktree {
             state.worktrees.get(state.worktree_index).cloned()
         } else {
@@ -78,29 +87,20 @@ impl App {
         let enable_notes = state.enable_notes;
 
         if branch.is_empty() {
-            self.message =
-                Some("Error: Branch name cannot be empty".into());
+            self.message = Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
 
         let stored_is_git = {
-            let project =
-                match self.store.find_project(&project_name) {
-                    Some(p) => p,
-                    None => {
-                        self.message = Some(format!(
-                            "Error: Project '{}' not found",
-                            project_name
-                        ));
-                        return Ok(());
-                    }
-                };
+            let project = match self.store.find_project(&project_name) {
+                Some(p) => p,
+                None => {
+                    self.message = Some(format!("Error: Project '{}' not found", project_name));
+                    return Ok(());
+                }
+            };
 
-            if project
-                .features
-                .iter()
-                .any(|f| f.name == branch)
-            {
+            if project.features.iter().any(|f| f.name == branch) {
                 self.message = Some(format!(
                     "Error: Feature '{}' already exists in '{}'",
                     branch, project_name
@@ -110,10 +110,7 @@ impl App {
 
             if !use_worktree
                 && selected_worktree.is_none()
-                && project
-                    .features
-                    .iter()
-                    .any(|f| !f.is_worktree)
+                && project.features.iter().any(|f| !f.is_worktree)
             {
                 self.message = Some(
                     "Error: Only one non-worktree feature \
@@ -126,79 +123,66 @@ impl App {
             project.is_git
         };
 
-        let is_git = stored_is_git
-            || self.worktree.repo_root(&project_repo).is_ok();
+        let is_git = stored_is_git || self.worktree.repo_root(&project_repo).is_ok();
 
         if is_git && !stored_is_git {
-            if let Some(p) =
-                self.store.find_project_mut(&project_name)
-            {
+            if let Some(p) = self.store.find_project_mut(&project_name) {
                 p.is_git = true;
             }
             self.save()?;
         }
 
-        if (use_worktree || selected_worktree.is_some())
-            && !is_git
-        {
-            self.message = Some(
-                "Error: Worktrees require a git repository"
-                    .into(),
-            );
+        if (use_worktree || selected_worktree.is_some()) && !is_git {
+            self.message = Some("Error: Worktrees require a git repository".into());
             return Ok(());
         }
 
-        let (workdir, is_worktree) =
-            if let Some(wt) = &selected_worktree {
-                (wt.path.clone(), true)
-            } else if use_worktree {
-                let wt_path = self.worktree.create(
-                    &project_repo,
-                    &branch,
-                    &branch,
-                )?;
+        let (workdir, is_worktree) = if let Some(wt) = &selected_worktree {
+            (wt.path.clone(), true)
+        } else if use_worktree {
+            let wt_path = self.worktree.create(&project_repo, &branch, &branch)?;
 
-                let global_ext = load_global_extension_config();
-                let ext = merge_project_extension_config(&global_ext, &project_repo);
+            let global_ext = load_global_extension_config();
+            let ext = merge_project_extension_config(&global_ext, &project_repo);
 
-                if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
-                    if let Some(prompt) = hook_cfg.prompt() {
-                        self.start_hook_prompt(
-                            hook_cfg.script().to_string(),
-                            wt_path.clone(),
-                            prompt.title.clone(),
-                            prompt.options.clone(),
-                            HookNext::WorktreeCreated {
-                                project_name,
-                                branch,
-                                mode,
-                                review,
-                                agent: state.agent.clone(),
-                                enable_chrome,
-                                enable_notes,
-                            },
-                        );
-                    } else {
-                        self.start_worktree_hook(
-                            hook_cfg.script(),
-                            wt_path.clone(),
+            if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
+                if let Some(prompt) = hook_cfg.prompt() {
+                    self.start_hook_prompt(
+                        hook_cfg.script().to_string(),
+                        wt_path.clone(),
+                        prompt.title.clone(),
+                        prompt.options.clone(),
+                        HookNext::WorktreeCreated {
                             project_name,
                             branch,
                             mode,
                             review,
-                            state.agent.clone(),
+                            agent: state.agent.clone(),
                             enable_chrome,
                             enable_notes,
-                            None,
-                        );
-                    }
-                    return Ok(());
+                        },
+                    );
+                } else {
+                    self.start_worktree_hook(
+                        hook_cfg.script(),
+                        wt_path.clone(),
+                        project_name,
+                        branch,
+                        mode,
+                        review,
+                        state.agent.clone(),
+                        enable_chrome,
+                        enable_notes,
+                        None,
+                    );
                 }
+                return Ok(());
+            }
 
-                (wt_path, true)
-            } else {
-                (project_repo.clone(), false)
-            };
+            (wt_path, true)
+        } else {
+            (project_repo.clone(), false)
+        };
 
         if enable_notes {
             let claude_dir = workdir.join(".claude");
@@ -235,10 +219,7 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
@@ -251,29 +232,18 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
         }
 
-        self.message = Some(format!(
-            "Created and started feature '{}'",
-            branch
-        ));
+        self.message = Some(format!("Created and started feature '{}'", branch));
 
         Ok(())
     }
 
-    pub(crate) fn ensure_feature_running(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
-        let repo =
-            self.store.projects[pi].repo.clone();
+    pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
+        let repo = self.store.projects[pi].repo.clone();
         let feature = match self
             .store
             .projects
@@ -289,6 +259,7 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
+            feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
@@ -296,6 +267,7 @@ impl App {
             let session_kind = match feature.agent {
                 AgentKind::Claude => SessionKind::Claude,
                 AgentKind::Opencode => SessionKind::Opencode,
+                AgentKind::Codex => SessionKind::Codex,
             };
             feature.add_session(session_kind);
             feature.add_session(SessionKind::Terminal);
@@ -314,11 +286,8 @@ impl App {
             &feature.sessions[0].tmux_window,
             &feature.workdir,
         )?;
-        self.tmux.set_session_env(
-            &feature.tmux_session,
-            "AMF_SESSION",
-            &feature.tmux_session,
-        )?;
+        self.tmux
+            .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
         for session in &feature.sessions[1..] {
             self.tmux.create_window(
@@ -328,8 +297,7 @@ impl App {
             )?;
         }
 
-        let extra_args: Vec<String> =
-            feature.mode.cli_flags(feature.enable_chrome);
+        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         for session in &feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
@@ -341,10 +309,12 @@ impl App {
                     )?;
                 }
                 SessionKind::Opencode => {
-                    self.tmux.launch_opencode(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                    )?;
+                    self.tmux
+                        .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
+                }
+                SessionKind::Codex => {
+                    self.tmux
+                        .launch_codex(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {
@@ -354,11 +324,8 @@ impl App {
                             "nvim .claude/notes.md",
                         )?;
                     } else {
-                        self.tmux.send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim",
-                        )?;
+                        self.tmux
+                            .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;
                     }
                 }
                 SessionKind::Terminal => {}
@@ -388,13 +355,8 @@ impl App {
                             }
                         }
                     }
-                    let status_dir = feature
-                        .workdir
-                        .join(".amf")
-                        .join("session-status");
-                    let _ = std::fs::create_dir_all(
-                        &status_dir,
-                    );
+                    let status_dir = feature.workdir.join(".amf").join("session-status");
+                    let _ = std::fs::create_dir_all(&status_dir);
                     let env_prefix = format!(
                         "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
                         session.id,
@@ -423,10 +385,8 @@ impl App {
             }
         }
 
-        self.tmux.select_window(
-            &feature.tmux_session,
-            &feature.sessions[0].tmux_window,
-        )?;
+        self.tmux
+            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();
@@ -436,8 +396,7 @@ impl App {
 
     pub fn start_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
 
@@ -456,17 +415,13 @@ impl App {
                 .and_then(|p| p.features.get(fi))
                 .map(|f| f.name.clone())
             {
-                self.message = Some(format!(
-                    "Error: '{}' is already running",
-                    name
-                ));
+                self.message = Some(format!("Error: '{}' is already running", name));
             }
             return Ok(());
         }
 
         // If on_start has a prompt, show the picker first.
-        let on_start =
-            self.active_extension.lifecycle_hooks.on_start.clone();
+        let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start {
             if let Some(prompt) = cfg.prompt() {
                 let workdir = self
@@ -501,9 +456,7 @@ impl App {
             self.run_lifecycle_hook(cfg.script(), &workdir, None);
         }
 
-        let name = self.store.projects[pi].features[fi]
-            .name
-            .clone();
+        let name = self.store.projects[pi].features[fi].name.clone();
         self.save()?;
         self.message = Some(format!("Started '{}'", name));
 
@@ -511,11 +464,7 @@ impl App {
     }
 
     /// Inner start logic called after a hook prompt is confirmed.
-    pub fn do_start_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub fn do_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         self.ensure_feature_running(pi, fi)?;
         let name = self
             .store
@@ -531,8 +480,7 @@ impl App {
 
     pub fn stop_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
 
@@ -547,17 +495,13 @@ impl App {
         };
 
         if feature.status == ProjectStatus::Stopped {
-            self.message = Some(format!(
-                "Error: '{}' is already stopped",
-                feature.name
-            ));
+            self.message = Some(format!("Error: '{}' is already stopped", feature.name));
             return Ok(());
         }
 
         // Fire on_stop lifecycle hook before killing session.
         // Clone hook and workdir data before mutable borrow.
-        let on_stop_hook =
-            self.active_extension.lifecycle_hooks.on_stop.clone();
+        let on_stop_hook = self.active_extension.lifecycle_hooks.on_stop.clone();
         let workdir_for_hook = feature.workdir.clone();
 
         // If on_stop has a prompt, show the picker first.
@@ -575,11 +519,7 @@ impl App {
         }
 
         if let Some(ref cfg) = on_stop_hook {
-            self.run_lifecycle_hook(
-                cfg.script(),
-                &workdir_for_hook,
-                None,
-            );
+            self.run_lifecycle_hook(cfg.script(), &workdir_for_hook, None);
         }
 
         self.do_stop_feature(pi, fi)?;
@@ -588,27 +528,13 @@ impl App {
     }
 
     /// Inner stop logic called after a hook prompt is confirmed.
-    pub fn do_stop_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub fn do_stop_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // Run on_stop for custom sessions before killing tmux.
-        if let Some(feature) = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Self::run_custom_session_on_stop(feature);
         }
 
-        let tmux_session = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        let tmux_session = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(f) => f.tmux_session.clone(),
             None => return Ok(()),
         };
@@ -637,10 +563,7 @@ impl App {
     fn run_custom_session_on_stop(feature: &Feature) {
         use crate::project::SessionKind;
 
-        let status_dir = feature
-            .workdir
-            .join(".amf")
-            .join("session-status");
+        let status_dir = feature.workdir.join(".amf").join("session-status");
 
         for session in &feature.sessions {
             if session.kind != SessionKind::Custom {
@@ -657,39 +580,31 @@ impl App {
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
-            let _ = std::fs::remove_file(
-                status_dir.join(format!("{}.txt", session.id)),
-            );
+            let _ = std::fs::remove_file(status_dir.join(format!("{}.txt", session.id)));
         }
     }
 
     pub fn delete_feature(&mut self) -> Result<()> {
         let (project_name, feature_name) = match &self.mode {
-            AppMode::DeletingFeature(pn, fn_) => {
-                (pn.clone(), fn_.clone())
-            }
+            AppMode::DeletingFeature(pn, fn_) => (pn.clone(), fn_.clone()),
             _ => return Ok(()),
         };
 
-        let (tmux_session, is_worktree, repo, workdir) =
-            if let Some(project) =
-                self.store.find_project(&project_name)
-                && let Some(feature) = project
-                    .features
-                    .iter()
-                    .find(|f| f.name == feature_name)
-            {
-                // Run on_stop for custom sessions before killing.
-                Self::run_custom_session_on_stop(feature);
-                (
-                    feature.tmux_session.clone(),
-                    feature.is_worktree,
-                    project.repo.clone(),
-                    feature.workdir.clone(),
-                )
-            } else {
-                return Ok(());
-            };
+        let (tmux_session, is_worktree, repo, workdir) = if let Some(project) =
+            self.store.find_project(&project_name)
+            && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
+        {
+            // Run on_stop for custom sessions before killing.
+            Self::run_custom_session_on_stop(feature);
+            (
+                feature.tmux_session.clone(),
+                feature.is_worktree,
+                project.repo.clone(),
+                feature.workdir.clone(),
+            )
+        } else {
+            return Ok(());
+        };
 
         let child = TmuxManager::spawn_kill_session(&tmux_session)?;
 
@@ -718,10 +633,8 @@ impl App {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if !status.success() {
-                        state.error = Some(format!(
-                            "Command failed with code: {:?}",
-                            status.code()
-                        ));
+                        state.error =
+                            Some(format!("Command failed with code: {:?}", status.code()));
                     }
                     state.child = None;
                 }
@@ -736,10 +649,7 @@ impl App {
         match state.stage {
             DeleteStage::KillingTmux => {
                 if state.is_worktree {
-                    match WorktreeManager::spawn_remove(
-                        &state.repo,
-                        &state.workdir,
-                    ) {
+                    match WorktreeManager::spawn_remove(&state.repo, &state.workdir) {
                         Ok(child) => {
                             state.child = Some(child);
                             state.stage = DeleteStage::RemovingWorktree;
@@ -784,8 +694,7 @@ impl App {
             return Ok(());
         }
 
-        self.store
-            .remove_feature(&project_name, &feature_name);
+        self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
         if let Some(pi) = self
@@ -798,10 +707,7 @@ impl App {
         }
 
         self.mode = AppMode::Normal;
-        self.message = Some(format!(
-            "Deleted feature '{}'",
-            feature_name
-        ));
+        self.message = Some(format!("Deleted feature '{}'", feature_name));
         Ok(())
     }
 
@@ -820,11 +726,7 @@ impl App {
         }
     }
 
-    pub fn is_feature_being_deleted(
-        &self,
-        project_name: &str,
-        feature_name: &str,
-    ) -> bool {
+    pub fn is_feature_being_deleted(&self, project_name: &str, feature_name: &str) -> bool {
         let key = format!("{}/{}", project_name, feature_name);
         self.background_deletions.contains_key(&key)
     }
@@ -837,10 +739,8 @@ impl App {
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         if !status.success() {
-                            deletion.error = Some(format!(
-                                "Command failed with code: {:?}",
-                                status.code()
-                            ));
+                            deletion.error =
+                                Some(format!("Command failed with code: {:?}", status.code()));
                         }
                         deletion.child = None;
                     }
@@ -856,10 +756,7 @@ impl App {
                 DeleteStage::KillingTmux => {
                     if deletion.child.is_none() {
                         if deletion.is_worktree {
-                            match WorktreeManager::spawn_remove(
-                                &deletion.repo,
-                                &deletion.workdir,
-                            ) {
+                            match WorktreeManager::spawn_remove(&deletion.repo, &deletion.workdir) {
                                 Ok(child) => {
                                     deletion.child = Some(child);
                                     deletion.stage = DeleteStage::RemovingWorktree;
@@ -892,16 +789,15 @@ impl App {
                     self.message = Some(format!(
                         "Error deleting feature '{}': {}",
                         deletion.feature_name,
-                        deletion.error.unwrap_or_else(|| "Unknown error".to_string())
+                        deletion
+                            .error
+                            .unwrap_or_else(|| "Unknown error".to_string())
                     ));
                 } else {
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);
                     let _ = self.save();
-                    self.message = Some(format!(
-                        "Deleted feature '{}'",
-                        deletion.feature_name
-                    ));
+                    self.message = Some(format!("Deleted feature '{}'", deletion.feature_name));
                 }
             }
         }
@@ -916,18 +812,13 @@ impl App {
             _ => return,
         };
 
-        let (project_name, project_repo, feature) =
-            match self.store.projects.get(pi) {
-                Some(p) => match p.features.get(fi) {
-                    Some(f) => (
-                        p.name.clone(),
-                        p.repo.clone(),
-                        f,
-                    ),
-                    None => return,
-                },
+        let (project_name, project_repo, feature) = match self.store.projects.get(pi) {
+            Some(p) => match p.features.get(fi) {
+                Some(f) => (p.name.clone(), p.repo.clone(), f),
                 None => return,
-            };
+            },
+            None => return,
+        };
 
         let agent_index = AgentKind::ALL
             .iter()
@@ -979,41 +870,25 @@ impl App {
             .map(|f| f.workdir.clone());
 
         if new_branch.is_empty() {
-            self.message =
-                Some("Error: Branch name cannot be empty".into());
+            self.message = Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
 
         // Check for duplicate feature name
-        if let Some(project) =
-            self.store.find_project(&project_name)
-        {
-            if project
-                .features
-                .iter()
-                .any(|f| f.name == new_branch)
-            {
-                self.message = Some(format!(
-                    "Error: Feature '{}' already exists",
-                    new_branch
-                ));
+        if let Some(project) = self.store.find_project(&project_name) {
+            if project.features.iter().any(|f| f.name == new_branch) {
+                self.message = Some(format!("Error: Feature '{}' already exists", new_branch));
                 return Ok(());
             }
         } else {
-            self.message = Some(format!(
-                "Error: Project '{}' not found",
-                project_name
-            ));
+            self.message = Some(format!("Error: Project '{}' not found", project_name));
             return Ok(());
         }
 
         // Create worktree from source branch
-        let workdir = self.worktree.create_from(
-            &project_repo,
-            &new_branch,
-            &new_branch,
-            &source_branch,
-        )?;
+        let workdir =
+            self.worktree
+                .create_from(&project_repo, &new_branch, &new_branch, &source_branch)?;
 
         // Copy uncommitted changes from source worktree
         if let Some(ref src_wd) = source_workdir {
@@ -1023,29 +898,19 @@ impl App {
         // Export transcript context from source session
         if include_context
             && let Some(ref src_wd) = source_workdir
-            && let Some(jsonl) =
-                crate::transcript::find_latest_transcript(src_wd)
-            && let Ok(md) =
-                crate::transcript::export_transcript_markdown(&jsonl)
+            && let Some(jsonl) = crate::transcript::find_latest_transcript(src_wd)
+            && let Ok(md) = crate::transcript::export_transcript_markdown(&jsonl)
         {
             let claude_dir = workdir.join(".claude");
             let _ = std::fs::create_dir_all(&claude_dir);
-            let _ = std::fs::write(
-                claude_dir.join("context.md"),
-                md,
-            );
+            let _ = std::fs::write(claude_dir.join("context.md"), md);
         }
 
         // Check for lifecycle hooks
         let global_ext = load_global_extension_config();
-        let ext = merge_project_extension_config(
-            &global_ext,
-            &project_repo,
-        );
+        let ext = merge_project_extension_config(&global_ext, &project_repo);
 
-        if let Some(ref hook_cfg) =
-            ext.lifecycle_hooks.on_worktree_created
-        {
+        if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
             if let Some(prompt) = hook_cfg.prompt() {
                 self.start_hook_prompt(
                     hook_cfg.script().to_string(),
@@ -1115,10 +980,7 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
@@ -1131,18 +993,12 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
         }
 
-        self.message = Some(format!(
-            "Forked '{}' -> '{}'",
-            source_branch, new_branch
-        ));
+        self.message = Some(format!("Forked '{}' -> '{}'", source_branch, new_branch));
 
         Ok(())
     }
@@ -1153,12 +1009,7 @@ impl App {
             _ => return,
         };
 
-        let current_nickname = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        let current_nickname = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(f) => f.nickname.clone().unwrap_or_default(),
             None => return,
         };
@@ -1280,18 +1131,11 @@ impl App {
                 .iter()
                 .any(|f| f.name == branch)
             {
-                self.message = Some(format!(
-                    "Error: Feature '{}' already exists",
-                    branch
-                ));
+                self.message = Some(format!("Error: Feature '{}' already exists", branch));
                 return Ok(());
             }
 
-            let workdir = self.worktree.create(
-                &project_repo,
-                &branch,
-                &branch,
-            )?;
+            let workdir = self.worktree.create(&project_repo, &branch, &branch)?;
 
             if enable_notes {
                 let claude_dir = workdir.join(".claude");

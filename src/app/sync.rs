@@ -5,6 +5,17 @@ use crate::tmux::TmuxManager;
 
 use chrono::Utc;
 
+pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    [
+        "esc interrupt",
+        "esc to interrupt",
+        "ctrl+c to interrupt",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
@@ -38,11 +49,7 @@ impl App {
                             .ok()
                             .and_then(|content| {
                                 let line = content.lines().next()?.trim().to_string();
-                                if line.is_empty() {
-                                    None
-                                } else {
-                                    Some(line)
-                                }
+                                if line.is_empty() { None } else { Some(line) }
                             });
                 }
             }
@@ -50,14 +57,28 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) {
+        let old_thinking = self.thinking_features.clone();
         self.thinking_features.clear();
+        let ipc_mode = self.ipc.is_some();
         for project in &self.store.projects {
             for feature in &project.features {
                 if feature.status == ProjectStatus::Stopped {
                     continue;
                 }
                 let thinking = match feature.agent {
-                    AgentKind::Claude => Self::is_claude_thinking(&feature.tmux_session),
+                    AgentKind::Claude => {
+                        if ipc_mode {
+                            self.ipc_thinking_sessions
+                                .contains(&feature.tmux_session)
+                                || self
+                                    .ipc_tool_sessions
+                                    .contains(&feature.tmux_session)
+                        } else {
+                            Self::is_session_marked_thinking(
+                                &feature.tmux_session,
+                            )
+                        }
+                    }
                     AgentKind::Opencode => {
                         let session = feature
                             .sessions
@@ -68,11 +89,17 @@ impl App {
                                 TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
                                     .ok()
                             })
-                            .map(|content| {
-                                let lower = content.to_lowercase();
-                                lower.contains("esc interrupt")
-                            })
+                            .map(|content| pane_shows_thinking_hint(&content))
                             .unwrap_or(false)
+                    }
+                    AgentKind::Codex => {
+                        if ipc_mode {
+                            self.ipc_thinking_sessions
+                                .contains(&feature.tmux_session)
+                        } else {
+                            // Fallback when IPC is unavailable.
+                            Self::is_session_marked_thinking(&feature.tmux_session)
+                        }
                     }
                 };
                 if thinking {
@@ -80,9 +107,106 @@ impl App {
                 }
             }
         }
+
+        // Agent-agnostic fallback: if a feature transitions from
+        // thinking to not-thinking, treat it as waiting for user
+        // input unless another pending notification already exists.
+        let active_features: Vec<(
+            String,
+            String,
+            String,
+            String,
+            AgentKind,
+        )> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project.features.iter().filter_map(|feature| {
+                    if feature.status == ProjectStatus::Stopped {
+                        return None;
+                    }
+                    Some((
+                        project.name.clone(),
+                        feature.name.clone(),
+                        feature.tmux_session.clone(),
+                        feature
+                            .workdir
+                            .to_string_lossy()
+                            .into_owned(),
+                        feature.agent.clone(),
+                    ))
+                })
+            })
+            .collect();
+
+        for (project_name, feature_name, sid, cwd, agent) in active_features {
+            let was_thinking = old_thinking.contains(&sid);
+            let is_thinking = self.thinking_features.contains(&sid);
+
+            if is_thinking {
+                let before = self.pending_inputs.len();
+                self.pending_inputs.retain(|p| {
+                    !(p.notification_type == "input-request"
+                        && p.project_name.as_deref()
+                            == Some(&project_name)
+                        && p.feature_name.as_deref()
+                            == Some(&feature_name))
+                });
+                let removed =
+                    before.saturating_sub(self.pending_inputs.len());
+                if removed > 0 {
+                    self.log_debug(
+                        "sync",
+                        format!(
+                            "Cleared {removed} input notification(s) for {} (agent={}, session={})",
+                            feature_name,
+                            agent.display_name(),
+                            sid
+                        ),
+                    );
+                }
+                continue;
+            }
+
+            if was_thinking && !is_thinking {
+                let any_pending_for_feature =
+                    self.pending_inputs.iter().any(|p| {
+                        p.project_name.as_deref()
+                                == Some(&project_name)
+                            && p.feature_name.as_deref()
+                                == Some(&feature_name)
+                    });
+                if !any_pending_for_feature {
+                    self.pending_inputs.push(PendingInput {
+                        session_id: sid.clone(),
+                        cwd,
+                        message:
+                            "Agent finished and is waiting for input"
+                                .to_string(),
+                        notification_type: "input-request".to_string(),
+                        file_path: std::path::PathBuf::new(),
+                        project_name: Some(project_name),
+                        feature_name: Some(feature_name.clone()),
+                        proceed_signal: None,
+                        request_id: None,
+                        reply_socket: None,
+                    });
+                    self.log_info(
+                        "sync",
+                        format!(
+                            "Detected waiting-for-input for {} (agent={}, session={})",
+                            feature_name,
+                            agent.display_name(),
+                            sid
+                        ),
+                    );
+                }
+            }
+        }
     }
 
-    fn is_claude_thinking(tmux_session: &str) -> bool {
+    fn is_session_marked_thinking(tmux_session: &str) -> bool {
         let path_str = format!("/tmp/amf-thinking/{}", tmux_session);
         let path = std::path::Path::new(&path_str);
         if !path.exists() {
@@ -121,6 +245,55 @@ impl App {
 
     pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {
         self.thinking_features.contains(tmux_session)
+    }
+
+    pub(crate) fn note_codex_prompt_submit(&mut self, tmux_session: &str, tmux_window: &str) {
+        let mut matched: Option<(String, String)> = None;
+        for project in &self.store.projects {
+            for feature in &project.features {
+                if feature.tmux_session != tmux_session
+                    || feature.agent != AgentKind::Codex
+                    || !feature.is_worktree
+                {
+                    continue;
+                }
+                let has_codex_window = feature
+                    .sessions
+                    .iter()
+                    .any(|s| s.kind == SessionKind::Codex && s.tmux_window == tmux_window);
+                if has_codex_window {
+                    matched = Some((project.name.clone(), feature.name.clone()));
+                    break;
+                }
+            }
+            if matched.is_some() {
+                break;
+            }
+        }
+
+        if let Some((project_name, feature_name)) = matched {
+            self.ipc_thinking_sessions.insert(tmux_session.to_string());
+            self.pending_inputs.retain(|p| {
+                !(p.notification_type == "input-request"
+                    && p.project_name.as_deref() == Some(&project_name)
+                    && p.feature_name.as_deref() == Some(&feature_name))
+            });
+            self.log_debug(
+                "ipc",
+                format!(
+                    "Codex prompt submit captured locally; marked thinking (session={}, feature={})",
+                    tmux_session, feature_name
+                ),
+            );
+        } else {
+            self.log_debug(
+                "ipc",
+                format!(
+                    "Ignored codex prompt submit marker for non-worktree/non-codex window (session={}, window={})",
+                    tmux_session, tmux_window
+                ),
+            );
+        }
     }
 
     pub fn is_feature_waiting_for_input(&self, feature_name: &str) -> bool {
@@ -230,6 +403,7 @@ impl App {
         let target_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         feature
             .sessions

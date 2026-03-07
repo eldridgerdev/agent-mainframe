@@ -29,6 +29,25 @@ impl App {
             return Ok(());
         }
 
+        self.reload_extension_config();
+
+        let session_names: Vec<(usize, String)> = self
+            .active_extension
+            .custom_sessions
+            .iter()
+            .enumerate()
+            .map(|(i, cs)| (i, cs.name.clone()))
+            .collect();
+        let sessions_count = session_names.len();
+
+        self.log_debug(
+            "session_picker",
+            format!("Active custom sessions count: {}", sessions_count),
+        );
+        for (i, name) in session_names {
+            self.log_debug("session_picker", format!("  [{}] {}", i, name));
+        }
+
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
@@ -41,10 +60,15 @@ impl App {
 
         let builtin_sessions = vec![
             BuiltinSessionOption {
-                kind: SessionKind::Claude,
+                kind: match agent {
+                    AgentKind::Claude => SessionKind::Claude,
+                    AgentKind::Opencode => SessionKind::Opencode,
+                    AgentKind::Codex => SessionKind::Codex,
+                },
                 label: match agent {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
+                    AgentKind::Codex => "Codex".to_string(),
                 },
                 disabled: None,
             },
@@ -123,6 +147,8 @@ impl App {
             None => return Ok(()),
         };
 
+        self.reload_extension_config();
+
         let feature = self.store.projects[pi].features[fi].clone();
         let agent = feature.agent.clone();
 
@@ -135,10 +161,15 @@ impl App {
 
         let builtin_sessions = vec![
             BuiltinSessionOption {
-                kind: SessionKind::Claude,
+                kind: match agent {
+                    AgentKind::Claude => SessionKind::Claude,
+                    AgentKind::Opencode => SessionKind::Opencode,
+                    AgentKind::Codex => SessionKind::Codex,
+                },
                 label: match agent {
                     AgentKind::Claude => "Claude".to_string(),
                     AgentKind::Opencode => "Opencode (Claude)".to_string(),
+                    AgentKind::Codex => "Codex".to_string(),
                 },
                 disabled: None,
             },
@@ -253,7 +284,9 @@ impl App {
         match kind {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi),
             SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi),
-            SessionKind::Claude => self.add_claude_session_for_picker(pi, fi),
+            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex => {
+                self.add_claude_session_for_picker(pi, fi)
+            }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => {
                 self.message = Some("Unsupported session type".into());
@@ -391,11 +424,18 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
+        ensure_notification_hooks(
+            &workdir,
+            &repo,
+            &mode,
+            &agent,
+            feature.is_worktree,
+        );
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         let session = feature.add_session(session_kind);
         let window = session.tmux_window.clone();
@@ -409,6 +449,9 @@ impl App {
             }
             AgentKind::Opencode => {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
+            }
+            AgentKind::Codex => {
+                TmuxManager::launch_codex(&tmux_session, &window)?;
             }
         }
 
@@ -503,11 +546,18 @@ impl App {
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         let agent = feature.agent.clone();
-        ensure_notification_hooks(&workdir, &repo, &mode, &agent);
+        ensure_notification_hooks(
+            &workdir,
+            &repo,
+            &mode,
+            &agent,
+            feature.is_worktree,
+        );
         ensure_review_claude_md(&workdir, feature.review);
         let session_kind = match feature.agent {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
         };
         let session = feature.add_session(session_kind);
         let window = session.tmux_window.clone();
@@ -521,6 +571,9 @@ impl App {
             }
             AgentKind::Opencode => {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
+            }
+            AgentKind::Codex => {
+                TmuxManager::launch_codex(&tmux_session, &window)?;
             }
         }
 

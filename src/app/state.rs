@@ -118,6 +118,8 @@ pub struct PendingInput {
     pub project_name: Option<String>,
     pub feature_name: Option<String>,
     pub proceed_signal: Option<String>,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
 }
 
 pub enum RenameReturnTo {
@@ -267,6 +269,8 @@ pub struct ChangeReasonState {
     pub reason: String,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
 }
 
 pub enum HookNext {
@@ -594,6 +598,7 @@ pub enum SessionFilter {
     All,
     Claude,
     Opencode,
+    Codex,
     Terminal,
     Nvim,
     Vscode,
@@ -601,10 +606,11 @@ pub enum SessionFilter {
 }
 
 impl SessionFilter {
-    pub const ALL: [SessionFilter; 7] = [
+    pub const ALL: [SessionFilter; 8] = [
         SessionFilter::All,
         SessionFilter::Claude,
         SessionFilter::Opencode,
+        SessionFilter::Codex,
         SessionFilter::Terminal,
         SessionFilter::Nvim,
         SessionFilter::Vscode,
@@ -616,6 +622,7 @@ impl SessionFilter {
             SessionFilter::All => "all",
             SessionFilter::Claude => "claude",
             SessionFilter::Opencode => "opencode",
+            SessionFilter::Codex => "codex",
             SessionFilter::Terminal => "terminal",
             SessionFilter::Nvim => "nvim",
             SessionFilter::Vscode => "vscode",
@@ -678,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn session_filter_all_has_seven_variants() {
-        assert_eq!(SessionFilter::ALL.len(), 7);
+    fn session_filter_all_has_eight_variants() {
+        assert_eq!(SessionFilter::ALL.len(), 8);
     }
 }

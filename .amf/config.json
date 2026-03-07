@@ -1,0 +1,131 @@
+{
+  "custom_sessions": [
+    {
+      "name": "Test Session",
+      "description": "A test custom session for testing purposes",
+      "command": "echo 'Hello from custom session!' && sleep 5",
+      "window_name": "test",
+      "working_dir": null,
+      "icon": "T",
+      "icon_nerd": "🧪",
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Logs Tail",
+      "description": "Tail local debug log output",
+      "command": "tail -f ~/.local/state/amf/debug.log",
+      "window_name": "logs",
+      "working_dir": null,
+      "icon": "L",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Git Status",
+      "description": "Watch short git status in a loop",
+      "command": "while true; do clear; git status -sb; sleep 2; done",
+      "window_name": "git-status",
+      "working_dir": null,
+      "icon": "G",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Cargo Check",
+      "description": "Run cargo check repeatedly while editing",
+      "command": "while true; do cargo check; sleep 5; done",
+      "window_name": "cargo-check",
+      "working_dir": null,
+      "icon": "C",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Ripgrep TODO",
+      "description": "Scan for TODO/FIXME markers",
+      "command": "while true; do clear; rg -n \"TODO|FIXME\" src || true; sleep 3; done",
+      "window_name": "todo-scan",
+      "working_dir": null,
+      "icon": "R",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Top",
+      "description": "Open top for quick system view",
+      "command": "top",
+      "window_name": "top",
+      "working_dir": null,
+      "icon": "P",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Disk Usage",
+      "description": "Watch largest directories in repo",
+      "command": "while true; do clear; du -sh ./* | sort -h | tail -n 15; sleep 5; done",
+      "window_name": "disk-usage",
+      "working_dir": null,
+      "icon": "D",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Env Peek",
+      "description": "Show a filtered set of environment variables",
+      "command": "env | sort | rg -n \"^(HOME|PATH|SHELL|TERM)=\"",
+      "window_name": "env",
+      "working_dir": null,
+      "icon": "E",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Date Ticker",
+      "description": "Show current date and time every second",
+      "command": "while true; do date; sleep 1; done",
+      "window_name": "clock",
+      "working_dir": null,
+      "icon": "K",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
+      "name": "Sleep Session",
+      "description": "Idle shell to test many session entries",
+      "command": "sleep 3600",
+      "window_name": "sleep",
+      "working_dir": null,
+      "icon": "S",
+      "icon_nerd": null,
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    }
+  ],
+  "lifecycle_hooks": {
+    "on_start": null,
+    "on_stop": null,
+    "on_worktree_created": null
+  },
+  "keybindings": {},
+  "feature_presets": []
+}

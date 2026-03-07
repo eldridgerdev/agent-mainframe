@@ -31,19 +31,12 @@ impl App {
             if !req.is_empty() && !sock.is_empty() {
                 let mut body = payload;
                 if let Some(obj) = body.as_object_mut() {
-                    obj.insert(
-                        "request_id".to_string(),
-                        serde_json::json!(req),
-                    );
+                    obj.insert("request_id".to_string(), serde_json::json!(req));
                 }
-                let serialized = serde_json::to_string(&body)
-                    .unwrap_or_else(|_| "{}".to_string());
+                let serialized = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
                 match crate::ipc::send(Path::new(sock), &serialized) {
                     Ok(_) => {
-                        self.log_debug(
-                            "ipc",
-                            format!("Replied over IPC to request {req}"),
-                        );
+                        self.log_debug("ipc", format!("Replied over IPC to request {req}"));
                         return;
                     }
                     Err(e) => {
@@ -106,31 +99,22 @@ impl App {
         if messages.is_empty() {
             return;
         }
-        self.log_debug(
-            "ipc",
-            format!("Draining {} message(s)", messages.len()),
-        );
+        self.log_debug("ipc", format!("Draining {} message(s)", messages.len()));
 
         for raw in messages {
-            let msg: IpcMsg =
-                match serde_json::from_value(raw) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
+            let msg: IpcMsg = match serde_json::from_value(raw) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
 
-            let msg_type = msg
-                .msg_type
-                .as_deref()
-                .unwrap_or("stop")
-                .to_string();
+            let msg_type = msg.msg_type.as_deref().unwrap_or("stop").to_string();
 
             // "clear" removes any pending notification for this
             // session, sent by clear-notify.sh on PreToolUse.
             if msg_type == "clear" {
                 if let Some(ref sid) = msg.session_id {
                     let before = self.pending_inputs.len();
-                    self.pending_inputs
-                        .retain(|i| &i.session_id != sid);
+                    self.pending_inputs.retain(|i| &i.session_id != sid);
                     let removed = before - self.pending_inputs.len();
                     if removed > 0 {
                         self.log_debug(
@@ -149,10 +133,7 @@ impl App {
                 if let Some(sid) = msg.session_id {
                     self.ipc_thinking_sessions.insert(sid.clone());
                     self.touch_feature_for_session(&sid);
-                    self.log_debug(
-                        "ipc",
-                        format!("thinking-start for {sid}"),
-                    );
+                    self.log_debug("ipc", format!("thinking-start for {sid}"));
                 }
                 continue;
             }
@@ -160,10 +141,7 @@ impl App {
             if msg_type == "thinking-stop" {
                 if let Some(sid) = msg.session_id {
                     self.ipc_thinking_sessions.remove(&sid);
-                    self.log_debug(
-                        "ipc",
-                        format!("thinking-stop for {sid}"),
-                    );
+                    self.log_debug("ipc", format!("thinking-stop for {sid}"));
                 }
                 continue;
             }
@@ -177,12 +155,7 @@ impl App {
                         .clone()
                         .or(msg.tool.clone())
                         .unwrap_or_default();
-                    self.log_debug(
-                        "ipc",
-                        format!(
-                            "tool-start for {sid} ({label})"
-                        ),
-                    );
+                    self.log_debug("ipc", format!("tool-start for {sid} ({label})"));
                 }
                 continue;
             }
@@ -190,10 +163,7 @@ impl App {
             if msg_type == "tool-stop" {
                 if let Some(sid) = msg.session_id {
                     self.ipc_tool_sessions.remove(&sid);
-                    self.log_debug(
-                        "ipc",
-                        format!("tool-stop for {sid}"),
-                    );
+                    self.log_debug("ipc", format!("tool-stop for {sid}"));
                 }
                 continue;
             }
@@ -212,22 +182,14 @@ impl App {
                         let _ = std::fs::create_dir_all(parent);
                     }
                     let _ = std::fs::write(&p, prompt);
-                    self.log_debug(
-                        "ipc",
-                        format!(
-                            "prompt-submit persisted at {}",
-                            p.display()
-                        ),
-                    );
+                    self.log_debug("ipc", format!("prompt-submit persisted at {}", p.display()));
                 }
                 continue;
             }
 
-            let session_id =
-                msg.session_id.unwrap_or_default();
+            let session_id = msg.session_id.unwrap_or_default();
             let cwd = msg.cwd.unwrap_or_default();
-            let notification_type =
-                msg.notification_type.unwrap_or(msg_type);
+            let notification_type = msg.notification_type.unwrap_or(msg_type);
 
             let cwd_path = PathBuf::from(&cwd);
 
@@ -239,59 +201,31 @@ impl App {
                 for project in &self.store.projects {
                     for feature in &project.features {
                         if cwd_path.starts_with(&feature.workdir)
-                            || feature
-                                .workdir
-                                .starts_with(&cwd_path)
+                            || feature.workdir.starts_with(&cwd_path)
                         {
-                            found_feature_name =
-                                Some(feature.name.clone());
+                            found_feature_name = Some(feature.name.clone());
                         }
                     }
                 }
 
-                if found_feature_name.as_deref()
-                    == Some(&view.feature_name)
-                {
-                    let response_file =
-                        msg.response_file.unwrap_or_default();
-                    let proceed_signal =
-                        msg.proceed_signal.unwrap_or_default();
+                if found_feature_name.as_deref() == Some(&view.feature_name) {
+                    let response_file = msg.response_file.unwrap_or_default();
+                    let proceed_signal = msg.proceed_signal.unwrap_or_default();
 
-                    self.mode =
-                        AppMode::ChangeReasonPrompt(
-                            ChangeReasonState {
-                                session_id,
-                                file_path: msg
-                                    .file_path
-                                    .unwrap_or_default(),
-                                relative_path: msg
-                                    .relative_path
-                                    .unwrap_or_default(),
-                                change_id: msg
-                                    .change_id
-                                    .unwrap_or_default(),
-                                tool: msg
-                                    .tool
-                                    .unwrap_or_default(),
-                                old_snippet: msg
-                                    .old_snippet
-                                    .unwrap_or_default(),
-                                new_snippet: msg
-                                    .new_snippet
-                                    .unwrap_or_default(),
-                                reason: msg
-                                    .reason
-                                    .unwrap_or_default(),
-                                response_file: PathBuf::from(
-                                    response_file,
-                                ),
-                                proceed_signal: PathBuf::from(
-                                    proceed_signal,
-                                ),
-                                request_id: msg.request_id.clone(),
-                                reply_socket: msg.reply_socket.clone(),
-                            },
-                        );
+                    self.mode = AppMode::ChangeReasonPrompt(ChangeReasonState {
+                        session_id,
+                        file_path: msg.file_path.unwrap_or_default(),
+                        relative_path: msg.relative_path.unwrap_or_default(),
+                        change_id: msg.change_id.unwrap_or_default(),
+                        tool: msg.tool.unwrap_or_default(),
+                        old_snippet: msg.old_snippet.unwrap_or_default(),
+                        new_snippet: msg.new_snippet.unwrap_or_default(),
+                        reason: msg.reason.unwrap_or_default(),
+                        response_file: PathBuf::from(response_file),
+                        proceed_signal: PathBuf::from(proceed_signal),
+                        request_id: msg.request_id.clone(),
+                        reply_socket: msg.reply_socket.clone(),
+                    });
                     return;
                 }
             }
@@ -303,21 +237,14 @@ impl App {
             let mut best_len: usize = 0;
             for project in &self.store.projects {
                 for feature in &project.features {
-                    let wlen =
-                        feature.workdir.as_os_str().len();
+                    let wlen = feature.workdir.as_os_str().len();
                     if (cwd_path.starts_with(&feature.workdir)
-                        || feature
-                            .workdir
-                            .starts_with(&cwd_path))
+                        || feature.workdir.starts_with(&cwd_path))
                         && wlen > best_len
                     {
-                        project_name =
-                            Some(project.name.clone());
-                        feature_name =
-                            Some(feature.name.clone());
-                        agent_name = Some(
-                            feature.agent.display_name().to_string(),
-                        );
+                        project_name = Some(project.name.clone());
+                        feature_name = Some(feature.name.clone());
+                        agent_name = Some(feature.agent.display_name().to_string());
                         best_len = wlen;
                     }
                 }
@@ -329,9 +256,7 @@ impl App {
             if notification_type == "diff-review"
                 && let AppMode::Viewing(ref view) = self.mode
             {
-                if feature_name.as_deref()
-                    == Some(&view.feature_name)
-                {
+                if feature_name.as_deref() == Some(&view.feature_name) {
                     self.respond_to_notification(
                         msg.request_id.as_deref(),
                         msg.reply_socket.as_deref(),
@@ -400,58 +325,37 @@ impl App {
 
         for project in &self.store.projects {
             for feature in &project.features {
-                let notify_dir = feature
-                    .workdir
-                    .join(".claude")
-                    .join("notifications");
+                let notify_dir = feature.workdir.join(".claude").join("notifications");
 
-                let entries =
-                    match std::fs::read_dir(&notify_dir) {
-                        Ok(e) => e,
-                        Err(_) => continue,
-                    };
+                let entries = match std::fs::read_dir(&notify_dir) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
 
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        != Some("json")
-                    {
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
                         continue;
                     }
 
-                    let data =
-                        match std::fs::read_to_string(&path)
-                        {
-                            Ok(d) => d,
-                            Err(_) => continue,
-                        };
+                    let data = match std::fs::read_to_string(&path) {
+                        Ok(d) => d,
+                        Err(_) => continue,
+                    };
 
-                    let notif: NotificationJson =
-                        match serde_json::from_str(&data) {
-                            Ok(n) => n,
-                            Err(_) => continue,
-                        };
+                    let notif: NotificationJson = match serde_json::from_str(&data) {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
 
                     inputs.push(PendingInput {
-                        session_id: notif
-                            .session_id
-                            .unwrap_or_default(),
+                        session_id: notif.session_id.unwrap_or_default(),
                         cwd: notif.cwd.unwrap_or_default(),
-                        message: notif
-                            .message
-                            .unwrap_or_default(),
-                        notification_type: notif
-                            .notification_type
-                            .unwrap_or_default(),
+                        message: notif.message.unwrap_or_default(),
+                        notification_type: notif.notification_type.unwrap_or_default(),
                         file_path: path,
-                        project_name: Some(
-                            project.name.clone(),
-                        ),
-                        feature_name: Some(
-                            feature.name.clone(),
-                        ),
+                        project_name: Some(project.name.clone()),
+                        feature_name: Some(feature.name.clone()),
                         proceed_signal: notif.proceed_signal,
                         request_id: notif.request_id,
                         reply_socket: notif.reply_socket,
@@ -460,15 +364,12 @@ impl App {
             }
         }
 
-        let global_notify_dir = crate::project::amf_config_dir()
-            .join("notifications");
+        let global_notify_dir = crate::project::amf_config_dir().join("notifications");
 
         if let Ok(entries) = std::fs::read_dir(&global_notify_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str())
-                    != Some("json")
-                {
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
 
@@ -477,17 +378,14 @@ impl App {
                     Err(_) => continue,
                 };
 
-                let notif: NotificationJson =
-                    match serde_json::from_str(&data) {
-                        Ok(n) => n,
-                        Err(_) => continue,
-                    };
+                let notif: NotificationJson = match serde_json::from_str(&data) {
+                    Ok(n) => n,
+                    Err(_) => continue,
+                };
 
-                let session_id =
-                    notif.session_id.unwrap_or_default();
+                let session_id = notif.session_id.unwrap_or_default();
                 let cwd = notif.cwd.unwrap_or_default();
-                let notification_type =
-                    notif.notification_type.unwrap_or_default();
+                let notification_type = notif.notification_type.unwrap_or_default();
                 let proceed_signal_val = notif.proceed_signal.clone();
 
                 if notification_type == "change-reason"
@@ -506,38 +404,23 @@ impl App {
                     }
 
                     if found_feature_name.as_deref() == Some(&view.feature_name) {
-                        let response_file = notif
-                            .response_file
-                            .unwrap_or_default();
-                        let proceed_signal_path = proceed_signal_val
-                            .unwrap_or_default();
+                        let response_file = notif.response_file.unwrap_or_default();
+                        let proceed_signal_path = proceed_signal_val.unwrap_or_default();
 
-                        self.mode = AppMode::ChangeReasonPrompt(
-                            ChangeReasonState {
-                                session_id,
-                                file_path: notif
-                                    .file_path
-                                    .unwrap_or_default(),
-                                relative_path: notif
-                                    .relative_path
-                                    .unwrap_or_default(),
-                                change_id: notif
-                                    .change_id
-                                    .unwrap_or_default(),
-                                tool: notif.tool.unwrap_or_default(),
-                                old_snippet: notif
-                                    .old_snippet
-                                    .unwrap_or_default(),
-                                new_snippet: notif
-                                    .new_snippet
-                                    .unwrap_or_default(),
-                                reason: notif.reason.unwrap_or_default(),
-                                response_file: PathBuf::from(response_file),
-                                proceed_signal: PathBuf::from(proceed_signal_path),
-                                request_id: notif.request_id.clone(),
-                                reply_socket: notif.reply_socket.clone(),
-                            },
-                        );
+                        self.mode = AppMode::ChangeReasonPrompt(ChangeReasonState {
+                            session_id,
+                            file_path: notif.file_path.unwrap_or_default(),
+                            relative_path: notif.relative_path.unwrap_or_default(),
+                            change_id: notif.change_id.unwrap_or_default(),
+                            tool: notif.tool.unwrap_or_default(),
+                            old_snippet: notif.old_snippet.unwrap_or_default(),
+                            new_snippet: notif.new_snippet.unwrap_or_default(),
+                            reason: notif.reason.unwrap_or_default(),
+                            response_file: PathBuf::from(response_file),
+                            proceed_signal: PathBuf::from(proceed_signal_path),
+                            request_id: notif.request_id.clone(),
+                            reply_socket: notif.reply_socket.clone(),
+                        });
                         let _ = std::fs::remove_file(&path);
                         return;
                     }
@@ -549,21 +432,13 @@ impl App {
                 let cwd_path = PathBuf::from(&cwd);
                 for project in &self.store.projects {
                     for feature in &project.features {
-                        let wlen = feature
-                            .workdir
-                            .as_os_str()
-                            .len();
-                        if (cwd_path
-                            .starts_with(&feature.workdir)
-                            || feature
-                                .workdir
-                                .starts_with(&cwd_path))
+                        let wlen = feature.workdir.as_os_str().len();
+                        if (cwd_path.starts_with(&feature.workdir)
+                            || feature.workdir.starts_with(&cwd_path))
                             && wlen > best_len
                         {
-                            project_name =
-                                Some(project.name.clone());
-                            feature_name =
-                                Some(feature.name.clone());
+                            project_name = Some(project.name.clone());
+                            feature_name = Some(feature.name.clone());
                             best_len = wlen;
                         }
                     }
@@ -590,8 +465,7 @@ impl App {
             if existing.file_path.as_os_str().is_empty()
                 && !inputs.iter().any(|i| {
                     i.session_id == existing.session_id
-                        && i.notification_type
-                            == existing.notification_type
+                        && i.notification_type == existing.notification_type
                         && i.request_id == existing.request_id
                 })
             {
@@ -608,10 +482,7 @@ impl App {
         if file_count != self.last_file_notification_count {
             self.log_info(
                 "ipc",
-                format!(
-                    "File-notification fallback pending count: {}",
-                    file_count
-                ),
+                format!("File-notification fallback pending count: {}", file_count),
             );
             self.last_file_notification_count = file_count;
         }
@@ -623,8 +494,7 @@ impl App {
                 .iter()
                 .filter(|input| {
                     input.notification_type == "diff-review"
-                        && input.feature_name.as_deref()
-                            == Some(&feat_name)
+                        && input.feature_name.as_deref() == Some(&feat_name)
                 })
                 .map(|input| {
                     (
@@ -647,15 +517,12 @@ impl App {
             }
             self.pending_inputs.retain(|input| {
                 !(input.notification_type == "diff-review"
-                    && input.feature_name.as_deref()
-                        == Some(&feat_name))
+                    && input.feature_name.as_deref() == Some(&feat_name))
             });
         }
     }
 
-    pub fn handle_notification_select(
-        &mut self,
-    ) -> Result<()> {
+    pub fn handle_notification_select(&mut self) -> Result<()> {
         let idx = match &self.mode {
             AppMode::NotificationPicker(i, _) => *i,
             _ => return Ok(()),
@@ -669,15 +536,11 @@ impl App {
             }
         };
 
-        if input.notification_type != "diff-review"
-            && input.notification_type != "input-request"
-        {
+        if input.notification_type != "diff-review" && input.notification_type != "input-request" {
             let _ = std::fs::remove_file(&input.file_path);
         }
 
-        if let (Some(proj_name), Some(feat_name)) =
-            (&input.project_name, &input.feature_name)
-        {
+        if let (Some(proj_name), Some(feat_name)) = (&input.project_name, &input.feature_name) {
             let pi = self
                 .store
                 .projects
@@ -689,8 +552,7 @@ impl App {
                     .iter()
                     .position(|f| &f.name == feat_name);
                 if let Some(fi) = fi {
-                    if input.notification_type == "diff-review"
-                    {
+                    if input.notification_type == "diff-review" {
                         self.respond_to_notification(
                             input.request_id.as_deref(),
                             input.reply_socket.as_deref(),
@@ -701,8 +563,7 @@ impl App {
                             }),
                         );
                     }
-                    self.selection =
-                        Selection::Feature(pi, fi);
+                    self.selection = Selection::Feature(pi, fi);
                     self.pending_inputs.remove(idx);
                     return self.enter_view();
                 }
@@ -712,10 +573,7 @@ impl App {
         self.pending_inputs.remove(idx);
         let _ = std::fs::remove_file(&input.file_path);
         self.mode = AppMode::Normal;
-        self.message = Some(
-            "Notification cleared (no matching feature)"
-                .into(),
-        );
+        self.message = Some("Notification cleared (no matching feature)".into());
         Ok(())
     }
 }

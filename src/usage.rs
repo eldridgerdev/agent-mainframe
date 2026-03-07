@@ -248,8 +248,7 @@ impl UsageManager {
     }
 
     pub fn should_cycle(&self) -> bool {
-        self.zai_enabled
-            && self.last_cycle.elapsed().as_secs() >= self.cycle_interval_secs
+        self.zai_enabled && self.last_cycle.elapsed().as_secs() >= self.cycle_interval_secs
     }
 
     pub fn refresh(&mut self) {

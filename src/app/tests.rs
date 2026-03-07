@@ -1,6 +1,7 @@
 use super::setup::{ensure_notification_hooks, strip_between_markers};
 use super::util::{shorten_path, slugify};
 use super::*;
+use crate::extension::ExtensionConfig;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -196,6 +197,44 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
     }
 }
 
+fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: repo.clone(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        status,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo,
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+    }
+}
+
 // ── sync_statuses ─────────────────────────────────────────────
 
 #[test]
@@ -339,6 +378,149 @@ fn create_feature_second_non_worktree_sets_error() {
     assert!(msg.contains("Only one non-worktree"), "got: {msg}");
 }
 
+#[test]
+fn create_feature_disallowed_agent_sets_error() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", false);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.agent = AgentKind::Opencode;
+        state.agent_index = 1;
+    }
+
+    app.create_feature().unwrap();
+
+    let msg = app.message.as_deref().unwrap_or("");
+    assert!(msg.contains("not allowed"), "got: {msg}");
+}
+
+#[test]
+fn start_create_feature_defaults_to_first_allowed_agent() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Codex]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Project(0);
+
+    app.start_create_feature();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.agent, AgentKind::Codex);
+            assert_eq!(state.agent_index, 0);
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn reload_extension_config_uses_project_repo_for_worktree_feature() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let workdir = repo.path().join(".worktrees").join("feature-a");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir,
+        is_worktree: true,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        status: ProjectStatus::Stopped,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.reload_extension_config();
+
+    assert_eq!(
+        app.active_extension.allowed_agents(),
+        vec![AgentKind::Claude]
+    );
+}
+
 // ── stop_feature ──────────────────────────────────────────────
 
 #[test]
@@ -407,8 +589,7 @@ fn stop_hook_has_thinking_stop_and_notify() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-stop.sh")),
+        cmds.iter().any(|c| c.contains("thinking-stop.sh")),
         "Stop hook missing thinking-stop.sh; got: {cmds:?}"
     );
     assert!(
@@ -424,13 +605,11 @@ fn pre_tool_use_hook_has_thinking_tool_and_clear() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-start.sh")),
+        cmds.iter().any(|c| c.contains("thinking-start.sh")),
         "PreToolUse missing thinking-start.sh; got: {cmds:?}"
     );
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("tool-start.sh")),
+        cmds.iter().any(|c| c.contains("tool-start.sh")),
         "PreToolUse missing tool-start.sh; got: {cmds:?}"
     );
     assert!(

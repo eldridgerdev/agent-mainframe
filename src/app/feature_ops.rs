@@ -27,12 +27,14 @@ impl App {
             .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
-        self.mode = AppMode::CreatingFeature(CreateFeatureState::new(
-            project_name,
-            project_repo,
-            worktrees,
-            is_first,
-        ));
+        let mut state =
+            CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
+        self.active_extension = self.extension_for_repo(&project_repo);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+
+        self.mode = AppMode::CreatingFeature(state);
         self.message = None;
     }
 
@@ -59,6 +61,14 @@ impl App {
 
         if branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &state.agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                state.agent.display_name()
+            ));
             return Ok(());
         }
 
@@ -785,10 +795,8 @@ impl App {
             None => return,
         };
 
-        let agent_index = AgentKind::ALL
-            .iter()
-            .position(|a| *a == feature.agent)
-            .unwrap_or(0);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &feature.agent);
+        self.active_extension = self.extension_for_repo(&project_repo);
 
         let state = ForkFeatureState {
             source_pi: pi,
@@ -798,7 +806,7 @@ impl App {
             source_branch: feature.branch.clone(),
             new_branch: format!("{}-fork", feature.branch),
             step: ForkFeatureStep::Branch,
-            agent: feature.agent.clone(),
+            agent,
             agent_index,
             mode: feature.mode.clone(),
             review: feature.review,
@@ -836,6 +844,14 @@ impl App {
 
         if new_branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                agent.display_name()
+            ));
             return Ok(());
         }
 
@@ -1075,6 +1091,14 @@ impl App {
 
         if !is_git {
             self.message = Some("Error: Batch features require a git repository".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                agent.display_name()
+            ));
             return Ok(());
         }
 

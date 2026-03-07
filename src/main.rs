@@ -92,8 +92,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command
-    {
+    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command {
         use std::io::Read;
         let mut payload = String::new();
         std::io::stdin().read_to_string(&mut payload)?;
@@ -102,15 +101,10 @@ fn main() -> Result<()> {
             return Ok(());
         }
         let socket = ipc::socket_path();
-        let reply = ipc::send_wait(
-            &socket,
-            payload,
-            Duration::from_millis(timeout_ms),
-        )?;
+        let reply = ipc::send_wait(&socket, payload, Duration::from_millis(timeout_ms))?;
         println!(
             "{}",
-            serde_json::to_string(&reply)
-                .unwrap_or_else(|_| "{}".to_string())
+            serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())
         );
         return Ok(());
     }
@@ -126,25 +120,17 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
-    let refreshed =
-        app::setup::refresh_opencode_plugins_for_store(
-            &app.store,
-        );
+    let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
     app.log_info(
         "setup",
-        format!(
-            "Refreshed opencode plugins for {refreshed} feature(s)"
-        ),
+        format!("Refreshed opencode plugins for {refreshed} feature(s)"),
     );
 
     // Start IPC socket server for push-based hook notifications.
     let socket = ipc::socket_path();
     match ipc::start(&socket) {
         Ok(guard) => {
-            app.log_info(
-                "ipc",
-                format!("Socket listening at {}", socket.display()),
-            );
+            app.log_info("ipc", format!("Socket listening at {}", socket.display()));
             app.ipc = Some(guard);
         }
         Err(e) => {

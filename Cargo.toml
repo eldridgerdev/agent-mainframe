@@ -23,6 +23,7 @@ ratatui-explorer = "0.2"
 ureq = "3"
 unicode-width = "0.1"
 regex = "1"
+toml = "0.8"
 
 [dev-dependencies]
 mockall = "0.13"

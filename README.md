@@ -4,7 +4,8 @@ Run many AI coding agents in parallel — each on its own branch,
 each in its own terminal — without losing track of any of them.
 
 `amf` is a terminal dashboard for managing concurrent
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+[Codex](https://github.com/openai/codex), and
 [Opencode](https://opencode.ai) agent sessions. Each feature gets its
 own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
@@ -622,7 +623,7 @@ src/
 ├── tmux.rs            # TmuxManager — all tmux interaction
 ├── worktree.rs        # WorktreeManager — git worktree ops
 ├── claude.rs          # ClaudeLauncher — claude CLI wrapper
-├── usage.rs           # token usage tracking (Claude / ZAI)
+├── usage.rs           # token usage tracking (Claude / Codex / ZAI)
 ├── traits.rs          # shared traits (TmuxOps, WorktreeOps)
 ├── handlers/
 │   ├── mod.rs         # top-level key dispatch

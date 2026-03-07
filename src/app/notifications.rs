@@ -75,6 +75,7 @@ impl App {
         struct IpcMsg {
             #[serde(rename = "type")]
             msg_type: Option<String>,
+            source: Option<String>,
             session_id: Option<String>,
             cwd: Option<String>,
             message: Option<String>,
@@ -226,6 +227,7 @@ impl App {
             let session_id =
                 msg.session_id.unwrap_or_default();
             let cwd = msg.cwd.unwrap_or_default();
+            let source = msg.source.unwrap_or_default();
             let notification_type =
                 msg.notification_type.unwrap_or(msg_type);
 
@@ -354,11 +356,20 @@ impl App {
             self.log_debug(
                 "ipc",
                 format!(
-                    "Received '{notification_type}' for session {session_id} (agent={}, feature={})",
+                    "Received '{notification_type}' (source={}) for session {session_id} (agent={}, feature={})",
+                    if source.is_empty() { "unknown" } else { &source },
                     agent_name.unwrap_or_else(|| "unknown".to_string()),
                     feature_name.clone().unwrap_or_else(|| "unknown".to_string())
                 ),
             );
+            if source == "codex-notify" {
+                self.log_info(
+                    "ipc",
+                    format!(
+                        "Codex notify hook delivered input-request over IPC (session={session_id})"
+                    ),
+                );
+            }
             self.pending_inputs.push(PendingInput {
                 session_id,
                 cwd,

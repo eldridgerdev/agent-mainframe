@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::{
@@ -538,7 +538,7 @@ pub fn draw_opencode_session_confirm(frame: &mut Frame) {
 }
 
 pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_font: bool) {
-    let area = centered_rect(55, 50, frame.area());
+    let area = centered_rect(55, 60, frame.area());
     frame.render_widget(Clear, area);
 
     let total = state.builtin_sessions.len() + state.custom_sessions.len();
@@ -566,6 +566,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
         .split(inner);
 
     let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_item_idx: Option<usize> = None;
 
     if !state.builtin_sessions.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
@@ -639,6 +640,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
             let line = Line::from(spans);
 
             if is_selected && !is_disabled {
+                selected_item_idx = Some(items.len());
                 items.push(ListItem::new(line).style(Style::default().bg(Color::DarkGray)));
             } else {
                 items.push(ListItem::new(line));
@@ -711,6 +713,7 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
 
             let item = ListItem::new(lines);
             if is_selected {
+                selected_item_idx = Some(items.len());
                 items.push(item.style(Style::default().bg(Color::DarkGray)));
             } else {
                 items.push(item);
@@ -719,7 +722,9 @@ pub fn draw_session_picker(frame: &mut Frame, state: &SessionPickerState, nerd_f
     }
 
     let list = List::new(items);
-    frame.render_widget(list, chunks[0]);
+    let mut list_state = ListState::default();
+    list_state.select(selected_item_idx);
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(

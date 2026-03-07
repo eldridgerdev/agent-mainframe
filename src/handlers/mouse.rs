@@ -3,17 +3,19 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
 use crate::app::{App, AppMode, Selection, VisibleItem};
+use crate::tmux::TmuxManager;
 
 static mut LAST_CLICK_TIME: Option<Instant> = None;
 static mut LAST_CLICK_ROW: Option<u16> = None;
+const VIEW_MOUSE_SCROLL_LINES: usize = 3;
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            handle_scroll_up(app);
+            handle_scroll_up(app, visible_rows);
         }
         MouseEventKind::ScrollDown => {
-            handle_scroll_down(app);
+            handle_scroll_down(app, visible_rows);
         }
         MouseEventKind::Down(button) => {
             handle_click(app, mouse.column, mouse.row, button, visible_rows)?;
@@ -29,18 +31,58 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
     Ok(())
 }
 
-fn handle_scroll_up(app: &mut App) {
+fn handle_scroll_up(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::Viewing(_)) {
+        handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
     }
     app.select_prev();
 }
 
-fn handle_scroll_down(app: &mut App) {
+fn handle_scroll_down(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::Viewing(_)) {
+        handle_view_scroll(app, ScrollDirection::Down, visible_rows);
         return;
     }
     app.select_next();
+}
+
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+fn handle_view_scroll(app: &mut App, direction: ScrollDirection, visible_rows: u16) {
+    let needs_scroll_mode = matches!(&app.mode, AppMode::Viewing(view) if !view.scroll_mode);
+    if needs_scroll_mode {
+        app.deactivate_leader();
+        app.toggle_scroll_mode(visible_rows);
+    }
+
+    let (session, window, passthrough) = match &app.mode {
+        AppMode::Viewing(view) if view.scroll_mode => (
+            view.session.clone(),
+            view.window.clone(),
+            view.scroll_passthrough,
+        ),
+        _ => return,
+    };
+
+    if passthrough {
+        let key_name = match direction {
+            ScrollDirection::Up => "PPage",
+            ScrollDirection::Down => "NPage",
+        };
+        if let Err(err) = TmuxManager::send_key_name(&session, &window, key_name) {
+            app.show_error(err);
+        }
+        return;
+    }
+
+    match direction {
+        ScrollDirection::Up => app.scroll_up(VIEW_MOUSE_SCROLL_LINES),
+        ScrollDirection::Down => app.scroll_down(VIEW_MOUSE_SCROLL_LINES, visible_rows),
+    }
 }
 
 fn handle_click(

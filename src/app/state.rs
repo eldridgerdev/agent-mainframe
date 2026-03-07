@@ -142,6 +142,16 @@ pub struct RenameFeatureState {
     pub input: String,
 }
 
+pub struct SessionConfigState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub project_name: String,
+    pub feature_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
@@ -189,6 +199,7 @@ pub enum AppMode {
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
     RenamingFeature(RenameFeatureState),
+    SessionConfig(SessionConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
@@ -345,6 +356,8 @@ pub struct DeletingFeatureState {
     pub workdir: PathBuf,
     pub stage: DeleteStage,
     pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub error: Option<String>,
 }
 
@@ -363,6 +376,8 @@ pub struct BackgroundDeletion {
     pub workdir: PathBuf,
     pub stage: DeleteStage,
     pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub error: Option<String>,
 }
 
@@ -381,6 +396,8 @@ impl BackgroundDeletion {
             workdir: state.workdir,
             stage: state.stage,
             child: state.child,
+            output: state.output,
+            output_rx: state.output_rx,
             error: state.error,
         }
     }

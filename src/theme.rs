@@ -59,9 +59,7 @@ impl std::str::FromStr for ThemeName {
             "nord" => Ok(ThemeName::Nord),
             "catppuccin-latte" | "catppuccin_latte" => Ok(ThemeName::CatppuccinLatte),
             "catppuccin-frappe" | "catppuccin_frappe" => Ok(ThemeName::CatppuccinFrappe),
-            "catppuccin-macchiato" | "catppuccin_macchiato" => {
-                Ok(ThemeName::CatppuccinMacchiato)
-            }
+            "catppuccin-macchiato" | "catppuccin_macchiato" => Ok(ThemeName::CatppuccinMacchiato),
             "catppuccin-mocha" | "catppuccin_mocha" => Ok(ThemeName::CatppuccinMocha),
             _ => Err(format!("Unknown theme: {}", s)),
         }

@@ -45,6 +45,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
+        ("u", "Update worktree session config"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
         ("y", "Toggle mark feature as ready"),
@@ -150,7 +151,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Bookmark picker popup", Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            "Bookmark picker popup",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
@@ -173,7 +177,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Jump to bookmark slot", Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            "Jump to bookmark slot",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(

@@ -393,6 +393,8 @@ impl App {
         let workdir = feature.workdir.clone();
         std::process::Command::new("code")
             .arg(&workdir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("Failed to launch VSCode: {}", e))?;
 

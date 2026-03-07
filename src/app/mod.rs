@@ -13,6 +13,7 @@ mod project_ops;
 mod rename;
 mod review;
 mod search;
+mod session_config;
 mod session_ops;
 pub mod setup;
 mod state;
@@ -410,5 +411,18 @@ impl App {
 
     pub fn log_error(&mut self, context: &str, message: String) {
         self.debug_log.error(context, message);
+    }
+
+    pub fn report_logged_error(&mut self, context: &str, detail: impl Into<String>) {
+        let detail = detail.into();
+        self.log_error(context, detail.clone());
+        self.set_debug_log_error_message(detail);
+    }
+
+    pub fn set_debug_log_error_message(&mut self, message: impl Into<String>) {
+        self.message = Some(format!(
+            "Error: {} Check debug log for details.",
+            message.into()
+        ));
     }
 }

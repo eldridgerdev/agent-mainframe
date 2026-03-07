@@ -119,6 +119,33 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Validate changelog for major/minor releases
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]' \
+            | sed -n '2p')
+
+          CURRENT="${CURRENT_TAG#v}"
+          IFS=. read -r CUR_MAJOR CUR_MINOR CUR_PATCH <<< "$CURRENT"
+
+          require_changelog=0
+          if [ -z "$PREV_TAG" ]; then
+            require_changelog=1
+          else
+            PREV="${PREV_TAG#v}"
+            IFS=. read -r PREV_MAJOR PREV_MINOR PREV_PATCH <<< "$PREV"
+            if [ "$CUR_MAJOR" -gt "$PREV_MAJOR" ]; then
+              require_changelog=1
+            elif [ "$CUR_MAJOR" -eq "$PREV_MAJOR" ] && \
+              [ "$CUR_MINOR" -gt "$PREV_MINOR" ]; then
+              require_changelog=1
+            fi
+          fi
+
+          if [ "$require_changelog" -eq 1 ]; then
+            grep -Eq "^## \[$CURRENT_TAG\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md
+          fi
+
       - name: Generate release notes
         id: notes
         run: |

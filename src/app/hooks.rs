@@ -2,8 +2,18 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::debug::{LogLevel, log_to_file};
 
 impl App {
+    fn hook_failure_detail(output: &str) -> String {
+        output
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| format!("Hook failed: {}", line.trim()))
+            .unwrap_or_else(|| "Hook failed".to_string())
+    }
+
     /// Run a lifecycle hook script non-blocking.
     /// Expands leading `~/` to the home directory.
     /// If `choice` is provided it is set as `AMF_HOOK_CHOICE`
@@ -18,11 +28,72 @@ impl App {
         };
 
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(&expanded).current_dir(workdir);
+        cmd.arg("-c")
+            .arg(&expanded)
+            .current_dir(workdir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
         if let Some(c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-        let _ = cmd.spawn();
+        let workdir = workdir.to_path_buf();
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let hook = expanded.clone();
+                std::thread::spawn(move || {
+                    if let Some(stderr) = child.stderr.take() {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(stderr)
+                            .lines()
+                            .map_while(std::result::Result::ok)
+                        {
+                            if !line.trim().is_empty() {
+                                log_to_file(
+                                    LogLevel::Error,
+                                    "hooks",
+                                    &format!("lifecycle hook `{hook}`: {line}"),
+                                );
+                            }
+                        }
+                    }
+
+                    match child.wait() {
+                        Ok(status) if !status.success() => {
+                            log_to_file(
+                                LogLevel::Error,
+                                "hooks",
+                                &format!(
+                                    "lifecycle hook `{hook}` failed in {} with code {:?}",
+                                    workdir.display(),
+                                    status.code()
+                                ),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            log_to_file(
+                                LogLevel::Error,
+                                "hooks",
+                                &format!(
+                                    "failed waiting on lifecycle hook `{hook}` in {}: {err}",
+                                    workdir.display()
+                                ),
+                            );
+                        }
+                    }
+                });
+            }
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Error,
+                    "hooks",
+                    &format!(
+                        "failed to spawn lifecycle hook `{expanded}` in {}: {err}",
+                        workdir.display()
+                    ),
+                );
+            }
+        }
     }
 
     /// Enter `HookPrompt` mode when the hook config has a
@@ -303,10 +374,13 @@ impl App {
                 branch
             ));
         } else {
-            self.message = Some(format!(
-                "Created and started feature '{}' (hook failed)",
-                branch
-            ));
+            self.report_logged_error(
+                "hooks",
+                format!(
+                    "Created and started feature '{}' but worktree hook failed",
+                    branch
+                ),
+            );
         }
 
         Ok(())
@@ -358,7 +432,7 @@ impl App {
                     let _ = self.save();
                     self.message = Some("Hook completed".to_string());
                 } else {
-                    self.message = Some("Hook failed".to_string());
+                    self.report_logged_error("hooks", Self::hook_failure_detail(&hook.output));
                 }
             }
         }

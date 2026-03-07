@@ -9,6 +9,32 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    fn drain_background_command_output(
+        output: &mut String,
+        rx: &std::sync::mpsc::Receiver<String>,
+    ) {
+        while let Ok(line) = rx.try_recv() {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    fn background_command_error(stage: DeleteStage, code: Option<i32>, output: &str) -> String {
+        let fallback = match stage {
+            DeleteStage::KillingTmux => "tmux kill-session failed",
+            DeleteStage::RemovingWorktree => "git worktree remove failed",
+            DeleteStage::Completed => "background command failed",
+        };
+
+        if let Some(line) = output.lines().rev().find(|line| !line.trim().is_empty()) {
+            format!("{fallback}: {}", line.trim())
+        } else if let Some(code) = code {
+            format!("{fallback} with code {code}")
+        } else {
+            fallback.to_string()
+        }
+    }
+
     pub fn toggle_feature_ready(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
@@ -616,7 +642,11 @@ impl App {
             return Ok(());
         };
 
-        let child = TmuxManager::spawn_kill_session(&tmux_session)?;
+        let spawned = TmuxManager::spawn_kill_session(&tmux_session)?;
+        let (child, output_rx) = match spawned {
+            Some(spawned) => (Some(spawned.child), Some(spawned.output_rx)),
+            None => (None, None),
+        };
 
         self.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
             project_name,
@@ -627,6 +657,8 @@ impl App {
             workdir,
             stage: DeleteStage::KillingTmux,
             child,
+            output: String::new(),
+            output_rx,
             error: None,
         });
 
@@ -639,29 +671,43 @@ impl App {
             _ => return Ok(()),
         };
 
+        if let Some(ref rx) = state.output_rx {
+            Self::drain_background_command_output(&mut state.output, rx);
+        }
+
         if let Some(ref mut child) = state.child {
+            let stage = state.stage;
             match child.try_wait() {
                 Ok(Some(status)) => {
                     if !status.success() {
-                        state.error =
-                            Some(format!("Command failed with code: {:?}", status.code()));
+                        state.error = Some(Self::background_command_error(
+                            stage,
+                            status.code(),
+                            &state.output,
+                        ));
                     }
                     state.child = None;
+                    state.output_rx = None;
                 }
                 Ok(None) => return Ok(()),
                 Err(e) => {
                     state.error = Some(e.to_string());
                     state.child = None;
+                    state.output_rx = None;
                 }
             }
         }
 
         match state.stage {
             DeleteStage::KillingTmux => {
-                if state.is_worktree {
+                if state.error.is_some() {
+                    state.stage = DeleteStage::Completed;
+                } else if state.is_worktree {
                     match WorktreeManager::spawn_remove(&state.repo, &state.workdir) {
-                        Ok(child) => {
-                            state.child = Some(child);
+                        Ok(spawned) => {
+                            state.child = Some(spawned.child);
+                            state.output.clear();
+                            state.output_rx = Some(spawned.output_rx);
                             state.stage = DeleteStage::RemovingWorktree;
                         }
                         Err(e) => {
@@ -696,11 +742,14 @@ impl App {
 
         if had_error {
             self.mode = AppMode::Normal;
-            self.message = Some(format!(
-                "Error deleting feature '{}': {}",
-                feature_name,
-                error_msg.unwrap_or_else(|| "Unknown error".to_string())
-            ));
+            self.report_logged_error(
+                "feature_delete",
+                format!(
+                    "Error deleting feature '{}': {}",
+                    feature_name,
+                    error_msg.unwrap_or_else(|| "Unknown error".to_string())
+                ),
+            );
             return Ok(());
         }
 
@@ -745,19 +794,29 @@ impl App {
         let mut completed = Vec::new();
 
         for (key, deletion) in self.background_deletions.iter_mut() {
+            if let Some(ref rx) = deletion.output_rx {
+                Self::drain_background_command_output(&mut deletion.output, rx);
+            }
+
             if let Some(ref mut child) = deletion.child {
+                let stage = deletion.stage;
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         if !status.success() {
-                            deletion.error =
-                                Some(format!("Command failed with code: {:?}", status.code()));
+                            deletion.error = Some(Self::background_command_error(
+                                stage,
+                                status.code(),
+                                &deletion.output,
+                            ));
                         }
                         deletion.child = None;
+                        deletion.output_rx = None;
                     }
                     Ok(None) => continue,
                     Err(e) => {
                         deletion.error = Some(e.to_string());
                         deletion.child = None;
+                        deletion.output_rx = None;
                     }
                 }
             }
@@ -765,10 +824,14 @@ impl App {
             match deletion.stage {
                 DeleteStage::KillingTmux => {
                     if deletion.child.is_none() {
-                        if deletion.is_worktree {
+                        if deletion.error.is_some() {
+                            deletion.stage = DeleteStage::Completed;
+                        } else if deletion.is_worktree {
                             match WorktreeManager::spawn_remove(&deletion.repo, &deletion.workdir) {
-                                Ok(child) => {
-                                    deletion.child = Some(child);
+                                Ok(spawned) => {
+                                    deletion.child = Some(spawned.child);
+                                    deletion.output.clear();
+                                    deletion.output_rx = Some(spawned.output_rx);
                                     deletion.stage = DeleteStage::RemovingWorktree;
                                 }
                                 Err(e) => {
@@ -796,13 +859,16 @@ impl App {
         for key in completed {
             if let Some(deletion) = self.background_deletions.remove(&key) {
                 if deletion.error.is_some() {
-                    self.message = Some(format!(
-                        "Error deleting feature '{}': {}",
-                        deletion.feature_name,
-                        deletion
-                            .error
-                            .unwrap_or_else(|| "Unknown error".to_string())
-                    ));
+                    self.report_logged_error(
+                        "feature_delete",
+                        format!(
+                            "Error deleting feature '{}': {}",
+                            deletion.feature_name,
+                            deletion
+                                .error
+                                .unwrap_or_else(|| "Unknown error".to_string())
+                        ),
+                    );
                 } else {
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);

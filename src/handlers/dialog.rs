@@ -214,6 +214,33 @@ pub fn handle_rename_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_session_config_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let AppMode::SessionConfig(state) = &mut app.mode
+                && state.selected_agent + 1 < state.allowed_agents.len()
+            {
+                state.selected_agent += 1;
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let AppMode::SessionConfig(state) = &mut app.mode
+                && state.selected_agent > 0
+            {
+                state.selected_agent -= 1;
+            }
+        }
+        KeyCode::Enter => {
+            app.apply_session_config()?;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_session_config();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {

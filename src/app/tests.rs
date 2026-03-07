@@ -1,4 +1,6 @@
-use super::setup::{ensure_notification_hooks, strip_between_markers};
+use super::setup::{
+    cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
+};
 use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
@@ -690,20 +692,9 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
-fn call_ensure_hooks_for(
-    workdir: &TempDir,
-    mode: VibeMode,
-    agent: AgentKind,
-    is_worktree: bool,
-) {
+fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is_worktree: bool) {
     let repo = workdir.path(); // repo = workdir in tests
-    ensure_notification_hooks(
-        workdir.path(),
-        repo,
-        &mode,
-        &agent,
-        is_worktree,
-    );
+    ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
@@ -876,23 +867,13 @@ fn ensure_hooks_is_idempotent() {
 fn codex_hooks_are_injected_for_worktree_only() {
     let workdir = TempDir::new().unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        false,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, false);
     assert!(
         !workdir.path().join(".codex").join("config.toml").exists(),
         "non-worktree codex feature should not get local codex config"
     );
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
     assert!(
         workdir.path().join(".codex").join("config.toml").exists(),
         "worktree codex feature should get local codex config"
@@ -915,12 +896,7 @@ fn codex_hook_merges_existing_notify_entries() {
     let cfg = codex_dir.join("config.toml");
     std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
 
     let rendered = std::fs::read_to_string(&cfg).unwrap();
     let parsed: toml::Value = toml::from_str(&rendered).unwrap();
@@ -956,6 +932,207 @@ fn codex_hook_merges_existing_notify_entries() {
         original_cmds,
         vec!["/tmp/existing-hook.sh".to_string()],
         "sidecar file should preserve original notify command argv"
+    );
+}
+
+#[test]
+fn cleanup_claude_hooks_removes_amf_artifacts() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks_for(&workdir, VibeMode::Vibeless, AgentKind::Claude, true);
+
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(claude_dir.join("notifications")).unwrap();
+    std::fs::write(claude_dir.join("latest-prompt.txt"), "prompt").unwrap();
+
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Claude);
+
+    let settings_path = claude_dir.join("settings.json");
+    assert!(
+        !settings_path.exists(),
+        "cleanup should remove settings.json when only AMF hooks were present"
+    );
+    assert!(
+        !claude_dir.join("notifications").exists(),
+        "cleanup should remove Claude notification directory"
+    );
+    assert!(
+        !claude_dir.join("latest-prompt.txt").exists(),
+        "cleanup should remove Claude latest prompt file"
+    );
+}
+
+#[test]
+fn cleanup_codex_hooks_restores_previous_notify_command() {
+    let workdir = TempDir::new().unwrap();
+    let codex_dir = workdir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let cfg = codex_dir.join("config.toml");
+    std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
+
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Codex);
+
+    let rendered = std::fs::read_to_string(&cfg).unwrap();
+    let parsed: toml::Value = toml::from_str(&rendered).unwrap();
+    let notify = parsed
+        .get("notify")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let entries: Vec<String> = notify
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["/tmp/existing-hook.sh".to_string()],
+        "cleanup should restore the previous Codex notify command"
+    );
+    assert!(
+        !codex_dir.join("amf-codex-notify.sh").exists(),
+        "cleanup should remove AMF Codex hook script"
+    );
+    assert!(
+        !codex_dir.join("amf-codex-notify-original.json").exists(),
+        "cleanup should remove Codex sidecar backup"
+    );
+}
+
+fn store_with_worktree_agent(
+    repo: &std::path::Path,
+    workdir: &std::path::Path,
+    agent: AgentKind,
+    status: ProjectStatus,
+    sessions: Vec<crate::project::FeatureSession>,
+) -> ProjectStore {
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree: true,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions,
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent,
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: true,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
+#[test]
+fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+
+    ensure_notification_hooks(
+        workdir.path(),
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let now = Utc::now();
+    let sessions = vec![
+        crate::project::FeatureSession {
+            id: "agent-session".to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude 1".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: Some("resume-me".to_string()),
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        },
+        crate::project::FeatureSession {
+            id: "terminal-session".to_string(),
+            kind: SessionKind::Terminal,
+            label: "Terminal 1".to_string(),
+            tmux_window: "terminal".to_string(),
+            claude_session_id: None,
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        },
+    ];
+
+    let store = store_with_worktree_agent(
+        repo.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Stopped,
+        sessions,
+    );
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-my-feat")
+        .times(1)
+        .return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+
+    app.start_session_config().unwrap();
+    if let AppMode::SessionConfig(state) = &mut app.mode {
+        state.selected_agent = state
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+    } else {
+        panic!("session config dialog should be open");
+    }
+
+    app.apply_session_config().unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.agent, AgentKind::Codex);
+    assert_eq!(feature.sessions[0].kind, SessionKind::Codex);
+    assert_eq!(feature.sessions[0].label, "Codex 1");
+    assert_eq!(feature.sessions[0].tmux_window, "codex");
+    assert_eq!(feature.sessions[0].claude_session_id, None);
+    assert_eq!(feature.sessions[1].kind, SessionKind::Terminal);
+    assert!(
+        !workdir
+            .path()
+            .join(".claude")
+            .join("settings.json")
+            .exists(),
+        "Claude hook settings should be removed after switching away"
+    );
+    assert!(
+        workdir.path().join(".codex").join("config.toml").exists(),
+        "Codex config should be injected after switching"
     );
 }
 
@@ -1332,15 +1509,9 @@ fn bookmark_add_and_remove_current_session() {
 fn jump_to_bookmark_enters_view_for_slot() {
     let store = store_with_single_claude_session();
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists()
-        .times(1)
-        .returning(|_| true);
+    tmux.expect_session_exists().times(1).returning(|_| true);
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();

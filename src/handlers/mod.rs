@@ -23,7 +23,8 @@ pub use change_reason::handle_change_reason_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
-    handle_rename_feature_key, handle_rename_session_key, handle_theme_picker_key,
+    handle_rename_feature_key, handle_rename_session_key, handle_session_config_key,
+    handle_theme_picker_key,
 };
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
@@ -58,6 +59,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::SessionSwitcher(_) => handle_session_switcher_key(app, key.code),
         AppMode::RenamingSession(_) => handle_rename_session_key(app, key.code),
         AppMode::RenamingFeature(_) => handle_rename_feature_key(app, key.code),
+        AppMode::SessionConfig(_) => handle_session_config_key(app, key.code),
         AppMode::CommandPicker(_) => handle_command_picker_key(app, key.code),
         AppMode::Searching(_) => handle_search_key(app, key.code),
         AppMode::OpencodeSessionPicker(_) => handle_opencode_session_picker_key(app, key.code),

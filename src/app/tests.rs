@@ -193,6 +193,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -599,6 +600,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -721,6 +723,7 @@ fn sync_session_status_skips_non_custom_sessions() {
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     };
 
     // Even if a status file exists for this ID, it should
@@ -839,4 +842,100 @@ fn sync_session_status_trims_whitespace() {
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000".to_string()),
     );
+}
+
+fn store_with_single_claude_session() -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: "sess-1".to_string(),
+        kind: SessionKind::Claude,
+        label: "Claude 1".to_string(),
+        tmux_window: "claude".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: PathBuf::from("/tmp/test-workdir"),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
+#[test]
+fn bookmark_add_and_remove_current_session() {
+    let store = store_with_single_claude_session();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+
+    app.bookmark_current_session().unwrap();
+    assert_eq!(app.store.session_bookmarks.len(), 1);
+    assert_eq!(app.store.session_bookmarks[0].session_id, "sess-1");
+
+    app.unbookmark_current_session().unwrap();
+    assert!(app.store.session_bookmarks.is_empty());
+}
+
+#[test]
+fn jump_to_bookmark_enters_view_for_slot() {
+    let store = store_with_single_claude_session();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(1)
+        .returning(|_| true);
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.bookmark_current_session().unwrap();
+    app.mode = AppMode::Normal;
+
+    app.jump_to_bookmark(1).unwrap();
+
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
 }

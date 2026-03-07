@@ -75,7 +75,7 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / n p i r x f D ?)",
+            "Leader key (then: q t T w h / n p i r x f D ? H M 1-9)",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -98,6 +98,39 @@ pub fn draw_help(frame: &mut Frame) {
         ),
         Span::raw("  "),
         Span::styled("Session switcher", Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "h"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Bookmark picker popup", Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "H / M"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Bookmark / unbookmark session",
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "1-9"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Jump to bookmark slot", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled(

@@ -47,6 +47,7 @@ pub use picker::{
     handle_claude_session_picker_key,
     handle_claude_session_confirm_key,
     handle_session_picker_key,
+    handle_bookmark_picker_key,
 };
 pub use fork::handle_fork_feature_key;
 pub use input::handle_paste;
@@ -115,6 +116,9 @@ pub fn handle_key(
         }
         AppMode::SessionPicker(_) => {
             handle_session_picker_key(app, key.code)
+        }
+        AppMode::BookmarkPicker(_) => {
+            handle_bookmark_picker_key(app, key.code)
         }
         AppMode::ChangeReasonPrompt(_) => {
             handle_change_reason_key(app, key)

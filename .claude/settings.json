@@ -1,10 +1,25 @@
 {
   "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "/home/eldridger/.config/amf/tool-stop.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
           {
-            "command": "[ -n \"$AMF_SESSION\" ] && mkdir -p /tmp/amf-thinking && touch \"/tmp/amf-thinking/$AMF_SESSION\" || true",
+            "command": "/home/eldridger/.config/amf/thinking-start.sh",
+            "type": "command"
+          },
+          {
+            "command": "/home/eldridger/.config/amf/tool-start.sh",
             "type": "command"
           },
           {
@@ -19,7 +34,7 @@
       {
         "hooks": [
           {
-            "command": "[ -n \"$AMF_SESSION\" ] && rm -f \"/tmp/amf-thinking/$AMF_SESSION\" || true",
+            "command": "/home/eldridger/.config/amf/thinking-stop.sh",
             "type": "command"
           },
           {
@@ -33,6 +48,10 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "command": "/home/eldridger/.config/amf/thinking-start.sh",
+            "type": "command"
+          },
           {
             "command": "/home/eldridger/.config/amf/save-prompt.sh",
             "type": "command"

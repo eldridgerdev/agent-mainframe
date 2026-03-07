@@ -260,6 +260,29 @@ fn handle_leader_key(
         KeyCode::Char('w') => {
             app.open_session_switcher();
         }
+        KeyCode::Char('h') => {
+            let view_state = match std::mem::replace(
+                &mut app.mode,
+                AppMode::Normal,
+            ) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_bookmark_picker(Some(view_state));
+        }
+        KeyCode::Char('H') => {
+            app.bookmark_current_session()?;
+        }
+        KeyCode::Char('M') => {
+            app.unbookmark_current_session()?;
+        }
+        KeyCode::Char(c @ '1'..='9') => {
+            let slot = (c as u8 - b'0') as usize;
+            app.jump_to_bookmark(slot)?;
+        }
         KeyCode::Char('/') => {
             let view_state = match std::mem::replace(
                 &mut app.mode,

@@ -165,6 +165,12 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => {}
         },
+        KeyCode::Char('y') => match &app.selection {
+            Selection::Feature(_, _) | Selection::Session(_, _, _) => {
+                app.toggle_feature_ready()?;
+            }
+            _ => {}
+        },
         KeyCode::Char('h') | KeyCode::Left => match &app.selection {
             Selection::Project(pi) => {
                 if let Some(project) = app.store.projects.get(*pi)
@@ -306,6 +312,7 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "refresh" => Some('r'),
         "filter" => Some('f'),
         "fork_feature" => Some('F'),
+        "mark_ready" => Some('y'),
         _ => None,
     }
 }
@@ -362,6 +369,7 @@ mod tests {
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));
         assert_eq!(default_key_for_action("filter"), Some('f'));
+        assert_eq!(default_key_for_action("mark_ready"), Some('y'));
     }
 
     #[test]

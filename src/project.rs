@@ -160,6 +160,8 @@ pub struct Feature {
     pub enable_chrome: bool,
     #[serde(default)]
     pub has_notes: bool,
+    #[serde(default)]
+    pub ready: bool,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
     pub last_accessed: DateTime<Utc>,
@@ -200,6 +202,7 @@ impl Feature {
             agent,
             enable_chrome,
             has_notes,
+            ready: false,
             status: ProjectStatus::Stopped,
             created_at: now,
             last_accessed: now,
@@ -593,6 +596,7 @@ impl ProjectStore {
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
+                            ready: false,
                             status: f.status,
                             created_at: f.created_at,
                             last_accessed: f.last_accessed,
@@ -716,6 +720,7 @@ mod tests {
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,
+            ready: false,
             status: ProjectStatus::Stopped,
             created_at: Utc::now(),
             last_accessed: Utc::now(),

@@ -98,6 +98,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" start  "),
                     Span::styled("x", Style::default().fg(Color::Yellow)),
                     Span::raw(" stop  "),
+                    Span::styled("y", Style::default().fg(Color::Yellow)),
+                    Span::raw(" ready  "),
                     Span::styled("f", Style::default().fg(Color::Yellow)),
                     Span::raw(" filter  "),
                     Span::styled("s", Style::default().fg(Color::Yellow)),

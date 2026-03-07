@@ -176,7 +176,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
-        | AppMode::SessionPicker(_) => Line::from(vec![
+        | AppMode::SessionPicker(_)
+        | AppMode::BookmarkPicker(_) => Line::from(vec![
             Span::styled(
                 "j/k or \u{2191}/\u{2193}",
                 Style::default().fg(Color::Yellow),
@@ -203,12 +204,38 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("r", Style::default().fg(Color::Red)),
             Span::raw(" reject"),
         ]),
-        AppMode::Viewing(_) => Line::from(vec![
-            Span::styled("Ctrl+Space", Style::default().fg(Color::Yellow)),
-            Span::raw(" commands  "),
-            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
-            Span::raw(" exit view"),
-        ]),
+        AppMode::Viewing(_) => {
+            let mut spans = vec![
+                Span::styled(
+                    "Ctrl+Space",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" commands  "),
+                Span::styled(
+                    "Ctrl+Q",
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::raw(" exit view"),
+            ];
+            let labels = app.bookmark_status_labels();
+            if !labels.is_empty() {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    "marks ",
+                    Style::default().fg(Color::DarkGray),
+                ));
+                for (idx, label) in labels.iter().enumerate() {
+                    spans.push(Span::styled(
+                        label.clone(),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                    if idx + 1 < labels.len() {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+            }
+            Line::from(spans)
+        }
         AppMode::RunningHook(state) => {
             if state.child.is_some() {
                 Line::from(Span::styled(

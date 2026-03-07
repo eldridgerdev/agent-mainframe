@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    ClaudeSessionPickerState, CommandPickerState, OpencodeSessionPickerState, PendingInput,
-    SessionPickerState, SessionSwitcherState,
+    BookmarkPickerState, ClaudeSessionPickerState, CommandPickerState, OpencodeSessionPickerState,
+    PendingInput, SessionPickerState, SessionSwitcherState,
 };
 use crate::project::SessionKind;
 
@@ -180,6 +180,91 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState) {
         Span::styled(" send  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Esc", Style::default().fg(Color::Yellow)),
         Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_bookmark_picker(
+    frame: &mut Frame,
+    state: &BookmarkPickerState,
+    rows: &[String],
+) {
+    let area = centered_rect(56, 42, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Harpoon Bookmarks ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    if rows.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No bookmarks yet. Use leader+m on a session.",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(empty, chunks[0]);
+        let hints = Paragraph::new(Line::from(vec![
+            Span::styled("  Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(" close", Style::default().fg(Color::DarkGray)),
+        ]));
+        frame.render_widget(hints, chunks[1]);
+        return;
+    }
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let is_selected = i == state.selected;
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    row.clone(),
+                    if is_selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line)
+                    .style(Style::default().bg(Color::DarkGray))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(" navigate  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(" jump  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("d", Style::default().fg(Color::Yellow)),
+        Span::styled(" remove  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("1-9", Style::default().fg(Color::Yellow)),
+        Span::styled(" quick jump  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled(" close", Style::default().fg(Color::DarkGray)),
     ]));
     frame.render_widget(hints, chunks[1]);
 }

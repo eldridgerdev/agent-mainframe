@@ -1,5 +1,6 @@
 mod state;
 pub mod commands;
+mod harpoon;
 mod feature_ops;
 mod hooks;
 mod navigation;

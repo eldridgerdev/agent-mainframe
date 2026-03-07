@@ -242,12 +242,15 @@ All keys are forwarded to the tmux session except:
 | `q` | Exit view |
 | `t` / `T` | Cycle between sessions (claude, terminal, nvim) |
 | `w` | Open session switcher |
+| `h` | Open bookmark picker popup |
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
 | `x` | Stop session and exit view |
+| `H` / `M` | Bookmark / unbookmark current session |
+| `1`-`9` | Jump to bookmark slot |
 | `?` | Show help |
 
 ## How It Works

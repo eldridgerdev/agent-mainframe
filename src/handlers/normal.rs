@@ -334,6 +334,19 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.open_command_picker(None);
         }
+        KeyCode::Char('h') => {
+            app.open_bookmark_picker(None);
+        }
+        KeyCode::Char('H') => {
+            app.bookmark_current_session()?;
+        }
+        KeyCode::Char('M') => {
+            app.unbookmark_current_session()?;
+        }
+        KeyCode::Char(c @ '1'..='9') => {
+            let slot = (c as u8 - b'0') as usize;
+            app.jump_to_bookmark(slot)?;
+        }
         KeyCode::Char('r') => {
             app.sync_statuses();
             if app.ipc.is_some() {

@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::AppMode;
 use crate::app::App;
+use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
 enum TmuxKey {
@@ -116,6 +117,21 @@ pub fn handle_view_key(
         };
         if let Err(e) = result {
             app.show_error(e);
+        } else if key.code == KeyCode::Enter
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            let is_codex_window = app
+                .store
+                .projects
+                .iter()
+                .flat_map(|p| p.features.iter())
+                .filter(|f| f.tmux_session == session)
+                .flat_map(|f| f.sessions.iter())
+                .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
+            if is_codex_window {
+                app.note_codex_prompt_submit(&session, &window);
+            }
         }
     }
 

@@ -16,7 +16,7 @@ pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog,
 };
-pub use help::{draw_help, draw_help_bottom_right};
+pub use help::draw_help;
 pub use hooks::{
     draw_change_reason_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
     draw_running_hook_dialog,

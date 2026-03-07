@@ -79,14 +79,17 @@
       "light": "info"
     },
     "text": {
-      "dark": "fg",
-      "light": "fg_dark"
+      "dark": "#c0caf5",
+      "light": "#a9b1d6"
     },
     "textMuted": {
-      "dark": "comment",
-      "light": "comment"
+      "dark": "#565f89",
+      "light": "#565f89"
     },
-    "background": "none",
+    "background": {
+      "dark": "bg",
+      "light": "bg"
+    },
     "backgroundPanel": {
       "dark": "bg_dark",
       "light": "bg"
@@ -156,8 +159,8 @@
       "light": "diff_delete"
     },
     "markdownText": {
-      "dark": "fg",
-      "light": "fg_dark"
+      "dark": "#c0caf5",
+      "light": "#a9b1d6"
     },
     "markdownHeading": {
       "dark": "blue",
@@ -244,8 +247,8 @@
       "light": "magenta2"
     },
     "syntaxPunctuation": {
-      "dark": "fg",
-      "light": "fg_dark"
+      "dark": "#9aa5ce",
+      "light": "#9aa5ce"
     }
   }
 }

@@ -27,7 +27,6 @@ impl std::fmt::Display for ProjectStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionKind {
-    #[serde(alias = "codex")]
     Claude,
     Opencode,
     Codex,
@@ -41,7 +40,6 @@ pub enum SessionKind {
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     #[default]
-    #[serde(alias = "codex")]
     Claude,
     Opencode,
     Codex,

@@ -239,6 +239,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_rename_feature_dialog(frame, state, &app.theme);
     }
 
+    if let AppMode::SessionConfig(state) = &app.mode {
+        super::dialogs::draw_session_config_dialog(frame, state, &app.theme);
+    }
+
     if matches!(app.mode, AppMode::Help(None)) {
         super::dialogs::draw_help(frame, &app.theme);
     }
@@ -298,7 +302,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::ForkingFeature(state) = &app.mode {
         let allowed_agents = app.active_extension.allowed_agents();
-        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice(), &app.theme);
+        super::dialogs::draw_fork_feature_dialog(
+            frame,
+            state,
+            allowed_agents.as_slice(),
+            &app.theme,
+        );
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {

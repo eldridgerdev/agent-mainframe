@@ -286,6 +286,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::SessionConfig(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" apply  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::DebugLog(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" scroll  "),

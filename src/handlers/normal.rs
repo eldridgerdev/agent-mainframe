@@ -165,6 +165,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => {}
         },
+        KeyCode::Char('u') => {
+            app.start_session_config()?;
+        }
         KeyCode::Char('y') => match &app.selection {
             Selection::Feature(_, _) | Selection::Session(_, _, _) => {
                 app.toggle_feature_ready()?;
@@ -307,6 +310,7 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "search" => Some('/'),
         "refresh" => Some('r'),
         "filter" => Some('f'),
+        "session_config" => Some('u'),
         "fork_feature" => Some('F'),
         "mark_ready" => Some('y'),
         _ => None,
@@ -377,6 +381,7 @@ mod tests {
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));
         assert_eq!(default_key_for_action("filter"), Some('f'));
+        assert_eq!(default_key_for_action("session_config"), Some('u'));
         assert_eq!(default_key_for_action("mark_ready"), Some('y'));
     }
 

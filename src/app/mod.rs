@@ -1,8 +1,8 @@
 mod claude_session_picker;
 mod claude_sessions;
 pub mod commands;
-mod harpoon;
 mod feature_ops;
+mod harpoon;
 mod hooks;
 mod navigation;
 mod notifications;
@@ -11,6 +11,7 @@ mod project_ops;
 mod rename;
 mod review;
 mod search;
+mod session_config;
 mod session_ops;
 pub mod setup;
 mod state;

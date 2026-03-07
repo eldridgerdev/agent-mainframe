@@ -1,5 +1,6 @@
 use ratatui::{
     Frame,
+    layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -10,6 +11,23 @@ use crate::theme::Theme;
 
 pub fn draw_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(55, 70, frame.area());
+    draw_help_at(frame, area, theme);
+}
+
+pub fn draw_help_bottom_right(frame: &mut Frame, theme: &Theme) {
+    let viewport = frame.area();
+    let width = (viewport.width.saturating_mul(55) / 100).max(40);
+    let height = (viewport.height.saturating_mul(70) / 100).max(12);
+    let area = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width + 1),
+        viewport.y + viewport.height.saturating_sub(height + 1),
+        width,
+        height,
+    );
+    draw_help_at(frame, area, theme);
+}
+
+fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Clear, area);
 
     let keybinds: Vec<(&str, &str)> = vec![
@@ -29,6 +47,7 @@ pub fn draw_help(frame: &mut Frame, theme: &Theme) {
         ("r", "Rename session"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
+        ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),
@@ -37,7 +56,24 @@ pub fn draw_help(frame: &mut Frame, theme: &Theme) {
         ("q / Esc", "Quit"),
     ];
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled(
+                "  ESC",
+                Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " closes this menu",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
     for (key, desc) in &keybinds {
         lines.push(Line::from(vec![
             Span::styled(
@@ -76,7 +112,7 @@ pub fn draw_help(frame: &mut Frame, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / n p i r x f D ?)",
+            "Leader key (then: q t T w h / n p i r x f D ? H M 1-9)",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));
@@ -105,6 +141,39 @@ pub fn draw_help(frame: &mut Frame, theme: &Theme) {
             "Session switcher",
             Style::default().fg(theme.text.to_color()),
         ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "h"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Bookmark picker popup", Style::default().fg(theme.text.to_color())),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "H / M"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Bookmark / unbookmark session",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "1-9"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Jump to bookmark slot", Style::default().fg(theme.text.to_color())),
     ]));
     lines.push(Line::from(vec![
         Span::styled(

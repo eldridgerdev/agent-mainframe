@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use crate::debug::{log_to_file, LogLevel};
+use crate::debug::{LogLevel, log_to_file};
 
 /// Path to the AMF IPC socket.
 /// Matches the state directory used by the debug log.
@@ -50,12 +50,11 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
     let _ = std::fs::remove_file(path);
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create IPC socket directory")?;
+        std::fs::create_dir_all(parent).context("Failed to create IPC socket directory")?;
     }
 
-    let listener = std::os::unix::net::UnixListener::bind(path)
-        .context("Failed to bind IPC socket")?;
+    let listener =
+        std::os::unix::net::UnixListener::bind(path).context("Failed to bind IPC socket")?;
 
     let (tx, rx) = channel::<serde_json::Value>();
 
@@ -64,25 +63,14 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
         for stream in listener.incoming() {
             match stream {
                 Ok(s) => {
-                    log_to_file(
-                        LogLevel::Debug,
-                        "ipc",
-                        "Accepted connection",
-                    );
+                    log_to_file(LogLevel::Debug, "ipc", "Accepted connection");
                     let tx = tx.clone();
                     std::thread::spawn(move || {
                         use std::io::BufRead;
-                        for line in
-                            std::io::BufReader::new(s).lines()
-                        {
+                        for line in std::io::BufReader::new(s).lines() {
                             match line {
-                                Ok(l)
-                                    if !l.trim().is_empty() =>
-                                {
-                                    match serde_json::from_str::<
-                                        serde_json::Value,
-                                    >(&l)
-                                    {
+                                Ok(l) if !l.trim().is_empty() => {
+                                    match serde_json::from_str::<serde_json::Value>(&l) {
                                         Ok(v) => {
                                             // Channel closed means
                                             // App is shutting down.
@@ -94,9 +82,7 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
                                             log_to_file(
                                                 LogLevel::Debug,
                                                 "ipc",
-                                                &format!(
-                                                    "Invalid JSON: {e}"
-                                                ),
+                                                &format!("Invalid JSON: {e}"),
                                             );
                                         }
                                     }
@@ -106,9 +92,7 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
                                     log_to_file(
                                         LogLevel::Debug,
                                         "ipc",
-                                        &format!(
-                                            "Read error: {e}"
-                                        ),
+                                        &format!("Read error: {e}"),
                                     );
                                     break;
                                 }
@@ -119,11 +103,7 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
                 Err(e) => {
                     // A single accept error is not fatal; log and
                     // continue unless the listener itself is gone.
-                    log_to_file(
-                        LogLevel::Warn,
-                        "ipc",
-                        &format!("Accept error: {e}"),
-                    );
+                    log_to_file(LogLevel::Warn, "ipc", &format!("Accept error: {e}"));
                     // EBADF / EINVAL mean the socket is closed.
                     use std::io::ErrorKind::*;
                     if matches!(e.kind(), InvalidInput | BrokenPipe) {
@@ -135,10 +115,7 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
         log_to_file(
             LogLevel::Debug,
             "ipc",
-            &format!(
-                "Listener thread exiting ({})",
-                path_buf.display()
-            ),
+            &format!("Listener thread exiting ({})", path_buf.display()),
         );
     });
 
@@ -165,11 +142,7 @@ mod tests {
         let guard = start(&path).unwrap();
         wait(10);
 
-        send(
-            &path,
-            r#"{"type":"stop","session_id":"s1","cwd":"/tmp"}"#,
-        )
-        .unwrap();
+        send(&path, r#"{"type":"stop","session_id":"s1","cwd":"/tmp"}"#).unwrap();
 
         let msg = guard
             .rx
@@ -192,9 +165,7 @@ mod tests {
 
     #[test]
     fn send_fails_when_no_server() {
-        let path = std::path::PathBuf::from(
-            "/tmp/amf-ipc-test-no-server.sock",
-        );
+        let path = std::path::PathBuf::from("/tmp/amf-ipc-test-no-server.sock");
         let result = send(&path, r#"{"test":true}"#);
         assert!(result.is_err());
     }
@@ -225,11 +196,7 @@ mod tests {
         wait(10);
 
         for i in 0..5 {
-            send(
-                &path,
-                &format!(r#"{{"session_id":"s{i}","cwd":"/tmp"}}"#),
-            )
-            .unwrap();
+            send(&path, &format!(r#"{{"session_id":"s{i}","cwd":"/tmp"}}"#)).unwrap();
         }
         wait(100);
 
@@ -266,11 +233,7 @@ mod tests {
         let guard = start(&path).unwrap();
         wait(10);
 
-        send(
-            &path,
-            r#"{"type":"clear","session_id":"xyz","cwd":"/tmp"}"#,
-        )
-        .unwrap();
+        send(&path, r#"{"type":"clear","session_id":"xyz","cwd":"/tmp"}"#).unwrap();
 
         let msg = guard
             .rx
@@ -308,36 +271,26 @@ pub fn send(path: &Path, payload: &str) -> Result<()> {
     if payload.is_empty() {
         anyhow::bail!("Payload is empty");
     }
-    let mut stream =
-        std::os::unix::net::UnixStream::connect(path).with_context(
-            || {
-                format!(
-                    "AMF socket not found at {} — is amf running?",
-                    path.display()
-                )
-            },
-        )?;
-    writeln!(stream, "{payload}")
-        .context("Failed to write to AMF socket")?;
-    stream
-        .flush()
-        .context("Failed to flush AMF socket")?;
+    let mut stream = std::os::unix::net::UnixStream::connect(path).with_context(|| {
+        format!(
+            "AMF socket not found at {} — is amf running?",
+            path.display()
+        )
+    })?;
+    writeln!(stream, "{payload}").context("Failed to write to AMF socket")?;
+    stream.flush().context("Failed to flush AMF socket")?;
     Ok(())
 }
 
 /// Send JSON payload and wait for a single JSON reply on a temporary
 /// callback socket. Adds `request_id` and `reply_socket` fields to
 /// the outbound payload if they are absent.
-pub fn send_wait(
-    path: &Path,
-    payload: &str,
-    timeout: Duration,
-) -> Result<serde_json::Value> {
+pub fn send_wait(path: &Path, payload: &str, timeout: Duration) -> Result<serde_json::Value> {
     use serde_json::json;
     use std::io::BufRead;
 
-    let mut msg: serde_json::Value = serde_json::from_str(payload.trim())
-        .context("Payload must be valid JSON")?;
+    let mut msg: serde_json::Value =
+        serde_json::from_str(payload.trim()).context("Payload must be valid JSON")?;
     let obj = msg
         .as_object_mut()
         .context("Payload must be a JSON object")?;
@@ -350,18 +303,12 @@ pub fn send_wait(
 
     let reply_path = reply_dir().join(format!("{request_id}.sock"));
     if let Some(parent) = reply_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context("Failed to create reply socket directory")?;
+        std::fs::create_dir_all(parent).context("Failed to create reply socket directory")?;
     }
     let _ = std::fs::remove_file(&reply_path);
 
-    let listener =
-        std::os::unix::net::UnixListener::bind(&reply_path).with_context(|| {
-            format!(
-                "Failed to bind reply socket at {}",
-                reply_path.display()
-            )
-        })?;
+    let listener = std::os::unix::net::UnixListener::bind(&reply_path)
+        .with_context(|| format!("Failed to bind reply socket at {}", reply_path.display()))?;
     listener
         .set_nonblocking(true)
         .context("Failed to set reply listener nonblocking")?;
@@ -389,22 +336,17 @@ pub fn send_wait(
                     .read_line(&mut line)
                     .context("Failed to read reply from AMF")?;
                 let reply: serde_json::Value =
-                    serde_json::from_str(line.trim())
-                        .context("Reply was not valid JSON")?;
+                    serde_json::from_str(line.trim()).context("Reply was not valid JSON")?;
                 break Ok(reply);
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if start.elapsed() >= timeout {
-                    break Err(anyhow::anyhow!(
-                        "Timed out waiting for AMF reply"
-                    ));
+                    break Err(anyhow::anyhow!("Timed out waiting for AMF reply"));
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
             Err(e) => {
-                break Err(anyhow::anyhow!(
-                    "Failed waiting for AMF reply: {e}"
-                ));
+                break Err(anyhow::anyhow!("Failed waiting for AMF reply: {e}"));
             }
         }
     };

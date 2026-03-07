@@ -5,22 +5,15 @@ use crate::theme::ThemeManager;
 
 use super::AppConfig;
 
-const NOTIFY_SH: &str =
-    include_str!("../../scripts/notify.sh");
-const CLEAR_NOTIFY_SH: &str =
-    include_str!("../../scripts/clear-notify.sh");
-const SAVE_PROMPT_SH: &str =
-    include_str!("../../scripts/save-prompt.sh");
-const THINKING_START_SH: &str =
-    include_str!("../../scripts/thinking-start.sh");
-const THINKING_STOP_SH: &str =
-    include_str!("../../scripts/thinking-stop.sh");
-const TOOL_START_SH: &str =
-    include_str!("../../scripts/tool-start.sh");
-const TOOL_STOP_SH: &str =
-    include_str!("../../scripts/tool-stop.sh");
-const INPUT_REQUEST_JS: &str =
-    include_str!("../../.opencode/plugins/input-request.js");
+const NOTIFY_SH: &str = include_str!("../../scripts/notify.sh");
+const CLEAR_NOTIFY_SH: &str = include_str!("../../scripts/clear-notify.sh");
+const SAVE_PROMPT_SH: &str = include_str!("../../scripts/save-prompt.sh");
+const THINKING_START_SH: &str = include_str!("../../scripts/thinking-start.sh");
+const THINKING_STOP_SH: &str = include_str!("../../scripts/thinking-stop.sh");
+const TOOL_START_SH: &str = include_str!("../../scripts/tool-start.sh");
+const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
+const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
+const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
@@ -40,44 +33,25 @@ pub fn ensure_notify_scripts() {
         let _ = std::fs::set_permissions(&clear_path, std::fs::Permissions::from_mode(0o755));
     }
     let save_prompt_path = config_dir.join("save-prompt.sh");
-    let thinking_start_path =
-        config_dir.join("thinking-start.sh");
-    let thinking_stop_path =
-        config_dir.join("thinking-stop.sh");
+    let thinking_start_path = config_dir.join("thinking-start.sh");
+    let thinking_stop_path = config_dir.join("thinking-stop.sh");
     let tool_start_path = config_dir.join("tool-start.sh");
     let tool_stop_path = config_dir.join("tool-stop.sh");
     let _ = std::fs::write(&save_prompt_path, SAVE_PROMPT_SH);
-    let _ = std::fs::write(
-        &thinking_start_path,
-        THINKING_START_SH,
-    );
-    let _ =
-        std::fs::write(&thinking_stop_path, THINKING_STOP_SH);
+    let _ = std::fs::write(&thinking_start_path, THINKING_START_SH);
+    let _ = std::fs::write(&thinking_stop_path, THINKING_STOP_SH);
     let _ = std::fs::write(&tool_start_path, TOOL_START_SH);
     let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &save_prompt_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-        let _ = std::fs::set_permissions(
-            &thinking_start_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-        let _ = std::fs::set_permissions(
-            &thinking_stop_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-        let _ = std::fs::set_permissions(
-            &tool_start_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-        let _ = std::fs::set_permissions(
-            &tool_stop_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&save_prompt_path, std::fs::Permissions::from_mode(0o755));
+        let _ =
+            std::fs::set_permissions(&thinking_start_path, std::fs::Permissions::from_mode(0o755));
+        let _ =
+            std::fs::set_permissions(&thinking_stop_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(&tool_start_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(&tool_stop_path, std::fs::Permissions::from_mode(0o755));
     }
     let plugins_dir = config_dir.join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
@@ -88,20 +62,14 @@ pub fn ensure_notify_scripts() {
 /// Refresh opencode plugin files in all known opencode feature
 /// workdirs, so existing sessions/worktrees pick up plugin fixes
 /// without requiring feature recreation.
-pub fn refresh_opencode_plugins_for_store(
-    store: &ProjectStore,
-) -> usize {
+pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
             if !matches!(feature.agent, AgentKind::Opencode) {
                 continue;
             }
-            ensure_opencode_plugins(
-                &feature.workdir,
-                &project.repo,
-                &feature.mode,
-            );
+            ensure_opencode_plugins(&feature.workdir, &project.repo, &feature.mode);
             refreshed += 1;
         }
     }
@@ -276,7 +244,80 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     }
 }
 
-pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, agent: &AgentKind) {
+fn ensure_codex_notify_hook(workdir: &Path) {
+    let codex_dir = workdir.join(".codex");
+    let _ = std::fs::create_dir_all(&codex_dir);
+
+    let hook_path = codex_dir.join("amf-codex-notify.sh");
+    let original_notify_path =
+        codex_dir.join("amf-codex-notify-original.json");
+    let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &hook_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+
+    let config_path = codex_dir.join("config.toml");
+    let mut config = if config_path.exists() {
+        match std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        {
+            Some(v) => v,
+            None => return,
+        }
+    } else {
+        toml::Value::Table(Default::default())
+    };
+
+    let Some(table) = config.as_table_mut() else {
+        return;
+    };
+    let hook_cmd = hook_path.to_string_lossy().to_string();
+    let existing_notify = table.get("notify").and_then(|notify| {
+        if let Some(arr) = notify.as_array() {
+            let values: Option<Vec<String>> = arr
+                .iter()
+                .map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            values.filter(|v| !v.is_empty())
+        } else {
+            notify.as_str().map(|s| vec![s.to_string()])
+        }
+    });
+
+    if let Some(existing) = existing_notify {
+        if existing != vec![hook_cmd.clone()] {
+            if let Ok(rendered) = serde_json::to_string_pretty(&existing) {
+                let _ = std::fs::write(&original_notify_path, rendered);
+            }
+        } else {
+            let _ = std::fs::remove_file(&original_notify_path);
+        }
+    } else {
+        let _ = std::fs::remove_file(&original_notify_path);
+    }
+    table.insert(
+        "notify".to_string(),
+        toml::Value::Array(vec![toml::Value::String(hook_cmd)]),
+    );
+
+    if let Ok(rendered) = toml::to_string_pretty(&config) {
+        let _ = std::fs::write(&config_path, rendered);
+    }
+}
+
+pub fn ensure_notification_hooks(
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+    agent: &AgentKind,
+    is_worktree: bool,
+) {
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Opencode) {
@@ -284,6 +325,9 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         return;
     }
     if matches!(agent, AgentKind::Codex) {
+        if is_worktree {
+            ensure_codex_notify_hook(workdir);
+        }
         return;
     }
 
@@ -351,13 +395,16 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
     let hooks_obj = hooks.as_object_mut().unwrap();
 
     // Stop: clear active thinking + write stop notification.
-    hooks_obj.insert("Stop".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [
-            { "type": "command", "command": thinking_stop_cmd },
-            { "type": "command", "command": notify_cmd }
-        ]
-    }]));
+    hooks_obj.insert(
+        "Stop".to_string(),
+        serde_json::json!([{
+            "matcher": "",
+            "hooks": [
+                { "type": "command", "command": thinking_stop_cmd },
+                { "type": "command", "command": notify_cmd }
+            ]
+        }]),
+    );
 
     // Remove legacy Notification hook (replaced by Stop above).
     hooks_obj.remove("Notification");
@@ -399,21 +446,27 @@ pub fn ensure_notification_hooks(workdir: &Path, repo: &Path, mode: &VibeMode, a
         }]),
     );
 
-    hooks_obj.insert("PostToolUse".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [
-            { "type": "command", "command": tool_stop_cmd }
-        ]
-    }]));
+    hooks_obj.insert(
+        "PostToolUse".to_string(),
+        serde_json::json!([{
+            "matcher": "",
+            "hooks": [
+                { "type": "command", "command": tool_stop_cmd }
+            ]
+        }]),
+    );
 
     // UserPromptSubmit: set thinking + persist latest prompt.
-    hooks_obj.insert("UserPromptSubmit".to_string(), serde_json::json!([{
-        "matcher": "",
-        "hooks": [
-            { "type": "command", "command": thinking_start_cmd },
-            { "type": "command", "command": save_prompt_cmd }
-        ]
-    }]));
+    hooks_obj.insert(
+        "UserPromptSubmit".to_string(),
+        serde_json::json!([{
+            "matcher": "",
+            "hooks": [
+                { "type": "command", "command": thinking_start_cmd },
+                { "type": "command", "command": save_prompt_cmd }
+            ]
+        }]),
+    );
 
     if wants_diff_review {
         let perms = settings

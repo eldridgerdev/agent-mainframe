@@ -9,6 +9,35 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    pub fn toggle_feature_ready(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        feature.ready = !feature.ready;
+        let name = feature.name.clone();
+        let ready = feature.ready;
+        self.save()?;
+        self.message = Some(if ready {
+            format!("Marked '{}' as ready", name)
+        } else {
+            format!("Marked '{}' as not ready", name)
+        });
+
+        Ok(())
+    }
+
     pub fn start_create_feature(&mut self) {
         let (project_name, project_repo, is_first, used_workdirs) = match &self.selection {
             Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
@@ -27,12 +56,14 @@ impl App {
             .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
-        self.mode = AppMode::CreatingFeature(CreateFeatureState::new(
-            project_name,
-            project_repo,
-            worktrees,
-            is_first,
-        ));
+        let mut state =
+            CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
+        self.active_extension = self.extension_for_repo(&project_repo);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+
+        self.mode = AppMode::CreatingFeature(state);
         self.message = None;
     }
 
@@ -59,6 +90,14 @@ impl App {
 
         if branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &state.agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                state.agent.display_name()
+            ));
             return Ok(());
         }
 
@@ -225,7 +264,13 @@ impl App {
             None => return Ok(()),
         };
 
-        ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        ensure_notification_hooks(
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
+            feature.is_worktree,
+        );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
@@ -785,10 +830,8 @@ impl App {
             None => return,
         };
 
-        let agent_index = AgentKind::ALL
-            .iter()
-            .position(|a| *a == feature.agent)
-            .unwrap_or(0);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &feature.agent);
+        self.active_extension = self.extension_for_repo(&project_repo);
 
         let state = ForkFeatureState {
             source_pi: pi,
@@ -798,7 +841,7 @@ impl App {
             source_branch: feature.branch.clone(),
             new_branch: format!("{}-fork", feature.branch),
             step: ForkFeatureStep::Branch,
-            agent: feature.agent.clone(),
+            agent,
             agent_index,
             mode: feature.mode.clone(),
             review: feature.review,
@@ -836,6 +879,14 @@ impl App {
 
         if new_branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                agent.display_name()
+            ));
             return Ok(());
         }
 
@@ -1075,6 +1126,14 @@ impl App {
 
         if !is_git {
             self.message = Some("Error: Batch features require a git repository".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                agent.display_name()
+            ));
             return Ok(());
         }
 

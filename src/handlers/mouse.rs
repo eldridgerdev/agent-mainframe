@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
 use crate::app::{App, AppMode, Selection, VisibleItem};
@@ -61,9 +61,13 @@ fn handle_click(
 
             let pending = app.pending_inputs.len();
             if pending > 0 {
-                let inputs_text = format!(" | {} input{}", pending, if pending == 1 { "" } else { "s" });
+                let inputs_text = format!(
+                    " | {} input{}",
+                    pending,
+                    if pending == 1 { "" } else { "s" }
+                );
                 let inputs_len = inputs_text.len() as u16;
-                
+
                 let mut header_len = 2;
                 header_len += view.project_name.len() as u16 + 1;
                 header_len += view.feature_name.len() as u16 + 2;
@@ -78,7 +82,7 @@ fn handle_click(
                     header_len += 9;
                 }
                 header_len += 17;
-                
+
                 let inputs_start = header_len;
                 let inputs_end = inputs_start + inputs_len;
                 if col >= inputs_start && col < inputs_end {
@@ -88,7 +92,7 @@ fn handle_click(
             }
             return Ok(());
         }
-        
+
         if button == MouseButton::Left && row > 0 {
             app.message = None;
             let content_row = row - 1;
@@ -113,7 +117,11 @@ fn handle_click(
             .unwrap_or_default();
         let prefix_len = 19 + cwd.len() as u16;
         let pending = app.pending_inputs.len();
-        let badge_text = format!("  [{} input request{}]", pending, if pending == 1 { "" } else { "s" });
+        let badge_text = format!(
+            "  [{} input request{}]",
+            pending,
+            if pending == 1 { "" } else { "s" }
+        );
         let badge_start = prefix_len;
         let badge_end = badge_start + badge_text.len() as u16;
         if col >= badge_start && col < badge_end {
@@ -134,6 +142,7 @@ fn handle_click(
             | AppMode::OpencodeSessionPicker(_)
             | AppMode::ConfirmingOpencodeSession { .. }
             | AppMode::SessionPicker(_)
+            | AppMode::BookmarkPicker(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)
@@ -288,31 +297,40 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-fn extract_selected_text(content: &str, selection: &crate::app::TextSelection, rows: u16, cols: u16) -> String {
+fn extract_selected_text(
+    content: &str,
+    selection: &crate::app::TextSelection,
+    rows: u16,
+    cols: u16,
+) -> String {
     let (start_row, start_col, end_row, end_col) = selection.normalized();
-    
+
     if rows == 0 || cols == 0 {
         return String::new();
     }
-    
+
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let normalized = content.replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
-    
+
     let mut result = String::new();
-    
+
     for row in start_row..=end_row.min(rows.saturating_sub(1)) {
         let col_start = if row == start_row { start_col } else { 0 };
-        let col_end = if row == end_row { end_col.min(cols) } else { cols };
-        
+        let col_end = if row == end_row {
+            end_col.min(cols)
+        } else {
+            cols
+        };
+
         let mut line_text = String::new();
         for col in col_start..col_end {
             if let Some(cell) = screen.cell(row, col) {
                 line_text.push_str(&cell.contents());
             }
         }
-        
+
         let trimmed = line_text.trim_end();
         if !trimmed.is_empty() || row != end_row.min(rows.saturating_sub(1)) {
             result.push_str(trimmed);
@@ -321,6 +339,6 @@ fn extract_selected_text(content: &str, selection: &crate::app::TextSelection, r
             }
         }
     }
-    
+
     result
 }

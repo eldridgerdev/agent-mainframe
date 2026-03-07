@@ -20,6 +20,7 @@ pub fn draw_create_feature_dialog(
     frame: &mut Frame,
     state: &CreateFeatureState,
     presets: &[FeaturePreset],
+    allowed_agents: &[AgentKind],
     theme: &Theme,
 ) {
     match state.step {
@@ -33,7 +34,7 @@ pub fn draw_create_feature_dialog(
             draw_create_feature_preset_picker(frame, state, presets, theme);
         }
         _ => {
-            draw_create_feature_branch_mode(frame, state, theme);
+            draw_create_feature_branch_mode(frame, state, allowed_agents, theme);
         }
     }
 }
@@ -293,7 +294,12 @@ fn draw_create_feature_worktree_picker(
     frame.render_widget(hints, chunks[1]);
 }
 
-fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
+fn draw_create_feature_branch_mode(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    allowed_agents: &[AgentKind],
+    theme: &Theme,
+) {
     let area = centered_rect(60, 70, frame.area());
     frame.render_widget(Clear, area);
 
@@ -397,7 +403,7 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
 
-    for (i, agent) in AgentKind::ALL.iter().enumerate() {
+    for (i, agent) in allowed_agents.iter().enumerate() {
         let is_selected = i == state.agent_index;
         let marker = if is_selected { ">" } else { " " };
         let style = if agent_active && is_selected {
@@ -832,7 +838,12 @@ pub fn draw_deleting_feature_dialog(
     frame.render_widget(hints, chunks[3]);
 }
 
-pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState, theme: &Theme) {
+pub fn draw_fork_feature_dialog(
+    frame: &mut Frame,
+    state: &ForkFeatureState,
+    allowed_agents: &[AgentKind],
+    theme: &Theme,
+) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
 
@@ -893,7 +904,7 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState, the
 
     let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
 
-    for (i, agent) in AgentKind::ALL.iter().enumerate() {
+    for (i, agent) in allowed_agents.iter().enumerate() {
         let is_selected = i == state.agent_index;
         let marker = if is_selected { ">" } else { " " };
         let style = if agent_active && is_selected {

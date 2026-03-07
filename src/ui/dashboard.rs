@@ -128,6 +128,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::BookmarkPicker(state) = &app.mode
+        && state.from_view.is_some()
+    {
+        let view = state.from_view.as_ref().unwrap();
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        let rows = app.bookmark_picker_rows();
+        super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
+        return;
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode
         && let RenameReturnTo::SessionSwitcher(ref sw) = state.return_to
     {
@@ -182,8 +200,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
-                let presets = app.active_extension.feature_presets.as_slice();
-                super::dialogs::draw_create_feature_dialog(frame, state, presets, &app.theme);
+                let presets = app.active_extension.allowed_feature_presets();
+                let allowed_agents = app.active_extension.allowed_agents();
+                super::dialogs::draw_create_feature_dialog(
+                    frame,
+                    state,
+                    presets.as_slice(),
+                    allowed_agents.as_slice(),
+                    &app.theme,
+                );
             }
         }
         AppMode::CreatingBatchFeatures(state) => {
@@ -250,6 +275,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }
 
+    if let AppMode::BookmarkPicker(state) = &app.mode {
+        let rows = app.bookmark_picker_rows();
+        super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
+    }
+
     if let AppMode::ChangeReasonPrompt(state) = &app.mode {
         super::dialogs::draw_change_reason_dialog(frame, state, &app.theme);
     }
@@ -267,7 +297,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::ForkingFeature(state) = &app.mode {
-        super::dialogs::draw_fork_feature_dialog(frame, state, &app.theme);
+        let allowed_agents = app.active_extension.allowed_agents();
+        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice(), &app.theme);
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {

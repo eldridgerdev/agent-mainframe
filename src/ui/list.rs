@@ -215,19 +215,26 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = format!(" {} ", span.content).into();
                         span
                     } else {
-                        match feature.status {
-                            ProjectStatus::Active => Span::styled(
-                                " ● ",
-                                Style::default().fg(theme.status_active.to_color()),
-                            ),
-                            ProjectStatus::Idle => Span::styled(
-                                " ○ ",
-                                Style::default().fg(theme.status_idle.to_color()),
-                            ),
-                            ProjectStatus::Stopped => Span::styled(
-                                " ■ ",
-                                Style::default().fg(theme.status_stopped.to_color()),
-                            ),
+                        if feature.ready {
+                            Span::styled(
+                                " ✓ ",
+                                Style::default().fg(theme.success.to_color()).add_modifier(Modifier::BOLD),
+                            )
+                        } else {
+                            match feature.status {
+                                ProjectStatus::Active => Span::styled(
+                                    " ● ",
+                                    Style::default().fg(theme.status_active.to_color()),
+                                ),
+                                ProjectStatus::Idle => Span::styled(
+                                    " ○ ",
+                                    Style::default().fg(theme.status_idle.to_color()),
+                                ),
+                                ProjectStatus::Stopped => Span::styled(
+                                    " ■ ",
+                                    Style::default().fg(theme.status_stopped.to_color()),
+                                ),
+                            }
                         }
                     };
 
@@ -292,6 +299,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(format!("{} ", collapse_icon), Style::default().fg(muted)),
                         Span::styled(display_name, name_style),
                     ];
+                    if !feature.is_worktree {
+                        line_spans.push(Span::styled(
+                            " [repo]",
+                            Style::default()
+                                .fg(theme.warning.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     if feature.nickname.is_some() {
                         line_spans.push(Span::styled(
                             format!(" ({})", feature.branch),

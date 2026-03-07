@@ -92,8 +92,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command
-    {
+    if let Some(Commands::NotifyWait { timeout_ms }) = cli.command {
         use std::io::Read;
         let mut payload = String::new();
         std::io::stdin().read_to_string(&mut payload)?;
@@ -102,15 +101,10 @@ fn main() -> Result<()> {
             return Ok(());
         }
         let socket = ipc::socket_path();
-        let reply = ipc::send_wait(
-            &socket,
-            payload,
-            Duration::from_millis(timeout_ms),
-        )?;
+        let reply = ipc::send_wait(&socket, payload, Duration::from_millis(timeout_ms))?;
         println!(
             "{}",
-            serde_json::to_string(&reply)
-                .unwrap_or_else(|_| "{}".to_string())
+            serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())
         );
         return Ok(());
     }
@@ -126,25 +120,17 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
-    let refreshed =
-        app::setup::refresh_opencode_plugins_for_store(
-            &app.store,
-        );
+    let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
     app.log_info(
         "setup",
-        format!(
-            "Refreshed opencode plugins for {refreshed} feature(s)"
-        ),
+        format!("Refreshed opencode plugins for {refreshed} feature(s)"),
     );
 
     // Start IPC socket server for push-based hook notifications.
     let socket = ipc::socket_path();
     match ipc::start(&socket) {
         Ok(guard) => {
-            app.log_info(
-                "ipc",
-                format!("Socket listening at {}", socket.display()),
-            );
+            app.log_info("ipc", format!("Socket listening at {}", socket.display()));
             app.ipc = Some(guard);
         }
         Err(e) => {
@@ -280,6 +266,8 @@ pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
+    let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
+    let mut last_claude_usage_debug: Option<String> = None;
     // Only used when no IPC socket is available (fallback).
     let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> = None;
@@ -368,6 +356,45 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             }
             app.sync_session_status();
             app.usage.refresh();
+            let usage = app.usage.get_data();
+            let key = (
+                usage.codex.five_hour_usage_pct.map(|v| v.round() as i64),
+                usage.codex.weekly_usage_pct.map(|v| v.round() as i64),
+                usage.codex.today_tokens,
+                usage.codex.today_calls,
+            );
+            if last_usage_debug != Some(key) {
+                app.log_debug(
+                    "usage",
+                    format!(
+                        "codex 5h_pct={:?} 7d_pct={:?} today_tokens={} calls={} 5h_tokens={}",
+                        usage.codex.five_hour_usage_pct,
+                        usage.codex.weekly_usage_pct,
+                        usage.codex.today_tokens,
+                        usage.codex.today_calls,
+                        usage.codex.five_hour_tokens
+                    ),
+                );
+                last_usage_debug = Some(key);
+            }
+            let claude_summary = format!(
+                "claude 5h_pct={:?} 7d_pct={:?} 5h_reset={:?} 7d_reset={:?} sub={:?} err={:?} today_msgs={} today_tokens={}",
+                usage.claude.five_hour_pct,
+                usage.claude.seven_day_pct,
+                usage.claude.five_hour_resets,
+                usage.claude.seven_day_resets,
+                usage.claude.subscription_type,
+                usage.claude.last_error,
+                usage.claude.today_messages,
+                usage.claude.today_tokens
+            );
+            if last_claude_usage_debug.as_ref() != Some(&claude_summary) {
+                app.log_debug("usage", claude_summary.clone());
+                if let Some(err) = &usage.claude.last_error {
+                    app.log_warn("usage", format!("claude usage error: {err}"));
+                }
+                last_claude_usage_debug = Some(claude_summary);
+            }
             last_sync = std::time::Instant::now();
         }
 

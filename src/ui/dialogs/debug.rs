@@ -1,9 +1,10 @@
 use ratatui::{
     Frame,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
+    widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
 use super::super::dashboard::centered_rect;
 use crate::debug::{DebugLog, LogLevel};
@@ -65,17 +66,6 @@ pub fn draw_debug_log(
         })
         .collect();
 
-    let total_lines = entries.len();
-    let visible_lines = inner.height.saturating_sub(2) as usize;
-    let max_scroll = total_lines.saturating_sub(visible_lines);
-    let scroll_offset = scroll_offset.min(max_scroll);
-
-    let visible_entries: Vec<Line> = entries
-        .into_iter()
-        .skip(scroll_offset)
-        .take(visible_lines)
-        .collect();
-
     let content_area = {
         use ratatui::layout::{Constraint, Direction, Layout};
         let chunks = Layout::default()
@@ -85,15 +75,28 @@ pub fn draw_debug_log(
         chunks[0]
     };
 
-    let paragraph = Paragraph::new(visible_entries);
+    let visible_lines = content_area.height as usize;
+    let mut wrap_width = content_area.width as usize;
+    let mut total_visual_lines = count_wrapped_lines(debug_log, wrap_width);
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        // Reserve one column for the scrollbar and recompute wrapped height.
+        wrap_width -= 1;
+        total_visual_lines = count_wrapped_lines(debug_log, wrap_width);
+    }
+    let max_scroll = total_visual_lines.saturating_sub(visible_lines);
+    let scroll_offset = scroll_offset.min(max_scroll);
+
+    let paragraph = Paragraph::new(entries)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_offset.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, content_area);
 
-    if total_lines > visible_lines {
+    if total_visual_lines > visible_lines {
         let scrollbar = Scrollbar::default()
             .orientation(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
-        let mut scrollbar_state = ScrollbarState::new(total_lines)
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
             .position(scroll_offset)
             .viewport_content_length(visible_lines);
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
@@ -117,4 +120,25 @@ pub fn draw_debug_log(
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
     frame.render_widget(hint_paragraph, chunks[1]);
+}
+
+fn count_wrapped_lines(debug_log: &DebugLog, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    debug_log
+        .entries()
+        .iter()
+        .map(|entry| {
+            let line = format!(
+                "{} [{:<5}] {}: {}",
+                entry.timestamp.format("%H:%M:%S%.3f"),
+                entry.level.display(),
+                entry.context,
+                entry.message
+            );
+            UnicodeWidthStr::width(line.as_str()).max(1).div_ceil(width)
+        })
+        .sum()
 }

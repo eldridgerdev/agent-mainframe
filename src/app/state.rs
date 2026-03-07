@@ -163,6 +163,12 @@ pub struct ClaudeSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Clone)]
+pub struct BookmarkPickerState {
+    pub selected: usize,
+    pub from_view: Option<ViewState>,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -189,6 +195,7 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    BookmarkPicker(BookmarkPickerState),
     SessionPicker(SessionPickerState),
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),

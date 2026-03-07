@@ -27,6 +27,7 @@ impl std::fmt::Display for ProjectStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionKind {
+    #[serde(alias = "codex")]
     Claude,
     Opencode,
     Codex,
@@ -40,6 +41,7 @@ pub enum SessionKind {
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {
     #[default]
+    #[serde(alias = "codex")]
     Claude,
     Opencode,
     Codex,
@@ -174,6 +176,8 @@ pub struct Feature {
     pub enable_chrome: bool,
     #[serde(default)]
     pub has_notes: bool,
+    #[serde(default)]
+    pub ready: bool,
     pub status: ProjectStatus,
     pub created_at: DateTime<Utc>,
     pub last_accessed: DateTime<Utc>,
@@ -214,6 +218,7 @@ impl Feature {
             agent,
             enable_chrome,
             has_notes,
+            ready: false,
             status: ProjectStatus::Stopped,
             created_at: now,
             last_accessed: now,
@@ -360,10 +365,23 @@ impl Project {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionBookmark {
+    pub project_id: String,
+    pub feature_id: String,
+    pub session_id: String,
+}
+
+fn default_session_bookmarks() -> Vec<SessionBookmark> {
+    Vec::new()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectStore {
     pub version: u32,
     pub projects: Vec<Project>,
+    #[serde(default = "default_session_bookmarks")]
+    pub session_bookmarks: Vec<SessionBookmark>,
 }
 
 // --- V1 types for migration ---
@@ -428,6 +446,7 @@ impl ProjectStore {
             return Ok(Self {
                 version: 4,
                 projects: Vec::new(),
+                session_bookmarks: default_session_bookmarks(),
             });
         }
         let data = fs::read_to_string(path)
@@ -490,6 +509,7 @@ impl ProjectStore {
         Self {
             version: 3,
             projects: v2.projects,
+            session_bookmarks: default_session_bookmarks(),
         }
     }
 
@@ -498,6 +518,7 @@ impl ProjectStore {
         Self {
             version: 4,
             projects: v3.projects,
+            session_bookmarks: default_session_bookmarks(),
         }
     }
 
@@ -607,6 +628,7 @@ impl ProjectStore {
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
+                            ready: false,
                             status: f.status,
                             created_at: f.created_at,
                             last_accessed: f.last_accessed,
@@ -631,6 +653,7 @@ impl ProjectStore {
         Self {
             version: 2,
             projects,
+            session_bookmarks: default_session_bookmarks(),
         }
     }
 
@@ -730,6 +753,7 @@ mod tests {
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,
+            ready: false,
             status: ProjectStatus::Stopped,
             created_at: Utc::now(),
             last_accessed: Utc::now(),
@@ -754,6 +778,7 @@ mod tests {
                 created_at: Utc::now(),
                 is_git: true,
             }],
+            session_bookmarks: vec![],
         };
         let tmp = NamedTempFile::new().unwrap();
         store.save(tmp.path()).unwrap();

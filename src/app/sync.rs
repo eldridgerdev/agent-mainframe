@@ -5,6 +5,17 @@ use crate::tmux::TmuxManager;
 
 use chrono::Utc;
 
+pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    [
+        "esc interrupt",
+        "esc to interrupt",
+        "ctrl+c to interrupt",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
@@ -60,7 +71,7 @@ impl App {
                             self.ipc_thinking_sessions.contains(&feature.tmux_session)
                                 || self.ipc_tool_sessions.contains(&feature.tmux_session)
                         } else {
-                            Self::is_claude_thinking(&feature.tmux_session)
+                            Self::is_session_marked_thinking(&feature.tmux_session)
                         }
                     }
                     AgentKind::Opencode => {
@@ -73,13 +84,18 @@ impl App {
                                 TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
                                     .ok()
                             })
-                            .map(|content| {
-                                let lower = content.to_lowercase();
-                                lower.contains("esc interrupt")
-                            })
+                            .map(|content| pane_shows_thinking_hint(&content))
                             .unwrap_or(false)
                     }
-                    AgentKind::Codex => false,
+                    AgentKind::Codex => {
+                        if ipc_mode {
+                            self.ipc_thinking_sessions
+                                .contains(&feature.tmux_session)
+                        } else {
+                            // Fallback when IPC is unavailable.
+                            Self::is_session_marked_thinking(&feature.tmux_session)
+                        }
+                    }
                 };
                 if thinking {
                     self.thinking_features.insert(feature.tmux_session.clone());
@@ -168,7 +184,7 @@ impl App {
         }
     }
 
-    fn is_claude_thinking(tmux_session: &str) -> bool {
+    fn is_session_marked_thinking(tmux_session: &str) -> bool {
         let path_str = format!("/tmp/amf-thinking/{}", tmux_session);
         let path = std::path::Path::new(&path_str);
         if !path.exists() {
@@ -207,6 +223,55 @@ impl App {
 
     pub fn is_feature_thinking(&self, tmux_session: &str) -> bool {
         self.thinking_features.contains(tmux_session)
+    }
+
+    pub(crate) fn note_codex_prompt_submit(&mut self, tmux_session: &str, tmux_window: &str) {
+        let mut matched: Option<(String, String)> = None;
+        for project in &self.store.projects {
+            for feature in &project.features {
+                if feature.tmux_session != tmux_session
+                    || feature.agent != AgentKind::Codex
+                    || !feature.is_worktree
+                {
+                    continue;
+                }
+                let has_codex_window = feature
+                    .sessions
+                    .iter()
+                    .any(|s| s.kind == SessionKind::Codex && s.tmux_window == tmux_window);
+                if has_codex_window {
+                    matched = Some((project.name.clone(), feature.name.clone()));
+                    break;
+                }
+            }
+            if matched.is_some() {
+                break;
+            }
+        }
+
+        if let Some((project_name, feature_name)) = matched {
+            self.ipc_thinking_sessions.insert(tmux_session.to_string());
+            self.pending_inputs.retain(|p| {
+                !(p.notification_type == "input-request"
+                    && p.project_name.as_deref() == Some(&project_name)
+                    && p.feature_name.as_deref() == Some(&feature_name))
+            });
+            self.log_debug(
+                "ipc",
+                format!(
+                    "Codex prompt submit captured locally; marked thinking (session={}, feature={})",
+                    tmux_session, feature_name
+                ),
+            );
+        } else {
+            self.log_debug(
+                "ipc",
+                format!(
+                    "Ignored codex prompt submit marker for non-worktree/non-codex window (session={}, window={})",
+                    tmux_session, tmux_window
+                ),
+            );
+        }
     }
 
     pub fn is_feature_waiting_for_input(&self, feature_name: &str) -> bool {

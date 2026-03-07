@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 use crate::app::AppMode;
+use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
 enum TmuxKey {
@@ -80,6 +81,21 @@ pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Resul
         };
         if let Err(e) = result {
             app.show_error(e);
+        } else if key.code == KeyCode::Enter
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+        {
+            let is_codex_window = app
+                .store
+                .projects
+                .iter()
+                .flat_map(|p| p.features.iter())
+                .filter(|f| f.tmux_session == session)
+                .flat_map(|f| f.sessions.iter())
+                .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
+            if is_codex_window {
+                app.note_codex_prompt_submit(&session, &window);
+            }
         }
     }
 
@@ -203,6 +219,26 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('w') => {
             app.open_session_switcher();
+        }
+        KeyCode::Char('h') => {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_bookmark_picker(Some(view_state));
+        }
+        KeyCode::Char('H') => {
+            app.bookmark_current_session()?;
+        }
+        KeyCode::Char('M') => {
+            app.unbookmark_current_session()?;
+        }
+        KeyCode::Char(c @ '1'..='9') => {
+            let slot = (c as u8 - b'0') as usize;
+            app.jump_to_bookmark(slot)?;
         }
         KeyCode::Char('/') => {
             let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {

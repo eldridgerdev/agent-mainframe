@@ -142,6 +142,16 @@ pub struct RenameFeatureState {
     pub input: String,
 }
 
+pub struct SessionConfigState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub project_name: String,
+    pub feature_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
@@ -182,6 +192,7 @@ pub enum AppMode {
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
     RenamingFeature(RenameFeatureState),
+    SessionConfig(SessionConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),

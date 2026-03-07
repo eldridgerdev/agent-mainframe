@@ -11,6 +11,7 @@ mod project_ops;
 mod rename;
 mod review;
 mod search;
+mod session_config;
 mod session_ops;
 pub mod setup;
 mod state;

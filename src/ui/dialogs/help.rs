@@ -45,6 +45,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
+        ("u", "Update worktree session config"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
         ("y", "Toggle mark feature as ready"),

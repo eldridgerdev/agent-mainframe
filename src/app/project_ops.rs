@@ -129,9 +129,8 @@ impl App {
     }
 
     pub fn show_error(&mut self, error: anyhow::Error) {
-        let msg = format!("Error: {}", error);
-        self.message = Some(msg.clone());
-        self.debug_log.error("app", msg);
+        let detail = error.to_string();
+        self.report_logged_error("app", format!("Error: {}", detail));
         match &self.mode {
             AppMode::Normal | AppMode::Help(_) | AppMode::Viewing(_) => {}
             _ => {

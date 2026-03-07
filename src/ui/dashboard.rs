@@ -298,7 +298,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::ForkingFeature(state) = &app.mode {
         let allowed_agents = app.active_extension.allowed_agents();
-        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice(), &app.theme);
+        super::dialogs::draw_fork_feature_dialog(
+            frame,
+            state,
+            allowed_agents.as_slice(),
+            &app.theme,
+        );
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {

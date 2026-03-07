@@ -30,6 +30,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
 use app::App;
@@ -114,6 +115,7 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    debug::install_panic_hook();
     cleanup_global_hooks();
     app::App::cleanup_stale_thinking_files();
 
@@ -162,7 +164,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &mut app);
+    let result = panic::catch_unwind(AssertUnwindSafe(|| run_loop(&mut terminal, &mut app)));
 
     disable_raw_mode()?;
     execute!(
@@ -177,7 +179,13 @@ fn main() -> Result<()> {
         TmuxManager::attach_session(session)?;
     }
 
-    result
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!(
+            "AMF panicked; see {}",
+            debug::global_log_path().display()
+        )),
+    }
 }
 
 /// Merges AMF thinking-detection hooks into ~/.claude/settings.json.
@@ -338,6 +346,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             && let Err(e) = app.poll_background_hooks()
         {
             app.show_error(e);
+        }
+
+        if let Some(alert) = debug::take_user_alert() {
+            app.message = Some(alert);
         }
 
         terminal.draw(|frame| ui::draw(frame, app))?;

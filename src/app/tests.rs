@@ -690,20 +690,9 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
-fn call_ensure_hooks_for(
-    workdir: &TempDir,
-    mode: VibeMode,
-    agent: AgentKind,
-    is_worktree: bool,
-) {
+fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is_worktree: bool) {
     let repo = workdir.path(); // repo = workdir in tests
-    ensure_notification_hooks(
-        workdir.path(),
-        repo,
-        &mode,
-        &agent,
-        is_worktree,
-    );
+    ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
@@ -876,23 +865,13 @@ fn ensure_hooks_is_idempotent() {
 fn codex_hooks_are_injected_for_worktree_only() {
     let workdir = TempDir::new().unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        false,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, false);
     assert!(
         !workdir.path().join(".codex").join("config.toml").exists(),
         "non-worktree codex feature should not get local codex config"
     );
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
     assert!(
         workdir.path().join(".codex").join("config.toml").exists(),
         "worktree codex feature should get local codex config"
@@ -915,12 +894,7 @@ fn codex_hook_merges_existing_notify_entries() {
     let cfg = codex_dir.join("config.toml");
     std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
 
     let rendered = std::fs::read_to_string(&cfg).unwrap();
     let parsed: toml::Value = toml::from_str(&rendered).unwrap();
@@ -1332,15 +1306,9 @@ fn bookmark_add_and_remove_current_session() {
 fn jump_to_bookmark_enters_view_for_slot() {
     let store = store_with_single_claude_session();
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists()
-        .times(1)
-        .returning(|_| true);
+    tmux.expect_session_exists().times(1).returning(|_| true);
 
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();

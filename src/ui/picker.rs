@@ -280,13 +280,22 @@ pub fn draw_bookmark_picker(
             "  j/k or \u{2191}/\u{2193}",
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::styled(" navigate  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(" jump  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("d", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" remove  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " remove  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("1-9", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" quick jump  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " quick jump  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
     ]));

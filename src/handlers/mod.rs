@@ -32,9 +32,10 @@ pub use input::handle_paste;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
 pub use picker::{
-    handle_bookmark_picker_key, handle_claude_session_confirm_key, handle_claude_session_picker_key,
-    handle_command_picker_key, handle_notification_picker_key, handle_opencode_session_confirm_key,
-    handle_opencode_session_picker_key, handle_session_picker_key, handle_session_switcher_key,
+    handle_bookmark_picker_key, handle_claude_session_confirm_key,
+    handle_claude_session_picker_key, handle_command_picker_key, handle_notification_picker_key,
+    handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
+    handle_session_picker_key, handle_session_switcher_key,
 };
 pub use search::handle_search_key;
 pub use view::handle_view_key;

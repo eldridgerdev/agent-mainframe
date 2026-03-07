@@ -1,4 +1,4 @@
-use crate::debug::{LogLevel, log_to_file};
+use crate::debug::{LogLevel, log_to_file, set_user_alert};
 use chrono::{Datelike, TimeZone};
 use serde::Deserialize;
 use serde_json::Value;
@@ -353,12 +353,41 @@ impl UsageManager {
             let monthly = self.zai_monthly_limit;
             let weekly = self.zai_weekly_limit;
             let five_hour = self.zai_five_hour_limit;
-            std::thread::spawn(move || {
-                fetch_rate_limits(&data);
-                if zai_enabled {
-                    fetch_zai_usage(&data, monthly, weekly, five_hour);
-                }
-            });
+            let spawn = std::thread::Builder::new()
+                .name("usage-refresh".to_string())
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        fetch_rate_limits(&data);
+                        if zai_enabled {
+                            fetch_zai_usage(&data, monthly, weekly, five_hour);
+                        }
+                    }));
+
+                    if result.is_err() {
+                        let mut d = data.lock().unwrap();
+                        d.claude.last_error = Some("usage refresh thread panicked".to_string());
+                        if zai_enabled {
+                            d.zai.last_error = Some("usage refresh thread panicked".to_string());
+                        }
+                        log_to_file(
+                            LogLevel::Error,
+                            "usage",
+                            "usage-refresh thread panicked; see panic log entry for details",
+                        );
+                        set_user_alert(
+                            "Error: Usage refresh failed. Check debug log for details.".to_string(),
+                        );
+                    }
+                });
+
+            if let Err(err) = spawn {
+                log_to_file(
+                    LogLevel::Error,
+                    "usage",
+                    &format!("failed to spawn usage-refresh thread: {err}"),
+                );
+                set_user_alert("Error: Usage refresh failed. Check debug log for details.".into());
+            }
         }
     }
 

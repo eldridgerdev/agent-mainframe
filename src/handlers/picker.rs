@@ -410,16 +410,10 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_bookmark_picker_key(
-    app: &mut App,
-    key: KeyCode,
-) -> Result<()> {
+pub fn handle_bookmark_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
-            let old_mode = std::mem::replace(
-                &mut app.mode,
-                AppMode::Normal,
-            );
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::BookmarkPicker(state) = old_mode
                 && let Some(view) = state.from_view
             {
@@ -427,20 +421,15 @@ pub fn handle_bookmark_picker_key(
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if let AppMode::BookmarkPicker(ref mut state) =
-                app.mode
-            {
+            if let AppMode::BookmarkPicker(ref mut state) = app.mode {
                 let len = app.store.session_bookmarks.len();
                 if len > 0 {
-                    state.selected =
-                        (state.selected + 1) % len;
+                    state.selected = (state.selected + 1) % len;
                 }
             }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            if let AppMode::BookmarkPicker(ref mut state) =
-                app.mode
-            {
+            if let AppMode::BookmarkPicker(ref mut state) = app.mode {
                 let len = app.store.session_bookmarks.len();
                 if len > 0 {
                     state.selected = if state.selected == 0 {
@@ -452,12 +441,9 @@ pub fn handle_bookmark_picker_key(
             }
         }
         KeyCode::Enter => {
-            let slot = if let AppMode::BookmarkPicker(state) =
-                &app.mode
-            {
+            let slot = if let AppMode::BookmarkPicker(state) = &app.mode {
                 if app.store.session_bookmarks.is_empty() {
-                    app.message =
-                        Some("No bookmarks yet".into());
+                    app.message = Some("No bookmarks yet".into());
                     return Ok(());
                 }
                 state.selected + 1
@@ -467,12 +453,9 @@ pub fn handle_bookmark_picker_key(
             app.jump_to_bookmark(slot)?;
         }
         KeyCode::Char('d') | KeyCode::Delete => {
-            let slot = if let AppMode::BookmarkPicker(state) =
-                &app.mode
-            {
+            let slot = if let AppMode::BookmarkPicker(state) = &app.mode {
                 if app.store.session_bookmarks.is_empty() {
-                    app.message =
-                        Some("No bookmarks to remove".into());
+                    app.message = Some("No bookmarks to remove".into());
                     return Ok(());
                 }
                 state.selected + 1

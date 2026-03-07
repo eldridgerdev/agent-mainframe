@@ -46,6 +46,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect) {
         ("r", "Rename session"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
+        ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),

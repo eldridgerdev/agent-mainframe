@@ -153,7 +153,7 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 use crate::project::{AgentKind, Feature, Project};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use tempfile::NamedTempFile;
 
 /// Build a minimal `ProjectStore` with one project and one
@@ -248,6 +248,78 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
         app.store.projects[0].features[0].status,
         ProjectStatus::Idle
     );
+}
+
+#[test]
+fn visible_items_prioritizes_non_worktree_features() {
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![
+            Feature {
+                id: "feat-worktree".to_string(),
+                name: "worktree-newer".to_string(),
+                branch: "worktree-newer".to_string(),
+                workdir: PathBuf::from("/tmp/test-repo/.worktrees/worktree-newer"),
+                is_worktree: true,
+                tmux_session: "amf-worktree-newer".to_string(),
+                sessions: vec![],
+                collapsed: false,
+                mode: VibeMode::default(),
+                review: false,
+                agent: AgentKind::default(),
+                enable_chrome: false,
+                has_notes: false,
+                status: ProjectStatus::Stopped,
+                created_at: now + Duration::minutes(1),
+                last_accessed: now + Duration::minutes(1),
+                summary: None,
+                summary_updated_at: None,
+                nickname: None,
+            },
+            Feature {
+                id: "feat-repo".to_string(),
+                name: "repo-older".to_string(),
+                branch: "repo-older".to_string(),
+                workdir: PathBuf::from("/tmp/test-repo"),
+                is_worktree: false,
+                tmux_session: "amf-repo-older".to_string(),
+                sessions: vec![],
+                collapsed: false,
+                mode: VibeMode::default(),
+                review: false,
+                agent: AgentKind::default(),
+                enable_chrome: false,
+                has_notes: false,
+                status: ProjectStatus::Stopped,
+                created_at: now,
+                last_accessed: now,
+                summary: None,
+                summary_updated_at: None,
+                nickname: None,
+            },
+        ],
+        created_at: now,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+    };
+
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let visible = app.visible_items();
+
+    assert!(matches!(visible[0], VisibleItem::Project(0)));
+    assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
+    assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
 }
 
 // ── create_feature validation ─────────────────────────────────
@@ -407,8 +479,7 @@ fn stop_hook_has_thinking_stop_and_notify() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-stop.sh")),
+        cmds.iter().any(|c| c.contains("thinking-stop.sh")),
         "Stop hook missing thinking-stop.sh; got: {cmds:?}"
     );
     assert!(
@@ -424,13 +495,11 @@ fn pre_tool_use_hook_has_thinking_tool_and_clear() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-start.sh")),
+        cmds.iter().any(|c| c.contains("thinking-start.sh")),
         "PreToolUse missing thinking-start.sh; got: {cmds:?}"
     );
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("tool-start.sh")),
+        cmds.iter().any(|c| c.contains("tool-start.sh")),
         "PreToolUse missing tool-start.sh; got: {cmds:?}"
     );
     assert!(

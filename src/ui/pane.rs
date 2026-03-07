@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::{Position, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
-    Frame,
 };
 
-use crate::app::{ViewState, TextSelection};
+use crate::app::{TextSelection, ViewState};
 use crate::project::VibeMode;
 use crate::theme::Theme;
 
@@ -75,9 +75,10 @@ pub fn draw(
                 "[vibeless] ",
                 Style::default().fg(theme.mode_vibeless.to_color()),
             )),
-            VibeMode::Vibe => {
-                header_spans.push(Span::styled("[vibe] ", Style::default().fg(theme.mode_vibe.to_color())))
-            }
+            VibeMode::Vibe => header_spans.push(Span::styled(
+                "[vibe] ",
+                Style::default().fg(theme.mode_vibe.to_color()),
+            )),
             VibeMode::SuperVibe => {
                 header_spans.push(Span::raw("["));
                 header_spans.extend(rainbow_spans("supervibe", theme));
@@ -119,7 +120,10 @@ pub fn draw(
         } else {
             "j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
-        header_spans.push(Span::styled(help, Style::default().fg(theme.accent_alt.to_color())));
+        header_spans.push(Span::styled(
+            help,
+            Style::default().fg(theme.accent_alt.to_color()),
+        ));
     } else if leader_active {
         header_spans.push(Span::styled(
             "|LEADER ",
@@ -149,7 +153,8 @@ pub fn draw(
 
     if pending_count > 0 && !view.scroll_mode {
         header_spans.push(Span::styled(
-            format!(" | {} input{}",
+            format!(
+                " | {} input{}",
                 pending_count,
                 if pending_count == 1 { "" } else { "s" },
             ),
@@ -173,8 +178,8 @@ pub fn draw(
         frame.render_widget(paragraph, content_area);
     } else {
         let text = ansi_to_ratatui_text_with_selection(
-            pane_content, 
-            content_area.width, 
+            pane_content,
+            content_area.width,
             content_area.height,
             &view.selection,
         );
@@ -240,9 +245,9 @@ fn strip_ansi_codes(s: &str) -> String {
 }
 
 fn ansi_to_ratatui_text_with_selection<'a>(
-    raw: &str, 
-    cols: u16, 
-    rows: u16, 
+    raw: &str,
+    cols: u16,
+    rows: u16,
     selection: &TextSelection,
 ) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
@@ -264,7 +269,10 @@ fn ansi_to_ratatui_text_with_selection<'a>(
         for col in 0..cols {
             let is_selected = has_selection
                 && ((row > sel_start_row && row < sel_end_row)
-                    || (row == sel_start_row && row == sel_end_row && col >= sel_start_col && col < sel_end_col)
+                    || (row == sel_start_row
+                        && row == sel_end_row
+                        && col >= sel_start_col
+                        && col < sel_end_col)
                     || (row == sel_start_row && row < sel_end_row && col >= sel_start_col)
                     || (row > sel_start_row && row == sel_end_row && col < sel_end_col));
 

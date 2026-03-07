@@ -1,4 +1,5 @@
-mod state;
+mod claude_session_picker;
+mod claude_sessions;
 pub mod commands;
 mod feature_ops;
 mod hooks;
@@ -11,12 +12,11 @@ mod review;
 mod search;
 mod session_ops;
 pub mod setup;
+mod state;
 mod switcher;
 mod sync;
 pub mod util;
 mod view;
-mod claude_sessions;
-mod claude_session_picker;
 
 #[cfg(test)]
 mod tests;
@@ -28,19 +28,17 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::debug::DebugLog;
 use crate::extension::{
-    merge_project_extension_config, ExtensionConfig,
-    load_global_extension_config,
+    ExtensionConfig, load_global_extension_config, merge_project_extension_config,
 };
 use crate::project::{
-    AgentKind, Feature, FeatureSession, Project, ProjectStatus,
-    ProjectStore, SessionKind, VibeMode,
+    AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
 };
 use crate::tmux::TmuxManager;
 use crate::traits::{TmuxOps, WorktreeOps};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
-use crate::debug::DebugLog;
 
 pub use self::setup::load_config;
 pub use state::*;
@@ -196,18 +194,12 @@ impl App {
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
         let zai_weekly = config.zai.as_ref().and_then(|z| z.get_weekly_limit());
-        let zai_five_hour =
-            config.zai.as_ref().and_then(|z| z.get_five_hour_limit());
+        let zai_five_hour = config.zai.as_ref().and_then(|z| z.get_five_hour_limit());
         let global_ext = load_global_extension_config();
         let active_extension = store
             .projects
             .first()
-            .map(|p| {
-                merge_project_extension_config(
-                    &global_ext,
-                    &p.repo,
-                )
-            })
+            .map(|p| merge_project_extension_config(&global_ext, &p.repo))
             .unwrap_or(global_ext);
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
@@ -251,8 +243,12 @@ impl App {
 
     pub fn log_startup(&mut self) {
         self.debug_log.info("amf", "AMF started".to_string());
-        self.debug_log.debug("amf", format!("Store path: {}", self.store_path.display()));
-        self.debug_log.debug("amf", format!("Projects loaded: {}", self.store.projects.len()));
+        self.debug_log
+            .debug("amf", format!("Store path: {}", self.store_path.display()));
+        self.debug_log.debug(
+            "amf",
+            format!("Projects loaded: {}", self.store.projects.len()),
+        );
     }
 
     /// Lightweight constructor for unit/integration tests.
@@ -311,33 +307,18 @@ impl App {
         let global_ext = load_global_extension_config();
         self.active_extension = match &self.selection {
             Selection::Project(pi) => {
-                if let Some(project) =
-                    self.store.projects.get(*pi)
-                {
-                    merge_project_extension_config(
-                        &global_ext,
-                        &project.repo,
-                    )
+                if let Some(project) = self.store.projects.get(*pi) {
+                    merge_project_extension_config(&global_ext, &project.repo)
                 } else {
                     global_ext
                 }
             }
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => {
-                if let Some(project) =
-                    self.store.projects.get(*pi)
-                {
-                    if let Some(feature) = project.features.get(*fi)
-                    {
-                        merge_project_extension_config(
-                            &global_ext,
-                            &feature.workdir,
-                        )
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
+                if let Some(project) = self.store.projects.get(*pi) {
+                    if let Some(feature) = project.features.get(*fi) {
+                        merge_project_extension_config(&global_ext, &feature.workdir)
                     } else {
-                        merge_project_extension_config(
-                            &global_ext,
-                            &project.repo,
-                        )
+                        merge_project_extension_config(&global_ext, &project.repo)
                     }
                 } else {
                     global_ext
@@ -356,10 +337,7 @@ impl App {
             .iter()
             .position(|t| *t == self.config.theme)
             .unwrap_or(0);
-        self.mode = AppMode::ThemePicker(ThemePickerState {
-            selected,
-            themes,
-        });
+        self.mode = AppMode::ThemePicker(ThemePickerState { selected, themes });
     }
 
     pub fn apply_theme(&mut self, theme_name: crate::theme::ThemeName) {
@@ -369,14 +347,12 @@ impl App {
         self.theme = theme;
         self.mode = AppMode::Normal;
 
-        let config_path =
-            crate::project::amf_config_dir().join("config.json");
+        let config_path = crate::project::amf_config_dir().join("config.json");
         let dir = config_path.parent().unwrap();
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(
             &config_path,
-            serde_json::to_string_pretty(&self.config)
-                .unwrap_or_default(),
+            serde_json::to_string_pretty(&self.config).unwrap_or_default(),
         );
     }
 

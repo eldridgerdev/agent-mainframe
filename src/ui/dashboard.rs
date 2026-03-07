@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
     Frame,
+    layout::{Constraint, Direction, Layout, Rect},
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
@@ -30,12 +30,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 ratatui::style::Color::Green
             };
-            let paragraph = ratatui::widgets::Paragraph::new(
-                ratatui::text::Span::styled(
-                    format!(" {}", msg),
-                    ratatui::style::Style::default().fg(color),
-                ),
-            );
+            let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
+                format!(" {}", msg),
+                ratatui::style::Style::default().fg(color),
+            ));
             frame.render_widget(paragraph, msg_area);
         }
         return;
@@ -60,11 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::picker::draw_session_switcher(
-            frame,
-            state,
-            app.config.nerd_font,
-        );
+        super::picker::draw_session_switcher(frame, state, app.config.nerd_font);
         return;
     }
 
@@ -82,9 +76,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    if let AppMode::NotificationPicker(selected, Some(view)) =
-        &app.mode
-    {
+    if let AppMode::NotificationPicker(selected, Some(view)) = &app.mode {
         super::pane::draw(
             frame,
             view,
@@ -94,11 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::picker::draw_notification_picker(
-            frame,
-            &app.pending_inputs,
-            *selected,
-        );
+        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected);
         return;
     }
 
@@ -134,8 +122,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::RenamingSession(state) = &app.mode
-        && let RenameReturnTo::SessionSwitcher(ref sw) =
-            state.return_to
+        && let RenameReturnTo::SessionSwitcher(ref sw) = state.return_to
     {
         let temp_view = crate::app::ViewState::new(
             sw.project_name.clone(),
@@ -168,7 +155,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ])
         .split(frame.area());
 
-    super::header::draw(frame, chunks[0], &std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(), app.pending_inputs.len(), &app.theme);
+    super::header::draw(
+        frame,
+        chunks[0],
+        &std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        app.pending_inputs.len(),
+        &app.theme,
+    );
     super::list::draw(frame, app, chunks[1]);
     super::status::draw(frame, app, chunks[2]);
 
@@ -180,11 +175,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame);
             } else {
-                let presets =
-                    app.active_extension.feature_presets.as_slice();
-                super::dialogs::draw_create_feature_dialog(
-                    frame, state, presets,
-                );
+                let presets = app.active_extension.feature_presets.as_slice();
+                super::dialogs::draw_create_feature_dialog(frame, state, presets);
             }
         }
         AppMode::CreatingBatchFeatures(state) => {
@@ -193,15 +185,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         AppMode::DeletingProject(name) => {
             super::dialogs::draw_delete_project_confirm(frame, name);
         }
-        AppMode::DeletingFeature(
-            project_name,
-            feature_name,
-        ) => {
-            super::dialogs::draw_delete_feature_confirm(
-                frame,
-                project_name,
-                feature_name,
-            );
+        AppMode::DeletingFeature(project_name, feature_name) => {
+            super::dialogs::draw_delete_feature_confirm(frame, project_name, feature_name);
         }
         AppMode::BrowsingPath(state) => {
             super::dialogs::draw_browse_path_dialog(frame, state);
@@ -222,11 +207,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {
-        super::picker::draw_notification_picker(
-            frame,
-            &app.pending_inputs,
-            *selected,
-        );
+        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected);
     }
 
     if let AppMode::CommandPicker(state) = &app.mode {
@@ -278,9 +259,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {
-        super::dialogs::draw_theme_picker(
-            frame, state, &app.config.theme,
-        );
+        super::dialogs::draw_theme_picker(frame, state, &app.config.theme);
     }
 
     if let AppMode::DebugLog(state) = &app.mode {
@@ -288,11 +267,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-pub fn centered_rect(
-    percent_x: u16,
-    percent_y: u16,
-    area: Rect,
-) -> Rect {
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

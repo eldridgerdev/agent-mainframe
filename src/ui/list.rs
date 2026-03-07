@@ -285,6 +285,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(format!("{} ", collapse_icon), Style::default().fg(muted)),
                         Span::styled(display_name, name_style),
                     ];
+                    if !feature.is_worktree {
+                        line_spans.push(Span::styled(
+                            " [repo]",
+                            Style::default()
+                                .fg(theme.warning.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     if feature.nickname.is_some() {
                         line_spans.push(Span::styled(
                             format!(" ({})", feature.branch),

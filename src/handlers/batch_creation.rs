@@ -82,7 +82,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     let count_str = state.feature_count.to_string();
                     if count_str.len() > 1 {
-                        state.feature_count = count_str[..count_str.len()-1].parse().unwrap_or(1);
+                        state.feature_count = count_str[..count_str.len() - 1].parse().unwrap_or(1);
                     } else {
                         state.feature_count = 1;
                     }

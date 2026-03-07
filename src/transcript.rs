@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 /// `~/.claude/projects/{encoded-path}/{session-id}.jsonl`
 /// where the path encoding replaces all non-alphanumeric
 /// chars with `-`.
-pub fn find_latest_transcript(
-    workdir: &Path,
-) -> Option<PathBuf> {
+pub fn find_latest_transcript(workdir: &Path) -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let encoded = encode_path(workdir);
     let projects_dir = PathBuf::from(&home)
@@ -25,12 +23,7 @@ pub fn find_latest_transcript(
     std::fs::read_dir(&projects_dir)
         .ok()?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .is_some_and(|ext| ext == "jsonl")
-        })
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
         .filter_map(|entry| {
             let modified = entry.metadata().ok()?.modified().ok()?;
             Some((entry.path(), modified))
@@ -45,9 +38,7 @@ pub fn find_latest_transcript(
 /// Filters for user and assistant messages, extracting only
 /// text content blocks (skipping tool_use, tool_result, and
 /// thinking blocks).
-pub fn export_transcript_markdown(
-    jsonl_path: &Path,
-) -> Result<String> {
+pub fn export_transcript_markdown(jsonl_path: &Path) -> Result<String> {
     let content = std::fs::read_to_string(jsonl_path)?;
     let mut output = String::from(
         "# Session Transcript\n\n\
@@ -71,9 +62,7 @@ pub fn export_transcript_markdown(
             continue;
         }
 
-        let role = entry["message"]["role"]
-            .as_str()
-            .unwrap_or(msg_type);
+        let role = entry["message"]["role"].as_str().unwrap_or(msg_type);
         let heading = match role {
             "user" => "User",
             "assistant" => "Assistant",
@@ -101,9 +90,7 @@ fn extract_text_content(content: &serde_json::Value) -> String {
     if let Some(blocks) = content.as_array() {
         let texts: Vec<&str> = blocks
             .iter()
-            .filter(|block| {
-                block["type"].as_str() == Some("text")
-            })
+            .filter(|block| block["type"].as_str() == Some("text"))
             .filter_map(|block| block["text"].as_str())
             .collect();
         return texts.join("\n\n");
@@ -128,10 +115,7 @@ mod tests {
     #[test]
     fn encode_path_replaces_non_alnum() {
         let p = Path::new("/home/user/my-project");
-        assert_eq!(
-            encode_path(p),
-            "-home-user-my-project"
-        );
+        assert_eq!(encode_path(p), "-home-user-my-project");
     }
 
     #[test]

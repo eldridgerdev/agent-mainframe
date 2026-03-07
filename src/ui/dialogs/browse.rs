@@ -1,23 +1,25 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 use crate::app::BrowsePathState;
+use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState) {
+pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState, theme: &Theme) {
     let area = centered_rect(80, 70, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Browse for Directory ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -36,7 +38,7 @@ pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState) {
         Span::styled(
             state.explorer.cwd().to_string_lossy().to_string(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
@@ -50,9 +52,15 @@ pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState) {
             .split(input_area);
 
         let prompt = Paragraph::new(Line::from(vec![
-            Span::styled(" Create folder: ", Style::default().fg(Color::Yellow)),
-            Span::styled(&state.new_folder_name, Style::default().fg(Color::White)),
-            Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                " Create folder: ",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                &state.new_folder_name,
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
         ]));
         frame.render_widget(prompt, input_chunks[0]);
     } else {
@@ -63,12 +71,12 @@ pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "\u{2500}".repeat(inner.width as usize),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.text_muted.to_color()),
             )),
             Line::from(vec![
-                Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" create  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" cancel"),
             ]),
         ])
@@ -76,18 +84,18 @@ pub fn draw_browse_path_dialog(frame: &mut Frame, state: &BrowsePathState) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "\u{2500}".repeat(inner.width as usize),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.text_muted.to_color()),
             )),
             Line::from(vec![
-                Span::styled(" Space", Style::default().fg(Color::Yellow)),
+                Span::styled(" Space", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" select  "),
-                Span::styled("Enter/l", Style::default().fg(Color::Yellow)),
+                Span::styled("Enter/l", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" open  "),
-                Span::styled("c", Style::default().fg(Color::Yellow)),
+                Span::styled("c", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" create folder  "),
-                Span::styled("h/BS", Style::default().fg(Color::Yellow)),
+                Span::styled("h/BS", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" parent  "),
-                Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
                 Span::raw(" cancel"),
             ]),
         ])

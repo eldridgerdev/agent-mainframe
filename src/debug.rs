@@ -1,8 +1,10 @@
 use chrono::{DateTime, Utc};
+use std::any::Any;
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, Once, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogLevel {
@@ -148,11 +150,7 @@ impl DebugLog {
 /// server) that cannot borrow `App`.
 pub fn log_to_file(level: LogLevel, context: &str, message: &str) {
     let path = global_log_path();
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let line = format!(
             "{} [{:<5}] {}: {}\n",
@@ -163,4 +161,54 @@ pub fn log_to_file(level: LogLevel, context: &str, message: &str) {
         );
         let _ = file.write_all(line.as_bytes());
     }
+}
+
+fn ui_alert_slot() -> &'static Mutex<Option<String>> {
+    static UI_ALERT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    UI_ALERT.get_or_init(|| Mutex::new(None))
+}
+
+pub fn set_user_alert(message: String) {
+    if let Ok(mut slot) = ui_alert_slot().lock() {
+        *slot = Some(message);
+    }
+}
+
+pub fn take_user_alert() -> Option<String> {
+    ui_alert_slot().lock().ok().and_then(|mut slot| slot.take())
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        (*msg).to_string()
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "panic payload is not a string".to_string()
+    }
+}
+
+pub fn install_panic_hook() {
+    static INSTALL: Once = Once::new();
+
+    INSTALL.call_once(|| {
+        std::panic::set_hook(Box::new(|info| {
+            let thread = std::thread::current()
+                .name()
+                .unwrap_or("unnamed")
+                .to_string();
+            let location = info
+                .location()
+                .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let payload = panic_payload_message(info.payload());
+
+            log_to_file(
+                LogLevel::Error,
+                "panic",
+                &format!("thread `{thread}` panicked at {location}: {payload}"),
+            );
+            set_user_alert("Error: AMF hit an internal error. Check debug log for details.".into());
+        }));
+    });
 }

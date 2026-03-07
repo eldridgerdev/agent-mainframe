@@ -103,8 +103,9 @@ impl App {
     }
 
     pub fn leader_timed_out(&self) -> bool {
+        let timeout_secs = self.config.leader_timeout_seconds.max(1);
         self.leader_activated_at
-            .map(|t| t.elapsed() >= std::time::Duration::from_secs(2))
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(timeout_secs))
             .unwrap_or(false)
     }
 

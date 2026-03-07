@@ -1,12 +1,32 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 
 use crate::traits::WorktreeOps;
 
 pub struct WorktreeManager;
 
+pub struct SpawnedWorktreeCommand {
+    pub child: Child,
+    pub output_rx: Receiver<String>,
+}
+
 impl WorktreeManager {
+    fn stream_child_output<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) {
+        if let Some(reader) = reader {
+            std::thread::spawn(move || {
+                for line in BufReader::new(reader)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    let _ = tx.send(line);
+                }
+            });
+        }
+    }
+
     /// Check if a path is inside a git repository and return the repo root
     pub fn repo_root(path: &Path) -> Result<PathBuf> {
         let output = Command::new("git")
@@ -279,8 +299,8 @@ impl WorktreeManager {
         Ok(())
     }
 
-    pub fn spawn_remove(repo: &Path, worktree_path: &Path) -> Result<Child> {
-        let child = Command::new("git")
+    pub fn spawn_remove(repo: &Path, worktree_path: &Path) -> Result<SpawnedWorktreeCommand> {
+        let mut child = Command::new("git")
             .args([
                 "worktree",
                 "remove",
@@ -288,10 +308,19 @@ impl WorktreeManager {
                 &worktree_path.to_string_lossy(),
             ])
             .current_dir(repo)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("Failed to spawn git worktree remove")?;
 
-        Ok(child)
+        let (tx, rx) = mpsc::channel();
+        Self::stream_child_output(child.stdout.take(), tx.clone());
+        Self::stream_child_output(child.stderr.take(), tx);
+
+        Ok(SpawnedWorktreeCommand {
+            child,
+            output_rx: rx,
+        })
     }
 
     /// List worktrees for a repo

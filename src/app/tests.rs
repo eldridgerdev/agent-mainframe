@@ -1,7 +1,10 @@
-use super::setup::{ensure_notification_hooks, strip_between_markers};
+use super::setup::{
+    cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
+};
 use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
+use crate::extension::ExtensionConfig;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -51,6 +54,21 @@ fn shorten_path_outside_home() {
     let path = std::path::Path::new("/tmp/some/path");
     let result = shorten_path(path);
     assert_eq!(result, "/tmp/some/path");
+}
+
+// ── AppConfig defaults ───────────────────────────────────
+
+#[test]
+fn app_config_default_leader_timeout_is_five_seconds() {
+    let config = AppConfig::default();
+    assert_eq!(config.leader_timeout_seconds, 5);
+}
+
+#[test]
+fn app_config_missing_leader_timeout_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.leader_timeout_seconds, 5);
+    assert!(!config.nerd_font);
 }
 
 // ── strip_between_markers ─────────────────────────────────
@@ -169,7 +187,7 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 use crate::project::{AgentKind, Feature, Project};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use tempfile::NamedTempFile;
 
 /// Build a minimal `ProjectStore` with one project and one
@@ -190,6 +208,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status,
         created_at: now,
         last_accessed: now,
@@ -209,6 +228,47 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
+fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: repo.clone(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo,
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -264,6 +324,81 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
         app.store.projects[0].features[0].status,
         ProjectStatus::Idle
     );
+}
+
+#[test]
+fn visible_items_prioritizes_non_worktree_features() {
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![
+            Feature {
+                id: "feat-worktree".to_string(),
+                name: "worktree-newer".to_string(),
+                branch: "worktree-newer".to_string(),
+                workdir: PathBuf::from("/tmp/test-repo/.worktrees/worktree-newer"),
+                is_worktree: true,
+                tmux_session: "amf-worktree-newer".to_string(),
+                sessions: vec![],
+                collapsed: false,
+                mode: VibeMode::default(),
+                review: false,
+                agent: AgentKind::default(),
+                enable_chrome: false,
+                has_notes: false,
+                ready: false,
+                status: ProjectStatus::Stopped,
+                created_at: now + Duration::minutes(1),
+                last_accessed: now + Duration::minutes(1),
+                summary: None,
+                summary_updated_at: None,
+                nickname: None,
+            },
+            Feature {
+                id: "feat-repo".to_string(),
+                name: "repo-older".to_string(),
+                branch: "repo-older".to_string(),
+                workdir: PathBuf::from("/tmp/test-repo"),
+                is_worktree: false,
+                tmux_session: "amf-repo-older".to_string(),
+                sessions: vec![],
+                collapsed: false,
+                mode: VibeMode::default(),
+                review: false,
+                agent: AgentKind::default(),
+                enable_chrome: false,
+                has_notes: false,
+                ready: false,
+                status: ProjectStatus::Stopped,
+                created_at: now,
+                last_accessed: now,
+                summary: None,
+                summary_updated_at: None,
+                nickname: None,
+            },
+        ],
+        created_at: now,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    };
+
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let visible = app.visible_items();
+
+    assert!(matches!(visible[0], VisibleItem::Project(0)));
+    assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
+    assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
 }
 
 // ── create_feature validation ─────────────────────────────────
@@ -353,6 +488,152 @@ fn create_feature_second_non_worktree_sets_error() {
 
     let msg = app.message.as_deref().unwrap_or("");
     assert!(msg.contains("Only one non-worktree"), "got: {msg}");
+}
+
+#[test]
+fn create_feature_disallowed_agent_sets_error() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", false);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.agent = AgentKind::Opencode;
+        state.agent_index = 1;
+    }
+
+    app.create_feature().unwrap();
+
+    let msg = app.message.as_deref().unwrap_or("");
+    assert!(msg.contains("not allowed"), "got: {msg}");
+}
+
+#[test]
+fn start_create_feature_defaults_to_first_allowed_agent() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Codex]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Project(0);
+
+    app.start_create_feature();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.agent, AgentKind::Codex);
+            assert_eq!(state.agent_index, 0);
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn reload_extension_config_uses_project_repo_for_worktree_feature() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let workdir = repo.path().join(".worktrees").join("feature-a");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir,
+        is_worktree: true,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status: ProjectStatus::Stopped,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.reload_extension_config();
+
+    assert_eq!(
+        app.active_extension.allowed_agents(),
+        vec![AgentKind::Claude]
+    );
 }
 
 // ── stop_feature ──────────────────────────────────────────────
@@ -663,6 +944,207 @@ fn codex_hook_merges_existing_notify_entries() {
     );
 }
 
+#[test]
+fn cleanup_claude_hooks_removes_amf_artifacts() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks_for(&workdir, VibeMode::Vibeless, AgentKind::Claude, true);
+
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(claude_dir.join("notifications")).unwrap();
+    std::fs::write(claude_dir.join("latest-prompt.txt"), "prompt").unwrap();
+
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Claude);
+
+    let settings_path = claude_dir.join("settings.json");
+    assert!(
+        !settings_path.exists(),
+        "cleanup should remove settings.json when only AMF hooks were present"
+    );
+    assert!(
+        !claude_dir.join("notifications").exists(),
+        "cleanup should remove Claude notification directory"
+    );
+    assert!(
+        !claude_dir.join("latest-prompt.txt").exists(),
+        "cleanup should remove Claude latest prompt file"
+    );
+}
+
+#[test]
+fn cleanup_codex_hooks_restores_previous_notify_command() {
+    let workdir = TempDir::new().unwrap();
+    let codex_dir = workdir.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let cfg = codex_dir.join("config.toml");
+    std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
+
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Codex);
+
+    let rendered = std::fs::read_to_string(&cfg).unwrap();
+    let parsed: toml::Value = toml::from_str(&rendered).unwrap();
+    let notify = parsed
+        .get("notify")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let entries: Vec<String> = notify
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["/tmp/existing-hook.sh".to_string()],
+        "cleanup should restore the previous Codex notify command"
+    );
+    assert!(
+        !codex_dir.join("amf-codex-notify.sh").exists(),
+        "cleanup should remove AMF Codex hook script"
+    );
+    assert!(
+        !codex_dir.join("amf-codex-notify-original.json").exists(),
+        "cleanup should remove Codex sidecar backup"
+    );
+}
+
+fn store_with_worktree_agent(
+    repo: &std::path::Path,
+    workdir: &std::path::Path,
+    agent: AgentKind,
+    status: ProjectStatus,
+    sessions: Vec<crate::project::FeatureSession>,
+) -> ProjectStore {
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree: true,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions,
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent,
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: true,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
+#[test]
+fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+
+    ensure_notification_hooks(
+        workdir.path(),
+        repo.path(),
+        &VibeMode::Vibe,
+        &AgentKind::Claude,
+        true,
+    );
+
+    let now = Utc::now();
+    let sessions = vec![
+        crate::project::FeatureSession {
+            id: "agent-session".to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude 1".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: Some("resume-me".to_string()),
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        },
+        crate::project::FeatureSession {
+            id: "terminal-session".to_string(),
+            kind: SessionKind::Terminal,
+            label: "Terminal 1".to_string(),
+            tmux_window: "terminal".to_string(),
+            claude_session_id: None,
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        },
+    ];
+
+    let store = store_with_worktree_agent(
+        repo.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Stopped,
+        sessions,
+    );
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-my-feat")
+        .times(1)
+        .return_const(false);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+
+    app.start_session_config().unwrap();
+    if let AppMode::SessionConfig(state) = &mut app.mode {
+        state.selected_agent = state
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Codex)
+            .unwrap();
+    } else {
+        panic!("session config dialog should be open");
+    }
+
+    app.apply_session_config().unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.agent, AgentKind::Codex);
+    assert_eq!(feature.sessions[0].kind, SessionKind::Codex);
+    assert_eq!(feature.sessions[0].label, "Codex 1");
+    assert_eq!(feature.sessions[0].tmux_window, "codex");
+    assert_eq!(feature.sessions[0].claude_session_id, None);
+    assert_eq!(feature.sessions[1].kind, SessionKind::Terminal);
+    assert!(
+        !workdir
+            .path()
+            .join(".claude")
+            .join("settings.json")
+            .exists(),
+        "Claude hook settings should be removed after switching away"
+    );
+    assert!(
+        workdir.path().join(".codex").join("config.toml").exists(),
+        "Codex config should be injected after switching"
+    );
+}
+
 // ── sync_session_status ──────────────────────────────────────
 
 use crate::project::{FeatureSession, SessionKind};
@@ -695,6 +1177,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
@@ -714,6 +1197,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -745,6 +1229,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         agent: AgentKind::Codex,
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
@@ -764,6 +1249,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -901,6 +1387,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,
@@ -920,6 +1407,7 @@ fn sync_session_status_skips_non_custom_sessions() {
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     };
 
     // Even if a status file exists for this ID, it should
@@ -1038,4 +1526,95 @@ fn sync_session_status_trims_whitespace() {
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000".to_string()),
     );
+}
+
+fn store_with_single_claude_session() -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: "sess-1".to_string(),
+        kind: SessionKind::Claude,
+        label: "Claude 1".to_string(),
+        tmux_window: "claude".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: PathBuf::from("/tmp/test-workdir"),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
+#[test]
+fn bookmark_add_and_remove_current_session() {
+    let store = store_with_single_claude_session();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+
+    app.bookmark_current_session().unwrap();
+    assert_eq!(app.store.session_bookmarks.len(), 1);
+    assert_eq!(app.store.session_bookmarks[0].session_id, "sess-1");
+
+    app.unbookmark_current_session().unwrap();
+    assert!(app.store.session_bookmarks.is_empty());
+}
+
+#[test]
+fn jump_to_bookmark_enters_view_for_slot() {
+    let store = store_with_single_claude_session();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.bookmark_current_session().unwrap();
+    app.mode = AppMode::Normal;
+
+    app.jump_to_bookmark(1).unwrap();
+
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
 }

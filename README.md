@@ -4,7 +4,8 @@ Run many AI coding agents in parallel — each on its own branch,
 each in its own terminal — without losing track of any of them.
 
 `amf` is a terminal dashboard for managing concurrent
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+[Codex](https://github.com/openai/codex), and
 [Opencode](https://opencode.ai) agent sessions. Each feature gets its
 own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
@@ -33,26 +34,30 @@ NOTE: I'll add real screenshots eventually
 
 ## Features
 
-- **Project / Feature hierarchy** — organize work by project and
-  feature branch
-- **Multi-session support** — each feature can have multiple Claude,
-  terminal, and nvim sessions, all in the same tmux session
-- **Vibe modes** — choose Vibeless (diff-review gate), Vibe
-  (auto-accept edits), or SuperVibe (skip all permissions) per feature
-- **Embedded tmux view** — watch agent output directly inside the TUI
-  with full ANSI rendering
-- **Git worktree integration** — each feature automatically gets its
-  own worktree so agents work in parallel without conflicts
-- **Notification system** — get alerted when an agent needs input;
-  jump straight to the right session
-- **Leader key chords** — vim-style `Ctrl+Space` leader key for quick
-  actions while viewing a session
-- **File browser** — browse and select project paths with an
-  interactive explorer (`Ctrl+B`)
-- **Opencode support** — use Opencode as an alternative agent
-  alongside or instead of Claude Code
-- **Non-git projects** — projects don't require a git repository
-  (worktree features are disabled for those)
+- **Multi-agent workspace manager** — run Claude Code, Codex, and
+  Opencode features side by side.
+- **Project / feature tree** — organize work by repo, branch,
+  nickname, ready state, timestamps, and one-line summaries.
+- **Flexible session model** — each feature can host agent sessions,
+  terminals, nvim, VSCode, and custom session types.
+- **Embedded tmux view** — watch panes directly in the TUI with ANSI
+  rendering, mouse text selection, and clipboard copy.
+- **Worktree automation** — first feature can reuse the repo, later
+  features get worktrees automatically; batch-create and fork features
+  when you need parallel branches quickly.
+- **Local hooks and notifications** — input requests are pushed over
+  IPC when possible, with file-based fallback, and hooks stay local to
+  the worktree.
+- **Leader workflow** — `Ctrl+Space` opens session controls, final
+  review, bookmarks, latest prompt, scroll mode, and debug tools.
+- **Workspace-level customization** — merge global
+  `~/.config/amf/config.json` with repo-local `.amf/config.json` for
+  presets, lifecycle hooks, custom sessions, agent restrictions, and
+  key remaps.
+- **Theme system** — built-in AMF UI themes plus bundled Opencode
+  themes that are injected into every worktree.
+- **Non-git projects** — projects do not require git; worktree-only
+  features are simply disabled for those repos.
 
 ## Prerequisites
 
@@ -61,10 +66,12 @@ NOTE: I'll add real screenshots eventually
 - **tmux** — must be installed and in `PATH`
   ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
 
-### Agent (choose one or both)
+### Agent (choose one or more)
 
 - **Claude CLI** — required for Claude Code sessions
   ([Claude Code docs](https://docs.anthropic.com/en/docs/claude-code))
+- **Codex CLI** — required for Codex sessions
+  ([Codex repo](https://github.com/openai/codex))
 - **Opencode** — optional alternative agent
   ([opencode.ai](https://opencode.ai))
 
@@ -82,6 +89,8 @@ NOTE: I'll add real screenshots eventually
   rendering. The app defaults to `nerd_font: true`; if your terminal
   font does not include Nerd Font glyphs, set `nerd_font: false` in
   `~/.config/amf/config.json` to use ASCII fallbacks instead.
+- **VSCode CLI** — install `code` in `PATH` if you want VSCode
+  sessions from the session picker.
 
 ## Installation
 
@@ -155,6 +164,23 @@ cargo install --path .
 
 This installs the `amf` binary to `~/.cargo/bin/`.
 
+### Upgrade and Release Notes
+
+Upgrade an existing install:
+
+```bash
+amf upgrade
+```
+
+Check the installed version:
+
+```bash
+amf -V
+```
+
+User-facing release notes and migration guidance live in
+[`CHANGELOG.md`](CHANGELOG.md).
+
 ## Quick Start
 
 1. Create or attach to a tmux session:
@@ -174,9 +200,9 @@ This installs the `amf` binary to `~/.cargo/bin/`.
    git repository (or press `Ctrl+B` to browse for a directory).
 
 4. Press `n` to add a feature. Enter a branch name, choose your agent
-   (Claude or Opencode), and pick a vibe mode. A git worktree is
-   created automatically (the first feature reuses the repo directory).
-   Features auto-start on creation.
+   (Claude, Codex, or Opencode), and pick a vibe mode. A git worktree
+   is created automatically when needed, and features auto-start on
+   creation.
 
    ```text
             ┌─ New Feature ─────────────────────────────────┐
@@ -196,9 +222,13 @@ This installs the `amf` binary to `~/.cargo/bin/`.
             └───────────────────────────────────────────────┘
    ```
 
-5. Press `Enter` to view the embedded tmux output.
+5. Press `s` to add more sessions to a running feature. The picker can
+   launch agent sessions, terminals, nvim, VSCode, and custom session
+   types from your config.
 
-6. Use `Ctrl+Space` then a key for leader commands while in view mode.
+6. Press `Enter` on a session to view the embedded tmux output.
+
+7. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
 ## Keybindings
 
@@ -208,20 +238,28 @@ This installs the `amf` binary to `~/.cargo/bin/`.
 | --- | --- |
 | `j` / `k` / `↑` / `↓` | Navigate project tree |
 | `h` | Collapse project / go to parent |
-| `l` | Expand project / view feature |
-| `Enter` | Toggle expand / view feature |
+| `l` | Expand project / feature |
+| `Enter` | Toggle expand or view selected session |
 | `N` | Create new project |
 | `n` | Create new feature |
-| `a` | Add Claude session to feature |
-| `t` | Add terminal session to feature |
-| `v` | Add nvim session to feature |
-| `r` | Rename session (when session selected) |
-| `R` | Refresh statuses |
-| `d` | Delete project or feature |
-| `c` | Start feature session |
-| `x` | Stop feature session |
+| `B` | Batch-create features for a workspace |
+| `O` | Open the `~/.config/amf` settings project |
+| `s` | Open session picker / add a session |
+| `S` | Resume a Claude or Opencode session |
+| `r` | Rename selected feature or session |
+| `d` | Delete selected project, feature, or session |
+| `c` | Start selected feature |
+| `x` | Stop selected feature or remove selected session |
+| `F` | Fork the selected feature into a new worktree |
 | `f` | Filter by session type |
+| `m` | Create or open `.claude/notes.md` as a Memo session |
+| `y` | Toggle ready state for the selected feature |
+| `Z` | Generate a one-line summary for the selected feature |
+| `T` | Open the theme picker |
 | `i` | Input requests picker |
+| `/` | Search and jump |
+| `D` | Open the debug log overlay |
+| `R` | Refresh statuses |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
 
@@ -232,21 +270,28 @@ All keys are forwarded to the tmux session except:
 | Key | Action |
 | --- | --- |
 | `Ctrl+Q` | Exit view, return to dashboard |
-| `Ctrl+Space` | Activate leader key (2s window) |
+| `Ctrl+Space` | Activate leader key (default 5s window, configurable) |
 
 ### Leader Commands (after Ctrl+Space)
 
 | Key | Action |
 | --- | --- |
 | `q` | Exit view |
-| `t` / `T` | Cycle between sessions (claude, terminal, nvim) |
+| `t` / `T` | Cycle between sessions |
 | `w` | Open session switcher |
+| `h` | Open bookmark picker popup |
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
 | `x` | Stop session and exit view |
+| `f` | Trigger final review |
+| `l` | Show the latest saved prompt |
+| `o` / `S` | Toggle pane scroll mode |
+| `D` | Open debug log |
+| `H` / `M` | Bookmark / unbookmark current session |
+| `1`-`9` | Jump to bookmark slot |
 | `?` | Show help |
 
 ## How It Works
@@ -254,11 +299,13 @@ All keys are forwarded to the tmux session except:
 ### Data Model
 
 ```text
-ProjectStore
+ProjectStore (version: 4, session_bookmarks)
   └─ Project (name, repo path, is_git)
-       └─ Feature (branch, workdir, tmux session, status,
-                   mode: VibeMode, agent: Claude|Opencode)
-            └─ FeatureSession (kind: Claude|Terminal|Nvim|Custom,
+       └─ Feature (branch, nickname?, workdir, tmux session,
+                   status, ready, mode, review, agent,
+                   summary?)
+            └─ FeatureSession (kind: Claude|Opencode|Codex|
+                               Terminal|Nvim|VSCode|Custom,
                                label, tmux window)
 ```
 
@@ -267,16 +314,22 @@ State is persisted as JSON at `~/.config/amf/projects.json`.
 ### Tmux Sessions
 
 Each feature gets a tmux session named `amf-<branch>`. Features start
-with a Claude (or Opencode) session and a terminal session. You can
-add more sessions at any time:
+with an agent session plus a terminal session. If notes are enabled, a
+Memo nvim session can be added automatically too.
 
-| Key | Session type |
+Use `s` to open the session picker and add more sessions at any time:
+
+| Picker entry | Session type |
 | --- | --- |
-| `a` | Claude Code session |
-| `t` | Plain shell terminal |
-| `v` | Neovim in the feature's working directory |
+| `Claude` / `Opencode` / `Codex` | Another agent session in the same feature |
+| `Terminal` | Plain shell terminal |
+| `Nvim` | Neovim in the feature's working directory |
+| `VSCode` | Open the feature workdir in VSCode via `code` |
+| Custom entries | Commands defined in `extension.custom_sessions` |
 
-Sessions can be renamed with `r` when a session item is selected.
+Sessions can be renamed with `r` when a feature or session item is
+selected. `S` can resume Claude or Opencode sessions for the selected
+feature.
 
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
@@ -306,12 +359,18 @@ popup listing all sessions for the current feature. Use `j`/`k` to
 navigate, `Enter` to switch to a session, `r` to rename, `Esc` to
 dismiss.
 
-### Git Worktrees
+### Git Worktrees, Forks, and Batch Creation
 
 The first feature in a project uses the repo directory directly.
 Additional features get worktrees under `.worktrees/<branch>` so
 multiple agents can work on the same repo simultaneously without
 conflicts.
+
+- `F` forks the selected feature into a new worktree, preserves
+  uncommitted changes, and can export transcript context into
+  `.claude/context.md`.
+- `B` batch-creates numbered features for a repo when you want a set
+  of parallel branches immediately.
 
 ### Vibe Modes
 
@@ -353,10 +412,10 @@ only — your global Claude Code settings are never modified.
 
 ### Notifications
 
-When a Claude Code session needs user input, a notification hook writes
-a JSON file to `~/.config/amf/notifications/`. The dashboard polls
-this directory and shows a badge. Press `i` to open the picker and
-jump to the session that needs attention:
+When an agent session needs user input, AMF prefers push-based IPC
+notifications and falls back to file polling if the socket is not
+available. Press `i` to open the picker and jump to the session that
+needs attention:
 
 ```text
        ┌─ Input Requests ──────────────────────────────┐
@@ -371,15 +430,21 @@ jump to the session that needs attention:
        └───────────────────────────────────────────────┘
 ```
 
-Notification hooks are configured automatically in each feature's
-`.claude/settings.json` when the session starts.
+Claude hooks are configured in the feature's local
+`.claude/settings.json`, Codex notifications are written into the
+worktree's `.codex/config.toml`, and Opencode plugins are refreshed
+into `.opencode/plugins/` automatically.
 
-### Opencode Support
+### Agent Support
 
-[Opencode](https://opencode.ai) is supported as an alternative to
-Claude Code. When creating a feature, choose **Opencode** as the
-agent. `amf` launches it in the same tmux session structure and
-monitors it the same way.
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+  supports diff-review hooks, latest-prompt capture, and session
+  resume.
+- [Codex](https://github.com/openai/codex) supports dedicated feature
+  sessions, notifications, and usage meters in the status bar.
+- [Opencode](https://opencode.ai) is supported as a first-class
+  alternative agent, including injected AMF-friendly themes and local
+  plugins.
 
 ## Configuration
 
@@ -391,15 +456,17 @@ automatically with defaults on first run.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
-| `opencode_theme` | string | `"catppuccin-frappe"` | Theme name passed to Opencode. |
-| `zai` | object? | `null` | ZAI usage tracking. `null` or omitted disables ZAI in the status bar. |
+| `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
+| `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
+| `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
+| `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
+| `zai` | object? | `null` | Optional ZAI usage limits for the status bar. |
+| `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
 
 ### `zai` — token usage limits (optional)
 
-_Not currently working. You can put some numbersin the token limits and guess if you want._
 Controls whether ZAI usage is shown in the status bar. Set to `null`
-or omit the key entirely to disable — the status bar will only show
-Claude usage.
+or omit the key entirely to disable it.
 
 ```json
 "zai": null
@@ -447,10 +514,19 @@ Nvim when creating sessions.
 | Key | Type | Description |
 | --- | --- | --- |
 | `name` | string | Display name shown in the session list. |
+| `description` | string? | Secondary text shown in the session picker. |
 | `command` | string? | Shell command to run when the session starts. |
+| `icon` | string? | ASCII icon shown for the custom session. |
+| `icon_nerd` | string? | Nerd Font icon shown when `nerd_font` is enabled. |
 | `on_stop` | string? | Shell command to run when the session is stopped or removed. Runs via `sh -c` in the feature's workdir with `AMF_SESSION_ID` and `AMF_STATUS_DIR` set. Fire-and-forget (non-blocking). |
+| `autolaunch` | bool? | Start this session automatically when a feature starts. |
+| `pre_check` | string? | Command to run before launch; non-zero exit blocks session startup and shows the command output. |
 | `window_name` | string? | tmux window name (defaults to a slug of `name`). |
 | `working_dir` | path? | Working directory relative to the feature's workdir. |
+
+`command` and `pre_check` are run via `bash -c`, so shell features
+work consistently across `bash`, `zsh`, and `fish` login
+environments.
 
 ##### Session Status Text
 
@@ -487,8 +563,10 @@ should be added to `.gitignore`.
 
 #### `lifecycle_hooks`
 
-Shell scripts executed automatically on feature lifecycle events. The
-script receives the feature's working directory as the first argument.
+Shell scripts executed automatically on feature lifecycle events. Each
+hook can be either a plain script path or an object with `script` plus
+an interactive `prompt`. The script receives the feature's working
+directory as the first argument.
 
 ```json
 "lifecycle_hooks": {
@@ -504,6 +582,18 @@ script receives the feature's working directory as the first argument.
 | `on_stop` | Runs when a feature session is stopped. |
 | `on_worktree_created` | Runs once after a new worktree is created for a feature. |
 
+Prompt-enabled form:
+
+```json
+"on_worktree_created": {
+  "script": "/path/to/init-worktree.sh",
+  "prompt": {
+    "title": "Run workspace bootstrap?",
+    "options": ["yes", "no"]
+  }
+}
+```
+
 #### `keybindings`
 
 Remap dashboard normal-mode keys. The key is the action name and the
@@ -517,8 +607,8 @@ value is the replacement character.
 ```
 
 Available actions: `quit`, `create_project`, `create_feature`,
-`start_session`, `stop_session`, `delete`, `help`,
-`search`, `refresh`, `filter`.
+`start_session`, `stop_session`, `delete`, `sessions`, `help`,
+`search`, `refresh`, `filter`, `fork_feature`, `mark_ready`.
 
 #### `feature_presets`
 
@@ -544,16 +634,54 @@ pre-filling the vibe mode, agent, and other settings.
 | `name` | string | Preset label shown during feature creation. |
 | `branch_prefix` | string? | Prepended to the branch name automatically. |
 | `mode` | string | Vibe mode: `"Vibeless"`, `"Vibe"`, or `"SuperVibe"`. |
-| `agent` | string | Agent to use: `"Claude"` or `"Opencode"`. |
+| `agent` | string | Agent to use: `"Claude"`, `"Codex"`, or `"Opencode"`. |
 | `review` | bool | Whether to enable the diff-review hook. |
 | `enable_chrome` | bool | Enable browser/Chrome integration. |
 | `enable_notes` | bool | Enable session notes. |
 
-## Built-in OpenCode Themes
+#### `allowed_agents`
 
-AMF includes custom transparent-background themes for opencode that are automatically injected into every worktree. These themes are designed to work well when viewing opencode inside AMF's embedded tmux view.
+Restrict which agents may be used in a workspace. This can be set
+globally or in a repo-local `.amf/config.json`.
 
-NOTE: Normal opencode themes don't look right in the embedded tmux view so I have to extend and modify them. I will port other more themes to amf-themes as I go
+```json
+"allowed_agents": ["Claude", "Codex"]
+```
+
+An empty array means "allow all agents".
+
+## Themes
+
+### AMF UI Themes
+
+AMF has a full built-in theme system for the dashboard and embedded
+view. You can:
+
+1. Press `T` in the dashboard to open the theme picker.
+2. Set a default in `~/.config/amf/config.json`:
+
+   ```json
+   {
+     "theme": "catppuccin-frappe",
+     "transparent_background": true
+   }
+   ```
+
+Available UI themes:
+
+- `default`
+- `amf`
+- `dracula`
+- `nord`
+- `catppuccin-latte`
+- `catppuccin-frappe`
+- `catppuccin-macchiato`
+- `catppuccin-mocha`
+
+### Bundled Opencode Themes
+
+AMF also injects Opencode themes into every worktree so embedded pane
+rendering stays readable and consistent.
 
 ### Available Themes
 
@@ -563,7 +691,8 @@ NOTE: Normal opencode themes don't look right in the embedded tmux view so I hav
 
 ### Using the Themes
 
-When you start a feature in AMF, these themes are automatically added to `.opencode/themes/` in your worktree. You can then:
+When you start an Opencode feature, these themes are automatically
+added to `.opencode/themes/` in the worktree. You can then:
 
 1. Use the `/theme` command in opencode to select a theme
 2. Edit `.opencode/tui.json` in the worktree to set your preferred theme
@@ -595,6 +724,11 @@ cargo clippy           # lint
 ```text
 src/
 ├── main.rs            # entry point, event loop
+├── codex.rs           # Codex CLI launcher
+├── ipc.rs             # local IPC server/client for notifications
+├── summary.rs         # feature summary generation
+├── theme.rs           # AMF theme system + Opencode theme injection
+├── upgrade.rs         # self-upgrade command
 ├── app/
 │   ├── mod.rs         # App struct, config types, new/save
 │   ├── state.rs       # AppMode, Selection, dialog states
@@ -602,12 +736,14 @@ src/
 │   ├── sync.rs        # status polling, thinking detection
 │   ├── project_ops.rs # project CRUD, path browsing
 │   ├── feature_ops.rs # feature create/start/stop/delete
+│   ├── harpoon.rs     # session bookmarks
 │   ├── session_ops.rs # session picker, add/remove sessions
 │   ├── view.rs        # embedded tmux view, leader key
-│   ├── switcher.rs    # session switcher
+│   ├── switcher.rs    # in-view session switcher
 │   ├── notifications.rs # notification scanning
 │   ├── hooks.rs       # lifecycle hook execution
 │   ├── opencode.rs    # opencode session management
+│   ├── claude_session_picker.rs # Claude resume picker
 │   ├── search.rs      # search and jump
 │   ├── commands.rs    # command picker
 │   ├── rename.rs      # session renaming
@@ -622,15 +758,17 @@ src/
 ├── tmux.rs            # TmuxManager — all tmux interaction
 ├── worktree.rs        # WorktreeManager — git worktree ops
 ├── claude.rs          # ClaudeLauncher — claude CLI wrapper
-├── usage.rs           # token usage tracking (Claude / ZAI)
+├── usage.rs           # token usage tracking (Claude / Codex / ZAI)
 ├── traits.rs          # shared traits (TmuxOps, WorktreeOps)
 ├── handlers/
 │   ├── mod.rs         # top-level key dispatch
 │   ├── normal.rs      # dashboard normal mode
 │   ├── view.rs        # embedded tmux view mode
 │   ├── dialog.rs      # project/delete/rename handlers
+│   ├── batch_creation.rs # batch feature creation
 │   ├── feature_creation.rs # feature creation wizard
 │   ├── browse.rs      # path browser
+│   ├── fork.rs        # feature forking flow
 │   ├── hooks.rs       # hook/delete-progress handlers
 │   ├── picker.rs      # notification/session/command pickers
 │   ├── search.rs      # search mode
@@ -647,10 +785,12 @@ src/
     ├── picker.rs      # picker overlays
     └── dialogs/
         ├── mod.rs     # re-exports
+        ├── batch_creation.rs # batch feature dialog
         ├── project.rs # create/delete project dialogs
-        ├── feature.rs # feature creation, supervibe confirm
+        ├── feature.rs # feature creation, forking, supervibe confirm
         ├── session.rs # rename session
         ├── help.rs    # keybindings help
+        ├── debug.rs   # debug log overlay
         ├── browse.rs  # path browser dialog
         ├── search.rs  # search dialog
         └── hooks.rs   # hook/review dialogs
@@ -677,6 +817,8 @@ src/
   rendering) and 250ms otherwise
 - Status sync polls tmux every 5 seconds to reconcile feature statuses
   with actual session state
+- Input notifications are delivered over a local IPC socket when
+  possible, with file-based fallback if the socket cannot be started
 - The embedded tmux view captures ANSI output from tmux and renders it
   through a vt100 parser into ratatui spans
 - The embedded tmux view renders agent output directly in the TUI
@@ -687,13 +829,20 @@ src/
 
 ### Contributing
 
-Contributions are welcome. There are no tests yet — the main way to
-verify changes is to run `cargo check && cargo clippy` and then
-exercise the TUI manually.
+Contributions are welcome. The main verification loop is:
+
+```bash
+cargo test
+cargo check
+cargo clippy -- -W clippy::all
+```
+
+Manual TUI testing is still important for pane rendering, tmux
+integration, and hook flows.
 
 1. Fork the repo and create a feature branch.
-2. Make your changes. Run `cargo check && cargo clippy -- -W
-   clippy::all` and fix any warnings before submitting.
+2. Make your changes. Run `cargo test`, `cargo check`, and
+   `cargo clippy -- -W clippy::all` before submitting.
 3. Open a pull request with a short description of what changed and
    why.
 
@@ -701,4 +850,4 @@ The project uses Rust 2024 edition (rustc 1.85+).
 
 ---
 
-*Last updated: 2026-03-01*
+*Last updated: 2026-03-07*

@@ -165,6 +165,15 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => {}
         },
+        KeyCode::Char('u') => {
+            app.start_session_config()?;
+        }
+        KeyCode::Char('y') => match &app.selection {
+            Selection::Feature(_, _) | Selection::Session(_, _, _) => {
+                app.toggle_feature_ready()?;
+            }
+            _ => {}
+        },
         KeyCode::Char('h') | KeyCode::Left => match &app.selection {
             Selection::Project(pi) => {
                 if let Some(project) = app.store.projects.get(*pi)
@@ -222,26 +231,23 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = Some("No pending input requests".into());
             }
         }
-        KeyCode::Char('r') => {
-            match &app.selection {
-                Selection::Session(_, _, _) => {
-                    app.start_rename_session();
-                }
-                Selection::Feature(_, _) => {
-                    app.start_rename_feature();
-                }
-                _ => {
-                    app.sync_statuses();
-                    if app.ipc.is_some() {
-                        app.drain_ipc_messages();
-                    } else {
-                        app.scan_notifications();
-                    }
-                    app.message =
-                        Some("Refreshed statuses".into());
-                }
+        KeyCode::Char('r') => match &app.selection {
+            Selection::Session(_, _, _) => {
+                app.start_rename_session();
             }
-        }
+            Selection::Feature(_, _) => {
+                app.start_rename_feature();
+            }
+            _ => {
+                app.sync_statuses();
+                if app.ipc.is_some() {
+                    app.drain_ipc_messages();
+                } else {
+                    app.scan_notifications();
+                }
+                app.message = Some("Refreshed statuses".into());
+            }
+        },
         KeyCode::Char('R') => {
             app.sync_statuses();
             if app.ipc.is_some() {
@@ -249,8 +255,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else {
                 app.scan_notifications();
             }
-            app.message =
-                Some("Refreshed statuses".into());
+            app.message = Some("Refreshed statuses".into());
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
@@ -305,7 +310,9 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "search" => Some('/'),
         "refresh" => Some('r'),
         "filter" => Some('f'),
+        "session_config" => Some('u'),
         "fork_feature" => Some('F'),
+        "mark_ready" => Some('y'),
         _ => None,
     }
 }
@@ -327,6 +334,19 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.open_command_picker(None);
         }
+        KeyCode::Char('h') => {
+            app.open_bookmark_picker(None);
+        }
+        KeyCode::Char('H') => {
+            app.bookmark_current_session()?;
+        }
+        KeyCode::Char('M') => {
+            app.unbookmark_current_session()?;
+        }
+        KeyCode::Char(c @ '1'..='9') => {
+            let slot = (c as u8 - b'0') as usize;
+            app.jump_to_bookmark(slot)?;
+        }
         KeyCode::Char('r') => {
             app.sync_statuses();
             if app.ipc.is_some() {
@@ -334,8 +354,7 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else {
                 app.scan_notifications();
             }
-            app.message =
-                Some("Refreshed statuses".into());
+            app.message = Some("Refreshed statuses".into());
         }
         _ => {}
     }
@@ -362,6 +381,8 @@ mod tests {
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));
         assert_eq!(default_key_for_action("filter"), Some('f'));
+        assert_eq!(default_key_for_action("session_config"), Some('u'));
+        assert_eq!(default_key_for_action("mark_ready"), Some('y'));
     }
 
     #[test]

@@ -39,13 +39,7 @@ pub fn handle_change_reason_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn submit_change_reason(app: &mut App, reject: bool, skip: bool) -> Result<()> {
-    let (
-        response_file,
-        proceed_signal,
-        reason,
-        request_id,
-        reply_socket,
-    ) = match &app.mode {
+    let (response_file, proceed_signal, reason, request_id, reply_socket) = match &app.mode {
         AppMode::ChangeReasonPrompt(state) => (
             state.response_file.clone(),
             state.proceed_signal.clone(),

@@ -5,9 +5,7 @@ use super::*;
 impl App {
     pub fn start_rename_session(&mut self) {
         let (pi, fi, si) = match &self.selection {
-            Selection::Session(pi, fi, si) => {
-                (*pi, *fi, *si)
-            }
+            Selection::Session(pi, fi, si) => (*pi, *fi, *si),
             _ => return,
         };
 
@@ -22,27 +20,23 @@ impl App {
             None => return,
         };
 
-        self.mode =
-            AppMode::RenamingSession(RenameSessionState {
-                project_idx: pi,
-                feature_idx: fi,
-                session_idx: si,
-                input: label,
-                return_to: RenameReturnTo::Dashboard,
-            });
+        self.mode = AppMode::RenamingSession(RenameSessionState {
+            project_idx: pi,
+            feature_idx: fi,
+            session_idx: si,
+            input: label,
+            return_to: RenameReturnTo::Dashboard,
+        });
     }
 
     pub fn start_rename_from_switcher(&mut self) {
-        let (pi, fi, si, switcher_state) = match &self.mode
-        {
+        let (pi, fi, si, switcher_state) = match &self.mode {
             AppMode::SessionSwitcher(state) => {
                 let pi = self
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == state.project_name
-                    });
+                    .position(|p| p.name == state.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return,
@@ -50,9 +44,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == state.feature_name
-                    });
+                    .position(|f| f.name == state.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return,
@@ -75,15 +67,9 @@ impl App {
         };
 
         let saved_switcher = SessionSwitcherState {
-            project_name: switcher_state
-                .project_name
-                .clone(),
-            feature_name: switcher_state
-                .feature_name
-                .clone(),
-            tmux_session: switcher_state
-                .tmux_session
-                .clone(),
+            project_name: switcher_state.project_name.clone(),
+            feature_name: switcher_state.feature_name.clone(),
+            tmux_session: switcher_state.tmux_session.clone(),
             sessions: switcher_state
                 .sessions
                 .iter()
@@ -96,26 +82,19 @@ impl App {
                 })
                 .collect(),
             selected: switcher_state.selected,
-            return_window: switcher_state
-                .return_window
-                .clone(),
-            return_label: switcher_state
-                .return_label
-                .clone(),
+            return_window: switcher_state.return_window.clone(),
+            return_label: switcher_state.return_label.clone(),
             vibe_mode: switcher_state.vibe_mode.clone(),
             review: switcher_state.review,
         };
 
-        self.mode =
-            AppMode::RenamingSession(RenameSessionState {
-                project_idx: pi,
-                feature_idx: fi,
-                session_idx: si,
-                input: label,
-                return_to: RenameReturnTo::SessionSwitcher(
-                    saved_switcher,
-                ),
-            });
+        self.mode = AppMode::RenamingSession(RenameSessionState {
+            project_idx: pi,
+            feature_idx: fi,
+            session_idx: si,
+            input: label,
+            return_to: RenameReturnTo::SessionSwitcher(saved_switcher),
+        });
     }
 
     pub fn apply_rename_session(&mut self) -> Result<()> {
@@ -130,8 +109,7 @@ impl App {
         };
 
         if input.is_empty() {
-            self.message =
-                Some("Name cannot be empty".into());
+            self.message = Some("Name cannot be empty".into());
             return Ok(());
         }
 
@@ -146,22 +124,14 @@ impl App {
         }
         self.save()?;
 
-        let old_mode = std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        );
-        if let AppMode::RenamingSession(rename_state) =
-            old_mode
-        {
+        let old_mode = std::mem::replace(&mut self.mode, AppMode::Normal);
+        if let AppMode::RenamingSession(rename_state) = old_mode {
             match rename_state.return_to {
                 RenameReturnTo::Dashboard => {
                     self.mode = AppMode::Normal;
                 }
-                RenameReturnTo::SessionSwitcher(
-                    mut switcher,
-                ) => {
-                    let feature = &self.store.projects[pi]
-                        .features[fi];
+                RenameReturnTo::SessionSwitcher(mut switcher) => {
+                    let feature = &self.store.projects[pi].features[fi];
                     switcher.sessions = feature
                         .sessions
                         .iter()
@@ -172,46 +142,32 @@ impl App {
                                 .iter()
                                 .find(|c| c.name == s.label);
                             SwitcherEntry {
-                                tmux_window: s
-                                    .tmux_window
-                                    .clone(),
+                                tmux_window: s.tmux_window.clone(),
                                 kind: s.kind.clone(),
                                 label: s.label.clone(),
-                                icon: cfg.and_then(|c| {
-                                    c.icon.clone()
-                                }),
-                                icon_nerd: cfg.and_then(|c| {
-                                    c.icon_nerd.clone()
-                                }),
+                                icon: cfg.and_then(|c| c.icon.clone()),
+                                icon_nerd: cfg.and_then(|c| c.icon_nerd.clone()),
                             }
                         })
                         .collect();
-                    self.mode =
-                        AppMode::SessionSwitcher(switcher);
+                    self.mode = AppMode::SessionSwitcher(switcher);
                 }
             }
         }
 
-        self.message =
-            Some(format!("Renamed to '{}'", input));
+        self.message = Some(format!("Renamed to '{}'", input));
         Ok(())
     }
 
     pub fn cancel_rename_session(&mut self) {
-        let old_mode = std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        );
+        let old_mode = std::mem::replace(&mut self.mode, AppMode::Normal);
         if let AppMode::RenamingSession(state) = old_mode {
             match state.return_to {
                 RenameReturnTo::Dashboard => {
                     self.mode = AppMode::Normal;
                 }
-                RenameReturnTo::SessionSwitcher(
-                    switcher,
-                ) => {
-                    self.mode =
-                        AppMode::SessionSwitcher(switcher);
+                RenameReturnTo::SessionSwitcher(switcher) => {
+                    self.mode = AppMode::SessionSwitcher(switcher);
                 }
             }
         }

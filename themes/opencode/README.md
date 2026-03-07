@@ -2,24 +2,24 @@
 
 This directory contains AMF-specific themes for opencode that are embedded in the AMF binary.
 
-These themes are designed specifically for use with opencode when running inside AMF's embedded tmux view. They feature transparent backgrounds that work well with AMF's terminal interface.
+These themes are designed specifically for use with opencode when running inside AMF's embedded tmux view. They use real base backgrounds so opencode renders consistently inside AMF instead of relying on transparency.
 
 ## How It Works
 
-When AMF starts or creates a feature, it automatically injects these themes into the worktree's `.opencode/themes/` directory. This ensures that anyone using AMF has access to transparent-background themes that work well in the AMF environment.
+When AMF starts or creates a feature, it automatically injects these themes into the worktree's `.opencode/themes/` directory. This ensures that anyone using AMF has access to AMF-managed themes with stable, non-transparent backgrounds that work well in the embedded view.
 
 ## Available Themes
 
-- **amf.json** - Nord-based theme with transparent background
-- **amf-tokyonight.json** - Tokyo Night with transparent background  
-- **amf-catppuccin.json** - Catppuccin Mocha with transparent background
+- **amf.json** - Nord-based theme
+- **amf-tokyonight.json** - Tokyo Night theme  
+- **amf-catppuccin.json** - Catppuccin Mocha theme
 
 ## Theme Properties
 
-All themes have the **main background** set to `"none"` for transparency, while all other UI elements use proper theme colors:
+All themes use a real **main background** plus theme-colored panel and element surfaces:
 
-### Transparent Background
-- `background` - Main background (transparent)
+### Main Background
+- `background` - Main application background (theme base color)
 
 ### Theme-Colored Backgrounds
 - `backgroundPanel` - Panel backgrounds (uses theme colors)
@@ -35,7 +35,7 @@ This approach provides:
 - **Visual hierarchy**: Panels and elements are visually distinct
 - **Better readability**: Diff sections and code blocks have proper backgrounds
 - **Theme consistency**: All colors match their respective theme palettes
-- **Transparency**: Main background shows AMF terminal through
+- **Stable rendering**: OpenCode does not depend on terminal transparency for its main surface
 
 ## Usage in OpenCode
 

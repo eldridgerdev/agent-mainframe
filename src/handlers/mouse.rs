@@ -1,19 +1,21 @@
 use anyhow::Result;
-use crossterm::event::{MouseEvent, MouseEventKind, MouseButton};
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
 use crate::app::{App, AppMode, Selection, VisibleItem};
+use crate::tmux::TmuxManager;
 
 static mut LAST_CLICK_TIME: Option<Instant> = None;
 static mut LAST_CLICK_ROW: Option<u16> = None;
+const VIEW_MOUSE_SCROLL_LINES: usize = 3;
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            handle_scroll_up(app);
+            handle_scroll_up(app, visible_rows);
         }
         MouseEventKind::ScrollDown => {
-            handle_scroll_down(app);
+            handle_scroll_down(app, visible_rows);
         }
         MouseEventKind::Down(button) => {
             handle_click(app, mouse.column, mouse.row, button, visible_rows)?;
@@ -29,18 +31,58 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
     Ok(())
 }
 
-fn handle_scroll_up(app: &mut App) {
+fn handle_scroll_up(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::Viewing(_)) {
+        handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
     }
     app.select_prev();
 }
 
-fn handle_scroll_down(app: &mut App) {
+fn handle_scroll_down(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::Viewing(_)) {
+        handle_view_scroll(app, ScrollDirection::Down, visible_rows);
         return;
     }
     app.select_next();
+}
+
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+fn handle_view_scroll(app: &mut App, direction: ScrollDirection, visible_rows: u16) {
+    let needs_scroll_mode = matches!(&app.mode, AppMode::Viewing(view) if !view.scroll_mode);
+    if needs_scroll_mode {
+        app.deactivate_leader();
+        app.toggle_scroll_mode(visible_rows);
+    }
+
+    let (session, window, passthrough) = match &app.mode {
+        AppMode::Viewing(view) if view.scroll_mode => (
+            view.session.clone(),
+            view.window.clone(),
+            view.scroll_passthrough,
+        ),
+        _ => return,
+    };
+
+    if passthrough {
+        let key_name = match direction {
+            ScrollDirection::Up => "PPage",
+            ScrollDirection::Down => "NPage",
+        };
+        if let Err(err) = TmuxManager::send_key_name(&session, &window, key_name) {
+            app.show_error(err);
+        }
+        return;
+    }
+
+    match direction {
+        ScrollDirection::Up => app.scroll_up(VIEW_MOUSE_SCROLL_LINES),
+        ScrollDirection::Down => app.scroll_down(VIEW_MOUSE_SCROLL_LINES, visible_rows),
+    }
 }
 
 fn handle_click(
@@ -61,9 +103,13 @@ fn handle_click(
 
             let pending = app.pending_inputs.len();
             if pending > 0 {
-                let inputs_text = format!(" | {} input{}", pending, if pending == 1 { "" } else { "s" });
+                let inputs_text = format!(
+                    " | {} input{}",
+                    pending,
+                    if pending == 1 { "" } else { "s" }
+                );
                 let inputs_len = inputs_text.len() as u16;
-                
+
                 let mut header_len = 2;
                 header_len += view.project_name.len() as u16 + 1;
                 header_len += view.feature_name.len() as u16 + 2;
@@ -78,7 +124,7 @@ fn handle_click(
                     header_len += 9;
                 }
                 header_len += 17;
-                
+
                 let inputs_start = header_len;
                 let inputs_end = inputs_start + inputs_len;
                 if col >= inputs_start && col < inputs_end {
@@ -88,7 +134,7 @@ fn handle_click(
             }
             return Ok(());
         }
-        
+
         if button == MouseButton::Left && row > 0 {
             app.message = None;
             let content_row = row - 1;
@@ -113,7 +159,11 @@ fn handle_click(
             .unwrap_or_default();
         let prefix_len = 19 + cwd.len() as u16;
         let pending = app.pending_inputs.len();
-        let badge_text = format!("  [{} input request{}]", pending, if pending == 1 { "" } else { "s" });
+        let badge_text = format!(
+            "  [{} input request{}]",
+            pending,
+            if pending == 1 { "" } else { "s" }
+        );
         let badge_start = prefix_len;
         let badge_end = badge_start + badge_text.len() as u16;
         if col >= badge_start && col < badge_end {
@@ -134,6 +184,7 @@ fn handle_click(
             | AppMode::OpencodeSessionPicker(_)
             | AppMode::ConfirmingOpencodeSession { .. }
             | AppMode::SessionPicker(_)
+            | AppMode::BookmarkPicker(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)
@@ -288,31 +339,40 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-fn extract_selected_text(content: &str, selection: &crate::app::TextSelection, rows: u16, cols: u16) -> String {
+fn extract_selected_text(
+    content: &str,
+    selection: &crate::app::TextSelection,
+    rows: u16,
+    cols: u16,
+) -> String {
     let (start_row, start_col, end_row, end_col) = selection.normalized();
-    
+
     if rows == 0 || cols == 0 {
         return String::new();
     }
-    
+
     let mut parser = vt100::Parser::new(rows, cols, 0);
     let normalized = content.replace('\n', "\r\n");
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
-    
+
     let mut result = String::new();
-    
+
     for row in start_row..=end_row.min(rows.saturating_sub(1)) {
         let col_start = if row == start_row { start_col } else { 0 };
-        let col_end = if row == end_row { end_col.min(cols) } else { cols };
-        
+        let col_end = if row == end_row {
+            end_col.min(cols)
+        } else {
+            cols
+        };
+
         let mut line_text = String::new();
         for col in col_start..col_end {
             if let Some(cell) = screen.cell(row, col) {
                 line_text.push_str(&cell.contents());
             }
         }
-        
+
         let trimmed = line_text.trim_end();
         if !trimmed.is_empty() || row != end_row.min(rows.saturating_sub(1)) {
             result.push_str(trimmed);
@@ -321,6 +381,6 @@ fn extract_selected_text(content: &str, selection: &crate::app::TextSelection, r
             }
         }
     }
-    
+
     result
 }

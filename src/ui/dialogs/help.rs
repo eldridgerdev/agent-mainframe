@@ -1,14 +1,33 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
+    Frame,
+    layout::Rect,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 use super::super::dashboard::centered_rect;
+use crate::theme::Theme;
 
-pub fn draw_help(frame: &mut Frame) {
+pub fn draw_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(55, 70, frame.area());
+    draw_help_at(frame, area, theme);
+}
+
+pub fn draw_help_bottom_right(frame: &mut Frame, theme: &Theme) {
+    let viewport = frame.area();
+    let width = (viewport.width.saturating_mul(55) / 100).max(40);
+    let height = (viewport.height.saturating_mul(70) / 100).max(12);
+    let area = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width + 1),
+        viewport.y + viewport.height.saturating_sub(height + 1),
+        width,
+        height,
+    );
+    draw_help_at(frame, area, theme);
+}
+
+fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Clear, area);
 
     let keybinds: Vec<(&str, &str)> = vec![
@@ -26,8 +45,10 @@ pub fn draw_help(frame: &mut Frame) {
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
+        ("u", "Update worktree session config"),
         ("F", "Fork feature (new branch)"),
         ("m", "Create memo (.claude/notes.md)"),
+        ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),
@@ -36,95 +57,161 @@ pub fn draw_help(frame: &mut Frame) {
         ("q / Esc", "Quit"),
     ];
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled(
+                "  ESC",
+                Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " closes this menu",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
     for (key, desc) in &keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>12}", key),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(*desc, Style::default().fg(Color::White)),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
         ]));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  While viewing (embedded tmux):",
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "Ctrl+Q"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Exit view", Style::default().fg(Color::White)),
+        Span::styled("Exit view", Style::default().fg(theme.text.to_color())),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "Ctrl+Space"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w / n p i r x f D ?)",
-            Style::default().fg(Color::White),
+            "Leader key (then: q t T w h / n p i r x f D ? H M 1-9)",
+            Style::default().fg(theme.text.to_color()),
         ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "t / T"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Cycle next/prev session", Style::default().fg(Color::White)),
+        Span::styled(
+            "Cycle next/prev session",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "w"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Session switcher", Style::default().fg(Color::White)),
+        Span::styled(
+            "Session switcher",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "h"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Bookmark picker popup",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "H / M"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Bookmark / unbookmark session",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "1-9"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Jump to bookmark slot",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "/"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Custom commands picker", Style::default().fg(Color::White)),
+        Span::styled(
+            "Custom commands picker",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "D"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Debug log", Style::default().fg(Color::White)),
+        Span::styled("Debug log", Style::default().fg(theme.text.to_color())),
     ]));
 
     let help = Paragraph::new(lines).block(
         Block::default()
             .title(" Keybindings ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.primary.to_color())),
     );
 
     frame.render_widget(help, area);

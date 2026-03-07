@@ -60,8 +60,8 @@ impl App {
             }
             Selection::Feature(pi, fi) => {
                 if let Some(p) = self.store.projects.get(*pi) {
-                    if let Some(f) = p.features.get(*fi) {
-                        Some(f.workdir.to_string_lossy().into_owned())
+                    if p.features.get(*fi).is_some() {
+                        Some(p.repo.to_string_lossy().into_owned())
                     } else {
                         None
                     }
@@ -71,8 +71,8 @@ impl App {
             }
             Selection::Session(pi, fi, _) => {
                 if let Some(p) = self.store.projects.get(*pi) {
-                    if let Some(f) = p.features.get(*fi) {
-                        Some(f.workdir.to_string_lossy().into_owned())
+                    if p.features.get(*fi).is_some() {
+                        Some(p.repo.to_string_lossy().into_owned())
                     } else {
                         None
                     }
@@ -82,9 +82,14 @@ impl App {
             }
         };
 
-        self.mode = AppMode::CreatingBatchFeatures(CreateBatchFeaturesState::with_workspace(
-            workspace_path,
-        ));
+        let mut state = CreateBatchFeaturesState::with_workspace(workspace_path);
+        let repo = PathBuf::from(&state.workspace_path);
+        self.active_extension = self.extension_for_repo(&repo);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&repo, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+
+        self.mode = AppMode::CreatingBatchFeatures(state);
         self.message = None;
     }
 
@@ -124,9 +129,8 @@ impl App {
     }
 
     pub fn show_error(&mut self, error: anyhow::Error) {
-        let msg = format!("Error: {}", error);
-        self.message = Some(msg.clone());
-        self.debug_log.error("app", msg);
+        let detail = error.to_string();
+        self.report_logged_error("app", format!("Error: {}", detail));
         match &self.mode {
             AppMode::Normal | AppMode::Help(_) | AppMode::Viewing(_) => {}
             _ => {

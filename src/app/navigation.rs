@@ -8,9 +8,14 @@ impl App {
             if !project.collapsed {
                 let mut feature_indices: Vec<usize> = (0..project.features.len()).collect();
                 feature_indices.sort_by(|&a, &b| {
-                    project.features[b]
-                        .created_at
-                        .cmp(&project.features[a].created_at)
+                    project.features[a]
+                        .is_worktree
+                        .cmp(&project.features[b].is_worktree)
+                        .then_with(|| {
+                            project.features[b]
+                                .created_at
+                                .cmp(&project.features[a].created_at)
+                        })
                 });
                 for fi in feature_indices {
                     let feature = &project.features[fi];

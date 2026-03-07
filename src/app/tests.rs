@@ -53,6 +53,21 @@ fn shorten_path_outside_home() {
     assert_eq!(result, "/tmp/some/path");
 }
 
+// ── AppConfig defaults ───────────────────────────────────
+
+#[test]
+fn app_config_default_leader_timeout_is_five_seconds() {
+    let config = AppConfig::default();
+    assert_eq!(config.leader_timeout_seconds, 5);
+}
+
+#[test]
+fn app_config_missing_leader_timeout_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.leader_timeout_seconds, 5);
+    assert!(!config.nerd_font);
+}
+
 // ── strip_between_markers ─────────────────────────────────
 
 #[test]

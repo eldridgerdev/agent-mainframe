@@ -318,8 +318,11 @@ impl App {
             }
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
                 if let Some(project) = self.store.projects.get(*pi) {
-                    if let Some(feature) = project.features.get(*fi) {
-                        merge_project_extension_config(&global_ext, &feature.workdir)
+                    if project.features.get(*fi).is_some() {
+                        // Extension config is project-scoped and lives under
+                        // `{repo}/.amf/config.json`, so worktree selections
+                        // should still reload from the project repo.
+                        merge_project_extension_config(&global_ext, &project.repo)
                     } else {
                         merge_project_extension_config(&global_ext, &project.repo)
                     }

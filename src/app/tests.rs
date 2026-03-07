@@ -246,6 +246,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status,
         created_at: now,
         last_accessed: now,
@@ -265,6 +266,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
     ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     }
 }
 
@@ -345,6 +347,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 agent: AgentKind::default(),
                 enable_chrome: false,
                 has_notes: false,
+                ready: false,
                 status: ProjectStatus::Stopped,
                 created_at: now + Duration::minutes(1),
                 last_accessed: now + Duration::minutes(1),
@@ -366,6 +369,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 agent: AgentKind::default(),
                 enable_chrome: false,
                 has_notes: false,
+                ready: false,
                 status: ProjectStatus::Stopped,
                 created_at: now,
                 last_accessed: now,
@@ -380,6 +384,7 @@ fn visible_items_prioritizes_non_worktree_features() {
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     };
 
     let app = App::new_for_test(
@@ -539,6 +544,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     };
     let mut app = App::new_for_test(
         store,
@@ -591,6 +597,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Stopped,
         created_at: now,
         last_accessed: now,
@@ -610,6 +617,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
+        session_bookmarks: vec![],
     };
     let mut app = App::new_for_test(
         store,
@@ -1276,6 +1284,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
         last_accessed: now,

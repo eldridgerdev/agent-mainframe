@@ -1,14 +1,20 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
+    Frame,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
-    Frame,
 };
 
 use super::super::dashboard::centered_rect;
 use crate::debug::{DebugLog, LogLevel};
+use crate::theme::Theme;
 
-pub fn draw_debug_log(frame: &mut Frame, debug_log: &DebugLog, scroll_offset: usize) {
+pub fn draw_debug_log(
+    frame: &mut Frame,
+    debug_log: &DebugLog,
+    scroll_offset: usize,
+    theme: &Theme,
+) {
     let area = centered_rect(80, 80, frame.area());
     frame.render_widget(Clear, area);
 
@@ -17,7 +23,8 @@ pub fn draw_debug_log(frame: &mut Frame, debug_log: &DebugLog, scroll_offset: us
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta));
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.secondary.to_color()));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         inner
@@ -32,14 +39,17 @@ pub fn draw_debug_log(frame: &mut Frame, debug_log: &DebugLog, scroll_offset: us
         .iter()
         .map(|entry| {
             let level_color = match entry.level {
-                LogLevel::Debug => Color::Gray,
-                LogLevel::Info => Color::Green,
-                LogLevel::Warn => Color::Yellow,
-                LogLevel::Error => Color::Red,
+                LogLevel::Debug => theme.text_muted.to_color(),
+                LogLevel::Info => theme.success.to_color(),
+                LogLevel::Warn => theme.warning.to_color(),
+                LogLevel::Error => theme.danger.to_color(),
             };
             let time = entry.timestamp.format("%H:%M:%S%.3f");
             Line::from(vec![
-                Span::styled(format!("{} ", time), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("{} ", time),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
                 Span::styled(
                     format!("[{:<5}] ", entry.level.display()),
                     Style::default()
@@ -48,9 +58,9 @@ pub fn draw_debug_log(frame: &mut Frame, debug_log: &DebugLog, scroll_offset: us
                 ),
                 Span::styled(
                     format!("{}: ", entry.context),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme.primary.to_color()),
                 ),
-                Span::styled(&entry.message, Style::default().fg(Color::White)),
+                Span::styled(&entry.message, Style::default().fg(theme.text.to_color())),
             ])
         })
         .collect();
@@ -92,11 +102,11 @@ pub fn draw_debug_log(frame: &mut Frame, debug_log: &DebugLog, scroll_offset: us
     let hint = Line::from(vec![
         Span::styled(
             "j/k:scroll  c:clear  Esc:close  ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(
             format!("({} entries)", debug_log.len()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_muted.to_color()),
         ),
     ]);
     let hint_paragraph = Paragraph::new(hint).right_aligned();

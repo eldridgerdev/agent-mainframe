@@ -8,29 +8,33 @@ use ratatui::{
 
 use crate::app::{App, AppMode, Selection, SessionFilter};
 use crate::project::SessionKind;
+use crate::theme::Theme;
 use crate::usage::Model;
 
-fn utilization_color(pct: f64) -> Color {
+fn utilization_color(pct: f64, theme: &Theme) -> Color {
     if pct >= 80.0 {
-        Color::Red
+        theme.usage_high.to_color()
     } else if pct >= 50.0 {
-        Color::Yellow
+        theme.usage_medium.to_color()
     } else {
-        Color::Green
+        theme.usage_low.to_color()
     }
 }
 
-fn usage_bar_spans<'a>(label: &'a str, pct: f64, bar_width: usize) -> Vec<Span<'a>> {
-    let color = utilization_color(pct);
+fn usage_bar_spans<'a>(label: &'a str, pct: f64, bar_width: usize, theme: &Theme) -> Vec<Span<'a>> {
+    let color = utilization_color(pct, theme);
     let filled = ((pct / 100.0) * bar_width as f64).round() as usize;
     let empty = bar_width.saturating_sub(filled);
 
     vec![
-        Span::styled(format!("{} ", label), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{} ", label),
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("┃".repeat(filled), Style::default().fg(color)),
         Span::styled(
             "░".repeat(empty),
-            Style::default().fg(Color::Rgb(60, 60, 60)),
+            Style::default().fg(theme.scrollbar.to_color()),
         ),
         Span::styled(
             format!(" {:.0}%", pct),
@@ -49,14 +53,18 @@ fn shorten_path(path: &std::path::Path) -> String {
 }
 
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let key_style = || Style::default().fg(theme.warning.to_color());
+    let hint_style = || Style::default().fg(theme.text_muted.to_color());
+
     let filter_spans = if app.session_filter != SessionFilter::All {
         vec![
-            Span::styled(" [", Style::default().fg(Color::DarkGray)),
+            Span::styled(" [", hint_style()),
             Span::styled(
                 app.session_filter.display_name(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme.primary.to_color()),
             ),
-            Span::styled("] ", Style::default().fg(Color::DarkGray)),
+            Span::styled("] ", hint_style()),
         ]
     } else {
         vec![]
@@ -69,69 +77,66 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             if on_session {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+                    Span::styled(" Enter", key_style()),
                     Span::raw(" view  "),
-                    Span::styled("r", Style::default().fg(Color::Yellow)),
+                    Span::styled("r", key_style()),
                     Span::raw(" rename  "),
-                    Span::styled("x", Style::default().fg(Color::Yellow)),
+                    Span::styled("x", key_style()),
                     Span::raw(" remove  "),
-                    Span::styled("d", Style::default().fg(Color::Yellow)),
+                    Span::styled("d", key_style()),
                     Span::raw(" delete  "),
-                    Span::styled("s", Style::default().fg(Color::Yellow)),
+                    Span::styled("s", key_style()),
                     Span::raw(" switch  "),
-                    Span::styled("S", Style::default().fg(Color::Yellow)),
+                    Span::styled("S", key_style()),
                     Span::raw(" resume  "),
-                    Span::styled("f", Style::default().fg(Color::Yellow)),
+                    Span::styled("f", key_style()),
                     Span::raw(" filter  "),
-                    Span::styled("q", Style::default().fg(Color::Yellow)),
+                    Span::styled("q", key_style()),
                     Span::raw(" quit"),
                 ]);
                 Line::from(spans)
             } else if on_feature {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(" n", Style::default().fg(Color::Yellow)),
+                    Span::styled(" n", key_style()),
                     Span::raw(" feature  "),
-                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::styled("Enter", key_style()),
                     Span::raw(" expand  "),
-                    Span::styled("c", Style::default().fg(Color::Yellow)),
+                    Span::styled("c", key_style()),
                     Span::raw(" start  "),
-                    Span::styled("x", Style::default().fg(Color::Yellow)),
+                    Span::styled("x", key_style()),
                     Span::raw(" stop  "),
-                    Span::styled("f", Style::default().fg(Color::Yellow)),
+                    Span::styled("f", key_style()),
                     Span::raw(" filter  "),
-                    Span::styled("s", Style::default().fg(Color::Yellow)),
+                    Span::styled("s", key_style()),
                     Span::raw(" switch  "),
-                    Span::styled("S", Style::default().fg(Color::Yellow)),
+                    Span::styled("S", key_style()),
                     Span::raw(" resume  "),
-                    Span::styled("d", Style::default().fg(Color::Yellow)),
+                    Span::styled("d", key_style()),
                     Span::raw(" delete  "),
                 ]);
                 if !app.active_extension.custom_sessions.is_empty() {
-                    spans.push(Span::styled("p", Style::default().fg(Color::Yellow)));
+                    spans.push(Span::styled("p", key_style()));
                     spans.push(Span::raw(" sessions  "));
                 }
-                spans.extend(vec![
-                    Span::styled("q", Style::default().fg(Color::Yellow)),
-                    Span::raw(" quit"),
-                ]);
+                spans.extend(vec![Span::styled("q", key_style()), Span::raw(" quit")]);
                 Line::from(spans)
             } else {
                 let mut spans = filter_spans;
                 spans.extend(vec![
-                    Span::styled(" n", Style::default().fg(Color::Yellow)),
+                    Span::styled(" n", key_style()),
                     Span::raw(" feature  "),
-                    Span::styled("N", Style::default().fg(Color::Yellow)),
+                    Span::styled("N", key_style()),
                     Span::raw(" project  "),
-                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::styled("Enter", key_style()),
                     Span::raw(" expand  "),
-                    Span::styled("f", Style::default().fg(Color::Yellow)),
+                    Span::styled("f", key_style()),
                     Span::raw(" filter  "),
-                    Span::styled("d", Style::default().fg(Color::Yellow)),
+                    Span::styled("d", key_style()),
                     Span::raw(" delete  "),
-                    Span::styled("R", Style::default().fg(Color::Yellow)),
+                    Span::styled("R", key_style()),
                     Span::raw(" refresh  "),
-                    Span::styled("q", Style::default().fg(Color::Yellow)),
+                    Span::styled("q", key_style()),
                     Span::raw(" quit"),
                 ]);
                 Line::from(spans)
@@ -143,19 +148,19 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
         | AppMode::BrowsingPath(_) => Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", key_style()),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::DeletingProject(_) | AppMode::DeletingFeature(_, _) => Line::from(vec![
-            Span::styled("y", Style::default().fg(Color::Yellow)),
+            Span::styled("y", key_style()),
             Span::raw(" confirm  "),
-            Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("n/Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::Help(_) => Line::from(vec![
-            Span::styled("Esc/q/?", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc/q/?", key_style()),
             Span::raw(" close help"),
         ]),
         AppMode::CommandPicker(_)
@@ -165,49 +170,46 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
         | AppMode::SessionPicker(_) => Line::from(vec![
-            Span::styled(
-                "j/k or \u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled("j/k or \u{2191}/\u{2193}", key_style()),
             Span::raw(" navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", key_style()),
             Span::raw(" select  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::ConfirmingOpencodeSession { .. } | AppMode::ConfirmingClaudeSession { .. } => {
             Line::from(vec![
-                Span::styled("y", Style::default().fg(Color::Yellow)),
+                Span::styled("y", key_style()),
                 Span::raw(" restart  "),
-                Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+                Span::styled("n/Esc", key_style()),
                 Span::raw(" cancel"),
             ])
         }
         AppMode::ChangeReasonPrompt(_) => Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", key_style()),
             Span::raw(" accept  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" skip  "),
-            Span::styled("r", Style::default().fg(Color::Red)),
+            Span::styled("r", Style::default().fg(theme.danger.to_color())),
             Span::raw(" reject"),
         ]),
         AppMode::Viewing(_) => Line::from(vec![
-            Span::styled("Ctrl+Space", Style::default().fg(Color::Yellow)),
+            Span::styled("Ctrl+Space", key_style()),
             Span::raw(" commands  "),
-            Span::styled("Ctrl+Q", Style::default().fg(Color::Yellow)),
+            Span::styled("Ctrl+Q", key_style()),
             Span::raw(" exit view"),
         ]),
         AppMode::RunningHook(state) => {
             if state.child.is_some() {
                 Line::from(Span::styled(
                     "Running hook...",
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme.info.to_color()),
                 ))
             } else {
                 Line::from(vec![
-                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::styled("Enter", key_style()),
                     Span::raw(" continue  "),
-                    Span::styled("Esc", Style::default().fg(Color::Yellow)),
+                    Span::styled("Esc", key_style()),
                     Span::raw(" skip"),
                 ])
             }
@@ -216,62 +218,59 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             if state.child.is_some() {
                 Line::from(Span::styled(
                     "Deleting feature...",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme.warning.to_color()),
                 ))
             } else if state.error.is_some() {
                 Line::from(vec![
-                    Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                    Span::styled("Enter", key_style()),
                     Span::raw(" acknowledge"),
                 ])
             } else {
-                Line::from(Span::styled(
-                    "Press any key to continue...",
-                    Style::default().fg(Color::DarkGray),
-                ))
+                Line::from(Span::styled("Press any key to continue...", hint_style()))
             }
         }
         AppMode::HookPrompt(_) => Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(" j/k", key_style()),
             Span::raw(" move  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", key_style()),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::LatestPrompt(_, _) => Line::from(vec![
-            Span::styled(" Esc", Style::default().fg(Color::Yellow)),
-            Span::styled("/q", Style::default().fg(Color::Yellow)),
+            Span::styled(" Esc", key_style()),
+            Span::styled("/q", key_style()),
             Span::raw(" close"),
         ]),
         AppMode::ForkingFeature(_) => Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(" Enter", key_style()),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::ThemePicker(_) => Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(" j/k", key_style()),
             Span::raw(" navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", key_style()),
             Span::raw(" apply  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::DebugLog(_) => Line::from(vec![
-            Span::styled(" j/k", Style::default().fg(Color::Yellow)),
+            Span::styled(" j/k", key_style()),
             Span::raw(" scroll  "),
-            Span::styled("c", Style::default().fg(Color::Yellow)),
+            Span::styled("c", key_style()),
             Span::raw(" clear  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {
         let color = if msg.starts_with("Error:") {
-            Color::Red
+            theme.danger.to_color()
         } else {
-            Color::Green
+            theme.success.to_color()
         };
         Line::from(Span::styled(msg.as_str(), Style::default().fg(color)))
     } else {
@@ -282,13 +281,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         format!(" {}", project.name),
                         Style::default()
-                            .fg(Color::Cyan)
+                            .fg(theme.project_title.to_color())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  {}", shorten_path(&project.repo)),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("  {}", shorten_path(&project.repo)), hint_style()),
                 ])
             }
             Selection::Feature(pi, fi)
@@ -305,13 +301,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         format!(" {}", feature.name),
                         Style::default()
-                            .fg(Color::White)
+                            .fg(theme.feature_title.to_color())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(branch_info, Style::default().fg(Color::Yellow)),
+                    Span::styled(branch_info, Style::default().fg(theme.warning.to_color())),
                     Span::styled(
                         format!("  {}", shorten_path(&feature.workdir)),
-                        Style::default().fg(Color::DarkGray),
+                        hint_style(),
                     ),
                 ])
             }
@@ -335,16 +331,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled(
                         format!(" {} ({})", session.label, kind_label),
                         Style::default()
-                            .fg(Color::White)
+                            .fg(theme.text.to_color())
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  {}", feature.name),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("  {}", feature.name), hint_style()),
                     Span::styled(
                         format!("  {}", shorten_path(&feature.workdir)),
-                        Style::default().fg(Color::DarkGray),
+                        hint_style(),
                     ),
                 ])
             }
@@ -360,7 +353,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                         feature_count,
                         if feature_count == 1 { "" } else { "s" },
                     ),
-                    Style::default().fg(Color::DarkGray),
+                    hint_style(),
                 ))
             }
         }
@@ -368,7 +361,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(theme.border.to_color()));
     let inner = block.inner(area);
 
     let status = Paragraph::new(vec![message_line, keybinds]).block(block);
@@ -380,7 +373,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let model_label = Span::styled(
         format!("[{}] ", usage.visible_model.label()),
         Style::default()
-            .fg(Color::Magenta)
+            .fg(theme.secondary.to_color())
             .add_modifier(Modifier::BOLD),
     );
     right_spans.push(model_label);
@@ -388,24 +381,24 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     match usage.visible_model {
         Model::Claude => {
             if let Some(pct5) = usage.claude.five_hour_pct {
-                right_spans.extend(usage_bar_spans("5h", pct5, 15));
+                right_spans.extend(usage_bar_spans("5h", pct5, 15, theme));
                 right_spans.push(Span::raw(" "));
             }
 
             if let Some(pct7) = usage.claude.seven_day_pct {
-                right_spans.extend(usage_bar_spans("7d", pct7, 15));
+                right_spans.extend(usage_bar_spans("7d", pct7, 15, theme));
                 right_spans.push(Span::raw(" "));
             } else if let Some(ref err) = usage.claude.last_error {
                 right_spans.push(Span::styled(
                     format!("{} ", err),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme.danger.to_color()),
                 ));
                 right_spans.push(Span::raw(" "));
             }
 
             right_spans.push(Span::styled(
                 format!("{} msgs ", usage.claude.today_messages),
-                Style::default().fg(Color::DarkGray),
+                hint_style(),
             ));
 
             if usage.claude.today_tokens > 0 {
@@ -417,7 +410,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     format!("{} tok ", tok)
                 };
-                right_spans.push(Span::styled(tok_str, Style::default().fg(Color::Cyan)));
+                right_spans.push(Span::styled(
+                    tok_str,
+                    Style::default().fg(theme.info.to_color()),
+                ));
             }
         }
         Model::Zai => {
@@ -432,23 +428,23 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             if let Some(pct) = usage.zai.five_hour_usage_pct {
-                right_spans.extend(usage_bar_spans("5h", pct, 15));
+                right_spans.extend(usage_bar_spans("5h", pct, 15, theme));
                 right_spans.push(Span::raw(" "));
             }
 
             if let Some(pct) = usage.zai.weekly_usage_pct {
-                right_spans.extend(usage_bar_spans("7d", pct, 15));
+                right_spans.extend(usage_bar_spans("7d", pct, 15, theme));
                 right_spans.push(Span::raw(" "));
             } else if usage.zai.today_tokens > 0 {
                 right_spans.push(Span::styled(
                     format!("{} ", format_tokens(usage.zai.today_tokens)),
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(theme.info.to_color()),
                 ));
             }
 
             right_spans.push(Span::styled(
                 format!("{} calls ", usage.zai.today_calls),
-                Style::default().fg(Color::DarkGray),
+                hint_style(),
             ));
         }
     }

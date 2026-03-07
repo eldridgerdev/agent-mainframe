@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
-    Frame,
 };
 
 use crate::app::{
@@ -12,6 +12,7 @@ use crate::app::{
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
+use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
@@ -19,19 +20,20 @@ pub fn draw_create_feature_dialog(
     frame: &mut Frame,
     state: &CreateFeatureState,
     presets: &[FeaturePreset],
+    theme: &Theme,
 ) {
     match state.step {
         CreateFeatureStep::Source => {
-            draw_create_feature_source(frame, state, presets);
+            draw_create_feature_source(frame, state, presets, theme);
         }
         CreateFeatureStep::ExistingWorktree => {
-            draw_create_feature_worktree_picker(frame, state);
+            draw_create_feature_worktree_picker(frame, state, theme);
         }
         CreateFeatureStep::SelectPreset => {
-            draw_create_feature_preset_picker(frame, state, presets);
+            draw_create_feature_preset_picker(frame, state, presets, theme);
         }
         _ => {
-            draw_create_feature_branch_mode(frame, state);
+            draw_create_feature_branch_mode(frame, state, theme);
         }
     }
 }
@@ -40,6 +42,7 @@ fn draw_create_feature_source(
     frame: &mut Frame,
     state: &CreateFeatureState,
     presets: &[FeaturePreset],
+    theme: &Theme,
 ) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
@@ -48,7 +51,8 @@ fn draw_create_feature_source(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -65,7 +69,7 @@ fn draw_create_feature_source(
 
     let label = Paragraph::new(Line::from(Span::styled(
         " Source:",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme.primary.to_color()),
     )));
     frame.render_widget(label, chunks[0]);
 
@@ -79,10 +83,10 @@ fn draw_create_feature_source(
         let marker = if is_selected { ">" } else { " " };
         let style = if is_selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
         lines.push(Line::from(Span::styled(
             format!("   {} {}", marker, opt),
@@ -95,12 +99,12 @@ fn draw_create_feature_source(
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
             " j/k or \u{2191}/\u{2193}",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning.to_color()),
         ),
         Span::raw(" select  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" confirm  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" cancel"),
     ]));
     frame.render_widget(hints, chunks[3]);
@@ -110,6 +114,7 @@ fn draw_create_feature_preset_picker(
     frame: &mut Frame,
     state: &CreateFeatureState,
     presets: &[FeaturePreset],
+    theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
@@ -118,7 +123,8 @@ fn draw_create_feature_preset_picker(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -131,7 +137,7 @@ fn draw_create_feature_preset_picker(
     if presets.is_empty() {
         let empty = Paragraph::new(Line::from(Span::styled(
             "  No presets configured.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_muted.to_color()),
         )));
         frame.render_widget(empty, chunks[0]);
     } else {
@@ -142,10 +148,10 @@ fn draw_create_feature_preset_picker(
                 let is_selected = i == state.preset_index;
                 let name_style = if is_selected {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(theme.primary.to_color())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(theme.text.to_color())
                 };
                 let agent_str = preset.agent.display_name();
                 let mode_str = match &preset.mode {
@@ -163,14 +169,14 @@ fn draw_create_feature_preset_picker(
                 let line = Line::from(vec![
                     Span::styled(
                         if is_selected { "  > " } else { "    " },
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.primary.to_color()),
                     ),
                     Span::styled(&preset.name, name_style),
-                    Span::styled(detail, Style::default().fg(Color::DarkGray)),
+                    Span::styled(detail, Style::default().fg(theme.text_muted.to_color())),
                 ]);
                 let item = ListItem::new(line);
                 if is_selected {
-                    item.style(Style::default().bg(Color::DarkGray))
+                    item.style(Style::default().bg(theme.effective_selection_bg()))
                 } else {
                     item
                 }
@@ -183,18 +189,22 @@ fn draw_create_feature_preset_picker(
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
             " j/k or \u{2191}/\u{2193}",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning.to_color()),
         ),
         Span::raw(" select  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" use preset  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[1]);
 }
 
-fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureState) {
+fn draw_create_feature_worktree_picker(
+    frame: &mut Frame,
+    state: &CreateFeatureState,
+    theme: &Theme,
+) {
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
 
@@ -202,7 +212,8 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -215,7 +226,7 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
     if state.worktrees.is_empty() {
         let empty_msg = Paragraph::new(Line::from(Span::styled(
             "  No available worktrees",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme.warning.to_color()),
         )));
         frame.render_widget(empty_msg, chunks[0]);
     } else {
@@ -231,26 +242,26 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
                 let line = Line::from(vec![
                     Span::styled(
                         if is_selected { "  > " } else { "    " },
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme.primary.to_color()),
                     ),
                     Span::styled(
                         branch_label,
                         if is_selected {
                             Style::default()
-                                .fg(Color::White)
+                                .fg(theme.text.to_color())
                                 .add_modifier(Modifier::BOLD)
                         } else {
-                            Style::default().fg(Color::White)
+                            Style::default().fg(theme.text.to_color())
                         },
                     ),
                     Span::styled(
                         format!("  {}", path_str),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme.text_muted.to_color()),
                     ),
                 ]);
 
                 if is_selected {
-                    ListItem::new(line).style(Style::default().bg(Color::DarkGray))
+                    ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
                 } else {
                     ListItem::new(line)
                 }
@@ -263,26 +274,26 @@ fn draw_create_feature_worktree_picker(frame: &mut Frame, state: &CreateFeatureS
 
     let hints = if state.worktrees.is_empty() {
         Paragraph::new(Line::from(vec![
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back"),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning.to_color()),
             ),
             Span::raw(" navigate  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" select  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back"),
         ]))
     };
     frame.render_widget(hints, chunks[1]);
 }
 
-fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState) {
+fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
     let area = centered_rect(60, 70, frame.area());
     frame.render_widget(Clear, area);
 
@@ -290,7 +301,8 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -319,28 +331,28 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let branch_active = state.step == CreateFeatureStep::Branch;
     let branch_label_style = if branch_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let cursor = if branch_active {
-        Span::styled("\u{2588}", Style::default().fg(Color::Cyan))
+        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color()))
     } else {
         Span::raw("")
     };
 
     let branch_field = Paragraph::new(Line::from(vec![
         Span::styled(" Branch: ", branch_label_style),
-        Span::styled(&state.branch, Style::default().fg(Color::White)),
+        Span::styled(&state.branch, Style::default().fg(theme.text.to_color())),
         cursor,
     ]));
     frame.render_widget(branch_field, chunks[0]);
 
     let wt_active = state.step == CreateFeatureStep::Worktree;
     let wt_label_style = if wt_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
 
     let yes_marker = if state.use_worktree { ">" } else { " " };
@@ -348,21 +360,21 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let yes_style = if wt_active && state.use_worktree {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD)
     } else if state.use_worktree {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let no_style = if wt_active && !state.use_worktree {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD)
     } else if !state.use_worktree {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
 
     let wt_lines = vec![
@@ -378,9 +390,9 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let agent_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 0;
     let agent_label_style = if agent_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
 
     let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
@@ -390,12 +402,12 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         let marker = if is_selected { ">" } else { " " };
         let style = if agent_active && is_selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else if is_selected {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text.to_color())
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
         agent_lines.push(Line::from(Span::styled(
             format!("   {} {}", marker, agent.display_name()),
@@ -408,9 +420,9 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
 
     let mode_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 1;
     let mode_label_style = if mode_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
 
     let mut mode_lines = vec![Line::from(Span::styled(" Mode:", mode_label_style))];
@@ -420,12 +432,12 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         let marker = if is_selected { ">" } else { " " };
         let style = if mode_active && is_selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else if is_selected {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text.to_color())
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
         mode_lines.push(Line::from(Span::styled(
             format!("   {} {}", marker, m.display_name()),
@@ -440,17 +452,17 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let review_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 2;
     let review_check = if state.review { "[x]" } else { "[ ]" };
     let review_style = if review_active {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let review_lines = vec![Line::from(vec![
         Span::styled(
             " Review: ",
             if review_active {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.primary.to_color())
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.text_muted.to_color())
             },
         ),
         Span::styled(
@@ -467,19 +479,19 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         && state.agent == AgentKind::Claude;
     let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
     let chrome_style = if chrome_active {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let chrome_label_style =
         if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
             if state.mode_focus == 3 {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.primary.to_color())
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.text_muted.to_color())
             }
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
 
     if state.agent == AgentKind::Claude {
@@ -503,17 +515,17 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
     let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
     let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
     let notes_style = if notes_active {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let notes_lines = vec![Line::from(vec![
         Span::styled(
             " Memo: ",
             if notes_active {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.primary.to_color())
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme.text_muted.to_color())
             },
         ),
         Span::styled(format!("{} Create memo", notes_check), notes_style),
@@ -525,45 +537,46 @@ fn draw_create_feature_branch_mode(frame: &mut Frame, state: &CreateFeatureState
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning.to_color()),
             ),
             Span::raw(" select  "),
-            Span::styled("h/l", Style::default().fg(Color::Yellow)),
+            Span::styled("h/l", Style::default().fg(theme.warning.to_color())),
             Span::raw(" prev/next field  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" confirm"),
         ]))
     } else if state.step == CreateFeatureStep::Worktree {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning.to_color()),
             ),
             Span::raw(" toggle  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" next  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back"),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" next  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" cancel"),
         ]))
     };
     frame.render_widget(hints, chunks[15]);
 }
 
-pub fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
+pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" SuperVibe Mode ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.danger.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -582,47 +595,54 @@ pub fn draw_confirm_supervibe_dialog(frame: &mut Frame) {
 
     let warning = Paragraph::new(Line::from(vec![Span::styled(
         " WARNING",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.danger.to_color())
+            .add_modifier(Modifier::BOLD),
     )]));
     frame.render_widget(warning, chunks[0]);
 
     let desc = Paragraph::new(vec![
         Line::from(Span::styled(
             " SuperVibe skips ALL permission checks.",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.to_color()),
         )),
         Line::from(Span::styled(
             " Claude will be able to execute any tool",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.to_color()),
         )),
         Line::from(Span::styled(
             " without asking for confirmation, including",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.to_color()),
         )),
         Line::from(Span::styled(
             " running arbitrary shell commands.",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.to_color()),
         )),
     ])
     .wrap(Wrap { trim: false });
     frame.render_widget(desc, chunks[2]);
 
     let prompt = Paragraph::new(Line::from(vec![
-        Span::styled(" Continue? ", Style::default().fg(Color::Yellow)),
-        Span::styled("(y/n)", Style::default().fg(Color::DarkGray)),
+        Span::styled(" Continue? ", Style::default().fg(theme.warning.to_color())),
+        Span::styled("(y/n)", Style::default().fg(theme.text_muted.to_color())),
     ]));
     frame.render_widget(prompt, chunks[4]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" y", Style::default().fg(Color::Yellow)),
+        Span::styled(" y", Style::default().fg(theme.warning.to_color())),
         Span::raw(" confirm  "),
-        Span::styled("n/Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("n/Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[5]);
 }
 
-pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, feature_name: &str) {
+pub fn draw_delete_feature_confirm(
+    frame: &mut Frame,
+    project_name: &str,
+    feature_name: &str,
+    theme: &Theme,
+) {
     let area = centered_rect(50, 25, frame.area());
     frame.render_widget(Clear, area);
 
@@ -632,13 +652,15 @@ pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, featur
             Span::raw(" Delete feature "),
             Span::styled(
                 feature_name,
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" from "),
             Span::styled(
                 project_name,
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("?"),
@@ -646,7 +668,7 @@ pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, featur
         Line::from(""),
         Line::from(Span::styled(
             " This will kill the tmux session and remove the worktree.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_muted.to_color()),
         )),
         Line::from(""),
         Line::from(vec![
@@ -654,21 +676,21 @@ pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, featur
             Span::styled(
                 "y",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" to confirm, "),
             Span::styled(
                 "n",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" or "),
             Span::styled(
                 "Esc",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" to cancel"),
@@ -679,7 +701,8 @@ pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, featur
         Block::default()
             .title(" Confirm Delete ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Red)),
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.danger.to_color())),
     );
 
     frame.render_widget(text, area);
@@ -689,22 +712,24 @@ pub fn draw_deleting_feature_dialog(
     frame: &mut Frame,
     state: &DeletingFeatureState,
     throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
 ) {
     let area = centered_rect(50, 30, frame.area());
     frame.render_widget(Clear, area);
 
     let is_running = state.child.is_some();
     let border_color = if is_running {
-        Color::Yellow
+        theme.warning.to_color()
     } else if state.error.is_some() {
-        Color::Red
+        theme.danger.to_color()
     } else {
-        Color::Green
+        theme.success.to_color()
     };
 
     let block = Block::default()
         .title(" Deleting Feature ")
         .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
@@ -730,7 +755,7 @@ pub fn draw_deleting_feature_dialog(
         let throbber = throbber_widgets_tui::Throbber::default()
             .throbber_style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             )
             .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
@@ -741,62 +766,73 @@ pub fn draw_deleting_feature_dialog(
             span,
             Span::styled(
                 format!(" {}", stage_text),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning.to_color()),
             ),
         ])
     } else if let Some(ref err) = state.error {
         Line::from(vec![
             Span::styled(" ", Style::default()),
-            Span::styled("✗ ", Style::default().fg(Color::Red)),
-            Span::styled(err, Style::default().fg(Color::Red)),
+            Span::styled("✗ ", Style::default().fg(theme.danger.to_color())),
+            Span::styled(err, Style::default().fg(theme.danger.to_color())),
         ])
     } else {
         Line::from(vec![
             Span::styled(" ", Style::default()),
-            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled("✓ ", Style::default().fg(theme.success.to_color())),
             Span::styled(
                 "Feature deleted successfully",
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme.success.to_color()),
             ),
         ])
     };
     frame.render_widget(Paragraph::new(status_text), chunks[0]);
 
     let feature_line = Paragraph::new(Line::from(vec![
-        Span::styled(" Feature: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " Feature: ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled(
             &state.feature_name,
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme.danger.to_color())
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
     frame.render_widget(feature_line, chunks[1]);
 
     let project_line = Paragraph::new(Line::from(vec![
-        Span::styled(" Project: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&state.project_name, Style::default().fg(Color::Cyan)),
+        Span::styled(
+            " Project: ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled(
+            &state.project_name,
+            Style::default().fg(theme.primary.to_color()),
+        ),
     ]));
     frame.render_widget(project_line, chunks[2]);
 
     let hints = if is_running {
         Paragraph::new(Line::from(vec![
-            Span::styled(" h", Style::default().fg(Color::Yellow)),
-            Span::styled(" hide  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" h", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" hide  ", Style::default().fg(theme.text_muted.to_color())),
         ]))
     } else if state.error.is_some() {
         Paragraph::new(Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" acknowledge  "),
         ]))
     } else {
         Paragraph::new(Line::from(Span::styled(
             " Press any key to continue...",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_muted.to_color()),
         )))
     };
     frame.render_widget(hints, chunks[3]);
 }
 
-pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
+pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState, theme: &Theme) {
     let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
 
@@ -805,7 +841,8 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -826,19 +863,22 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     // Branch name input
     let branch_active = state.step == ForkFeatureStep::Branch;
     let branch_label_style = if branch_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let cursor = if branch_active {
-        Span::styled("\u{2588}", Style::default().fg(Color::Cyan))
+        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color()))
     } else {
         Span::raw("")
     };
 
     let branch_field = Paragraph::new(Line::from(vec![
         Span::styled(" Branch: ", branch_label_style),
-        Span::styled(&state.new_branch, Style::default().fg(Color::White)),
+        Span::styled(
+            &state.new_branch,
+            Style::default().fg(theme.text.to_color()),
+        ),
         cursor,
     ]));
     frame.render_widget(branch_field, chunks[0]);
@@ -846,9 +886,9 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     // Agent picker
     let agent_active = state.step == ForkFeatureStep::Agent;
     let agent_label_style = if agent_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
 
     let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
@@ -858,12 +898,12 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
         let marker = if is_selected { ">" } else { " " };
         let style = if agent_active && is_selected {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else if is_selected {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text.to_color())
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
         agent_lines.push(Line::from(Span::styled(
             format!("   {} {}", marker, agent.display_name()),
@@ -878,14 +918,14 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     let context_active = state.step == ForkFeatureStep::Agent;
     let ctx_check = if state.include_context { "[x]" } else { "[ ]" };
     let ctx_style = if context_active {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.text.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let ctx_label_style = if context_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.primary.to_color())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_muted.to_color())
     };
     let ctx_line = Paragraph::new(Line::from(vec![
         Span::styled(" Context: ", ctx_label_style),
@@ -899,23 +939,23 @@ pub fn draw_fork_feature_dialog(frame: &mut Frame, state: &ForkFeatureState) {
     // Hints
     let hints = if branch_active {
         Paragraph::new(Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" next  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" cancel"),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 " j/k or \u{2191}/\u{2193}",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme.warning.to_color()),
             ),
             Span::raw(" select  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" confirm  "),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back  "),
-            Span::styled("Tab", Style::default().fg(Color::Yellow)),
+            Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
             Span::raw(" toggle context"),
         ]))
     };

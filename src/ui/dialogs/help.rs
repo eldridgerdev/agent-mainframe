@@ -1,13 +1,14 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
+    Frame,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 use super::super::dashboard::centered_rect;
+use crate::theme::Theme;
 
-pub fn draw_help(frame: &mut Frame) {
+pub fn draw_help(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(55, 70, frame.area());
     frame.render_widget(Clear, area);
 
@@ -42,89 +43,99 @@ pub fn draw_help(frame: &mut Frame) {
             Span::styled(
                 format!("  {:>12}", key),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(*desc, Style::default().fg(Color::White)),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
         ]));
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  While viewing (embedded tmux):",
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "Ctrl+Q"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Exit view", Style::default().fg(Color::White)),
+        Span::styled("Exit view", Style::default().fg(theme.text.to_color())),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "Ctrl+Space"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             "Leader key (then: q t T w / n p i r x f D ?)",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.text.to_color()),
         ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "t / T"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Cycle next/prev session", Style::default().fg(Color::White)),
+        Span::styled(
+            "Cycle next/prev session",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "w"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Session switcher", Style::default().fg(Color::White)),
+        Span::styled(
+            "Session switcher",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "/"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Custom commands picker", Style::default().fg(Color::White)),
+        Span::styled(
+            "Custom commands picker",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
             format!("  {:>12}", "D"),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Debug log", Style::default().fg(Color::White)),
+        Span::styled("Debug log", Style::default().fg(theme.text.to_color())),
     ]));
 
     let help = Paragraph::new(lines).block(
         Block::default()
             .title(" Keybindings ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.primary.to_color())),
     );
 
     frame.render_widget(help, area);

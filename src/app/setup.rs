@@ -249,16 +249,12 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     let _ = std::fs::create_dir_all(&codex_dir);
 
     let hook_path = codex_dir.join("amf-codex-notify.sh");
-    let original_notify_path =
-        codex_dir.join("amf-codex-notify-original.json");
+    let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
     let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &hook_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
 
     let config_path = codex_dir.join("config.toml");

@@ -218,7 +218,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         if feature.ready {
                             Span::styled(
                                 " ✓ ",
-                                Style::default().fg(theme.success.to_color()).add_modifier(Modifier::BOLD),
+                                Style::default()
+                                    .fg(theme.success.to_color())
+                                    .add_modifier(Modifier::BOLD),
                             )
                         } else {
                             match feature.status {

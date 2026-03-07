@@ -7,13 +7,9 @@ use chrono::Utc;
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
     let lower = content.to_lowercase();
-    [
-        "esc interrupt",
-        "esc to interrupt",
-        "ctrl+c to interrupt",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    ["esc interrupt", "esc to interrupt", "ctrl+c to interrupt"]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 impl App {
@@ -89,8 +85,7 @@ impl App {
                     }
                     AgentKind::Codex => {
                         if ipc_mode {
-                            self.ipc_thinking_sessions
-                                .contains(&feature.tmux_session)
+                            self.ipc_thinking_sessions.contains(&feature.tmux_session)
                         } else {
                             // Fallback when IPC is unavailable.
                             Self::is_session_marked_thinking(&feature.tmux_session)

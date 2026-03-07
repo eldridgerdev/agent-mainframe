@@ -1,11 +1,18 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
+    style::Style,
+    widgets::Block,
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    frame.render_widget(
+        Block::default().style(Style::default().bg(app.theme.effective_bg())),
+        frame.area(),
+    );
+
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         super::pane::draw(
@@ -26,9 +33,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 1,
             );
             let color = if msg.starts_with("Error:") {
-                ratatui::style::Color::Red
+                app.theme.danger.to_color()
             } else {
-                ratatui::style::Color::Green
+                app.theme.success.to_color()
             };
             let paragraph = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
                 format!(" {}", msg),
@@ -58,7 +65,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::picker::draw_session_switcher(frame, state, app.config.nerd_font);
+        super::picker::draw_session_switcher(frame, state, app.config.nerd_font, &app.theme);
         return;
     }
 
@@ -72,7 +79,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::dialogs::draw_help(frame);
+        super::dialogs::draw_help(frame, &app.theme);
         return;
     }
 
@@ -86,7 +93,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected);
+        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
         return;
     }
 
@@ -100,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::dialogs::draw_latest_prompt_dialog(frame, prompt);
+        super::dialogs::draw_latest_prompt_dialog(frame, prompt, &app.theme);
         return;
     }
 
@@ -117,7 +124,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::picker::draw_command_picker(frame, state);
+        super::picker::draw_command_picker(frame, state, &app.theme);
         return;
     }
 
@@ -135,9 +142,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.theme,
         );
         let rows = app.bookmark_picker_rows();
-        super::picker::draw_bookmark_picker(
-            frame, state, &rows,
-        );
+        super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
         return;
     }
 
@@ -162,7 +167,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.tmux_cursor,
             &app.theme,
         );
-        super::dialogs::draw_rename_session_dialog(frame, state);
+        super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
         return;
     }
 
@@ -189,11 +194,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match &app.mode {
         AppMode::CreatingProject(state) => {
-            super::dialogs::draw_create_project_dialog(frame, state);
+            super::dialogs::draw_create_project_dialog(frame, state, &app.theme);
         }
         AppMode::CreatingFeature(state) => {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
-                super::dialogs::draw_confirm_supervibe_dialog(frame);
+                super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
                 let presets = app.active_extension.allowed_feature_presets();
                 let allowed_agents = app.active_extension.allowed_agents();
@@ -202,102 +207,106 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     state,
                     presets.as_slice(),
                     allowed_agents.as_slice(),
+                    &app.theme,
                 );
             }
         }
         AppMode::CreatingBatchFeatures(state) => {
-            super::dialogs::draw_create_batch_features_dialog(frame, state);
+            super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
         }
         AppMode::DeletingProject(name) => {
-            super::dialogs::draw_delete_project_confirm(frame, name);
+            super::dialogs::draw_delete_project_confirm(frame, name, &app.theme);
         }
         AppMode::DeletingFeature(project_name, feature_name) => {
-            super::dialogs::draw_delete_feature_confirm(frame, project_name, feature_name);
+            super::dialogs::draw_delete_feature_confirm(
+                frame,
+                project_name,
+                feature_name,
+                &app.theme,
+            );
         }
         AppMode::BrowsingPath(state) => {
-            super::dialogs::draw_browse_path_dialog(frame, state);
+            super::dialogs::draw_browse_path_dialog(frame, state, &app.theme);
         }
         _ => {}
     }
 
     if let AppMode::RenamingSession(state) = &app.mode {
-        super::dialogs::draw_rename_session_dialog(frame, state);
+        super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::RenamingFeature(state) = &app.mode {
-        super::dialogs::draw_rename_feature_dialog(frame, state);
+        super::dialogs::draw_rename_feature_dialog(frame, state, &app.theme);
     }
 
     if matches!(app.mode, AppMode::Help(None)) {
-        super::dialogs::draw_help_bottom_right(frame);
+        super::dialogs::draw_help(frame, &app.theme);
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {
-        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected);
+        super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
     }
 
     if let AppMode::CommandPicker(state) = &app.mode {
-        super::picker::draw_command_picker(frame, state);
+        super::picker::draw_command_picker(frame, state, &app.theme);
     }
 
     if let AppMode::Searching(state) = &app.mode {
-        super::dialogs::draw_search_dialog(frame, state);
+        super::dialogs::draw_search_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::OpencodeSessionPicker(state) = &app.mode {
-        super::picker::draw_opencode_session_picker(frame, state);
+        super::picker::draw_opencode_session_picker(frame, state, &app.theme);
     }
 
     if matches!(app.mode, AppMode::ConfirmingOpencodeSession { .. }) {
-        super::picker::draw_opencode_session_confirm(frame);
+        super::picker::draw_opencode_session_confirm(frame, &app.theme);
     }
 
     if let AppMode::ClaudeSessionPicker(state) = &app.mode {
-        super::picker::draw_claude_session_picker(frame, state);
+        super::picker::draw_claude_session_picker(frame, state, &app.theme);
     }
 
     if matches!(app.mode, AppMode::ConfirmingClaudeSession { .. }) {
-        super::picker::draw_claude_session_confirm(frame);
+        super::picker::draw_claude_session_confirm(frame, &app.theme);
     }
 
     if let AppMode::SessionPicker(state) = &app.mode {
-        super::picker::draw_session_picker(frame, state, app.config.nerd_font);
+        super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }
 
     if let AppMode::BookmarkPicker(state) = &app.mode {
         let rows = app.bookmark_picker_rows();
-        super::picker::draw_bookmark_picker(
-            frame, state, &rows,
-        );
+        super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
     }
 
     if let AppMode::ChangeReasonPrompt(state) = &app.mode {
-        super::dialogs::draw_change_reason_dialog(frame, state);
+        super::dialogs::draw_change_reason_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::RunningHook(state) = &app.mode {
-        super::dialogs::draw_running_hook_dialog(frame, state, &app.throbber_state);
+        super::dialogs::draw_running_hook_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 
     if let AppMode::DeletingFeatureInProgress(state) = &app.mode {
-        super::dialogs::draw_deleting_feature_dialog(frame, state, &app.throbber_state);
+        super::dialogs::draw_deleting_feature_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 
     if let AppMode::HookPrompt(state) = &app.mode {
-        super::dialogs::draw_hook_prompt_dialog(frame, state);
+        super::dialogs::draw_hook_prompt_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::ForkingFeature(state) = &app.mode {
         let allowed_agents = app.active_extension.allowed_agents();
-        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice());
+        super::dialogs::draw_fork_feature_dialog(frame, state, allowed_agents.as_slice(), &app.theme);
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {
-        super::dialogs::draw_theme_picker(frame, state, &app.config.theme);
+        super::dialogs::draw_theme_picker(frame, state, &app.config.theme, &app.theme);
     }
 
     if let AppMode::DebugLog(state) = &app.mode {
-        super::dialogs::draw_debug_log(frame, &app.debug_log, state.scroll_offset);
+        super::dialogs::draw_debug_log(frame, &app.debug_log, state.scroll_offset, &app.theme);
     }
 }
 

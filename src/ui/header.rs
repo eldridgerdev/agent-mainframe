@@ -11,7 +11,7 @@ use crate::theme::Theme;
 pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border_accent.to_color()));
+        .border_style(Style::default().fg(theme.border_focus.to_color()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -19,11 +19,11 @@ pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize, them
         Span::styled(
             " Agent Mainframe ",
             Style::default()
-                .fg(theme.accent.to_color())
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("| ", Style::default().fg(theme.muted.to_color())),
-        Span::styled(cwd, Style::default().fg(theme.fg.to_color())),
+        Span::styled("| ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(cwd, Style::default().fg(theme.text.to_color())),
     ];
 
     if pending_count > 0 {
@@ -43,8 +43,8 @@ pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize, them
     frame.render_widget(title, inner);
 
     let help_hint = Line::from(vec![
-        Span::styled("?", Style::default().fg(theme.accent.to_color())),
-        Span::styled(" help ", Style::default().fg(theme.muted.to_color())),
+        Span::styled("?", Style::default().fg(theme.primary.to_color())),
+        Span::styled(" help ", Style::default().fg(theme.text_muted.to_color())),
     ]);
     let hint_width: u16 = help_hint.spans.iter().map(|s| s.content.len() as u16).sum();
     let hint_width = hint_width.min(inner.width);

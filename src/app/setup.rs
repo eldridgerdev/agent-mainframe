@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::project::{AgentKind, ProjectStore, VibeMode};
+use crate::theme::ThemeManager;
 
 use super::AppConfig;
 
@@ -177,6 +178,7 @@ pub fn remove_old_diff_review_plugin(repo: &Path) {
 fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
+    let _ = ThemeManager::inject_opencode_themes(workdir);
 
     let global_input_request = crate::project::amf_config_dir()
         .join("plugins")

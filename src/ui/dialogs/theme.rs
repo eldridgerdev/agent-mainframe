@@ -6,36 +6,42 @@ use ratatui::{
 };
 
 use crate::app::ThemePickerState;
-use crate::theme::ThemeName;
+use crate::theme::{Theme, ThemeName};
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_theme_picker(frame: &mut Frame, state: &ThemePickerState, current_theme: &ThemeName) {
+pub fn draw_theme_picker(
+    frame: &mut Frame,
+    state: &ThemePickerState,
+    current_theme: &ThemeName,
+    theme: &Theme,
+) {
     let area = centered_rect(40, 40, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()))
         .title(" Theme ");
 
     let lines: Vec<Line> = state
         .themes
         .iter()
         .enumerate()
-        .map(|(i, theme)| {
-            let is_current = theme == current_theme;
+        .map(|(i, theme_name)| {
+            let is_current = theme_name == current_theme;
             let marker = if is_current { " *" } else { "" };
-            let label = format!(" {}{}", theme.display_name(), marker,);
+            let label = format!(" {}{}", theme_name.display_name(), marker,);
             let style = if i == state.selected {
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                    .fg(theme.shortcut_text.to_color())
+                    .bg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD)
             } else if is_current {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme.primary.to_color())
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.text.to_color())
             };
             Line::from(Span::styled(label, style))
         })

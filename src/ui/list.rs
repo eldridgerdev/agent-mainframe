@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
@@ -30,12 +30,12 @@ fn format_age(dt: DateTime<Utc>) -> String {
 
 pub fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
     let colors = [
-        theme.error.to_color(),
+        theme.danger.to_color(),
         theme.warning.to_color(),
         theme.success.to_color(),
-        theme.accent.to_color(),
+        theme.primary.to_color(),
         theme.info.to_color(),
-        theme.accent_alt.to_color(),
+        theme.secondary.to_color(),
     ];
     text.chars()
         .enumerate()
@@ -68,7 +68,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
                 "No projects yet. Press ",
-                Style::default().fg(theme.muted.to_color()),
+                Style::default().fg(theme.text_muted.to_color()),
             ),
             Span::styled(
                 "N",
@@ -78,12 +78,17 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::styled(
                 " to create one.",
-                Style::default().fg(theme.muted.to_color()),
+                Style::default().fg(theme.text_muted.to_color()),
             ),
         ]))
         .block(
             Block::default()
-                .title(" Projects ")
+                .title(Span::styled(
+                    " Projects ",
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border.to_color())),
         );
@@ -111,9 +116,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             };
 
             let muted = if is_selected {
-                theme.fg.to_color()
+                theme.text.to_color()
             } else {
-                theme.muted.to_color()
+                theme.text_muted.to_color()
             };
 
             let line = match item {
@@ -126,7 +131,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(
                             &project.name,
                             Style::default()
-                                .fg(theme.project_name.to_color())
+                                .fg(theme.project_title.to_color())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
@@ -169,7 +174,9 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     let status_dot = if is_being_deleted {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                                Style::default()
+                                    .fg(theme.danger.to_color())
+                                    .add_modifier(Modifier::BOLD),
                             )
                             .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
                             .use_type(throbber_widgets_tui::WhichUse::Spin);
@@ -180,7 +187,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
                                 Style::default()
-                                    .fg(Color::Cyan)
+                                    .fg(theme.info.to_color())
                                     .add_modifier(Modifier::BOLD),
                             )
                             .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
@@ -199,7 +206,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
                                 Style::default()
-                                    .fg(theme.accent.to_color())
+                                    .fg(theme.primary.to_color())
                                     .add_modifier(Modifier::BOLD),
                             )
                             .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
@@ -211,7 +218,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         if feature.ready {
                             Span::styled(
                                 " ✓ ",
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                                Style::default().fg(theme.success.to_color()).add_modifier(Modifier::BOLD),
                             )
                         } else {
                             match feature.status {
@@ -241,14 +248,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
                     let name_style = if is_being_deleted {
                         Style::default()
-                            .fg(Color::DarkGray)
+                            .fg(theme.text_muted.to_color())
                             .add_modifier(Modifier::CROSSED_OUT)
                     } else if is_selected {
                         Style::default()
-                            .fg(theme.feature_name.to_color())
+                            .fg(theme.feature_title.to_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(theme.feature_name.to_color())
+                        Style::default().fg(theme.feature_title.to_color())
                     };
 
                     let session_count = feature.sessions.len();
@@ -303,27 +310,29 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     if feature.nickname.is_some() {
                         line_spans.push(Span::styled(
                             format!(" ({})", feature.branch),
-                            Style::default().fg(Color::Rgb(100, 100, 100)),
+                            Style::default().fg(theme.text_muted.to_color()),
                         ));
                     }
                     line_spans.extend(mode_badge_spans);
                     if is_being_deleted {
                         line_spans.push(Span::styled(
                             " [deleting...]",
-                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(theme.danger.to_color())
+                                .add_modifier(Modifier::BOLD),
                         ));
                     }
                     if is_hook_running {
                         line_spans.push(Span::styled(
                             " [hook running...]",
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(theme.info.to_color())
                                 .add_modifier(Modifier::BOLD),
                         ));
                     }
                     line_spans.push(Span::styled(
                         format!(" {}", format_age(feature.created_at)),
-                        Style::default().fg(Color::Rgb(180, 140, 80)),
+                        Style::default().fg(theme.warning.to_color()),
                     ));
                     line_spans.push(Span::styled(badge, Style::default().fg(muted)));
                     if has_pending_input {
@@ -340,7 +349,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     ));
                     if app.summary_state.generating.contains(&feature.tmux_session) {
                         let throbber = throbber_widgets_tui::Throbber::default()
-                            .throbber_style(Style::default().fg(Color::Yellow))
+                            .throbber_style(Style::default().fg(theme.warning.to_color()))
                             .throbber_set(throbber_widgets_tui::CLOCK)
                             .use_type(throbber_widgets_tui::WhichUse::Spin);
                         let mut span = throbber.to_symbol_span(&app.throbber_state);
@@ -349,7 +358,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else if let Some(summary) = &feature.summary {
                         line_spans.push(Span::styled(
                             format!(" — {}", summary),
-                            Style::default().fg(Color::Yellow),
+                            Style::default().fg(theme.warning.to_color()),
                         ));
                     }
                     Line::from(line_spans)
@@ -409,7 +418,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             } else {
                                 "V "
                             };
-                            Span::styled(icon, Style::default().fg(Color::Blue))
+                            Span::styled(
+                                icon,
+                                Style::default().fg(theme.session_icon_vscode.to_color()),
+                            )
                         }
                         SessionKind::Custom => {
                             let cfg = app
@@ -435,10 +447,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
                     let name_style = if is_selected {
                         Style::default()
-                            .fg(theme.fg.to_color())
+                            .fg(theme.text.to_color())
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(theme.fg.to_color())
+                        Style::default().fg(theme.text.to_color())
                     };
 
                     let main_line = Line::from(vec![
@@ -460,12 +472,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Span::styled(status_pad, Style::default().fg(muted)),
                             Span::styled(
                                 text.as_str(),
-                                Style::default().fg(theme.custom_status_text.to_color()),
+                                Style::default().fg(theme.status_detail.to_color()),
                             ),
                         ]);
                         return if is_selected {
                             ListItem::new(vec![main_line, status_line])
-                                .style(Style::default().bg(Color::DarkGray))
+                                .style(Style::default().bg(theme.effective_selection_bg()))
                         } else {
                             ListItem::new(vec![main_line, status_line])
                         };
@@ -485,7 +497,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let list = List::new(items).block(
         Block::default()
-            .title(" Projects ")
+            .title(Span::styled(
+                " Projects ",
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.border.to_color())),
     );

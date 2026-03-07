@@ -1,44 +1,50 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{CreateBatchFeaturesState, CreateBatchFeaturesStep};
 use crate::project::AgentKind;
+use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_create_batch_features_dialog(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+pub fn draw_create_batch_features_dialog(
+    frame: &mut Frame,
+    state: &CreateBatchFeaturesState,
+    theme: &Theme,
+) {
     match state.step {
         CreateBatchFeaturesStep::WorkspacePath => {
-            draw_batch_workspace_path(frame, state);
+            draw_batch_workspace_path(frame, state, theme);
         }
         CreateBatchFeaturesStep::ProjectName => {
-            draw_batch_project_name(frame, state);
+            draw_batch_project_name(frame, state, theme);
         }
         CreateBatchFeaturesStep::FeatureCount => {
-            draw_batch_feature_count(frame, state);
+            draw_batch_feature_count(frame, state, theme);
         }
         CreateBatchFeaturesStep::FeatureBaseName => {
-            draw_batch_feature_base_name(frame, state);
+            draw_batch_feature_base_name(frame, state, theme);
         }
         CreateBatchFeaturesStep::FeatureSettings => {
-            draw_batch_feature_settings(frame, state);
+            draw_batch_feature_settings(frame, state, theme);
         }
     }
 }
 
-fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Create Batch Features ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -56,7 +62,7 @@ fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState
 
     let label = Paragraph::new(Line::from(Span::styled(
         " Workspace Path:",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme.primary.to_color()),
     )));
     frame.render_widget(label, chunks[0]);
 
@@ -64,41 +70,42 @@ fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(theme.warning.to_color())),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[1]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" next  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" cancel"),
     ]));
     frame.render_widget(hints, chunks[2]);
 
     let info = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled(" Note: ", Style::default().fg(Color::Cyan)),
+            Span::styled(" Note: ", Style::default().fg(theme.primary.to_color())),
             Span::raw("Path must be a git repository"),
         ]),
         Line::from(vec![
-            Span::styled("       ", Style::default().fg(Color::Cyan)),
+            Span::styled("       ", Style::default().fg(theme.primary.to_color())),
             Span::raw("This will be root for all features"),
         ]),
     ])
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(theme.text_muted.to_color()));
     frame.render_widget(info, chunks[3]);
 }
 
-fn draw_batch_project_name(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+fn draw_batch_project_name(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Create Batch Features ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -116,7 +123,7 @@ fn draw_batch_project_name(frame: &mut Frame, state: &CreateBatchFeaturesState) 
 
     let label = Paragraph::new(Line::from(Span::styled(
         " Project Name:",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme.primary.to_color()),
     )));
     frame.render_widget(label, chunks[0]);
 
@@ -124,41 +131,46 @@ fn draw_batch_project_name(frame: &mut Frame, state: &CreateBatchFeaturesState) 
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(theme.warning.to_color())),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[1]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" next  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[2]);
 
     let info = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled(" Note: ", Style::default().fg(Color::Cyan)),
+            Span::styled(" Note: ", Style::default().fg(theme.primary.to_color())),
             Span::raw("Auto-detected from workspace path"),
         ]),
         Line::from(vec![
-            Span::styled("       ", Style::default().fg(Color::Cyan)),
+            Span::styled("       ", Style::default().fg(theme.primary.to_color())),
             Span::raw("You can override if needed"),
         ]),
     ])
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(theme.text_muted.to_color()));
     frame.render_widget(info, chunks[3]);
 }
 
-fn draw_batch_feature_base_name(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+fn draw_batch_feature_base_name(
+    frame: &mut Frame,
+    state: &CreateBatchFeaturesState,
+    theme: &Theme,
+) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Create Batch Features ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -176,7 +188,7 @@ fn draw_batch_feature_base_name(frame: &mut Frame, state: &CreateBatchFeaturesSt
 
     let label = Paragraph::new(Line::from(Span::styled(
         " Feature Base Name:",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme.primary.to_color()),
     )));
     frame.render_widget(label, chunks[0]);
 
@@ -184,15 +196,15 @@ fn draw_batch_feature_base_name(frame: &mut Frame, state: &CreateBatchFeaturesSt
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(theme.warning.to_color())),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[1]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" next  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[2]);
@@ -203,21 +215,22 @@ fn draw_batch_feature_base_name(frame: &mut Frame, state: &CreateBatchFeaturesSt
     let features_text = format!("Will create: {}", features_preview.join(", "));
 
     let info = Paragraph::new(vec![Line::from(vec![
-        Span::styled(" Note: ", Style::default().fg(Color::Cyan)),
+        Span::styled(" Note: ", Style::default().fg(theme.primary.to_color())),
         Span::raw(features_text),
     ])])
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(theme.text_muted.to_color()));
     frame.render_widget(info, chunks[3]);
 }
 
-fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 30, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Create Batch Features ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -235,7 +248,7 @@ fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState)
 
     let label = Paragraph::new(Line::from(Span::styled(
         " Number of Features:",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(theme.primary.to_color()),
     )));
     frame.render_widget(label, chunks[0]);
 
@@ -244,17 +257,17 @@ fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(theme.warning.to_color())),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[1]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::raw(" adjust  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" next  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[2]);
@@ -270,26 +283,27 @@ fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState)
 
     let info = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled(" Note: ", Style::default().fg(Color::Cyan)),
+            Span::styled(" Note: ", Style::default().fg(theme.primary.to_color())),
             Span::raw(preview_text),
         ]),
         Line::from(vec![
-            Span::styled("       ", Style::default().fg(Color::Cyan)),
+            Span::styled("       ", Style::default().fg(theme.primary.to_color())),
             Span::raw("All features will be worktrees"),
         ]),
     ])
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(theme.text_muted.to_color()));
     frame.render_widget(info, chunks[3]);
 }
 
-fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesState) {
+fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" Create Batch Features ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -351,18 +365,18 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
 
         let label_style = if is_focused {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(theme.text_muted.to_color())
         };
 
         let value_style = if is_focused {
             Style::default()
-                .fg(Color::White)
+                .fg(theme.text.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme.text.to_color())
         };
 
         let text = Line::from(vec![
@@ -374,7 +388,7 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
         let block = if is_focused {
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow))
+                .border_style(Style::default().fg(theme.warning.to_color()))
         } else {
             Block::default().borders(Borders::ALL)
         };
@@ -384,13 +398,13 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
     }
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("j/k", Style::default().fg(Color::Yellow)),
+        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::raw(" change  "),
-        Span::styled("Tab", Style::default().fg(Color::Yellow)),
+        Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(" field  "),
-        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" confirm  "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[2]);

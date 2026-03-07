@@ -132,9 +132,9 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         let help = if view.scroll_passthrough {
-            "j/k:PgUp/Dn - q/Esc:exit"
+            "wheel/j/k:PgUp/Dn - q/Esc:exit"
         } else {
-            "j/k:scroll PgUp/Dn:page - q/Esc:exit"
+            "wheel/j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
         header_spans.push(Span::styled(
             help,
@@ -232,11 +232,7 @@ pub fn draw(
     }
 }
 
-fn draw_leader_menu(
-    frame: &mut Frame,
-    content_area: Rect,
-    theme: &Theme,
-) {
+fn draw_leader_menu(frame: &mut Frame, content_area: Rect, theme: &Theme) {
     if content_area.width < 30 || content_area.height < 8 {
         return;
     }
@@ -246,14 +242,10 @@ fn draw_leader_menu(
         .map(|(key, desc)| key.len() + desc.len() + 4)
         .max()
         .unwrap_or(24) as u16;
-    let width =
-        (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
-    let height = (LEADER_COMMANDS.len() as u16 + 2)
-        .min(content_area.height.saturating_sub(1));
-    let x = content_area.x
-        + content_area.width.saturating_sub(width + 1);
-    let y = content_area.y
-        + content_area.height.saturating_sub(height + 1);
+    let width = (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
+    let height = (LEADER_COMMANDS.len() as u16 + 2).min(content_area.height.saturating_sub(1));
+    let x = content_area.x + content_area.width.saturating_sub(width + 1);
+    let y = content_area.y + content_area.height.saturating_sub(height + 1);
     let area = Rect::new(x, y, width, height);
 
     let lines: Vec<Line<'static>> = LEADER_COMMANDS
@@ -267,10 +259,7 @@ fn draw_leader_menu(
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(
-                    *desc,
-                    Style::default().fg(theme.text.to_color()),
-                ),
+                Span::styled(*desc, Style::default().fg(theme.text.to_color())),
             ])
         })
         .collect();

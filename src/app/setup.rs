@@ -249,16 +249,12 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     let _ = std::fs::create_dir_all(&codex_dir);
 
     let hook_path = codex_dir.join("amf-codex-notify.sh");
-    let original_notify_path =
-        codex_dir.join("amf-codex-notify-original.json");
+    let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
     let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &hook_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
 
     let config_path = codex_dir.join("config.toml");
@@ -308,6 +304,148 @@ fn ensure_codex_notify_hook(workdir: &Path) {
 
     if let Ok(rendered) = toml::to_string_pretty(&config) {
         let _ = std::fs::write(&config_path, rendered);
+    }
+}
+
+fn cleanup_claude_notification_hooks(workdir: &Path) {
+    let claude_dir = workdir.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+
+    if settings_path.exists() {
+        let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+            hooks.remove("Stop");
+            hooks.remove("Notification");
+            hooks.remove("PreToolUse");
+            hooks.remove("PostToolUse");
+            hooks.remove("UserPromptSubmit");
+        }
+
+        if settings
+            .get("hooks")
+            .and_then(|v| v.as_object())
+            .is_some_and(|hooks| hooks.is_empty())
+        {
+            settings.as_object_mut().unwrap().remove("hooks");
+        }
+
+        if let Some(allow) = settings
+            .pointer_mut("/permissions/allow")
+            .and_then(|v| v.as_array_mut())
+        {
+            allow.retain(|value| value.as_str() != Some("Edit") && value.as_str() != Some("Write"));
+        }
+
+        if settings
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .is_some_and(|allow| allow.is_empty())
+            && let Some(permissions) = settings
+                .get_mut("permissions")
+                .and_then(|v| v.as_object_mut())
+        {
+            permissions.remove("allow");
+        }
+
+        if settings
+            .get("permissions")
+            .and_then(|v| v.as_object())
+            .is_some_and(|permissions| permissions.is_empty())
+        {
+            settings.as_object_mut().unwrap().remove("permissions");
+        }
+
+        if settings.as_object().is_some_and(|obj| obj.is_empty()) {
+            let _ = std::fs::remove_file(&settings_path);
+        } else if let Ok(rendered) = serde_json::to_string_pretty(&settings) {
+            let _ = std::fs::write(&settings_path, rendered);
+        }
+    }
+
+    let _ = std::fs::remove_file(claude_dir.join("latest-prompt.txt"));
+    let _ = std::fs::remove_dir_all(claude_dir.join("notifications"));
+}
+
+fn cleanup_opencode_plugins(workdir: &Path) {
+    let plugins_dir = workdir.join(".opencode").join("plugins");
+    let themes_dir = workdir.join(".opencode").join("themes");
+
+    for file in [
+        "input-request.js",
+        "diff-review.js",
+        "diff-review.sh",
+        "change-tracker.js",
+        "feedback-prompt.sh",
+        "explain.sh",
+    ] {
+        let _ = std::fs::remove_file(plugins_dir.join(file));
+    }
+
+    for theme in ["amf.json", "amf-tokyonight.json", "amf-catppuccin.json"] {
+        let _ = std::fs::remove_file(themes_dir.join(theme));
+    }
+}
+
+fn cleanup_codex_notify_hook(workdir: &Path) {
+    let codex_dir = workdir.join(".codex");
+    let config_path = codex_dir.join("config.toml");
+    let hook_path = codex_dir.join("amf-codex-notify.sh");
+    let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
+    let hook_cmd = hook_path.to_string_lossy().to_string();
+
+    if config_path.exists()
+        && let Some(mut config) = std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+        && let Some(table) = config.as_table_mut()
+    {
+        let uses_amf_hook = table
+            .get("notify")
+            .map(|notify| match notify {
+                toml::Value::String(cmd) => cmd == &hook_cmd,
+                toml::Value::Array(values) => values
+                    .iter()
+                    .any(|value| value.as_str() == Some(hook_cmd.as_str())),
+                _ => false,
+            })
+            .unwrap_or(false);
+
+        if uses_amf_hook {
+            let original_notify = std::fs::read_to_string(&original_notify_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+                .filter(|entries| !entries.is_empty());
+
+            if let Some(entries) = original_notify {
+                table.insert(
+                    "notify".to_string(),
+                    toml::Value::Array(entries.into_iter().map(toml::Value::String).collect()),
+                );
+            } else {
+                table.remove("notify");
+            }
+        }
+
+        if table.is_empty() {
+            let _ = std::fs::remove_file(&config_path);
+        } else if let Ok(rendered) = toml::to_string_pretty(&config) {
+            let _ = std::fs::write(&config_path, rendered);
+        }
+    }
+
+    let _ = std::fs::remove_file(&hook_path);
+    let _ = std::fs::remove_file(&original_notify_path);
+}
+
+pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
+    match agent {
+        AgentKind::Claude => cleanup_claude_notification_hooks(workdir),
+        AgentKind::Opencode => cleanup_opencode_plugins(workdir),
+        AgentKind::Codex => cleanup_codex_notify_hook(workdir),
     }
 }
 

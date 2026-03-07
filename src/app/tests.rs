@@ -411,20 +411,9 @@ fn hook_commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
         .collect()
 }
 
-fn call_ensure_hooks_for(
-    workdir: &TempDir,
-    mode: VibeMode,
-    agent: AgentKind,
-    is_worktree: bool,
-) {
+fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is_worktree: bool) {
     let repo = workdir.path(); // repo = workdir in tests
-    ensure_notification_hooks(
-        workdir.path(),
-        repo,
-        &mode,
-        &agent,
-        is_worktree,
-    );
+    ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
@@ -438,8 +427,7 @@ fn stop_hook_has_thinking_stop_and_notify() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "Stop");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-stop.sh")),
+        cmds.iter().any(|c| c.contains("thinking-stop.sh")),
         "Stop hook missing thinking-stop.sh; got: {cmds:?}"
     );
     assert!(
@@ -455,13 +443,11 @@ fn pre_tool_use_hook_has_thinking_tool_and_clear() {
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("thinking-start.sh")),
+        cmds.iter().any(|c| c.contains("thinking-start.sh")),
         "PreToolUse missing thinking-start.sh; got: {cmds:?}"
     );
     assert!(
-        cmds.iter()
-            .any(|c| c.contains("tool-start.sh")),
+        cmds.iter().any(|c| c.contains("tool-start.sh")),
         "PreToolUse missing tool-start.sh; got: {cmds:?}"
     );
     assert!(
@@ -597,32 +583,31 @@ fn ensure_hooks_is_idempotent() {
 }
 
 #[test]
-fn codex_hooks_are_injected_for_worktree_only() {
+fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
     let workdir = TempDir::new().unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        false,
-    );
-    assert!(
-        !workdir.path().join(".codex").join("config.toml").exists(),
-        "non-worktree codex feature should not get local codex config"
-    );
-
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, false);
     assert!(
         workdir.path().join(".codex").join("config.toml").exists(),
-        "worktree codex feature should get local codex config"
+        "repo-root codex feature should get local codex config"
     );
     assert!(
         workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "repo-root codex feature should get local notify hook script"
+    );
+
+    let second = TempDir::new().unwrap();
+    call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
+    assert!(
+        second.path().join(".codex").join("config.toml").exists(),
+        "worktree codex feature should get local codex config"
+    );
+    assert!(
+        second
             .path()
             .join(".codex")
             .join("amf-codex-notify.sh")
@@ -639,12 +624,7 @@ fn codex_hook_merges_existing_notify_entries() {
     let cfg = codex_dir.join("config.toml");
     std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
 
-    call_ensure_hooks_for(
-        &workdir,
-        VibeMode::Vibe,
-        AgentKind::Codex,
-        true,
-    );
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
 
     let rendered = std::fs::read_to_string(&cfg).unwrap();
     let parsed: toml::Value = toml::from_str(&rendered).unwrap();
@@ -737,6 +717,56 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
     }
 }
 
+fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: "codex-sess".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        has_notes: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+    }
+}
+
 #[test]
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
@@ -760,6 +790,40 @@ fn sync_session_status_reads_first_line() {
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000 | DB :5432".to_string()),
+    );
+}
+
+#[test]
+fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pending_inputs.push(PendingInput {
+        session_id: "amf-my-feat".to_string(),
+        cwd: workdir.path().display().to_string(),
+        message: "Codex finished and is waiting for input".to_string(),
+        notification_type: "input-request".to_string(),
+        file_path: PathBuf::new(),
+        project_name: Some("my-project".to_string()),
+        feature_name: Some("my-feat".to_string()),
+        proceed_signal: None,
+        request_id: None,
+        reply_socket: None,
+    });
+
+    app.note_codex_prompt_submit("amf-my-feat", "codex");
+
+    assert!(
+        app.ipc_thinking_sessions.contains("amf-my-feat"),
+        "repo-root codex feature should be marked thinking"
+    );
+    assert!(
+        app.pending_inputs.is_empty(),
+        "prompt submit should clear stale input-request notifications"
     );
 }
 

@@ -204,7 +204,13 @@ impl App {
             None => return Ok(()),
         };
 
-        ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        ensure_notification_hooks(
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
+            feature.is_worktree,
+        );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {

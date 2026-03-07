@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -17,6 +17,21 @@ const RAINBOW_COLORS: &[Color] = &[
     Color::Cyan,
     Color::Blue,
     Color::Magenta,
+];
+
+const LEADER_COMMANDS: &[(&str, &str)] = &[
+    ("q", "Exit view"),
+    ("t / T", "Next / prev session"),
+    ("w", "Session switcher"),
+    ("n / p", "Next / prev feature"),
+    ("/", "Command picker"),
+    ("i", "Pending inputs"),
+    ("l", "Latest prompt"),
+    ("s", "Attach to session"),
+    ("o", "Scroll mode"),
+    ("x", "Stop session"),
+    ("f", "Final review"),
+    ("?", "Help"),
 ];
 
 fn rainbow_spans(text: &str) -> Vec<Span<'static>> {
@@ -129,7 +144,7 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(
-            " q:exit  t/T:cycle  w:switcher  n/p:feature  /:commands  i:inputs  s:attach  o:scroll  x:stop  f:review  ?:help",
+            "press a command key",
             Style::default().fg(Color::Yellow),
         ));
     } else {
@@ -186,6 +201,54 @@ pub fn draw(
             frame.set_cursor_position(Position::new(abs_x, abs_y));
         }
     }
+
+    if leader_active {
+        draw_leader_menu(frame, content_area);
+    }
+}
+
+fn draw_leader_menu(frame: &mut Frame, content_area: Rect) {
+    if content_area.width < 30 || content_area.height < 8 {
+        return;
+    }
+
+    let longest_label = LEADER_COMMANDS
+        .iter()
+        .map(|(key, desc)| key.len() + desc.len() + 4)
+        .max()
+        .unwrap_or(24) as u16;
+    let width = (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
+    let height = (LEADER_COMMANDS.len() as u16 + 2).min(content_area.height.saturating_sub(1));
+    let x = content_area.x + content_area.width.saturating_sub(width + 1);
+    let y = content_area.y + content_area.height.saturating_sub(height + 1);
+    let area = Rect::new(x, y, width, height);
+
+    let lines: Vec<Line<'static>> = LEADER_COMMANDS
+        .iter()
+        .map(|(key, desc)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("{:<6}", key),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("  "),
+                Span::styled(*desc, Style::default().fg(Color::White)),
+            ])
+        })
+        .collect();
+
+    let popup = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Ctrl+Space commands ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::Rgb(36, 39, 58)))
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(popup, area);
 }
 
 fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<'static>> {

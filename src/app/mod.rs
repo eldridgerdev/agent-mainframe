@@ -141,6 +141,7 @@ impl ZaiPlanConfig {
 #[serde(default)]
 pub struct AppConfig {
     pub nerd_font: bool,
+    pub leader_timeout_seconds: u64,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub extension: ExtensionConfig,
@@ -150,6 +151,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             nerd_font: true,
+            leader_timeout_seconds: 5,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             extension: ExtensionConfig::default(),
@@ -3454,10 +3456,11 @@ impl App {
     }
 
     pub fn leader_timed_out(&self) -> bool {
+        let timeout_secs = self.config.leader_timeout_seconds.max(1);
         self.leader_activated_at
             .map(|t| {
                 t.elapsed()
-                    >= std::time::Duration::from_secs(2)
+                    >= std::time::Duration::from_secs(timeout_secs)
             })
             .unwrap_or(false)
     }
@@ -5283,6 +5286,24 @@ mod tests {
         assert_eq!(result, "/tmp/some/path");
     }
 
+    // ── app config ────────────────────────────────────────────
+
+    #[test]
+    fn app_config_default_leader_timeout_is_five_seconds() {
+        let config = AppConfig::default();
+        assert_eq!(config.leader_timeout_seconds, 5);
+    }
+
+    #[test]
+    fn app_config_missing_leader_timeout_uses_default() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{"nerd_font":false}"#,
+        )
+        .unwrap();
+        assert_eq!(config.leader_timeout_seconds, 5);
+        assert!(!config.nerd_font);
+    }
+
     // ── strip_between_markers ─────────────────────────────────
 
     #[test]
@@ -5419,7 +5440,10 @@ mod tests {
             created_at: now,
             is_git: false,
         };
-        ProjectStore { version: 2, projects: vec![project] }
+        ProjectStore {
+            version: crate::project::CURRENT_PROJECT_STORE_VERSION,
+            projects: vec![project],
+        }
     }
 
     // ── sync_statuses ─────────────────────────────────────────────

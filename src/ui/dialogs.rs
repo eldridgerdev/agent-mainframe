@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
@@ -845,6 +845,23 @@ pub fn draw_delete_feature_confirm(frame: &mut Frame, project_name: &str, featur
 
 pub fn draw_help(frame: &mut Frame) {
     let area = centered_rect(55, 70, frame.area());
+    draw_help_at(frame, area);
+}
+
+pub fn draw_help_bottom_right(frame: &mut Frame) {
+    let viewport = frame.area();
+    let width = (viewport.width.saturating_mul(55) / 100).max(40);
+    let height = (viewport.height.saturating_mul(70) / 100).max(12);
+    let area = Rect::new(
+        viewport.x + viewport.width.saturating_sub(width + 1),
+        viewport.y + viewport.height.saturating_sub(height + 1),
+        width,
+        height,
+    );
+    draw_help_at(frame, area);
+}
+
+fn draw_help_at(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, area);
 
     let keybinds: Vec<(&str, &str)> = vec![
@@ -872,7 +889,24 @@ pub fn draw_help(frame: &mut Frame) {
         ("q / Esc", "Quit"),
     ];
 
-    let mut lines: Vec<Line> = vec![Line::from("")];
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled(
+                "  ESC",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " closes this menu",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
     for (key, desc) in &keybinds {
         lines.push(Line::from(vec![
             Span::styled(

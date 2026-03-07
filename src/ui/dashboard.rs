@@ -187,7 +187,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if matches!(app.mode, AppMode::Help(None)) {
-        super::dialogs::draw_help(frame);
+        super::dialogs::draw_help_bottom_right(frame);
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {

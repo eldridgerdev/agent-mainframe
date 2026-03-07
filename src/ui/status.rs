@@ -39,6 +39,16 @@ fn usage_bar_spans<'a>(label: &'a str, pct: f64, bar_width: usize) -> Vec<Span<'
     ]
 }
 
+fn format_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 fn shorten_path(path: &std::path::Path) -> String {
     if let Some(home) = dirs::home_dir()
         && let Ok(rest) = path.strip_prefix(&home)
@@ -420,17 +430,35 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 right_spans.push(Span::styled(tok_str, Style::default().fg(Color::Cyan)));
             }
         }
-        Model::Zai => {
-            let format_tokens = |n: u64| {
-                if n >= 1_000_000 {
-                    format!("{:.1}M", n as f64 / 1_000_000.0)
-                } else if n >= 1_000 {
-                    format!("{:.1}K", n as f64 / 1_000.0)
-                } else {
-                    n.to_string()
-                }
-            };
+        Model::Codex => {
+            if let Some(pct5) = usage.codex.five_hour_usage_pct {
+                right_spans.extend(usage_bar_spans("5h", pct5, 15));
+                right_spans.push(Span::raw(" "));
+            }
 
+            if let Some(pct7) = usage.codex.weekly_usage_pct {
+                right_spans.extend(usage_bar_spans("7d", pct7, 15));
+                right_spans.push(Span::raw(" "));
+            } else if usage.codex.five_hour_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!("5h {} ", format_tokens(usage.codex.five_hour_tokens)),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
+            if usage.codex.today_tokens > 0 {
+                right_spans.push(Span::styled(
+                    format!("{} tok ", format_tokens(usage.codex.today_tokens)),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+
+            right_spans.push(Span::styled(
+                format!("{} calls ", usage.codex.today_calls),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Model::Zai => {
             if let Some(pct) = usage.zai.five_hour_usage_pct {
                 right_spans.extend(usage_bar_spans("5h", pct, 15));
                 right_spans.push(Span::raw(" "));

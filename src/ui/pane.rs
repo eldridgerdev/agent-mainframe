@@ -132,9 +132,9 @@ pub fn draw(
                 .add_modifier(Modifier::BOLD),
         ));
         let help = if view.scroll_passthrough {
-            "j/k:PgUp/Dn - q/Esc:exit"
+            "wheel/j/k:PgUp/Dn - q/Esc:exit"
         } else {
-            "j/k:scroll PgUp/Dn:page - q/Esc:exit"
+            "wheel/j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
         header_spans.push(Span::styled(
             help,

@@ -123,6 +123,15 @@ impl VibeMode {
         }
     }
 
+    pub fn description(&self) -> &str {
+        match self {
+            VibeMode::Vibeless => "asks for approval for every change",
+            VibeMode::Vibe => "auto-accepts edits",
+            VibeMode::SuperVibe => "skips all permission prompts",
+            VibeMode::Review => "logs changes for final code review",
+        }
+    }
+
     pub fn cli_flags(&self, enable_chrome: bool) -> Vec<String> {
         let mut flags = match self {
             VibeMode::Vibeless => vec![],

@@ -1,4 +1,5 @@
 use crate::debug::{LogLevel, log_to_file, set_user_alert};
+use crate::http_client;
 use chrono::{Datelike, TimeZone};
 use serde::Deserialize;
 use serde_json::Value;
@@ -526,7 +527,8 @@ fn fetch_rate_limits(data: &Arc<Mutex<UsageData>>) {
         d.claude.subscription_type = oauth.subscription_type;
     }
 
-    let result = ureq::get("https://api.anthropic.com/api/oauth/usage")
+    let result = http_client::https_agent()
+        .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", &format!("Bearer {}", oauth.access_token))
         .header("anthropic-beta", "oauth-2025-04-20")
         .header("User-Agent", "claude-code/2.1.42")

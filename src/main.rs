@@ -6,6 +6,7 @@ mod codex;
 mod debug;
 mod extension;
 mod handlers;
+mod http_client;
 mod ipc;
 mod project;
 mod summary;

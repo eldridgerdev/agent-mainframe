@@ -87,7 +87,7 @@ pub fn draw(
             Style::default().fg(theme.text.to_color()),
         ));
         match view.vibe_mode {
-            VibeMode::Vibeless => header_spans.push(Span::styled(
+            VibeMode::Vibeless | VibeMode::Review => header_spans.push(Span::styled(
                 "[vibeless] ",
                 Style::default().fg(theme.mode_vibeless.to_color()),
             )),
@@ -100,10 +100,6 @@ pub fn draw(
                 header_spans.extend(rainbow_spans("supervibe", theme));
                 header_spans.push(Span::raw("] "));
             }
-            VibeMode::Review => header_spans.push(Span::styled(
-                "[review] ",
-                Style::default().fg(theme.mode_review.to_color()),
-            )),
         };
         if view.review {
             header_spans.push(Span::styled(

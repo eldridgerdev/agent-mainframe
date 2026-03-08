@@ -454,7 +454,7 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    is_worktree: bool,
+    _is_worktree: bool,
 ) {
     remove_old_diff_review_plugin(repo);
 
@@ -463,9 +463,7 @@ pub fn ensure_notification_hooks(
         return;
     }
     if matches!(agent, AgentKind::Codex) {
-        if is_worktree {
-            ensure_codex_notify_hook(workdir);
-        }
+        ensure_codex_notify_hook(workdir);
         return;
     }
 

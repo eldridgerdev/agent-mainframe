@@ -2,7 +2,7 @@ use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
 };
 use super::sync::pane_shows_thinking_hint;
-use super::util::{shorten_path, slugify};
+use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::extension::ExtensionConfig;
 
@@ -54,6 +54,35 @@ fn shorten_path_outside_home() {
     let path = std::path::Path::new("/tmp/some/path");
     let result = shorten_path(path);
     assert_eq!(result, "/tmp/some/path");
+}
+
+#[test]
+fn read_latest_prompt_prefers_claude_path() {
+    let workdir = TempDir::new().unwrap();
+    let claude_path = latest_prompt_path(workdir.path());
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(claude_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&claude_path, "claude prompt").unwrap();
+    std::fs::write(&codex_path, "codex prompt").unwrap();
+
+    assert_eq!(
+        read_latest_prompt(workdir.path()).as_deref(),
+        Some("claude prompt")
+    );
+}
+
+#[test]
+fn read_latest_prompt_falls_back_to_codex_path() {
+    let workdir = TempDir::new().unwrap();
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&codex_path, "codex prompt").unwrap();
+
+    assert_eq!(
+        read_latest_prompt(workdir.path()).as_deref(),
+        Some("codex prompt")
+    );
 }
 
 // ── AppConfig defaults ───────────────────────────────────
@@ -864,22 +893,31 @@ fn ensure_hooks_is_idempotent() {
 }
 
 #[test]
-fn codex_hooks_are_injected_for_worktree_only() {
+fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
     let workdir = TempDir::new().unwrap();
 
     call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, false);
     assert!(
-        !workdir.path().join(".codex").join("config.toml").exists(),
-        "non-worktree codex feature should not get local codex config"
-    );
-
-    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
-    assert!(
         workdir.path().join(".codex").join("config.toml").exists(),
-        "worktree codex feature should get local codex config"
+        "repo-root codex feature should get local codex config"
     );
     assert!(
         workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "repo-root codex feature should get local notify hook script"
+    );
+
+    let second = TempDir::new().unwrap();
+    call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
+    assert!(
+        second.path().join(".codex").join("config.toml").exists(),
+        "worktree codex feature should get local codex config"
+    );
+    assert!(
+        second
             .path()
             .join(".codex")
             .join("amf-codex-notify.sh")
@@ -1192,6 +1230,58 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
     }
 }
 
+fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: "codex-sess".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    }
+}
+
 #[test]
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
@@ -1215,6 +1305,40 @@ fn sync_session_status_reads_first_line() {
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000 | DB :5432".to_string()),
+    );
+}
+
+#[test]
+fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pending_inputs.push(PendingInput {
+        session_id: "amf-my-feat".to_string(),
+        cwd: workdir.path().display().to_string(),
+        message: "Codex finished and is waiting for input".to_string(),
+        notification_type: "input-request".to_string(),
+        file_path: PathBuf::new(),
+        project_name: Some("my-project".to_string()),
+        feature_name: Some("my-feat".to_string()),
+        proceed_signal: None,
+        request_id: None,
+        reply_socket: None,
+    });
+
+    app.note_codex_prompt_submit("amf-my-feat", "codex");
+
+    assert!(
+        app.ipc_thinking_sessions.contains("amf-my-feat"),
+        "repo-root codex feature should be marked thinking"
+    );
+    assert!(
+        app.pending_inputs.is_empty(),
+        "prompt submit should clear stale input-request notifications"
     );
 }
 

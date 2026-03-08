@@ -268,7 +268,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
 
                     let mode_badge_spans: Vec<Span> = match feature.mode {
-                        VibeMode::Vibeless | VibeMode::Review => vec![Span::styled(
+                        VibeMode::Vibeless => vec![Span::styled(
                             " [vibeless]",
                             Style::default().fg(theme.mode_vibeless.to_color()),
                         )],
@@ -312,6 +312,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         ));
                     }
                     line_spans.extend(mode_badge_spans);
+                    if feature.review {
+                        line_spans.push(Span::styled(
+                            " [review]",
+                            Style::default().fg(theme.mode_review.to_color()),
+                        ));
+                    }
                     if is_being_deleted {
                         line_spans.push(Span::styled(
                             " [deleting...]",

@@ -738,6 +738,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         collapsed: false,
         mode: VibeMode::default(),
         review: false,
+        plan_mode: false,
         agent: AgentKind::Claude,
         enable_chrome: false,
         has_notes: false,
@@ -1520,12 +1521,14 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 

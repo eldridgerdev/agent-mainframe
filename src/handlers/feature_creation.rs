@@ -204,9 +204,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     if state.mode_focus > 0 {
                         state.mode_focus -= 1;
-                    } else if state.source_index == 1
-                        && !state.worktrees.is_empty()
-                    {
+                    } else if state.source_index == 1 && !state.worktrees.is_empty() {
                         state.step = CreateFeatureStep::ExistingWorktree;
                     } else {
                         state.step = CreateFeatureStep::Worktree;

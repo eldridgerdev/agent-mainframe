@@ -56,5 +56,9 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
     paths
         .into_iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
-        .or_else(|| super::codex_sessions::latest_prompt_for_workdir(workdir).ok().flatten())
+        .or_else(|| {
+            super::codex_sessions::latest_prompt_for_workdir(workdir)
+                .ok()
+                .flatten()
+        })
 }

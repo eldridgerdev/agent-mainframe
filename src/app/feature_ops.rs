@@ -1,8 +1,10 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use super::setup::{
+    ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
+};
 use super::*;
-use super::setup::{ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md};
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;

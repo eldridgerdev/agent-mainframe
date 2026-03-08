@@ -181,6 +181,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
         | AppMode::ClaudeSessionPicker(_)
+        | AppMode::CodexSessionPicker(_)
         | AppMode::SessionPicker(_)
         | AppMode::BookmarkPicker(_) => Line::from(vec![
             Span::styled("j/k or \u{2191}/\u{2193}", key_style()),
@@ -190,14 +191,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::ConfirmingOpencodeSession { .. } | AppMode::ConfirmingClaudeSession { .. } => {
-            Line::from(vec![
-                Span::styled("y", key_style()),
-                Span::raw(" restart  "),
-                Span::styled("n/Esc", key_style()),
-                Span::raw(" cancel"),
-            ])
-        }
+        AppMode::ConfirmingOpencodeSession { .. }
+        | AppMode::ConfirmingClaudeSession { .. }
+        | AppMode::ConfirmingCodexSession { .. } => Line::from(vec![
+            Span::styled("y", key_style()),
+            Span::raw(" restart  "),
+            Span::styled("n/Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::ChangeReasonPrompt(_) => Line::from(vec![
             Span::styled("Enter", key_style()),
             Span::raw(" accept  "),

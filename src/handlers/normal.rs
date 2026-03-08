@@ -154,7 +154,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if is_claude.unwrap_or(false) {
                 app.pick_claude_session();
             } else if is_codex.unwrap_or(false) {
-                app.message = Some("Codex session restore picker is not implemented yet".into());
+                app.pick_codex_session();
             } else {
                 app.message = Some("S only works for opencode, claude, or codex sessions".into());
             }

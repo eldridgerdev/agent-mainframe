@@ -1,5 +1,7 @@
 mod claude_session_picker;
 mod claude_sessions;
+mod codex_session_picker;
+mod codex_sessions;
 pub mod commands;
 mod feature_ops;
 mod harpoon;

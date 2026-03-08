@@ -183,6 +183,10 @@ fn handle_click(
             | AppMode::Searching(_)
             | AppMode::OpencodeSessionPicker(_)
             | AppMode::ConfirmingOpencodeSession { .. }
+            | AppMode::ClaudeSessionPicker(_)
+            | AppMode::ConfirmingClaudeSession { .. }
+            | AppMode::CodexSessionPicker(_)
+            | AppMode::ConfirmingCodexSession { .. }
             | AppMode::SessionPicker(_)
             | AppMode::BookmarkPicker(_)
             | AppMode::SessionSwitcher(_)

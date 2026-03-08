@@ -1,8 +1,10 @@
+use anyhow::Result;
+
 use super::*;
 use crate::tmux::TmuxManager;
 
 impl App {
-    pub fn pick_claude_session(&mut self) {
+    pub fn pick_codex_session(&mut self) {
         let workdir = match &self.selection {
             Selection::Feature(pi, fi) => self
                 .store
@@ -26,7 +28,7 @@ impl App {
             }
         };
 
-        let sessions = match claude_sessions::fetch_claude_sessions(&workdir) {
+        let sessions = match codex_sessions::fetch_codex_sessions(&workdir) {
             Ok(s) => s,
             Err(e) => {
                 self.message = Some(format!("Failed to fetch sessions: {}", e));
@@ -35,24 +37,24 @@ impl App {
         };
 
         if sessions.is_empty() {
-            self.message = Some("No claude sessions for this worktree".into());
+            self.message = Some("No codex sessions for this worktree".into());
             return;
         }
 
-        self.mode = AppMode::ClaudeSessionPicker(ClaudeSessionPickerState {
+        self.mode = AppMode::CodexSessionPicker(CodexSessionPickerState {
             sessions,
             selected: 0,
             workdir,
         });
     }
 
-    pub fn cancel_claude_session_picker(&mut self) {
+    pub fn cancel_codex_session_picker(&mut self) {
         self.mode = AppMode::Normal;
     }
 
-    pub fn confirm_claude_session(&mut self) {
+    pub fn confirm_codex_session(&mut self) {
         let session_id = match &self.mode {
-            AppMode::ClaudeSessionPicker(state) => {
+            AppMode::CodexSessionPicker(state) => {
                 state.sessions.get(state.selected).map(|s| s.id.clone())
             }
             _ => return,
@@ -69,45 +71,45 @@ impl App {
 
         if feature_running {
             let workdir = match &self.mode {
-                AppMode::ClaudeSessionPicker(state) => state.workdir.clone(),
+                AppMode::CodexSessionPicker(state) => state.workdir.clone(),
                 _ => return,
             };
-            self.mode = AppMode::ConfirmingClaudeSession {
+            self.mode = AppMode::ConfirmingCodexSession {
                 session_id,
                 workdir,
             };
         } else {
             self.mode = AppMode::Normal;
-            if let Err(e) = self.restart_feature_with_claude_session(&session_id) {
+            if let Err(e) = self.restart_feature_with_codex_session(&session_id) {
                 self.message = Some(format!("Error: {}", e));
             }
         }
     }
 
-    pub fn cancel_claude_session_confirm(&mut self) {
+    pub fn cancel_codex_session_confirm(&mut self) {
         let workdir = match &self.mode {
-            AppMode::ConfirmingClaudeSession { workdir, .. } => workdir.clone(),
+            AppMode::ConfirmingCodexSession { workdir, .. } => workdir.clone(),
             _ => return,
         };
 
-        self.mode = AppMode::ClaudeSessionPicker(ClaudeSessionPickerState {
-            sessions: claude_sessions::fetch_claude_sessions(&workdir).unwrap_or_default(),
+        self.mode = AppMode::CodexSessionPicker(CodexSessionPickerState {
+            sessions: codex_sessions::fetch_codex_sessions(&workdir).unwrap_or_default(),
             selected: 0,
             workdir,
         });
     }
 
-    pub fn confirm_and_start_claude(&mut self) -> Result<()> {
+    pub fn confirm_and_start_codex(&mut self) -> Result<()> {
         let session_id = match &self.mode {
-            AppMode::ConfirmingClaudeSession { session_id, .. } => session_id.clone(),
+            AppMode::ConfirmingCodexSession { session_id, .. } => session_id.clone(),
             _ => return Ok(()),
         };
 
         self.mode = AppMode::Normal;
-        self.restart_feature_with_claude_session(&session_id)
+        self.restart_feature_with_codex_session(&session_id)
     }
 
-    fn restart_feature_with_claude_session(&mut self, claude_session_id: &str) -> Result<()> {
+    fn restart_feature_with_codex_session(&mut self, codex_session_id: &str) -> Result<()> {
         let (pi, fi) = match self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
             _ => return Ok(()),
@@ -129,7 +131,7 @@ impl App {
             TmuxManager::kill_session(&tmux_session)?;
         }
 
-        self.ensure_feature_running_with_claude_session(pi, fi, claude_session_id)?;
+        self.ensure_feature_running_with_codex_session(pi, fi, codex_session_id)?;
 
         let (
             project_name,
@@ -146,7 +148,7 @@ impl App {
             let si = feature
                 .sessions
                 .iter()
-                .position(|s| s.kind == SessionKind::Claude)
+                .position(|s| s.kind == SessionKind::Codex)
                 .unwrap_or(0);
 
             let session = &feature.sessions[si];
@@ -179,16 +181,16 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
-        self.message = Some("Restored claude session".into());
+        self.message = Some("Restored codex session".into());
 
         Ok(())
     }
 
-    fn ensure_feature_running_with_claude_session(
+    fn ensure_feature_running_with_codex_session(
         &mut self,
         pi: usize,
         fi: usize,
-        claude_session_id: &str,
+        codex_session_id: &str,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
         let feature = match self
@@ -211,7 +213,7 @@ impl App {
         setup::ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
-            feature.add_session(SessionKind::Claude);
+            feature.add_session(SessionKind::Codex);
             feature.add_session(SessionKind::Terminal);
             if feature.has_notes {
                 let s = feature.add_session(SessionKind::Nvim);
@@ -240,13 +242,20 @@ impl App {
 
         for session in &feature.sessions {
             match session.kind {
+                SessionKind::Codex => {
+                    TmuxManager::launch_codex(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        Some(codex_session_id),
+                    )?;
+                }
                 SessionKind::Claude => {
                     let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
                     let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
                     TmuxManager::launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
-                        Some(claude_session_id),
+                        session.claude_session_id.as_deref(),
                         &extra_refs,
                     )?;
                 }
@@ -256,9 +265,6 @@ impl App {
                         &session.tmux_window,
                         None,
                     )?;
-                }
-                SessionKind::Codex => {
-                    TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {

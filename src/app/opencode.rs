@@ -261,7 +261,7 @@ impl App {
                     )?;
                 }
                 SessionKind::Codex => {
-                    TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window)?;
+                    TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {

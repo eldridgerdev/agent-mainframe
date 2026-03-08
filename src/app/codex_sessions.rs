@@ -1,0 +1,273 @@
+use anyhow::Result;
+use chrono::{DateTime, Utc};
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct CodexSessionInfo {
+    pub id: String,
+    pub title: String,
+    pub updated: i64,
+}
+
+pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(Vec::new());
+    };
+    fetch_codex_sessions_from_root(workdir, &sessions_root)
+}
+
+fn fetch_codex_sessions_from_root(
+    workdir: &Path,
+    sessions_root: &Path,
+) -> Result<Vec<CodexSessionInfo>> {
+    if !sessions_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut sessions = Vec::new();
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(session) = parse_codex_session_file(&path, workdir) {
+                sessions.push(session);
+            }
+        }
+    }
+
+    sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
+    Ok(sessions)
+}
+
+fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionInfo> {
+    let contents = std::fs::read_to_string(path).ok()?;
+
+    let mut session_id: Option<String> = None;
+    let mut session_cwd: Option<PathBuf> = None;
+    let mut title: Option<String> = None;
+    let mut updated = 0_i64;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let value: Value = serde_json::from_str(line).ok()?;
+
+        if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
+            && let Some(parsed) = parse_timestamp(ts)
+        {
+            updated = updated.max(parsed);
+        }
+
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("session_meta") => {
+                let payload = value.get("payload")?;
+                session_id = payload
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+                    .or(session_id);
+                session_cwd = payload
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from)
+                    .or(session_cwd);
+                if let Some(ts) = payload.get("timestamp").and_then(|v| v.as_str())
+                    && let Some(parsed) = parse_timestamp(ts)
+                {
+                    updated = updated.max(parsed);
+                }
+            }
+            Some("event_msg") => {
+                if title.is_none() {
+                    title = extract_title_from_event(&value);
+                }
+            }
+            Some("response_item") => {
+                if title.is_none() {
+                    title = extract_title_from_response_item(&value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if session_cwd.as_deref()? != workdir {
+        return None;
+    }
+
+    let id = session_id?;
+    Some(CodexSessionInfo {
+        id,
+        title: title.unwrap_or_else(|| "Untitled".to_string()),
+        updated,
+    })
+}
+
+fn extract_title_from_event(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type")?.as_str()? != "user_message" {
+        return None;
+    }
+    let message = payload.get("message")?.as_str()?;
+    title_from_text(message)
+}
+
+fn extract_title_from_response_item(value: &Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    if payload.get("type")?.as_str()? != "message" {
+        return None;
+    }
+    if payload.get("role")?.as_str()? != "user" {
+        return None;
+    }
+
+    let content = payload.get("content")?.as_array()?;
+    for item in content {
+        if item.get("type").and_then(|v| v.as_str()) == Some("input_text")
+            && let Some(text) = item.get("text").and_then(|v| v.as_str())
+            && let Some(title) = title_from_text(text)
+        {
+            return Some(title);
+        }
+    }
+
+    None
+}
+
+fn title_from_text(text: &str) -> Option<String> {
+    let title = text.lines().find(|line| !line.trim().is_empty())?.trim();
+    let title = if title.len() > 60 {
+        format!("{}...", &title[..57])
+    } else {
+        title.to_string()
+    };
+    Some(title)
+}
+
+fn parse_timestamp(timestamp: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc).timestamp())
+}
+
+fn codex_sessions_root() -> Option<PathBuf> {
+    let from_dirs = dirs::home_dir().map(|h| h.join(".codex").join("sessions"));
+    if from_dirs.as_ref().is_some_and(|p| p.exists()) {
+        return from_dirs;
+    }
+
+    let from_env = std::env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .map(|h| h.join(".codex").join("sessions"));
+    if from_env.as_ref().is_some_and(|p| p.exists()) {
+        return from_env;
+    }
+
+    let from_user_home = std::env::var("USER")
+        .ok()
+        .map(|u| PathBuf::from("/home").join(u))
+        .map(|h| h.join(".codex").join("sessions"));
+    if from_user_home.as_ref().is_some_and(|p| p.exists()) {
+        return from_user_home;
+    }
+
+    from_dirs.or(from_env).or(from_user_home)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_session(root: &Path, relative: &str, contents: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn fetch_codex_sessions_filters_by_workdir_and_sorts_newest_first() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+        let other = tmp.path().join("other");
+
+        write_session(
+            tmp.path(),
+            "2026/03/07/a.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-07T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-a\",\"timestamp\":\"2026-03-07T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-07T10:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"older title\"}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+        write_session(
+            tmp.path(),
+            "2026/03/07/b.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-07T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-b\",\"timestamp\":\"2026-03-07T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-07T11:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"newer title\"}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+        write_session(
+            tmp.path(),
+            "2026/03/07/c.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-07T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-c\",\"timestamp\":\"2026-03-07T11:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-07T12:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"ignored\"}}}}\n"
+                ),
+                other.display()
+            ),
+        );
+
+        let sessions = fetch_codex_sessions_from_root(&workdir, tmp.path()).unwrap();
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["sess-b", "sess-a"]);
+        assert_eq!(sessions[0].title, "newer title");
+    }
+
+    #[test]
+    fn parse_codex_session_file_uses_response_item_as_title_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+        let session_path = tmp.path().join("session.jsonl");
+
+        std::fs::write(
+            &session_path,
+            format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-07T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-1\",\"timestamp\":\"2026-03-07T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-07T10:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"restore codex\\nsecond line\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        )
+        .unwrap();
+
+        let session = parse_codex_session_file(&session_path, &workdir).unwrap();
+        assert_eq!(session.id, "sess-1");
+        assert_eq!(session.title, "restore codex");
+        assert_eq!(session.updated, 1_772_877_660);
+    }
+}

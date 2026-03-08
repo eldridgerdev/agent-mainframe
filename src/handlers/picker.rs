@@ -250,6 +250,39 @@ pub fn handle_claude_session_picker_key(app: &mut App, key: KeyCode) -> Result<(
     Ok(())
 }
 
+pub fn handle_codex_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.cancel_codex_session_picker();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::CodexSessionPicker(ref mut state) = app.mode {
+                let len = state.sessions.len();
+                if len > 0 {
+                    state.selected = (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::CodexSessionPicker(ref mut state) = app.mode {
+                let len = state.sessions.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            app.confirm_codex_session();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_claude_session_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('n') => {
@@ -257,6 +290,19 @@ pub fn handle_claude_session_confirm_key(app: &mut App, key: KeyCode) -> Result<
         }
         KeyCode::Char('y') => {
             app.confirm_and_start_claude()?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_codex_session_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('n') => {
+            app.cancel_codex_session_confirm();
+        }
+        KeyCode::Char('y') => {
+            app.confirm_and_start_codex()?;
         }
         _ => {}
     }

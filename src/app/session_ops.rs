@@ -447,7 +447,7 @@ impl App {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
             AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window)?;
+                TmuxManager::launch_codex(&tmux_session, &window, None)?;
             }
         }
 
@@ -563,7 +563,7 @@ impl App {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
             AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window)?;
+                TmuxManager::launch_codex(&tmux_session, &window, None)?;
             }
         }
 

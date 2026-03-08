@@ -275,6 +275,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_claude_session_confirm(frame, &app.theme);
     }
 
+    if let AppMode::CodexSessionPicker(state) = &app.mode {
+        super::picker::draw_codex_session_picker(frame, state, &app.theme);
+    }
+
+    if matches!(app.mode, AppMode::ConfirmingCodexSession { .. }) {
+        super::picker::draw_codex_session_confirm(frame, &app.theme);
+    }
+
     if let AppMode::SessionPicker(state) = &app.mode {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }

@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest};
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use super::setup::{ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md};
 use super::*;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
@@ -99,7 +99,6 @@ impl App {
             AppMode::CreatingFeature(s) => s,
             _ => return Ok(()),
         };
-
         let use_existing_worktree = state.source_index == 1 && !state.worktrees.is_empty();
         if use_existing_worktree {
             self.message = Some(
@@ -115,13 +114,13 @@ impl App {
             agent: state.agent.clone(),
             mode: state.mode.clone(),
             review: state.review,
+            plan_mode: state.plan_mode,
             use_worktree: Some(state.use_worktree),
             enable_chrome: state.enable_chrome,
             enable_notes: state.enable_notes,
             hook_choice: None,
             dry_run: false,
         };
-
         let response = match self.create_feature_from_request(&request) {
             Ok(response) => response,
             Err(err) => {
@@ -129,7 +128,6 @@ impl App {
                 return Ok(());
             }
         };
-
         if let Some(pi) = self
             .store
             .projects
@@ -171,6 +169,7 @@ impl App {
             feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
@@ -877,6 +876,7 @@ impl App {
                         branch: new_branch,
                         mode,
                         review,
+                        plan_mode: false,
                         agent,
                         enable_chrome,
                         enable_notes,
@@ -892,6 +892,7 @@ impl App {
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                false,
                 agent.clone(),
                 enable_chrome,
                 enable_notes,
@@ -921,6 +922,7 @@ impl App {
             true,
             mode,
             review,
+            false,
             agent,
             enable_chrome,
             enable_notes,
@@ -1039,7 +1041,6 @@ impl App {
                 return Ok(());
             }
         };
-
         if let Some(pi) = self
             .store
             .projects

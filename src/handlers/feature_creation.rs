@@ -133,6 +133,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.mode = preset.mode;
                     state.agent = preset.agent.clone();
                     state.review = preset.review;
+                    state.plan_mode = preset.plan_mode;
                     state.enable_chrome = preset.enable_chrome;
                     state.enable_notes = preset.enable_notes;
                     if let Some(ref prefix) = preset.branch_prefix
@@ -203,7 +204,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     if state.mode_focus > 0 {
                         state.mode_focus -= 1;
-                    } else if state.source_index == 1 && !state.worktrees.is_empty() {
+                    } else if state.source_index == 1
+                        && !state.worktrees.is_empty()
+                    {
                         state.step = CreateFeatureStep::ExistingWorktree;
                     } else {
                         state.step = CreateFeatureStep::Worktree;
@@ -213,9 +216,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        5
                     } else {
-                        3
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -232,9 +235,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        5
                     } else {
-                        3
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -264,13 +267,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
+                        5 => {
                             state.enable_notes = !state.enable_notes;
                         }
                         _ => {}
@@ -301,13 +307,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
+                        5 => {
                             state.enable_notes = !state.enable_notes;
                         }
                         _ => {}

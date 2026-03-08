@@ -84,6 +84,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::Normal => {
             let on_session = matches!(app.selection, Selection::Session(_, _, _));
             let on_feature = matches!(app.selection, Selection::Feature(_, _));
+            let pending_worktree_script = match app.selection {
+                Selection::Feature(pi, fi) => app.feature_is_pending_worktree_script(pi, fi),
+                _ => false,
+            };
             if on_session {
                 let mut spans = filter_spans;
                 spans.extend(vec![
@@ -103,6 +107,21 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" filter  "),
                     Span::styled("q", key_style()),
                     Span::raw(" quit"),
+                ]);
+                Line::from(spans)
+            } else if on_feature && pending_worktree_script {
+                let mut spans = filter_spans;
+                spans.extend(vec![
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" expand  "),
+                    Span::styled("d", key_style()),
+                    Span::raw(" delete  "),
+                    Span::styled("q", key_style()),
+                    Span::raw(" quit  "),
+                    Span::styled(
+                        "worktree script still running",
+                        Style::default().fg(theme.info.to_color()),
+                    ),
                 ]);
                 Line::from(spans)
             } else if on_feature {

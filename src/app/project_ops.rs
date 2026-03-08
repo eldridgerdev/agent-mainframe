@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use ratatui_explorer::FileExplorer;
 
 use super::*;
+use crate::automation::CreateProjectRequest;
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
@@ -240,50 +241,33 @@ impl App {
             _ => return Ok(()),
         };
 
-        let name = state.name.clone();
-        let path = PathBuf::from(&state.path);
-
-        if name.is_empty() {
-            self.message = Some("Error: Project name cannot be empty".into());
-            return Ok(());
-        }
-
-        if !path.exists() {
-            self.message = Some(format!(
-                "Error: Path does not exist: {} (press Ctrl+B to browse and create folder)",
-                path.display()
-            ));
-            return Ok(());
-        }
-
-        if self.store.find_project(&name).is_some() {
-            self.message = Some(format!("Error: Project '{}' already exists", name));
-            return Ok(());
-        }
-
-        let (project_path, is_git) = match self.worktree.repo_root(&path) {
-            Ok(r) => (r, true),
-            Err(_) => (path.clone(), false),
+        let request = CreateProjectRequest {
+            path: PathBuf::from(&state.path),
+            project_name: state.name.clone(),
+            preferred_agent: Some(state.agent.clone()),
+            dry_run: false,
         };
 
-        let preferred_agent = state.agent.clone();
-        if !self.allows_agent_for_repo(&project_path, &preferred_agent) {
-            self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
-                preferred_agent.display_name()
-            ));
-            return Ok(());
-        }
-
-        let project = Project::new(name.clone(), project_path, is_git, preferred_agent);
-
-        self.store.add_project(project);
-        self.save()?;
+        let response = match self.create_project_from_request(&request) {
+            Ok(response) => response,
+            Err(err) => {
+                let text = err.to_string();
+                if text.starts_with("Path does not exist:") {
+                    self.message = Some(format!(
+                        "Error: {} (press Ctrl+B to browse and create folder)",
+                        text
+                    ));
+                } else {
+                    self.message = Some(format!("Error: {text}"));
+                }
+                return Ok(());
+            }
+        };
 
         let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
         self.mode = AppMode::Normal;
-        self.message = Some(format!("Created project '{}'", name));
+        self.message = Some(response.message);
 
         Ok(())
     }

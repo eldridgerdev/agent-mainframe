@@ -111,6 +111,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::SteeringPrompt(state) = &app.mode {
+        super::pane::draw(
+            frame,
+            &state.view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
+        return;
+    }
+
     if let AppMode::CommandPicker(state) = &app.mode
         && state.from_view.is_some()
     {

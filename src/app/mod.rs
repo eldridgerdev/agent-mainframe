@@ -17,6 +17,7 @@ mod search;
 mod session_config;
 mod session_ops;
 pub mod setup;
+mod steering;
 mod state;
 mod switcher;
 mod sync;
@@ -46,6 +47,7 @@ use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 pub use self::setup::load_config;
+pub use steering::{PromptAnalysis, analyze_prompt};
 pub use state::*;
 
 pub struct CommandEntry {

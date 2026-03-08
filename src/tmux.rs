@@ -685,6 +685,10 @@ impl TmuxOps for TmuxManager {
         TmuxManager::send_literal(session, window, text)
     }
 
+    fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()> {
+        TmuxManager::paste_text(session, window, text)
+    }
+
     fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()> {
         TmuxManager::send_key_name(session, window, key_name)
     }

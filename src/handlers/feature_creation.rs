@@ -275,7 +275,14 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             }
                         }
                         5 => {
-                            state.enable_notes = !state.enable_notes;
+                            if state.agent == AgentKind::Claude {
+                                state.enable_notes = !state.enable_notes;
+                            } else {
+                                state.steering_enabled = !state.steering_enabled;
+                            }
+                        }
+                        6 => {
+                            state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
                     }
@@ -315,10 +322,46 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             }
                         }
                         5 => {
-                            state.enable_notes = !state.enable_notes;
+                            if state.agent == AgentKind::Claude {
+                                state.enable_notes = !state.enable_notes;
+                            } else {
+                                state.steering_enabled = !state.steering_enabled;
+                            }
+                        }
+                        6 => {
+                            state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
                     }
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::TaskPrompt => match key {
+            KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.step = CreateFeatureStep::Mode;
+                }
+            }
+            KeyCode::Tab => {
+                app.create_feature()?;
+            }
+            KeyCode::Enter => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.push('\n');
+                    state.refresh_prompt_analysis();
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.pop();
+                    state.refresh_prompt_analysis();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.push(c);
+                    state.refresh_prompt_analysis();
                 }
             }
             _ => {}

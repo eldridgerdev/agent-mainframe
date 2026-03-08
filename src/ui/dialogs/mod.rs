@@ -14,7 +14,7 @@ pub use browse::draw_browse_path_dialog;
 pub use debug::draw_debug_log;
 pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
-    draw_deleting_feature_dialog, draw_fork_feature_dialog,
+    draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
 };
 pub use help::draw_help;
 pub use hooks::{

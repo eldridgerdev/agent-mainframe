@@ -166,6 +166,37 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_steering_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc => {
+            app.cancel_steering_prompt();
+        }
+        KeyCode::Tab => {
+            app.submit_steering_prompt()?;
+        }
+        KeyCode::Enter => {
+            if let AppMode::SteeringPrompt(state) = &mut app.mode {
+                state.prompt.push('\n');
+                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::SteeringPrompt(state) = &mut app.mode {
+                state.prompt.pop();
+                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::SteeringPrompt(state) = &mut app.mode {
+                state.prompt.push(c);
+                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_delete_project_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('y') => {

@@ -46,6 +46,7 @@ impl App {
         workdir: &Path,
         mode: &VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: &AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
@@ -72,6 +73,7 @@ impl App {
                 true,
                 mode.clone(),
                 review,
+                plan_mode,
                 agent.clone(),
                 enable_chrome,
                 enable_notes,
@@ -86,6 +88,7 @@ impl App {
             feature.is_worktree = true;
             feature.mode = mode.clone();
             feature.review = review;
+            feature.plan_mode = plan_mode;
             feature.agent = agent.clone();
             feature.enable_chrome = enable_chrome;
             feature.has_notes = enable_notes;
@@ -103,9 +106,11 @@ impl App {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
+        steering_enabled: bool,
         focus_feature: bool,
     ) -> Result<()> {
         let Some((pi, fi)) = self.upsert_pending_worktree_feature(
@@ -114,6 +119,7 @@ impl App {
             &workdir,
             &mode,
             review,
+            plan_mode,
             &agent,
             enable_chrome,
             enable_notes,
@@ -121,23 +127,34 @@ impl App {
             return Ok(());
         };
 
-        if let Some(feature) = self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|project| project.features.get_mut(fi))
-        {
-            feature.pending_worktree_script = false;
-        }
-
         if focus_feature {
             self.selection = Selection::Feature(pi, fi);
         }
 
-        self.ensure_feature_running(pi, fi)?;
-        self.save()?;
+        let is_worktree = workdir
+            != self
+                .store
+                .find_project(&project_name)
+                .map(|p| p.repo.clone())
+                .unwrap_or_default();
 
-        Ok(())
+        let prepared = PreparedFeatureLaunch {
+            project_name,
+            branch,
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            enable_notes,
+            steering_enabled,
+            hook_succeeded: None,
+            startup_prompt: None,
+        };
+
+        self.finish_feature_launch(prepared)
     }
 
     fn hook_failure_detail(output: &str) -> String {
@@ -275,9 +292,11 @@ impl App {
                 branch,
                 mode,
                 review,
+                plan_mode,
                 agent,
                 enable_chrome,
                 enable_notes,
+                steering_enabled,
             } => {
                 self.start_worktree_hook(
                     &state.script,
@@ -286,9 +305,11 @@ impl App {
                     branch,
                     mode,
                     review,
+                    plan_mode,
                     agent,
                     enable_chrome,
                     enable_notes,
+                    steering_enabled,
                     Some(choice),
                 );
             }
@@ -312,9 +333,11 @@ impl App {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
+        steering_enabled: bool,
         choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
@@ -341,6 +364,7 @@ impl App {
             &workdir,
             &mode,
             review,
+            plan_mode,
             &agent,
             enable_chrome,
             enable_notes,
@@ -382,9 +406,11 @@ impl App {
             branch,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
             enable_notes,
+            steering_enabled,
             child,
             output: String::new(),
             success: None,
@@ -436,9 +462,11 @@ impl App {
             branch,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
             enable_notes,
+            steering_enabled,
             success,
         ) = {
             match &self.mode {
@@ -448,9 +476,11 @@ impl App {
                     s.branch.clone(),
                     s.mode.clone(),
                     s.review,
+                    s.plan_mode,
                     s.agent.clone(),
                     s.enable_chrome,
                     s.enable_notes,
+                    s.steering_enabled,
                     s.success,
                 ),
                 _ => return Ok(()),
@@ -478,25 +508,31 @@ impl App {
             branch.clone(),
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
             enable_notes,
+            steering_enabled,
             true,
         )?;
 
-        if success.unwrap_or(false) {
-            self.message = Some(format!(
-                "Created and started feature '{}' (hook succeeded)",
-                branch
-            ));
-        } else {
-            self.report_logged_error(
-                "hooks",
-                format!(
-                    "Created and started feature '{}' but worktree hook failed",
+        match success {
+            Some(true) => {
+                self.message = Some(format!(
+                    "Created and started feature '{}' (hook succeeded)",
                     branch
-                ),
-            );
+                ));
+            }
+            Some(false) => {
+                self.report_logged_error(
+                    "hooks",
+                    format!(
+                        "Created and started feature '{}' but worktree hook failed",
+                        branch
+                    ),
+                );
+            }
+            None => {}
         }
 
         Ok(())
@@ -550,9 +586,11 @@ impl App {
                     hook.branch.clone(),
                     hook.mode.clone(),
                     hook.review,
+                    hook.plan_mode,
                     hook.agent.clone(),
                     hook.enable_chrome,
                     hook.enable_notes,
+                    hook.steering_enabled,
                     false,
                 ) {
                     self.report_logged_error(

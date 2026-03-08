@@ -2,6 +2,7 @@ use ratatui_explorer::FileExplorer;
 use std::path::PathBuf;
 use std::process::Child;
 
+use super::PromptAnalysis;
 use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
 use crate::worktree::WorktreeInfo;
@@ -152,6 +153,14 @@ pub struct SessionConfigState {
     pub selected_agent: usize,
 }
 
+pub struct ProjectAgentConfigState {
+    pub project_idx: usize,
+    pub project_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
@@ -186,6 +195,14 @@ pub struct BookmarkPickerState {
     pub from_view: Option<ViewState>,
 }
 
+#[derive(Clone)]
+pub struct SteeringPromptState {
+    pub view: ViewState,
+    pub workdir: PathBuf,
+    pub prompt: String,
+    pub prompt_analysis: PromptAnalysis,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -200,6 +217,7 @@ pub enum AppMode {
     RenamingSession(RenameSessionState),
     RenamingFeature(RenameFeatureState),
     SessionConfig(SessionConfigState),
+    ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
@@ -219,6 +237,7 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),
@@ -302,9 +321,11 @@ pub enum HookNext {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
+        steering_enabled: bool,
     },
     StartFeature {
         pi: usize,
@@ -332,9 +353,11 @@ pub struct RunningHookState {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
     pub enable_notes: bool,
+    pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -410,9 +433,11 @@ pub struct BackgroundHook {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
     pub enable_notes: bool,
+    pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
@@ -432,9 +457,11 @@ impl BackgroundHook {
             branch: state.branch,
             mode: state.mode,
             review: state.review,
+            plan_mode: state.plan_mode,
             agent: state.agent,
             enable_chrome: state.enable_chrome,
             enable_notes: state.enable_notes,
+            steering_enabled: state.steering_enabled,
             child: state.child,
             output: state.output,
             success: state.success,
@@ -462,12 +489,15 @@ pub struct CreateProjectState {
     pub step: CreateProjectStep,
     pub name: String,
     pub path: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
 }
 
 #[derive(Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,
+    Agent,
 }
 
 impl CreateProjectState {
@@ -481,6 +511,8 @@ impl CreateProjectState {
             step: CreateProjectStep::Name,
             name: String::new(),
             path: repo_path,
+            agent: AgentKind::default(),
+            agent_index: 0,
         }
     }
 }
@@ -493,6 +525,7 @@ pub enum CreateFeatureStep {
     Branch,
     Worktree,
     Mode,
+    TaskPrompt,
     ConfirmSuperVibe,
 }
 
@@ -516,13 +549,18 @@ pub struct CreateFeatureState {
     pub mode_index: usize,
     pub mode_focus: usize,
     pub review: bool,
+    pub plan_mode: bool,
     pub source_index: usize,
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
     pub use_worktree: bool,
     pub enable_chrome: bool,
     pub enable_notes: bool,
+    pub steering_enabled: bool,
     pub preset_index: usize,
+    pub task_prompt: String,
+    pub prompt_analysis: PromptAnalysis,
+    pub prepared_launch: Option<PreparedFeatureLaunch>,
 }
 
 impl CreateFeatureState {
@@ -554,15 +592,41 @@ impl CreateFeatureState {
             mode_index: 0,
             mode_focus: 0,
             review: false,
+            plan_mode: false,
             source_index: 0,
             worktrees,
             worktree_index: 0,
             use_worktree: !is_first_feature,
             enable_chrome: false,
             enable_notes: false,
+            steering_enabled: true,
             preset_index: 0,
+            task_prompt: String::new(),
+            prompt_analysis: crate::app::analyze_prompt(""),
+            prepared_launch: None,
         }
     }
+
+    pub fn refresh_prompt_analysis(&mut self) {
+        self.prompt_analysis = crate::app::analyze_prompt(&self.task_prompt);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedFeatureLaunch {
+    pub project_name: String,
+    pub branch: String,
+    pub workdir: PathBuf,
+    pub is_worktree: bool,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub plan_mode: bool,
+    pub agent: AgentKind,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub steering_enabled: bool,
+    pub hook_succeeded: Option<bool>,
+    pub startup_prompt: Option<String>,
 }
 
 #[derive(Clone)]

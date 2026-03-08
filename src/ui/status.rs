@@ -103,6 +103,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" switch  "),
                     Span::styled("S", key_style()),
                     Span::raw(" resume  "),
+                    Span::styled("u", key_style()),
+                    Span::raw(" config  "),
                     Span::styled("f", key_style()),
                     Span::raw(" filter  "),
                     Span::styled("q", key_style()),
@@ -143,6 +145,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" switch  "),
                     Span::styled("S", key_style()),
                     Span::raw(" resume  "),
+                    Span::styled("u", key_style()),
+                    Span::raw(" config  "),
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
                 ]);
@@ -161,6 +165,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" project  "),
                     Span::styled("Enter", key_style()),
                     Span::raw(" expand  "),
+                    Span::styled("u", key_style()),
+                    Span::raw(" preferred agent  "),
                     Span::styled("f", key_style()),
                     Span::raw(" filter  "),
                     Span::styled("d", key_style()),
@@ -175,6 +181,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
+        | AppMode::SteeringPrompt(_)
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)
@@ -314,6 +321,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ProjectAgentConfig(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" apply  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::DebugLog(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" scroll  "),
@@ -341,6 +356,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default()
                             .fg(theme.project_title.to_color())
                             .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  preferred: {}", project.preferred_agent.display_name()),
+                        Style::default().fg(theme.primary.to_color()),
                     ),
                     Span::styled(format!("  {}", shorten_path(&project.repo)), hint_style()),
                 ])

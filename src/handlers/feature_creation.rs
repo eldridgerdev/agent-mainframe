@@ -133,6 +133,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.mode = preset.mode;
                     state.agent = preset.agent.clone();
                     state.review = preset.review;
+                    state.plan_mode = preset.plan_mode;
                     state.enable_chrome = preset.enable_chrome;
                     state.enable_notes = preset.enable_notes;
                     if let Some(ref prefix) = preset.branch_prefix
@@ -213,9 +214,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        5
                     } else {
-                        3
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -232,9 +233,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        5
                     } else {
-                        3
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -264,14 +265,24 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
-                            state.enable_notes = !state.enable_notes;
+                        5 => {
+                            if state.agent == AgentKind::Claude {
+                                state.enable_notes = !state.enable_notes;
+                            } else {
+                                state.steering_enabled = !state.steering_enabled;
+                            }
+                        }
+                        6 => {
+                            state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
                     }
@@ -301,17 +312,56 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
-                            state.enable_notes = !state.enable_notes;
+                        5 => {
+                            if state.agent == AgentKind::Claude {
+                                state.enable_notes = !state.enable_notes;
+                            } else {
+                                state.steering_enabled = !state.steering_enabled;
+                            }
+                        }
+                        6 => {
+                            state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
                     }
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::TaskPrompt => match key {
+            KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.step = CreateFeatureStep::Mode;
+                }
+            }
+            KeyCode::Tab => {
+                app.create_feature()?;
+            }
+            KeyCode::Enter => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.push('\n');
+                    state.refresh_prompt_analysis();
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.pop();
+                    state.refresh_prompt_analysis();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.task_prompt.push(c);
+                    state.refresh_prompt_analysis();
                 }
             }
             _ => {}

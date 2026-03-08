@@ -280,7 +280,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
 
                     let mode_badge_spans: Vec<Span> = match feature.mode {
-                        VibeMode::Vibeless => vec![Span::styled(
+                        VibeMode::Vibeless | VibeMode::Review => vec![Span::styled(
                             " [vibeless]",
                             Style::default().fg(theme.mode_vibeless.to_color()),
                         )],
@@ -294,10 +294,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             spans.push(Span::raw("]"));
                             spans
                         }
-                        VibeMode::Review => vec![Span::styled(
-                            " [review]",
-                            Style::default().fg(theme.mode_review.to_color()),
-                        )],
                     };
 
                     let has_pending_input = app.pending_inputs.iter().any(|p| {

@@ -9,6 +9,34 @@ use super::*;
 use crate::project::{FeatureSession, ProjectStatus, SessionKind};
 
 impl App {
+    pub fn start_project_agent_config(&mut self) -> Result<()> {
+        let pi = match self.selection {
+            Selection::Project(pi) => pi,
+            _ => {
+                self.message = Some("Select a project first".into());
+                return Ok(());
+            }
+        };
+
+        let Some(project) = self.store.projects.get(pi) else {
+            return Ok(());
+        };
+
+        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
+        let selected_agent = AgentKind::index_in(&allowed_agents, &project.preferred_agent);
+
+        self.mode = AppMode::ProjectAgentConfig(ProjectAgentConfigState {
+            project_idx: pi,
+            project_name: project.name.clone(),
+            current_agent: project.preferred_agent.clone(),
+            allowed_agents,
+            selected_agent,
+        });
+        self.message = None;
+
+        Ok(())
+    }
+
     pub fn start_session_config(&mut self) -> Result<()> {
         let (pi, fi) = match self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (pi, fi),
@@ -60,6 +88,10 @@ impl App {
     }
 
     pub fn apply_session_config(&mut self) -> Result<()> {
+        if let AppMode::ProjectAgentConfig(_) = &self.mode {
+            return self.apply_project_agent_config();
+        }
+
         let (pi, fi, next_agent) = match &self.mode {
             AppMode::SessionConfig(state) => {
                 let next = state
@@ -73,6 +105,58 @@ impl App {
         };
 
         self.apply_feature_agent_change(pi, fi, next_agent)
+    }
+
+    fn apply_project_agent_config(&mut self) -> Result<()> {
+        let (pi, next_agent) = match &self.mode {
+            AppMode::ProjectAgentConfig(state) => {
+                let next = state
+                    .allowed_agents
+                    .get(state.selected_agent)
+                    .cloned()
+                    .unwrap_or_else(|| state.current_agent.clone());
+                (state.project_idx, next)
+            }
+            _ => return Ok(()),
+        };
+
+        let Some(project) = self.store.projects.get(pi) else {
+            return Ok(());
+        };
+
+        if !self.allows_agent_for_repo(&project.repo, &next_agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                next_agent.display_name()
+            ));
+            self.mode = AppMode::Normal;
+            return Ok(());
+        }
+
+        if project.preferred_agent == next_agent {
+            self.mode = AppMode::Normal;
+            self.message = Some(format!(
+                "'{}' already prefers {}",
+                project.name,
+                next_agent.display_name()
+            ));
+            return Ok(());
+        }
+
+        let project_name = project.name.clone();
+        if let Some(project) = self.store.projects.get_mut(pi) {
+            project.preferred_agent = next_agent.clone();
+        }
+
+        self.mode = AppMode::Normal;
+        self.save()?;
+        self.message = Some(format!(
+            "Updated '{}' preferred agent to {}",
+            project_name,
+            next_agent.display_name()
+        ));
+
+        Ok(())
     }
 
     fn apply_feature_agent_change(

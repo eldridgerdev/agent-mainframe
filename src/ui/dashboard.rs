@@ -111,6 +111,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::SteeringPrompt(state) = &app.mode {
+        super::pane::draw(
+            frame,
+            &state.view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
+        return;
+    }
+
     if let AppMode::CommandPicker(state) = &app.mode
         && state.from_view.is_some()
     {
@@ -194,7 +208,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     match &app.mode {
         AppMode::CreatingProject(state) => {
-            super::dialogs::draw_create_project_dialog(frame, state, &app.theme);
+            let allowed_agents =
+                app.allowed_agents_for_project_path(&std::path::PathBuf::from(&state.path));
+            super::dialogs::draw_create_project_dialog(
+                frame,
+                state,
+                allowed_agents.as_slice(),
+                &app.theme,
+            );
         }
         AppMode::CreatingFeature(state) => {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
@@ -241,6 +262,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::SessionConfig(state) = &app.mode {
         super::dialogs::draw_session_config_dialog(frame, state, &app.theme);
+    }
+
+    if let AppMode::ProjectAgentConfig(state) = &app.mode {
+        super::dialogs::draw_project_agent_config_dialog(frame, state, &app.theme);
     }
 
     if matches!(app.mode, AppMode::Help(None)) {

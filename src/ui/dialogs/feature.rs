@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{
     CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
-    ForkFeatureStep,
+    ForkFeatureStep, PromptAnalysis, SteeringPromptState,
 };
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
@@ -32,6 +32,9 @@ pub fn draw_create_feature_dialog(
         }
         CreateFeatureStep::SelectPreset => {
             draw_create_feature_preset_picker(frame, state, presets, theme);
+        }
+        CreateFeatureStep::TaskPrompt => {
+            draw_create_feature_prompt_coach(frame, state, theme);
         }
         _ => {
             draw_create_feature_branch_mode(frame, state, allowed_agents, theme);
@@ -155,12 +158,7 @@ fn draw_create_feature_preset_picker(
                     Style::default().fg(theme.text.to_color())
                 };
                 let agent_str = preset.agent.display_name();
-                let mode_str = match &preset.mode {
-                    crate::project::VibeMode::Vibeless => "vibeless",
-                    crate::project::VibeMode::Vibe => "vibe",
-                    crate::project::VibeMode::SuperVibe => "supervibe",
-                    crate::project::VibeMode::Review => "review",
-                };
+                let mode_str = preset.mode.display_name().to_ascii_lowercase();
                 let detail = format!(
                     " {} | {}{}",
                     agent_str,
@@ -300,7 +298,7 @@ fn draw_create_feature_branch_mode(
     allowed_agents: &[AgentKind],
     theme: &Theme,
 ) {
-    let area = centered_rect(60, 70, frame.area());
+    let area = centered_rect(60, 90, frame.area());
     frame.render_widget(Clear, area);
 
     let title = format!(" New Feature ({}) ", state.project_name);
@@ -326,9 +324,13 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(1), // spacer
             Constraint::Length(1), // review checkbox
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // chrome checkbox
+            Constraint::Length(2), // plan_mode checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // chrome checkbox
             Constraint::Length(1), // spacer
             Constraint::Length(1), // notes checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // steering coach checkbox
             Constraint::Length(1), // extra space
             Constraint::Min(0),
             Constraint::Length(1), // hints
@@ -487,9 +489,34 @@ fn draw_create_feature_branch_mode(
     let review_widget = Paragraph::new(review_lines);
     frame.render_widget(review_widget, chunks[8]);
 
-    // Chrome checkbox (chunks[10])
+    // Plan mode checkbox (chunks[10])
+    let plan_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 3;
+    let plan_check = if state.plan_mode { "[x]" } else { "[ ]" };
+    let plan_style = if plan_active {
+        Style::default().fg(theme.text.to_color())
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let plan_lines = vec![Line::from(vec![
+        Span::styled(
+            " Plan: ",
+            if plan_active {
+                Style::default().fg(theme.primary.to_color())
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            },
+        ),
+        Span::styled(
+            format!("{} Collaborative planning mode", plan_check),
+            plan_style,
+        ),
+    ])];
+    let plan_widget = Paragraph::new(plan_lines);
+    frame.render_widget(plan_widget, chunks[10]);
+
+    // Chrome checkbox (chunks[12])
     let chrome_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 3
+        && state.mode_focus == 4
         && state.agent == AgentKind::Claude;
     let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
     let chrome_style = if chrome_active {
@@ -499,7 +526,7 @@ fn draw_create_feature_branch_mode(
     };
     let chrome_label_style =
         if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
-            if state.mode_focus == 3 {
+            if state.mode_focus == 4 {
                 Style::default().fg(theme.primary.to_color())
             } else {
                 Style::default().fg(theme.text_muted.to_color())
@@ -517,14 +544,14 @@ fn draw_create_feature_branch_mode(
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[10]);
+        frame.render_widget(chrome_widget, chunks[12]);
     }
 
-    // Notes checkbox (chunks[12])
+    // Notes checkbox (chunks[14])
     let memo_focus = if state.agent == AgentKind::Claude {
-        4
+        5
     } else {
-        3
+        4
     };
     let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
     let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
@@ -545,7 +572,36 @@ fn draw_create_feature_branch_mode(
         Span::styled(format!("{} Create memo", notes_check), notes_style),
     ])];
     let notes_widget = Paragraph::new(notes_lines);
-    frame.render_widget(notes_widget, chunks[12]);
+    frame.render_widget(notes_widget, chunks[14]);
+
+    let steering_focus = if state.agent == AgentKind::Claude {
+        6
+    } else {
+        5
+    };
+    let steering_active =
+        state.step == CreateFeatureStep::Mode && state.mode_focus == steering_focus;
+    let steering_check = if state.steering_enabled { "[x]" } else { "[ ]" };
+    let steering_lines = vec![Line::from(vec![
+        Span::styled(
+            " Steering Coach: ",
+            if steering_active {
+                Style::default().fg(theme.primary.to_color())
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            },
+        ),
+        Span::styled(
+            format!("{} Show prompt guidance before launch", steering_check),
+            if steering_active {
+                Style::default().fg(theme.text.to_color())
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            },
+        ),
+    ])];
+    let steering_widget = Paragraph::new(steering_lines);
+    frame.render_widget(steering_widget, chunks[16]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
@@ -579,7 +635,180 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[15]);
+    frame.render_widget(hints, chunks[17]);
+}
+
+fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
+    let area = centered_rect(84, 82, frame.area());
+    frame.render_widget(Clear, area);
+
+    let score_color = if state.prompt_analysis.score >= 8 {
+        theme.success.to_color()
+    } else if state.prompt_analysis.score >= 4 {
+        theme.warning.to_color()
+    } else {
+        theme.danger.to_color()
+    };
+
+    let title = format!(
+        " Steering Coach ({})  {} / {} ",
+        state.project_name, state.prompt_analysis.score, state.prompt_analysis.max_score
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(score_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(8),
+            Constraint::Length(1),
+            Constraint::Length(8),
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let summary = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(" Score: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                format!(
+                    "{} / {}",
+                    state.prompt_analysis.score, state.prompt_analysis.max_score
+                ),
+                Style::default()
+                    .fg(score_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            state.prompt_analysis.summary.as_str(),
+            Style::default().fg(theme.text.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(summary, chunks[0]);
+
+    let prompt_text = if state.task_prompt.is_empty() {
+        vec![Line::from(Span::styled(
+            "Describe the task, then add boundaries, validation, and watch-outs.",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))]
+    } else {
+        let mut lines = state
+            .task_prompt
+            .lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.text.to_color()))))
+            .collect::<Vec<_>>();
+        if state.task_prompt.ends_with('\n') || lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled(
+                "\u{2588}",
+                Style::default().fg(theme.primary.to_color()),
+            ));
+        }
+        lines
+    };
+
+    let prompt = Paragraph::new(prompt_text)
+        .block(
+            Block::default()
+                .title(" Draft Task Prompt ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(prompt, chunks[1]);
+
+    let checklist = Paragraph::new(prompt_checklist_lines(&state.prompt_analysis, theme))
+        .block(
+            Block::default()
+                .title(" Constraint Checklist ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(checklist, chunks[3]);
+
+    let mut tip_lines = Vec::new();
+    if state.prompt_analysis.teaching_tips.is_empty() {
+        tip_lines.push(Line::from(Span::styled(
+            "Your draft already covers the core steering constraints. Launch when the wording is precise enough for this repo.",
+            Style::default().fg(theme.text.to_color()),
+        )));
+    } else {
+        for tip in &state.prompt_analysis.teaching_tips {
+            tip_lines.push(Line::from(vec![
+                Span::styled(" - ", Style::default().fg(theme.warning.to_color())),
+                Span::styled(tip, Style::default().fg(theme.text.to_color())),
+            ]));
+        }
+    }
+    let tips = Paragraph::new(tip_lines)
+        .block(
+            Block::default()
+                .title(" How To Strengthen It ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(tips, chunks[5]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled("Type / Paste", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" edit  "),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" newline  "),
+        Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" launch"),
+    ]));
+    frame.render_widget(hints, chunks[6]);
+}
+
+fn prompt_checklist_lines(analysis: &PromptAnalysis, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    for check in &analysis.checks {
+        let (marker, color, detail) = if check.present {
+            (
+                "[x]",
+                theme.success.to_color(),
+                "covered",
+            )
+        } else {
+            (
+                "[ ]",
+                theme.warning.to_color(),
+                check.constraint.missing_explanation(),
+            )
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {} ", marker), Style::default().fg(color)),
+            Span::styled(
+                check.constraint.label(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" - {}", detail),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+    }
+
+    lines
 }
 
 pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
@@ -649,6 +878,146 @@ pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
         Span::raw(" back"),
     ]));
     frame.render_widget(hints, chunks[5]);
+}
+
+pub fn draw_steering_prompt_dialog(
+    frame: &mut Frame,
+    state: &SteeringPromptState,
+    theme: &Theme,
+) {
+    let area = centered_rect(84, 82, frame.area());
+    frame.render_widget(Clear, area);
+
+    let score_color = if state.prompt_analysis.score >= 8 {
+        theme.success.to_color()
+    } else if state.prompt_analysis.score >= 4 {
+        theme.warning.to_color()
+    } else {
+        theme.danger.to_color()
+    };
+
+    let title = format!(
+        " Steering Coach ({})  {} / {} ",
+        state.view.feature_name, state.prompt_analysis.score, state.prompt_analysis.max_score
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(score_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(8),
+            Constraint::Length(1),
+            Constraint::Length(8),
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let summary = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled(" Session: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                state.view.session_label.as_str(),
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            state.prompt_analysis.summary.as_str(),
+            Style::default().fg(theme.text.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(summary, chunks[0]);
+
+    let prompt_text = if state.prompt.is_empty() {
+        vec![Line::from(Span::styled(
+            "Describe the task, then add boundaries, validation, and watch-outs.",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))]
+    } else {
+        let mut lines = state
+            .prompt
+            .lines()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.text.to_color()))))
+            .collect::<Vec<_>>();
+        if state.prompt.ends_with('\n') || lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        if let Some(last) = lines.last_mut() {
+            last.spans.push(Span::styled(
+                "\u{2588}",
+                Style::default().fg(theme.primary.to_color()),
+            ));
+        }
+        lines
+    };
+
+    let prompt = Paragraph::new(prompt_text)
+        .block(
+            Block::default()
+                .title(" Prompt To Inject ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(prompt, chunks[1]);
+
+    let checklist = Paragraph::new(prompt_checklist_lines(&state.prompt_analysis, theme))
+        .block(
+            Block::default()
+                .title(" Constraint Checklist ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(checklist, chunks[3]);
+
+    let mut tip_lines = Vec::new();
+    if state.prompt_analysis.teaching_tips.is_empty() {
+        tip_lines.push(Line::from(Span::styled(
+            "Your draft covers the main steering constraints. Press Tab to inject it into the running agent session.",
+            Style::default().fg(theme.text.to_color()),
+        )));
+    } else {
+        for tip in &state.prompt_analysis.teaching_tips {
+            tip_lines.push(Line::from(vec![
+                Span::styled(" - ", Style::default().fg(theme.warning.to_color())),
+                Span::styled(tip, Style::default().fg(theme.text.to_color())),
+            ]));
+        }
+    }
+    let tips = Paragraph::new(tip_lines)
+        .block(
+            Block::default()
+                .title(" How To Strengthen It ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.primary.to_color())),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(tips, chunks[5]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled("Type / Paste", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" edit  "),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" newline  "),
+        Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" inject  "),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" close"),
+    ]));
+    frame.render_widget(hints, chunks[6]);
 }
 
 pub fn draw_delete_feature_confirm(

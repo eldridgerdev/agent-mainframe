@@ -1,18 +1,24 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{CreateProjectState, CreateProjectStep};
+use crate::project::AgentKind;
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_create_project_dialog(frame: &mut Frame, state: &CreateProjectState, theme: &Theme) {
-    let area = centered_rect(60, 30, frame.area());
+pub fn draw_create_project_dialog(
+    frame: &mut Frame,
+    state: &CreateProjectState,
+    allowed_agents: &[AgentKind],
+    theme: &Theme,
+) {
+    let area = centered_rect(60, 40, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -29,6 +35,7 @@ pub fn draw_create_project_dialog(frame: &mut Frame, state: &CreateProjectState,
         .constraints([
             Constraint::Length(2),
             Constraint::Length(2),
+            Constraint::Length(6),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -61,11 +68,44 @@ pub fn draw_create_project_dialog(frame: &mut Frame, state: &CreateProjectState,
     let path_field = Paragraph::new(Line::from(path_spans));
     frame.render_widget(path_field, chunks[1]);
 
+    let agent_active = matches!(state.step, CreateProjectStep::Agent);
+    let mut agent_lines = vec![Line::from(Span::styled(
+        " Preferred agent:",
+        if agent_active {
+            Style::default().fg(theme.primary.to_color())
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        },
+    ))];
+    for (index, agent) in allowed_agents.iter().enumerate() {
+        let is_selected = index == state.agent_index;
+        let marker = if is_selected { ">" } else { " " };
+        let style = if agent_active && is_selected {
+            Style::default()
+                .fg(theme.shortcut_text.to_color())
+                .bg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        agent_lines.push(Line::from(Span::styled(
+            format!("   {} {}", marker, agent.display_name()),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(agent_lines), chunks[2]);
+
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(" switch field  "),
         Span::styled("Ctrl+B", Style::default().fg(theme.warning.to_color())),
         Span::raw(" browse  "),
+        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" choose agent  "),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" confirm  "),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),

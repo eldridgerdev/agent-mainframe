@@ -66,6 +66,8 @@ Fields:
 - `hook_choice`: optional answer for prompted `on_worktree_created` hooks
 - `dry_run`: validate and preview without changing AMF state
 
+If a repo has a prompted `on_worktree_created` hook, `--dry-run` returns a `worktree_hook_prompt` object with the hook title and valid options. An agent can use that response to pick a `hook_choice` before making the real call.
+
 Example:
 
 ```bash
@@ -88,6 +90,10 @@ Typical success response:
   "tmux_session": "amf-automation-feature",
   "started": true,
   "worktree_hook_ran": false,
+  "worktree_hook_prompt": {
+    "title": "Choose stack",
+    "options": ["node", "rust"]
+  },
   "message": "Created and started feature 'automation-feature'"
 }
 ```

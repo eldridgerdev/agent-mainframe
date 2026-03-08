@@ -161,6 +161,12 @@ impl CreateProjectResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AutomationHookPrompt {
+    pub title: String,
+    pub options: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CreateFeatureResponse {
     #[serde(rename = "type")]
     pub msg_type: &'static str,
@@ -176,6 +182,8 @@ pub struct CreateFeatureResponse {
     pub worktree_hook_ran: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_hook_succeeded: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_hook_prompt: Option<AutomationHookPrompt>,
     pub message: String,
 }
 
@@ -189,6 +197,7 @@ impl CreateFeatureResponse {
         started: bool,
         worktree_hook_ran: bool,
         worktree_hook_succeeded: Option<bool>,
+        worktree_hook_prompt: Option<AutomationHookPrompt>,
         message: String,
     ) -> Self {
         Self {
@@ -204,6 +213,7 @@ impl CreateFeatureResponse {
             started,
             worktree_hook_ran,
             worktree_hook_succeeded,
+            worktree_hook_prompt,
             message,
         }
     }

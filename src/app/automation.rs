@@ -4,8 +4,9 @@ use anyhow::{Result, bail};
 
 use super::*;
 use crate::automation::{
-    BatchFeatureAutomationResult, CreateBatchFeaturesRequest, CreateBatchFeaturesResponse,
-    CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest, CreateProjectResponse,
+    AutomationHookPrompt, BatchFeatureAutomationResult, CreateBatchFeaturesRequest,
+    CreateBatchFeaturesResponse, CreateFeatureRequest, CreateFeatureResponse, CreateProjectRequest,
+    CreateProjectResponse,
 };
 use crate::extension::merge_project_extension_config;
 
@@ -82,6 +83,18 @@ impl App {
             }
             Err(err) => (false, Some(err.to_string())),
         }
+    }
+
+    fn worktree_hook_prompt_for_repo(&self, project_repo: &Path) -> Option<AutomationHookPrompt> {
+        let ext = merge_project_extension_config(&self.config.extension, project_repo);
+        ext.lifecycle_hooks
+            .on_worktree_created
+            .as_ref()
+            .and_then(|hook| hook.prompt())
+            .map(|prompt| AutomationHookPrompt {
+                title: prompt.title.clone(),
+                options: prompt.options.clone(),
+            })
     }
 
     pub fn create_project_from_request(
@@ -202,6 +215,11 @@ impl App {
             bail!("Only one non-worktree feature allowed per project");
         }
 
+        let hook_prompt = if use_worktree {
+            self.worktree_hook_prompt_for_repo(&project_repo)
+        } else {
+            None
+        };
         let mut hook_ran = false;
         let mut hook_succeeded = None;
         let workdir = if use_worktree {
@@ -224,6 +242,7 @@ impl App {
                 false,
                 hook_ran,
                 hook_succeeded,
+                hook_prompt.clone(),
                 message,
             ));
         }
@@ -330,6 +349,7 @@ impl App {
             true,
             hook_ran,
             hook_succeeded,
+            hook_prompt,
             message,
         ))
     }

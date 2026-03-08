@@ -5,7 +5,7 @@ use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
-use crate::extension::ExtensionConfig;
+use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -1657,6 +1657,51 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
     assert!(response.is_worktree);
     assert!(!response.started);
     assert!(app.store.projects[0].features.is_empty());
+}
+
+#[test]
+fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_empty_project(repo.clone(), true),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.extension = ExtensionConfig {
+        lifecycle_hooks: LifecycleHooks {
+            on_worktree_created: Some(HookConfig::WithPrompt {
+                script: "setup.sh".to_string(),
+                prompt: HookPrompt {
+                    title: "Choose stack".to_string(),
+                    options: vec!["node".to_string(), "rust".to_string()],
+                },
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let request = CreateFeatureRequest {
+        project_name: "automation-project".to_string(),
+        branch: "feature-1".to_string(),
+        agent: AgentKind::Codex,
+        mode: VibeMode::Vibe,
+        review: false,
+        use_worktree: Some(true),
+        enable_chrome: false,
+        enable_notes: false,
+        hook_choice: None,
+        dry_run: true,
+    };
+
+    let response = app.create_feature_from_request(&request).unwrap();
+
+    let prompt = response.worktree_hook_prompt.expect("missing hook prompt");
+    assert_eq!(prompt.title, "Choose stack");
+    assert_eq!(prompt.options, vec!["node", "rust"]);
 }
 
 #[test]

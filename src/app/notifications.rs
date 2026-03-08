@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::app::util::latest_prompt_path;
 
 impl App {
     fn touch_feature_for_session(&mut self, session_id: &str) {
@@ -176,9 +177,7 @@ impl App {
                     self.touch_feature_for_session(sid);
                 }
                 if !cwd.is_empty() && !prompt.is_empty() {
-                    let p = PathBuf::from(&cwd)
-                        .join(".claude")
-                        .join("latest-prompt.txt");
+                    let p = latest_prompt_path(&PathBuf::from(&cwd));
                     if let Some(parent) = p.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }

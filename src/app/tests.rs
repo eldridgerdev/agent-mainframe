@@ -2,7 +2,7 @@ use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
 };
 use super::sync::pane_shows_thinking_hint;
-use super::util::{shorten_path, slugify};
+use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::extension::ExtensionConfig;
 
@@ -54,6 +54,35 @@ fn shorten_path_outside_home() {
     let path = std::path::Path::new("/tmp/some/path");
     let result = shorten_path(path);
     assert_eq!(result, "/tmp/some/path");
+}
+
+#[test]
+fn read_latest_prompt_prefers_claude_path() {
+    let workdir = TempDir::new().unwrap();
+    let claude_path = latest_prompt_path(workdir.path());
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(claude_path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&claude_path, "claude prompt").unwrap();
+    std::fs::write(&codex_path, "codex prompt").unwrap();
+
+    assert_eq!(
+        read_latest_prompt(workdir.path()).as_deref(),
+        Some("claude prompt")
+    );
+}
+
+#[test]
+fn read_latest_prompt_falls_back_to_codex_path() {
+    let workdir = TempDir::new().unwrap();
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&codex_path, "codex prompt").unwrap();
+
+    assert_eq!(
+        read_latest_prompt(workdir.path()).as_deref(),
+        Some("codex prompt")
+    );
 }
 
 // ── AppConfig defaults ───────────────────────────────────

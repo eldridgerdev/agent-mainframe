@@ -2530,7 +2530,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
 }
 
 #[test]
-fn create_feature_automation_rejects_review_as_a_mode() {
+fn create_feature_automation_accepts_review_flag_with_vibeless_mode() {
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -2545,7 +2545,7 @@ fn create_feature_automation_rejects_review_as_a_mode() {
         project_name: "automation-project".to_string(),
         branch: "feature-1".to_string(),
         agent: AgentKind::Codex,
-        mode: VibeMode::Review,
+        mode: VibeMode::Vibeless,
         review: true,
         plan_mode: false,
         use_worktree: Some(true),
@@ -2555,11 +2555,10 @@ fn create_feature_automation_rejects_review_as_a_mode() {
         dry_run: true,
     };
 
-    let err = app.create_feature_from_request(&request).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Use `review: true` with a non-review mode; `mode: review` is not supported"
-    );
+    let response = app.create_feature_from_request(&request).unwrap();
+    assert!(response.dry_run);
+    assert_eq!(response.project_name, "automation-project");
+    assert_eq!(response.branch, "feature-1");
 }
 
 #[test]
@@ -2692,6 +2691,13 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
     let mut app = App::new_for_test(
         ProjectStore {
             version: 4,
@@ -2700,7 +2706,7 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree),
     );
 
     let request = CreateBatchFeaturesRequest {
@@ -2709,18 +2715,17 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
         feature_count: 2,
         feature_prefix: "plan-".to_string(),
         agent: AgentKind::Codex,
-        mode: VibeMode::Review,
+        mode: VibeMode::Vibeless,
         review: true,
         enable_chrome: false,
         enable_notes: false,
         dry_run: true,
     };
 
-    let err = app.create_batch_features_from_request(&request).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Use `review: true` with a non-review mode; `mode: review` is not supported"
-    );
+    let response = app.create_batch_features_from_request(&request).unwrap();
+    assert!(response.dry_run);
+    assert_eq!(response.features.len(), 2);
+    assert_eq!(response.project_name, "plan-batch");
 }
 
 #[test]

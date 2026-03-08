@@ -4,7 +4,7 @@ use super::setup::{
 use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
-use crate::automation::CreateBatchFeaturesRequest;
+use crate::automation::{CreateBatchFeaturesRequest, CreateProjectRequest};
 use crate::extension::ExtensionConfig;
 
 // ── slugify ───────────────────────────────────────────────
@@ -1523,6 +1523,85 @@ fn jump_to_bookmark_enters_view_for_slot() {
 
     assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
     assert!(matches!(app.mode, AppMode::Viewing(_)));
+}
+
+#[test]
+fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+
+    let request = CreateProjectRequest {
+        path: repo.clone(),
+        project_name: "automation-project".to_string(),
+        dry_run: true,
+    };
+
+    let response = app.create_project_from_request(&request).unwrap();
+
+    assert!(response.ok);
+    assert!(response.dry_run);
+    assert_eq!(response.project_name, "automation-project");
+    assert_eq!(response.project_path, repo);
+    assert!(response.is_git);
+    assert!(app.store.projects.is_empty());
+}
+
+#[test]
+fn create_project_automation_creates_project() {
+    let workspace = TempDir::new().unwrap();
+    let path = workspace.path().join("repo");
+    std::fs::create_dir_all(&path).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = path.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+
+    let request = CreateProjectRequest {
+        path: path.clone(),
+        project_name: "automation-project".to_string(),
+        dry_run: false,
+    };
+
+    let response = app.create_project_from_request(&request).unwrap();
+
+    assert!(response.ok);
+    assert_eq!(app.store.projects.len(), 1);
+    assert_eq!(app.store.projects[0].name, "automation-project");
+    assert_eq!(app.store.projects[0].repo, path);
+    assert!(app.store.projects[0].is_git);
 }
 
 #[test]

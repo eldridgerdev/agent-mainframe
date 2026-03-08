@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::automation::{
-    CREATE_BATCH_FEATURES_ACTION, CreateBatchFeaturesRequest, automation_error_response,
+    CREATE_BATCH_FEATURES_ACTION, CREATE_PROJECT_ACTION, CreateBatchFeaturesRequest,
+    CreateProjectRequest, automation_error_response,
 };
 
 impl App {
@@ -128,6 +129,42 @@ impl App {
                     .to_string();
 
                 let payload = match action.as_str() {
+                    CREATE_PROJECT_ACTION => {
+                        match serde_json::from_value::<CreateProjectRequest>(raw.clone()) {
+                            Ok(request) => match self.create_project_from_request(&request) {
+                                Ok(response) => {
+                                    self.log_info(
+                                        "automation",
+                                        format!(
+                                            "Automation created project '{}' at {}",
+                                            response.project_name,
+                                            response.project_path.display()
+                                        ),
+                                    );
+                                    serde_json::to_value(response).unwrap_or_else(|err| {
+                                        automation_error_response(
+                                            CREATE_PROJECT_ACTION,
+                                            format!("Failed to serialize response: {err}"),
+                                        )
+                                    })
+                                }
+                                Err(err) => {
+                                    self.log_error(
+                                        "automation",
+                                        format!("Automation '{}' failed: {err}", CREATE_PROJECT_ACTION),
+                                    );
+                                    automation_error_response(
+                                        CREATE_PROJECT_ACTION,
+                                        err.to_string(),
+                                    )
+                                }
+                            },
+                            Err(err) => automation_error_response(
+                                CREATE_PROJECT_ACTION,
+                                format!("Invalid automation payload: {err}"),
+                            ),
+                        }
+                    }
                     CREATE_BATCH_FEATURES_ACTION => {
                         match serde_json::from_value::<CreateBatchFeaturesRequest>(raw.clone()) {
                             Ok(request) => match self.create_batch_features_from_request(&request) {

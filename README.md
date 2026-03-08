@@ -186,13 +186,14 @@ User-facing release notes and migration guidance live in
 
 ## Automation
 
-AMF exposes a machine-friendly automation command for external agents:
+AMF exposes machine-friendly automation commands for external agents:
 
 ```bash
+amf automation create-project --file docs/automation/create-project.example.json
 amf automation create-batch-features --file docs/automation/create-batch-features.example.json
 ```
 
-Templates, examples, and the JSON response format live in
+Create-project and batch-feature templates, examples, and the JSON response format live in
 [`docs/automation/README.md`](docs/automation/README.md).
 
 ## Quick Start

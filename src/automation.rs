@@ -6,7 +6,38 @@ use crate::project::{AgentKind, VibeMode};
 
 pub const AUTOMATION_REQUEST_TYPE: &str = "automation";
 pub const AUTOMATION_RESULT_TYPE: &str = "automation-result";
+pub const CREATE_PROJECT_ACTION: &str = "create_project";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreateProjectRequest {
+    pub path: PathBuf,
+    pub project_name: String,
+    pub dry_run: bool,
+}
+
+impl Default for CreateProjectRequest {
+    fn default() -> Self {
+        Self {
+            path: PathBuf::new(),
+            project_name: String::new(),
+            dry_run: false,
+        }
+    }
+}
+
+impl CreateProjectRequest {
+    pub fn ipc_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": AUTOMATION_REQUEST_TYPE,
+            "action": CREATE_PROJECT_ACTION,
+            "path": self.path,
+            "project_name": self.project_name,
+            "dry_run": self.dry_run,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -56,6 +87,41 @@ impl CreateBatchFeaturesRequest {
             "enable_notes": self.enable_notes,
             "dry_run": self.dry_run,
         })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateProjectResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub dry_run: bool,
+    pub input_path: PathBuf,
+    pub project_name: String,
+    pub project_path: PathBuf,
+    pub is_git: bool,
+    pub message: String,
+}
+
+impl CreateProjectResponse {
+    pub fn success(
+        request: &CreateProjectRequest,
+        project_path: PathBuf,
+        is_git: bool,
+        message: String,
+    ) -> Self {
+        Self {
+            msg_type: AUTOMATION_RESULT_TYPE,
+            action: CREATE_PROJECT_ACTION,
+            ok: true,
+            dry_run: request.dry_run,
+            input_path: request.path.clone(),
+            project_name: request.project_name.clone(),
+            project_path,
+            is_git,
+            message,
+        }
     }
 }
 

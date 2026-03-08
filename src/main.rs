@@ -76,6 +76,18 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum AutomationCommands {
+    /// Create a single AMF project from JSON input
+    CreateProject {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Override the JSON payload and perform validation only.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
     /// Create one project with many parallel feature worktrees from JSON input
     CreateBatchFeatures {
         /// Read request JSON from a file. Omit or pass `-` to read stdin.
@@ -242,6 +254,27 @@ fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
 
 fn run_automation_command(command: AutomationCommands) -> Result<()> {
     match command {
+        AutomationCommands::CreateProject {
+            file,
+            dry_run,
+            timeout_ms,
+        } => {
+            let payload = read_json_input(file.as_ref())?;
+            let mut request: automation::CreateProjectRequest =
+                serde_json::from_str(&payload).context("Invalid create_project JSON payload")?;
+            if dry_run {
+                request.dry_run = true;
+            }
+
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
         AutomationCommands::CreateBatchFeatures {
             file,
             dry_run,

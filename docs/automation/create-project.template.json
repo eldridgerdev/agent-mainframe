@@ -1,0 +1,5 @@
+{
+  "path": "/absolute/path/to/repo/or/directory",
+  "project_name": "name-for-the-amf-project",
+  "dry_run": false
+}

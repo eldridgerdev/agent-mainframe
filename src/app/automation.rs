@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use super::*;
 use crate::automation::{
     BatchFeatureAutomationResult, CreateBatchFeaturesRequest, CreateBatchFeaturesResponse,
+    CreateProjectRequest, CreateProjectResponse,
 };
 
 impl App {
@@ -38,6 +39,54 @@ impl App {
                 }
             })
             .collect()
+    }
+
+    pub fn create_project_from_request(
+        &mut self,
+        request: &CreateProjectRequest,
+    ) -> Result<CreateProjectResponse> {
+        if request.project_name.trim().is_empty() {
+            bail!("Project name cannot be empty");
+        }
+
+        if request.path.as_os_str().is_empty() {
+            bail!("Path cannot be empty");
+        }
+
+        if !request.path.exists() {
+            bail!("Path does not exist: {}", request.path.display());
+        }
+
+        if self.store.find_project(&request.project_name).is_some() {
+            bail!("Project '{}' already exists", request.project_name);
+        }
+
+        let (project_path, is_git) = match self.worktree.repo_root(&request.path) {
+            Ok(repo) => (repo, true),
+            Err(_) => (request.path.clone(), false),
+        };
+
+        if request.dry_run {
+            let message = format!("Dry run: would create project '{}'", request.project_name);
+            return Ok(CreateProjectResponse::success(
+                request,
+                project_path,
+                is_git,
+                message,
+            ));
+        }
+
+        let project = Project::new(request.project_name.clone(), project_path.clone(), is_git);
+        self.store.add_project(project);
+        self.save()?;
+
+        let message = format!("Created project '{}'", request.project_name);
+        Ok(CreateProjectResponse::success(
+            request,
+            project_path,
+            is_git,
+            message,
+        ))
     }
 
     pub fn create_batch_features_from_request(

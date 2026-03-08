@@ -1,8 +1,9 @@
 # Automation
 
-AMF now exposes a machine-friendly entrypoint for batch feature creation:
+AMF now exposes machine-friendly automation entrypoints:
 
 ```bash
+amf automation create-project --file docs/automation/create-project.example.json
 amf automation create-batch-features --file docs/automation/create-batch-features.example.json
 ```
 
@@ -11,10 +12,44 @@ The command sends a request to the running AMF dashboard over the same local IPC
 ## Requirements
 
 - A normal `amf` dashboard instance must already be running.
-- The `workspace_path` must be inside a git repository.
-- `project_name` must not already exist in AMF.
+- For `create-project`, `path` must exist.
+- For `create-batch-features`, `workspace_path` must be inside a git repository.
+- For both actions, `project_name` must not already exist in AMF.
 
-## Input
+## Create Project
+
+Use [`create-project.template.json`](create-project.template.json) as the contract reference.
+
+Fields:
+
+- `path`: repo or directory to register as the AMF project
+- `project_name`: the AMF-visible project name
+- `dry_run`: validate and preview without changing AMF state
+
+Example:
+
+```bash
+cat docs/automation/create-project.example.json | amf automation create-project --dry-run
+amf automation create-project --file docs/automation/create-project.example.json
+```
+
+Typical success response:
+
+```json
+{
+  "type": "automation-result",
+  "action": "create_project",
+  "ok": true,
+  "dry_run": false,
+  "input_path": "/home/you/code/my-repo",
+  "project_name": "my-repo",
+  "project_path": "/home/you/code/my-repo",
+  "is_git": true,
+  "message": "Created project 'my-repo'"
+}
+```
+
+## Create Batch Features
 
 Use [`create-batch-features.template.json`](create-batch-features.template.json) as the contract reference.
 

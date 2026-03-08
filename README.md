@@ -48,6 +48,9 @@ NOTE: I'll add real screenshots eventually
 - **Local hooks and notifications** — input requests are pushed over
   IPC when possible, with file-based fallback, and hooks stay local to
   the worktree.
+- **Automation entrypoints** — external agents can call structured
+  AMF actions like batch feature creation and get JSON replies instead
+  of scripting the TUI.
 - **Leader workflow** — `Ctrl+Space` opens session controls, final
   review, bookmarks, latest prompt, scroll mode, and debug tools.
 - **Workspace-level customization** — merge global
@@ -180,6 +183,19 @@ amf -V
 
 User-facing release notes and migration guidance live in
 [`CHANGELOG.md`](CHANGELOG.md).
+
+## Automation
+
+AMF exposes machine-friendly automation commands for external agents:
+
+```bash
+amf automation create-project --file docs/automation/create-project.example.json
+amf automation create-feature --file docs/automation/create-feature.example.json
+amf automation create-batch-features --file docs/automation/create-batch-features.example.json
+```
+
+Create-project and batch-feature templates, examples, and the JSON response format live in
+[`docs/automation/README.md`](docs/automation/README.md).
 
 ## Quick Start
 

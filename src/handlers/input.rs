@@ -19,8 +19,10 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                     CreateProjectStep::Path => {
                         state.path.push_str(text);
                     }
+                    CreateProjectStep::Agent => {}
                 }
             }
+            app.refresh_create_project_agent_selection();
         }
         AppMode::CreatingFeature(_) => {
             if let AppMode::CreatingFeature(state) = &mut app.mode

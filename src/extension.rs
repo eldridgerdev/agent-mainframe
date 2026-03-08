@@ -100,6 +100,7 @@ pub struct FeaturePreset {
     pub mode: VibeMode,
     pub agent: AgentKind,
     pub review: bool,
+    pub plan_mode: bool,
     pub enable_chrome: bool,
     pub enable_notes: bool,
 }
@@ -112,6 +113,7 @@ struct FeaturePresetDe {
     mode: StoredVibeMode,
     agent: AgentKind,
     review: bool,
+    plan_mode: bool,
     enable_chrome: bool,
     enable_notes: bool,
 }
@@ -129,9 +131,16 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             mode,
             agent: preset.agent,
             review: preset.review || legacy_review,
+            plan_mode: preset.plan_mode,
             enable_chrome: preset.enable_chrome,
             enable_notes: preset.enable_notes,
         })
+    }
+}
+
+impl FeaturePreset {
+    pub fn normalize_legacy_review_mode(&mut self) -> bool {
+        false
     }
 }
 
@@ -161,6 +170,12 @@ impl ExtensionConfig {
             .cloned()
             .collect()
     }
+
+    fn normalize_legacy_review_modes(&mut self) {
+        for preset in &mut self.feature_presets {
+            preset.normalize_legacy_review_mode();
+        }
+    }
 }
 
 /// Thin wrapper used only for deserializing the
@@ -181,11 +196,13 @@ pub fn load_global_extension_config() -> ExtensionConfig {
         return ExtensionConfig::default();
     }
 
-    std::fs::read_to_string(&config_path)
+    let mut config = std::fs::read_to_string(&config_path)
         .ok()
         .and_then(|s| serde_json::from_str::<GlobalConfigPartial>(&s).ok())
         .map(|c| c.extension)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    config.normalize_legacy_review_modes();
+    config
 }
 
 /// Load `{repo}/.amf/config.json` and merge it onto
@@ -246,7 +263,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         keybindings.insert(action.clone(), *key);
     }
 
-    return ExtensionConfig {
+    let mut merged = ExtensionConfig {
         custom_sessions,
         lifecycle_hooks: LifecycleHooks {
             on_start,
@@ -260,6 +277,8 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .clone()
             .or_else(|| base.allowed_agents.clone()),
     };
+    merged.normalize_legacy_review_modes();
+    merged
 }
 
 #[cfg(test)]
@@ -448,16 +467,27 @@ mod tests {
     }
 
     #[test]
-    fn legacy_review_preset_migrates_to_review_flag() {
-        let preset: FeaturePreset = serde_json::from_str(
-            r#"{
-                "name": "legacy-review",
-                "mode": "review"
-            }"#,
-        )
-        .unwrap();
+    fn merge_normalizes_legacy_review_preset_mode() {
+        let global = ExtensionConfig::default();
+        let tmp = TempDir::new().unwrap();
+        let raw = r#"{
+            "feature_presets": [
+                {
+                    "name": "review-preset",
+                    "mode": "review",
+                    "agent": "claude",
+                    "review": false,
+                    "enable_chrome": false,
+                    "enable_notes": false
+                }
+            ]
+        }"#;
+        std::fs::create_dir_all(tmp.path().join(".amf")).unwrap();
+        std::fs::write(tmp.path().join(".amf").join("config.json"), raw).unwrap();
 
-        assert_eq!(preset.mode, VibeMode::Vibeless);
-        assert!(preset.review);
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(merged.feature_presets.len(), 1);
+        assert_eq!(merged.feature_presets[0].mode, VibeMode::Vibeless);
+        assert!(merged.feature_presets[0].review);
     }
 }

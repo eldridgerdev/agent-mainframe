@@ -1,0 +1,12 @@
+{
+  "workspace_path": "/home/you/code/agent-mainframe",
+  "project_name": "plan-42",
+  "feature_count": 4,
+  "feature_prefix": "plan-",
+  "agent": "codex",
+  "mode": "vibe",
+  "review": true,
+  "enable_chrome": false,
+  "enable_notes": true,
+  "dry_run": false
+}

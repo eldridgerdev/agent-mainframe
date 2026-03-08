@@ -1,3 +1,4 @@
+mod automation;
 mod claude_session_picker;
 mod claude_sessions;
 mod codex_session_picker;
@@ -135,9 +136,17 @@ pub struct AppConfig {
     pub leader_timeout_seconds: u64,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
+    pub projects: ProjectsConfig,
     pub extension: ExtensionConfig,
     pub theme: crate::theme::ThemeName,
     pub transparent_background: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ProjectsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_preferred_agent: Option<AgentKind>,
 }
 
 impl Default for AppConfig {
@@ -147,6 +156,7 @@ impl Default for AppConfig {
             leader_timeout_seconds: 5,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
+            projects: ProjectsConfig::default(),
             extension: ExtensionConfig::default(),
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
@@ -345,6 +355,17 @@ impl App {
         self.extension_for_repo(repo).allowed_agents()
     }
 
+    pub(crate) fn repo_for_project_path(&self, path: &Path) -> PathBuf {
+        self.worktree
+            .repo_root(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    pub(crate) fn allowed_agents_for_project_path(&self, path: &Path) -> Vec<AgentKind> {
+        let repo = self.repo_for_project_path(path);
+        self.allowed_agents_for_repo(&repo)
+    }
+
     pub(crate) fn allows_agent_for_repo(&self, repo: &Path, agent: &AgentKind) -> bool {
         self.extension_for_repo(repo).allows_agent(agent)
     }
@@ -366,6 +387,35 @@ impl App {
             .unwrap_or_else(|| allowed[0].clone());
         let index = AgentKind::index_in(&allowed, &selected);
         (selected, index)
+    }
+
+    pub(crate) fn normalize_agent_for_project_path(
+        &self,
+        path: &Path,
+        preferred: &AgentKind,
+    ) -> (AgentKind, usize) {
+        let repo = self.repo_for_project_path(path);
+        self.normalize_agent_for_repo(&repo, preferred)
+    }
+
+    pub(crate) fn refresh_create_project_agent_selection(&mut self) {
+        let (path, preferred) = match &self.mode {
+            AppMode::CreatingProject(state) => (PathBuf::from(&state.path), state.agent.clone()),
+            _ => return,
+        };
+        let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &preferred);
+        if let AppMode::CreatingProject(state) = &mut self.mode {
+            state.agent = agent;
+            state.agent_index = agent_index;
+        }
+    }
+
+    pub(crate) fn default_project_preferred_agent(&self) -> AgentKind {
+        self.config
+            .projects
+            .default_preferred_agent
+            .clone()
+            .unwrap_or_default()
     }
 
     pub fn save(&self) -> Result<()> {

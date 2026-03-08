@@ -152,6 +152,14 @@ pub struct SessionConfigState {
     pub selected_agent: usize,
 }
 
+pub struct ProjectAgentConfigState {
+    pub project_idx: usize,
+    pub project_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
@@ -200,6 +208,7 @@ pub enum AppMode {
     RenamingSession(RenameSessionState),
     RenamingFeature(RenameFeatureState),
     SessionConfig(SessionConfigState),
+    ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
@@ -302,6 +311,7 @@ pub enum HookNext {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
@@ -332,6 +342,7 @@ pub struct RunningHookState {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
     pub enable_notes: bool,
@@ -410,6 +421,7 @@ pub struct BackgroundHook {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
     pub enable_notes: bool,
@@ -432,6 +444,7 @@ impl BackgroundHook {
             branch: state.branch,
             mode: state.mode,
             review: state.review,
+            plan_mode: state.plan_mode,
             agent: state.agent,
             enable_chrome: state.enable_chrome,
             enable_notes: state.enable_notes,
@@ -462,12 +475,15 @@ pub struct CreateProjectState {
     pub step: CreateProjectStep,
     pub name: String,
     pub path: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
 }
 
 #[derive(Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,
+    Agent,
 }
 
 impl CreateProjectState {
@@ -481,6 +497,8 @@ impl CreateProjectState {
             step: CreateProjectStep::Name,
             name: String::new(),
             path: repo_path,
+            agent: AgentKind::default(),
+            agent_index: 0,
         }
     }
 }
@@ -516,6 +534,7 @@ pub struct CreateFeatureState {
     pub mode_index: usize,
     pub mode_focus: usize,
     pub review: bool,
+    pub plan_mode: bool,
     pub source_index: usize,
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
@@ -554,6 +573,7 @@ impl CreateFeatureState {
             mode_index: 0,
             mode_focus: 0,
             review: false,
+            plan_mode: false,
             source_index: 0,
             worktrees,
             worktree_index: 0,

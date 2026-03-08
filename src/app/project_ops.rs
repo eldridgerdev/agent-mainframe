@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use ratatui_explorer::FileExplorer;
 
 use super::*;
+use crate::automation::CreateProjectRequest;
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
@@ -45,7 +46,13 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        self.mode = AppMode::CreatingProject(CreateProjectState::auto_detect());
+        let mut state = CreateProjectState::auto_detect();
+        state.agent = self.default_project_preferred_agent();
+        let path = PathBuf::from(&state.path);
+        let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+        self.mode = AppMode::CreatingProject(state);
         self.message = None;
     }
 
@@ -113,7 +120,12 @@ impl App {
             return Ok(());
         }
 
-        let project = Project::new("amf-settings".into(), settings_dir.clone(), false);
+        let project = Project::new(
+            "amf-settings".into(),
+            settings_dir.clone(),
+            false,
+            AgentKind::default(),
+        );
         self.store.add_project(project);
         self.save()?;
 
@@ -176,6 +188,12 @@ impl App {
         if let AppMode::BrowsingPath(mut state) = browse {
             state.create_state.path = path;
             state.create_state.step = CreateProjectStep::Path;
+            let (agent, agent_index) = self.normalize_agent_for_project_path(
+                &PathBuf::from(&state.create_state.path),
+                &state.create_state.agent,
+            );
+            state.create_state.agent = agent;
+            state.create_state.agent_index = agent_index;
             self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
@@ -223,40 +241,33 @@ impl App {
             _ => return Ok(()),
         };
 
-        let name = state.name.clone();
-        let path = PathBuf::from(&state.path);
-
-        if name.is_empty() {
-            self.message = Some("Error: Project name cannot be empty".into());
-            return Ok(());
-        }
-
-        if !path.exists() {
-            self.message = Some(format!(
-                "Error: Path does not exist: {} (press Ctrl+B to browse and create folder)",
-                path.display()
-            ));
-            return Ok(());
-        }
-
-        if self.store.find_project(&name).is_some() {
-            self.message = Some(format!("Error: Project '{}' already exists", name));
-            return Ok(());
-        }
-
-        let (project_path, is_git) = match WorktreeManager::repo_root(&path) {
-            Ok(r) => (r, true),
-            Err(_) => (path.clone(), false),
+        let request = CreateProjectRequest {
+            path: PathBuf::from(&state.path),
+            project_name: state.name.clone(),
+            preferred_agent: Some(state.agent.clone()),
+            dry_run: false,
         };
-        let project = Project::new(name.clone(), project_path, is_git);
 
-        self.store.add_project(project);
-        self.save()?;
+        let response = match self.create_project_from_request(&request) {
+            Ok(response) => response,
+            Err(err) => {
+                let text = err.to_string();
+                if text.starts_with("Path does not exist:") {
+                    self.message = Some(format!(
+                        "Error: {} (press Ctrl+B to browse and create folder)",
+                        text
+                    ));
+                } else {
+                    self.message = Some(format!("Error: {text}"));
+                }
+                return Ok(());
+            }
+        };
 
         let pi = self.store.projects.len().saturating_sub(1);
         self.selection = Selection::Project(pi);
         self.mode = AppMode::Normal;
-        self.message = Some(format!("Created project '{}'", name));
+        self.message = Some(response.message);
 
         Ok(())
     }

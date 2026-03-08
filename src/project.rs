@@ -191,6 +191,8 @@ pub struct Feature {
     #[serde(default)]
     pub review: bool,
     #[serde(default)]
+    pub plan_mode: bool,
+    #[serde(default)]
     pub agent: AgentKind,
     #[serde(default)]
     pub enable_chrome: bool,
@@ -225,6 +227,8 @@ struct FeatureDe {
     mode: StoredVibeMode,
     #[serde(default)]
     review: bool,
+    #[serde(default)]
+    plan_mode: bool,
     #[serde(default)]
     agent: AgentKind,
     #[serde(default)]
@@ -262,6 +266,7 @@ impl<'de> Deserialize<'de> for Feature {
             collapsed: feature.collapsed,
             mode,
             review: feature.review || legacy_review,
+            plan_mode: feature.plan_mode,
             agent: feature.agent,
             enable_chrome: feature.enable_chrome,
             has_notes: feature.has_notes,
@@ -285,6 +290,7 @@ impl Feature {
         is_worktree: bool,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         has_notes: bool,
@@ -302,6 +308,7 @@ impl Feature {
             collapsed: true,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
             has_notes,
@@ -317,6 +324,10 @@ impl Feature {
 
     pub fn touch(&mut self) {
         self.last_accessed = Utc::now();
+    }
+
+    pub fn normalize_legacy_review_mode(&mut self) -> bool {
+        false
     }
 
     /// Return the next label for a session of the given kind.
@@ -435,11 +446,13 @@ pub struct Project {
     pub features: Vec<Feature>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
+    pub preferred_agent: AgentKind,
+    #[serde(default)]
     pub is_git: bool,
 }
 
 impl Project {
-    pub fn new(name: String, repo: PathBuf, is_git: bool) -> Self {
+    pub fn new(name: String, repo: PathBuf, is_git: bool, preferred_agent: AgentKind) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
@@ -447,6 +460,7 @@ impl Project {
             collapsed: false,
             features: Vec::new(),
             created_at: Utc::now(),
+            preferred_agent,
             is_git,
         }
     }
@@ -469,6 +483,8 @@ pub struct ProjectStore {
     pub projects: Vec<Project>,
     #[serde(default = "default_session_bookmarks")]
     pub session_bookmarks: Vec<SessionBookmark>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 // --- V1 types for migration ---
@@ -534,6 +550,7 @@ impl ProjectStore {
                 version: 4,
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
+                extra: HashMap::new(),
             });
         }
         let data = fs::read_to_string(path)
@@ -552,7 +569,8 @@ impl ProjectStore {
                 let v1 = Self::migrate_from_old(old);
                 let v2 = Self::migrate_from_v1(v1);
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
@@ -561,7 +579,8 @@ impl ProjectStore {
                     .with_context(|| "Failed to parse v1 project store")?;
                 let v2 = Self::migrate_from_v1(v1);
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
@@ -569,20 +588,30 @@ impl ProjectStore {
                 let v2: ProjectStore =
                     serde_json::from_value(raw).with_context(|| "Failed to parse project store")?;
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
             3 => {
                 let v3: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v3 project store")?;
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
             4 => {
-                let store: ProjectStore = serde_json::from_value(raw)
+                let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v4 project store")?;
+                if store.normalize_legacy_review_modes() {
+                    store.save(path)?;
+                }
+                Ok(store)
+            }
+            5 => {
+                let store: ProjectStore = serde_json::from_value(raw)
+                    .with_context(|| "Failed to parse v5 project store")?;
                 Ok(store)
             }
             _ => {
@@ -597,6 +626,7 @@ impl ProjectStore {
             version: 3,
             projects: v2.projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -606,6 +636,7 @@ impl ProjectStore {
             version: 4,
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -712,6 +743,7 @@ impl ProjectStore {
                             collapsed: true,
                             mode: VibeMode::default(),
                             review: false,
+                            plan_mode: false,
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
@@ -732,6 +764,7 @@ impl ProjectStore {
                     collapsed: p.collapsed,
                     features,
                     created_at: p.created_at,
+                    preferred_agent: AgentKind::default(),
                     is_git: true,
                 }
             })
@@ -741,6 +774,7 @@ impl ProjectStore {
             version: 2,
             projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -790,6 +824,16 @@ impl ProjectStore {
         }
         None
     }
+
+    fn normalize_legacy_review_modes(&mut self) -> bool {
+        let mut changed = false;
+        for project in &mut self.projects {
+            for feature in &mut project.features {
+                changed |= feature.normalize_legacy_review_mode();
+            }
+        }
+        changed
+    }
 }
 
 pub fn amf_config_dir() -> PathBuf {
@@ -837,6 +881,7 @@ mod tests {
             collapsed: true,
             mode: VibeMode::default(),
             review: false,
+            plan_mode: false,
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,
@@ -863,9 +908,11 @@ mod tests {
                 collapsed: false,
                 features: vec![],
                 created_at: Utc::now(),
+                preferred_agent: AgentKind::Codex,
                 is_git: true,
             }],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();
         store.save(tmp.path()).unwrap();
@@ -878,7 +925,73 @@ mod tests {
             loaded.projects[0].repo,
             PathBuf::from("/home/user/my-project")
         );
+        assert_eq!(loaded.projects[0].preferred_agent, AgentKind::Codex);
         assert!(loaded.projects[0].is_git);
+    }
+
+    #[test]
+    fn projectstore_load_defaults_missing_preferred_agent() {
+        let json = r#"{
+            "version": 4,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-project",
+                    "collapsed": false,
+                    "features": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": []
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), json).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.projects[0].preferred_agent, AgentKind::Claude);
+    }
+
+    #[test]
+    fn projectstore_loads_version_5_and_preserves_unknown_top_level_fields() {
+        let json = r#"{
+            "version": 5,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-project",
+                    "collapsed": false,
+                    "features": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "preferred_agent": "codex",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": [],
+            "guided_tours": {
+                "proj-id": {
+                    "summary": "tour",
+                    "highlights": [],
+                    "stops": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "updated_at": "2024-01-01T00:00:00Z"
+                }
+            }
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), json).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, 5);
+        assert!(loaded.extra.contains_key("guided_tours"));
+
+        loaded.save(tmp.path()).unwrap();
+
+        let reloaded_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path()).unwrap()).unwrap();
+        assert!(reloaded_json.get("guided_tours").is_some());
     }
 
     // ── Migration v0 → v2 ────────────────────────────────────
@@ -912,6 +1025,7 @@ mod tests {
         let proj = &store.projects[0];
         // project name derived from repo basename
         assert_eq!(proj.name, "my-repo");
+        assert_eq!(proj.preferred_agent, AgentKind::Claude);
         assert_eq!(proj.features.len(), 1);
 
         let feat = &proj.features[0];
@@ -966,6 +1080,7 @@ mod tests {
 
         let proj = &store.projects[0];
         assert_eq!(proj.name, "my-project");
+        assert_eq!(proj.preferred_agent, AgentKind::Claude);
 
         let feat = &proj.features[0];
         assert_eq!(feat.name, "my-feature");
@@ -985,6 +1100,56 @@ mod tests {
             .find(|s| s.kind == SessionKind::Terminal)
             .unwrap();
         assert_eq!(term_sess.tmux_window, "terminal");
+    }
+
+    #[test]
+    fn load_normalizes_legacy_review_mode() {
+        let v4_json = r#"{
+            "version": 4,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-repo",
+                    "collapsed": false,
+                    "features": [
+                        {
+                            "id": "feat-id",
+                            "name": "my-feature",
+                            "branch": "feat/my-feature",
+                            "workdir": "/home/user/my-repo/.worktrees/my-feature",
+                            "is_worktree": true,
+                            "tmux_session": "amf-my-feature",
+                            "sessions": [],
+                            "collapsed": true,
+                            "mode": "review",
+                            "review": false,
+                            "agent": "claude",
+                            "enable_chrome": false,
+                            "has_notes": false,
+                            "ready": false,
+                            "status": "idle",
+                            "created_at": "2024-06-01T12:00:00Z",
+                            "last_accessed": "2024-06-01T12:00:00Z"
+                        }
+                    ],
+                    "created_at": "2024-06-01T00:00:00Z",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": []
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), v4_json).unwrap();
+
+        let store = ProjectStore::load(tmp.path()).unwrap();
+        let feature = &store.projects[0].features[0];
+        assert_eq!(feature.mode, VibeMode::Vibeless);
+        assert!(feature.review);
+
+        let saved = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(saved.contains("\"mode\": \"vibeless\""));
+        assert!(saved.contains("\"review\": true"));
     }
 
     // ── Feature::next_label ───────────────────────────────────

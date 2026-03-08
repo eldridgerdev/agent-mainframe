@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod automation;
 mod app;
 mod claude;
 mod codex;
@@ -19,7 +20,7 @@ mod upgrade;
 mod usage;
 mod worktree;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
     event::{
@@ -31,6 +32,7 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
+use std::path::PathBuf;
 use std::panic::{self, AssertUnwindSafe};
 use std::time::Duration;
 
@@ -53,6 +55,11 @@ struct Cli {
 enum Commands {
     /// Upgrade amf to the latest release
     Upgrade,
+    /// Run machine-friendly automation actions against a running AMF instance
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCommands,
+    },
     /// Send a notification to the running AMF instance via the
     /// IPC socket. Reads JSON from stdin. Used by hook scripts.
     #[command(hide = true)]
@@ -62,6 +69,22 @@ enum Commands {
     #[command(hide = true)]
     NotifyWait {
         /// Timeout in milliseconds while waiting for reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AutomationCommands {
+    /// Create one project with many parallel feature worktrees from JSON input
+    CreateBatchFeatures {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Override the JSON payload and perform validation only.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Timeout in milliseconds while waiting for AMF to reply.
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
@@ -77,6 +100,10 @@ fn main() -> Result<()> {
 
     if let Some(Commands::Upgrade) = cli.command {
         return upgrade::upgrade();
+    }
+
+    if let Some(Commands::Automation { command }) = cli.command {
+        return run_automation_command(command);
     }
 
     if let Some(Commands::Notify) = cli.command {
@@ -186,6 +213,57 @@ fn main() -> Result<()> {
             "AMF panicked; see {}",
             debug::global_log_path().display()
         )),
+    }
+}
+
+fn read_json_input(file: Option<&PathBuf>) -> Result<String> {
+    use std::io::Read;
+
+    let mut payload = String::new();
+    match file {
+        Some(path) if path.as_os_str() != "-" => {
+            payload = std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+        }
+        _ => {
+            std::io::stdin()
+                .read_to_string(&mut payload)
+                .context("Failed to read automation JSON from stdin")?;
+        }
+    }
+
+    let payload = payload.trim();
+    if payload.is_empty() {
+        anyhow::bail!("Automation request payload is empty");
+    }
+
+    Ok(payload.to_string())
+}
+
+fn run_automation_command(command: AutomationCommands) -> Result<()> {
+    match command {
+        AutomationCommands::CreateBatchFeatures {
+            file,
+            dry_run,
+            timeout_ms,
+        } => {
+            let payload = read_json_input(file.as_ref())?;
+            let mut request: automation::CreateBatchFeaturesRequest =
+                serde_json::from_str(&payload)
+                    .context("Invalid create_batch_features JSON payload")?;
+            if dry_run {
+                request.dry_run = true;
+            }
+
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
     }
 }
 

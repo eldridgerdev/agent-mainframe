@@ -4,6 +4,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::automation::{
+    CREATE_BATCH_FEATURES_ACTION, CreateBatchFeaturesRequest, automation_error_response,
+};
 
 impl App {
     fn touch_feature_for_session(&mut self, session_id: &str) {
@@ -103,6 +106,89 @@ impl App {
         self.log_debug("ipc", format!("Draining {} message(s)", messages.len()));
 
         for raw in messages {
+            let msg_type = raw
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("stop")
+                .to_string();
+
+            if msg_type == crate::automation::AUTOMATION_REQUEST_TYPE {
+                let request_id = raw
+                    .get("request_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let reply_socket = raw
+                    .get("reply_socket")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let action = raw
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let payload = match action.as_str() {
+                    CREATE_BATCH_FEATURES_ACTION => {
+                        match serde_json::from_value::<CreateBatchFeaturesRequest>(raw.clone()) {
+                            Ok(request) => match self.create_batch_features_from_request(&request) {
+                                Ok(response) => {
+                                    self.log_info(
+                                        "automation",
+                                        format!(
+                                            "Automation created batch project '{}' with {} features",
+                                            response.project_name,
+                                            response.features.len()
+                                        ),
+                                    );
+                                    serde_json::to_value(response).unwrap_or_else(|err| {
+                                        automation_error_response(
+                                            CREATE_BATCH_FEATURES_ACTION,
+                                            format!("Failed to serialize response: {err}"),
+                                        )
+                                    })
+                                }
+                                Err(err) => {
+                                    self.log_error(
+                                        "automation",
+                                        format!(
+                                            "Automation '{}' failed: {err}",
+                                            CREATE_BATCH_FEATURES_ACTION
+                                        ),
+                                    );
+                                    automation_error_response(
+                                        CREATE_BATCH_FEATURES_ACTION,
+                                        err.to_string(),
+                                    )
+                                }
+                            },
+                            Err(err) => automation_error_response(
+                                CREATE_BATCH_FEATURES_ACTION,
+                                format!("Invalid automation payload: {err}"),
+                            ),
+                        }
+                    }
+                    _ => automation_error_response(
+                        if action.is_empty() { "unknown" } else { &action },
+                        format!(
+                            "Unknown automation action '{}'",
+                            if action.is_empty() {
+                                "<missing>"
+                            } else {
+                                &action
+                            }
+                        ),
+                    ),
+                };
+
+                self.respond_to_notification(
+                    request_id.as_deref(),
+                    reply_socket.as_deref(),
+                    None,
+                    payload,
+                );
+                continue;
+            }
+
             let msg: IpcMsg = match serde_json::from_value(raw) {
                 Ok(m) => m,
                 Err(_) => continue,

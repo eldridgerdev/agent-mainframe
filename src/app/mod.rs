@@ -1,3 +1,4 @@
+mod automation;
 mod claude_session_picker;
 mod claude_sessions;
 mod codex_session_picker;

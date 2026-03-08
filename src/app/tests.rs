@@ -4,6 +4,7 @@ use super::setup::{
 use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
+use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::ExtensionConfig;
 
 // ── slugify ───────────────────────────────────────────────
@@ -1522,4 +1523,180 @@ fn jump_to_bookmark_enters_view_for_slot() {
 
     assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
     assert!(matches!(app.mode, AppMode::Viewing(_)));
+}
+
+#[test]
+fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+
+    let request = CreateBatchFeaturesRequest {
+        workspace_path: repo.clone(),
+        project_name: "plan-batch".to_string(),
+        feature_count: 3,
+        feature_prefix: "plan-".to_string(),
+        agent: AgentKind::Codex,
+        mode: VibeMode::Vibe,
+        review: false,
+        enable_chrome: false,
+        enable_notes: true,
+        dry_run: true,
+    };
+
+    let response = app.create_batch_features_from_request(&request).unwrap();
+
+    assert!(response.ok);
+    assert!(response.dry_run);
+    assert_eq!(response.features.len(), 3);
+    assert_eq!(response.features[0].branch, "plan-1");
+    assert_eq!(response.features[0].workdir, repo.join(".worktrees").join("plan-1"));
+    assert!(app.store.projects.is_empty());
+}
+
+#[test]
+fn batch_feature_automation_rejects_review_as_a_mode() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    let request = CreateBatchFeaturesRequest {
+        workspace_path: repo,
+        project_name: "plan-batch".to_string(),
+        feature_count: 2,
+        feature_prefix: "plan-".to_string(),
+        agent: AgentKind::Codex,
+        mode: VibeMode::Review,
+        review: true,
+        enable_chrome: false,
+        enable_notes: false,
+        dry_run: true,
+    };
+
+    let err = app.create_batch_features_from_request(&request).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Use `review: true` with a non-review mode; `mode: review` is not supported"
+    );
+}
+
+#[test]
+fn batch_feature_automation_creates_project_and_starts_features() {
+    let workspace = TempDir::new().unwrap();
+    let repo = workspace.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let worktree_one = repo.join(".worktrees").join("plan-1");
+    let worktree_two = repo.join(".worktrees").join("plan-2");
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+    let repo_for_first = repo.clone();
+    let worktree_one_clone = worktree_one.clone();
+    worktree
+        .expect_create()
+        .times(1)
+        .withf(move |repo_path, name, branch| {
+            repo_path == repo_for_first.as_path() && name == "plan-1" && branch == "plan-1"
+        })
+        .returning(move |_, _, _| Ok(worktree_one_clone.clone()));
+    let repo_for_second = repo.clone();
+    let worktree_two_clone = worktree_two.clone();
+    worktree
+        .expect_create()
+        .times(1)
+        .withf(move |repo_path, name, branch| {
+            repo_path == repo_for_second.as_path() && name == "plan-2" && branch == "plan-2"
+        })
+        .returning(move |_, _, _| Ok(worktree_two_clone.clone()));
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .times(2)
+        .returning(|_| false);
+    tmux.expect_create_session_with_window()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_codex()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(2)
+        .returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+        },
+        Box::new(tmux),
+        Box::new(worktree),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+
+    let request = CreateBatchFeaturesRequest {
+        workspace_path: repo.clone(),
+        project_name: "plan-batch".to_string(),
+        feature_count: 2,
+        feature_prefix: "plan-".to_string(),
+        agent: AgentKind::Codex,
+        mode: VibeMode::Vibe,
+        review: false,
+        enable_chrome: false,
+        enable_notes: false,
+        dry_run: false,
+    };
+
+    let response = app.create_batch_features_from_request(&request).unwrap();
+
+    assert!(response.ok);
+    assert_eq!(response.features.len(), 2);
+    assert_eq!(app.store.projects.len(), 1);
+    assert_eq!(app.store.projects[0].name, "plan-batch");
+    assert_eq!(app.store.projects[0].features.len(), 2);
+    assert_eq!(app.store.projects[0].features[0].branch, "plan-1");
+    assert_eq!(app.store.projects[0].features[1].branch, "plan-2");
+    assert!(app.store.projects[0]
+        .features
+        .iter()
+        .all(|feature| feature.sessions.len() == 2));
 }

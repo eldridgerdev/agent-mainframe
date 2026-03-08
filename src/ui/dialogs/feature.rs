@@ -158,12 +158,7 @@ fn draw_create_feature_preset_picker(
                     Style::default().fg(theme.text.to_color())
                 };
                 let agent_str = preset.agent.display_name();
-                let mode_str = match &preset.mode {
-                    crate::project::VibeMode::Vibeless => "vibeless",
-                    crate::project::VibeMode::Vibe => "vibe",
-                    crate::project::VibeMode::SuperVibe => "supervibe",
-                    crate::project::VibeMode::Review => "review",
-                };
+                let mode_str = preset.mode.display_name().to_ascii_lowercase();
                 let detail = format!(
                     " {} | {}{}",
                     agent_str,
@@ -303,7 +298,7 @@ fn draw_create_feature_branch_mode(
     allowed_agents: &[AgentKind],
     theme: &Theme,
 ) {
-    let area = centered_rect(60, 70, frame.area());
+    let area = centered_rect(60, 90, frame.area());
     frame.render_widget(Clear, area);
 
     let title = format!(" New Feature ({}) ", state.project_name);
@@ -329,7 +324,9 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(1), // spacer
             Constraint::Length(1), // review checkbox
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // chrome checkbox
+            Constraint::Length(2), // plan_mode checkbox
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // chrome checkbox
             Constraint::Length(1), // spacer
             Constraint::Length(1), // notes checkbox
             Constraint::Length(1), // spacer
@@ -492,9 +489,34 @@ fn draw_create_feature_branch_mode(
     let review_widget = Paragraph::new(review_lines);
     frame.render_widget(review_widget, chunks[8]);
 
-    // Chrome checkbox (chunks[10])
+    // Plan mode checkbox (chunks[10])
+    let plan_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 3;
+    let plan_check = if state.plan_mode { "[x]" } else { "[ ]" };
+    let plan_style = if plan_active {
+        Style::default().fg(theme.text.to_color())
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let plan_lines = vec![Line::from(vec![
+        Span::styled(
+            " Plan: ",
+            if plan_active {
+                Style::default().fg(theme.primary.to_color())
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            },
+        ),
+        Span::styled(
+            format!("{} Collaborative planning mode", plan_check),
+            plan_style,
+        ),
+    ])];
+    let plan_widget = Paragraph::new(plan_lines);
+    frame.render_widget(plan_widget, chunks[10]);
+
+    // Chrome checkbox (chunks[12])
     let chrome_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 3
+        && state.mode_focus == 4
         && state.agent == AgentKind::Claude;
     let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
     let chrome_style = if chrome_active {
@@ -504,7 +526,7 @@ fn draw_create_feature_branch_mode(
     };
     let chrome_label_style =
         if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
-            if state.mode_focus == 3 {
+            if state.mode_focus == 4 {
                 Style::default().fg(theme.primary.to_color())
             } else {
                 Style::default().fg(theme.text_muted.to_color())
@@ -522,14 +544,14 @@ fn draw_create_feature_branch_mode(
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[10]);
+        frame.render_widget(chrome_widget, chunks[12]);
     }
 
-    // Notes checkbox (chunks[12])
+    // Notes checkbox (chunks[14])
     let memo_focus = if state.agent == AgentKind::Claude {
-        4
+        5
     } else {
-        3
+        4
     };
     let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
     let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
@@ -550,12 +572,12 @@ fn draw_create_feature_branch_mode(
         Span::styled(format!("{} Create memo", notes_check), notes_style),
     ])];
     let notes_widget = Paragraph::new(notes_lines);
-    frame.render_widget(notes_widget, chunks[12]);
+    frame.render_widget(notes_widget, chunks[14]);
 
     let steering_focus = if state.agent == AgentKind::Claude {
-        5
+        6
     } else {
-        4
+        5
     };
     let steering_active =
         state.step == CreateFeatureStep::Mode && state.mode_focus == steering_focus;
@@ -579,7 +601,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[14]);
+    frame.render_widget(steering_widget, chunks[16]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![

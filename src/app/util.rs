@@ -1,4 +1,5 @@
 use crate::worktree::WorktreeManager;
+use std::path::{Path, PathBuf};
 
 pub fn shorten_path(path: &std::path::Path) -> String {
     if let Some(home) = dirs::home_dir()
@@ -40,4 +41,24 @@ pub fn detect_branch() -> String {
         .ok()
         .flatten()
         .unwrap_or_default()
+}
+
+pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
+    workdir.join(".claude").join("latest-prompt.txt")
+}
+
+pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
+    let paths = [
+        latest_prompt_path(workdir),
+        workdir.join(".codex").join("latest-prompt.txt"),
+    ];
+
+    paths
+        .into_iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .or_else(|| {
+            super::codex_sessions::latest_prompt_for_workdir(workdir)
+                .ok()
+                .flatten()
+        })
 }

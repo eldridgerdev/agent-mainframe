@@ -62,6 +62,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::RenamingSession(_) => handle_rename_session_key(app, key.code),
         AppMode::RenamingFeature(_) => handle_rename_feature_key(app, key.code),
         AppMode::SessionConfig(_) => handle_session_config_key(app, key.code),
+        AppMode::ProjectAgentConfig(_) => handle_session_config_key(app, key.code),
         AppMode::CommandPicker(_) => handle_command_picker_key(app, key.code),
         AppMode::Searching(_) => handle_search_key(app, key.code),
         AppMode::OpencodeSessionPicker(_) => handle_opencode_session_picker_key(app, key.code),

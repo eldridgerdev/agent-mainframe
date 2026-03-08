@@ -133,6 +133,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.mode = preset.mode;
                     state.agent = preset.agent.clone();
                     state.review = preset.review;
+                    state.plan_mode = preset.plan_mode;
                     state.enable_chrome = preset.enable_chrome;
                     state.enable_notes = preset.enable_notes;
                     if let Some(ref prefix) = preset.branch_prefix
@@ -264,20 +265,23 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
+                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_notes = !state.enable_notes;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        6 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
@@ -308,20 +312,23 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.review = !state.review;
                         }
                         3 => {
+                            state.plan_mode = !state.plan_mode;
+                        }
+                        4 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.enable_notes = !state.enable_notes;
                             }
                         }
-                        4 => {
+                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_notes = !state.enable_notes;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        6 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}

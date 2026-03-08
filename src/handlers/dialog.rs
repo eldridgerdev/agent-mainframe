@@ -19,6 +19,12 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
     }
 
+    let is_agent_step = matches!(
+        &app.mode,
+        AppMode::CreatingProject(state)
+            if matches!(state.step, CreateProjectStep::Agent)
+    );
+
     match key.code {
         KeyCode::Esc => {
             app.cancel_create();
@@ -36,6 +42,11 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     }
                 }
                 CreateProjectStep::Path => {
+                    if let AppMode::CreatingProject(state) = &mut app.mode {
+                        state.step = CreateProjectStep::Agent;
+                    }
+                }
+                CreateProjectStep::Agent => {
                     app.create_project()?;
                 }
             }
@@ -44,7 +55,8 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if let AppMode::CreatingProject(state) = &mut app.mode {
                 state.step = match state.step {
                     CreateProjectStep::Name => CreateProjectStep::Path,
-                    CreateProjectStep::Path => CreateProjectStep::Name,
+                    CreateProjectStep::Path => CreateProjectStep::Agent,
+                    CreateProjectStep::Agent => CreateProjectStep::Name,
                 };
             }
         }
@@ -57,6 +69,49 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     CreateProjectStep::Path => {
                         state.path.pop();
                     }
+                    CreateProjectStep::Agent => {}
+                }
+            }
+            app.refresh_create_project_agent_selection();
+        }
+        code if is_agent_step
+            && matches!(code, KeyCode::Char('j') | KeyCode::Down | KeyCode::Right) =>
+        {
+            let (is_agent_step, path, next_index) = match &app.mode {
+                AppMode::CreatingProject(state) => (
+                    matches!(state.step, CreateProjectStep::Agent),
+                    std::path::PathBuf::from(&state.path),
+                    state.agent_index.saturating_add(1),
+                ),
+                _ => (false, std::path::PathBuf::new(), 0),
+            };
+            if is_agent_step {
+                let allowed = app.allowed_agents_for_project_path(&path);
+                if next_index < allowed.len()
+                    && let AppMode::CreatingProject(state) = &mut app.mode
+                {
+                    state.agent_index = next_index;
+                    state.agent = allowed[next_index].clone();
+                }
+            }
+        }
+        code if is_agent_step
+            && matches!(code, KeyCode::Char('k') | KeyCode::Up | KeyCode::Left) =>
+        {
+            let (is_agent_step, path, current_index) = match &app.mode {
+                AppMode::CreatingProject(state) => (
+                    matches!(state.step, CreateProjectStep::Agent),
+                    std::path::PathBuf::from(&state.path),
+                    state.agent_index,
+                ),
+                _ => (false, std::path::PathBuf::new(), 0),
+            };
+            if is_agent_step && current_index > 0 {
+                let next_index = current_index - 1;
+                let allowed = app.allowed_agents_for_project_path(&path);
+                if let AppMode::CreatingProject(state) = &mut app.mode {
+                    state.agent_index = next_index;
+                    state.agent = allowed[next_index].clone();
                 }
             }
         }
@@ -65,8 +120,10 @@ pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 match state.step {
                     CreateProjectStep::Name => state.name.push(c),
                     CreateProjectStep::Path => state.path.push(c),
+                    CreateProjectStep::Agent => {}
                 }
             }
+            app.refresh_create_project_agent_selection();
         }
         _ => {}
     }
@@ -247,20 +304,28 @@ pub fn handle_rename_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
 
 pub fn handle_session_config_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
-        KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::SessionConfig(state) = &mut app.mode
-                && state.selected_agent + 1 < state.allowed_agents.len()
+        KeyCode::Char('j') | KeyCode::Down => match &mut app.mode {
+            AppMode::SessionConfig(state)
+                if state.selected_agent + 1 < state.allowed_agents.len() =>
             {
                 state.selected_agent += 1;
             }
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::SessionConfig(state) = &mut app.mode
-                && state.selected_agent > 0
+            AppMode::ProjectAgentConfig(state)
+                if state.selected_agent + 1 < state.allowed_agents.len() =>
             {
+                state.selected_agent += 1;
+            }
+            _ => {}
+        },
+        KeyCode::Char('k') | KeyCode::Up => match &mut app.mode {
+            AppMode::SessionConfig(state) if state.selected_agent > 0 => {
                 state.selected_agent -= 1;
             }
-        }
+            AppMode::ProjectAgentConfig(state) if state.selected_agent > 0 => {
+                state.selected_agent -= 1;
+            }
+            _ => {}
+        },
         KeyCode::Enter => {
             app.apply_session_config()?;
         }

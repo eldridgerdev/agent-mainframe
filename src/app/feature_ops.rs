@@ -1,7 +1,10 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use crate::automation::CreateBatchFeaturesRequest;
+use super::setup::{
+    ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
+};
 use super::*;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
@@ -65,11 +68,19 @@ impl App {
     }
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, is_first, used_workdirs) = match &self.selection {
+        let (project_name, project_repo, preferred_agent, is_first, used_workdirs) = match &self
+            .selection
+        {
             Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
                 if let Some(p) = self.store.projects.get(*pi) {
                     let used: Vec<PathBuf> = p.features.iter().map(|f| f.workdir.clone()).collect();
-                    (p.name.clone(), p.repo.clone(), p.features.is_empty(), used)
+                    (
+                        p.name.clone(),
+                        p.repo.clone(),
+                        p.preferred_agent.clone(),
+                        p.features.is_empty(),
+                        used,
+                    )
                 } else {
                     return;
                 }
@@ -85,7 +96,7 @@ impl App {
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         self.active_extension = self.extension_for_repo(&project_repo);
-        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &state.agent);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.agent = agent;
         state.agent_index = agent_index;
 
@@ -98,18 +109,18 @@ impl App {
             AppMode::CreatingFeature(s) => s,
             _ => return Ok(()),
         };
-
-        let project_name = state.project_name.clone();
-        let project_repo = state.project_repo.clone();
-        let branch = state.branch.clone();
-        let mode = state.mode.clone();
-        let review = state.review;
         let use_existing_worktree = state.source_index == 1 && !state.worktrees.is_empty();
         let selected_worktree = if use_existing_worktree {
             state.worktrees.get(state.worktree_index).cloned()
         } else {
             None
         };
+        let project_name = state.project_name.clone();
+        let project_repo = state.project_repo.clone();
+        let branch = state.branch.clone();
+        let mode = state.mode.clone();
+        let review = state.review;
+        let plan_mode = state.plan_mode;
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
         let enable_notes = state.enable_notes;
@@ -119,7 +130,6 @@ impl App {
             self.message = Some("Error: Branch name cannot be empty".into());
             return Ok(());
         }
-
         if !self.allows_agent_for_repo(&project_repo, &state.agent) {
             self.message = Some(format!(
                 "Error: Agent '{}' is not allowed for this workspace",
@@ -149,11 +159,7 @@ impl App {
                 && selected_worktree.is_none()
                 && project.features.iter().any(|f| !f.is_worktree)
             {
-                self.message = Some(
-                    "Error: Only one non-worktree feature \
-                     allowed per project"
-                        .into(),
-                );
+                self.message = Some("Error: Only one non-worktree feature allowed per project".into());
                 return Ok(());
             }
 
@@ -179,8 +185,7 @@ impl App {
         } else if use_worktree {
             let wt_path = self.worktree.create(&project_repo, &branch, &branch)?;
 
-            let global_ext = load_global_extension_config();
-            let ext = merge_project_extension_config(&global_ext, &project_repo);
+            let ext = merge_project_extension_config(&self.config.extension, &project_repo);
 
             if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
                 if let Some(prompt) = hook_cfg.prompt() {
@@ -194,6 +199,7 @@ impl App {
                             branch,
                             mode,
                             review,
+                            plan_mode,
                             agent: state.agent.clone(),
                             enable_chrome,
                             enable_notes,
@@ -208,6 +214,7 @@ impl App {
                         branch,
                         mode,
                         review,
+                        plan_mode,
                         state.agent.clone(),
                         enable_chrome,
                         enable_notes,
@@ -230,6 +237,7 @@ impl App {
             is_worktree,
             mode,
             review,
+            plan_mode,
             agent: state.agent.clone(),
             enable_chrome,
             enable_notes,
@@ -263,6 +271,7 @@ impl App {
             prepared.is_worktree,
             prepared.mode,
             prepared.review,
+            prepared.plan_mode,
             prepared.agent,
             prepared.enable_chrome,
             prepared.enable_notes,
@@ -270,7 +279,6 @@ impl App {
 
         self.store.add_feature(&prepared.project_name, feature);
         self.save()?;
-
         if let Some(pi) = self
             .store
             .projects
@@ -426,6 +434,7 @@ impl App {
             feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
@@ -1132,6 +1141,7 @@ impl App {
                         branch: new_branch,
                         mode,
                         review,
+                        plan_mode: false,
                         agent,
                         enable_chrome,
                         enable_notes,
@@ -1148,6 +1158,7 @@ impl App {
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                false,
                 agent.clone(),
                 enable_chrome,
                 enable_notes,
@@ -1178,6 +1189,7 @@ impl App {
             true,
             mode,
             review,
+            false,
             agent,
             enable_chrome,
             enable_notes,
@@ -1276,133 +1288,36 @@ impl App {
             _ => return Ok(()),
         };
 
-        let workspace_path = if state.workspace_path.is_empty() {
-            PathBuf::new()
-        } else {
-            PathBuf::from(&state.workspace_path)
-        };
-        let project_name = state.project_name.clone();
-        let feature_count = state.feature_count;
-        let feature_prefix = state.feature_prefix.clone();
-        let mode = state.mode.clone();
-        let review = state.review;
-        let agent = state.agent.clone();
-        let enable_chrome = state.enable_chrome;
-        let enable_notes = state.enable_notes;
-
-        if state.workspace_path.is_empty() || !workspace_path.exists() {
-            self.message = Some("Error: Workspace path is invalid".into());
-            return Ok(());
-        }
-
-        if project_name.is_empty() {
-            self.message = Some("Error: Project name cannot be empty".into());
-            return Ok(());
-        }
-
-        if self.store.find_project(&project_name).is_some() {
-            self.message = Some(format!("Error: Project '{}' already exists", project_name));
-            return Ok(());
-        }
-
-        if feature_count == 0 {
-            self.message = Some("Error: Feature count must be at least 1".into());
-            return Ok(());
-        }
-
-        if feature_prefix.is_empty() {
-            self.message = Some("Error: Feature prefix cannot be empty".into());
-            return Ok(());
-        }
-
-        let (project_repo, is_git) = match WorktreeManager::repo_root(&workspace_path) {
-            Ok(r) => (r, true),
-            Err(_) => (workspace_path.clone(), false),
+        let request = CreateBatchFeaturesRequest {
+            workspace_path: PathBuf::from(&state.workspace_path),
+            project_name: state.project_name.clone(),
+            feature_count: state.feature_count,
+            feature_prefix: state.feature_prefix.clone(),
+            agent: state.agent.clone(),
+            mode: state.mode.clone(),
+            review: state.review,
+            enable_chrome: state.enable_chrome,
+            enable_notes: state.enable_notes,
+            dry_run: false,
         };
 
-        if !is_git {
-            self.message = Some("Error: Batch features require a git repository".into());
-            return Ok(());
-        }
-
-        if !self.allows_agent_for_repo(&project_repo, &agent) {
-            self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
-                agent.display_name()
-            ));
-            return Ok(());
-        }
-
-        let project = Project::new(project_name.clone(), project_repo.clone(), is_git);
-        self.store.add_project(project);
-        self.save()?;
-
-        let pi = self.store.projects.len().saturating_sub(1);
-        self.store.projects[pi].collapsed = false;
-        self.selection = Selection::Project(pi);
-        self.mode = AppMode::Normal;
-
-        let mut created_features = Vec::new();
-        for i in 1..=feature_count {
-            let branch = format!("{}{}", feature_prefix, i);
-
-            if self.store.projects[pi]
-                .features
-                .iter()
-                .any(|f| f.name == branch)
-            {
-                self.message = Some(format!("Error: Feature '{}' already exists", branch));
+        let response = match self.create_batch_features_from_request(&request) {
+            Ok(response) => response,
+            Err(err) => {
+                self.message = Some(format!("Error: {err}"));
                 return Ok(());
             }
-
-            let workdir = self.worktree.create(&project_repo, &branch, &branch)?;
-
-            if enable_notes {
-                let claude_dir = workdir.join(".claude");
-                if !claude_dir.exists() {
-                    let _ = std::fs::create_dir_all(&claude_dir);
-                }
-                let notes_path = claude_dir.join("notes.md");
-                if !notes_path.exists() {
-                    let _ = std::fs::write(
-                        &notes_path,
-                        "# Notes\n\nWrite instructions for Claude here.\n",
-                    );
-                }
-            }
-
-            let feature = Feature::new(
-                branch.clone(),
-                branch.clone(),
-                workdir,
-                true,
-                mode.clone(),
-                review,
-                agent.clone(),
-                enable_chrome,
-                enable_notes,
-            );
-
-            self.store.add_feature(&project_name, feature);
-            created_features.push(branch);
-            self.save()?;
+        };
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == response.project_name)
+        {
+            self.selection = Selection::Project(pi);
         }
-
-        for (_idx, branch) in created_features.iter().enumerate() {
-            let fi = self.store.projects[pi]
-                .features
-                .iter()
-                .position(|f| f.name == *branch)
-                .unwrap();
-
-            self.ensure_feature_running(pi, fi)?;
-            self.save()?;
-        }
-
-        self.message = Some(format!(
-            "Created project '{}' with {} features",
-            project_name, feature_count
-        ));
+        self.mode = AppMode::Normal;
+        self.message = Some(response.message);
 
         Ok(())
     }

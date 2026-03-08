@@ -1,0 +1,12 @@
+{
+  "project_name": "existing-amf-project-name",
+  "branch": "feature-1",
+  "agent": "codex",
+  "mode": "vibe",
+  "review": false,
+  "use_worktree": true,
+  "enable_chrome": false,
+  "enable_notes": true,
+  "hook_choice": null,
+  "dry_run": false
+}

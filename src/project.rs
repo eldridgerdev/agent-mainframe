@@ -96,6 +96,7 @@ pub enum VibeMode {
     Vibeless,
     Vibe,
     SuperVibe,
+    // Legacy alias normalized to Vibeless + review=true.
     Review,
 }
 
@@ -108,6 +109,7 @@ impl<'de> Deserialize<'de> for VibeMode {
         Ok(match s.as_str() {
             "vibe" => VibeMode::Vibe,
             "supervibe" => VibeMode::SuperVibe,
+            "review" => VibeMode::Review,
             _ => VibeMode::Vibeless,
         })
     }
@@ -119,7 +121,7 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
-            VibeMode::Review => "Review",
+            VibeMode::Review => "Vibeless",
         }
     }
 
@@ -128,20 +130,19 @@ impl VibeMode {
             VibeMode::Vibeless => "asks for approval for every change",
             VibeMode::Vibe => "auto-accepts edits",
             VibeMode::SuperVibe => "skips all permission prompts",
-            VibeMode::Review => "logs changes for final code review",
+            VibeMode::Review => "asks for approval for every change",
         }
     }
 
     pub fn cli_flags(&self, enable_chrome: bool) -> Vec<String> {
         let mut flags = match self {
-            VibeMode::Vibeless => vec![],
+            VibeMode::Vibeless | VibeMode::Review => vec![],
             VibeMode::Vibe => {
                 vec!["--permission-mode".into(), "acceptEdits".into()]
             }
             VibeMode::SuperVibe => {
                 vec!["--dangerously-skip-permissions".into()]
             }
-            VibeMode::Review => vec![],
         };
         if enable_chrome {
             flags.push("--chrome".into());
@@ -149,12 +150,7 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 4] = [
-        VibeMode::Vibeless,
-        VibeMode::Vibe,
-        VibeMode::SuperVibe,
-        VibeMode::Review,
-    ];
+    pub const ALL: [VibeMode; 3] = [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
 }
 
 fn default_true() -> bool {
@@ -237,6 +233,15 @@ impl Feature {
 
     pub fn touch(&mut self) {
         self.last_accessed = Utc::now();
+    }
+
+    pub fn normalize_legacy_review_mode(&mut self) -> bool {
+        if self.mode == VibeMode::Review {
+            self.mode = VibeMode::Vibeless;
+            self.review = true;
+            return true;
+        }
+        false
     }
 
     /// Return the next label for a session of the given kind.
@@ -472,7 +477,8 @@ impl ProjectStore {
                 let v1 = Self::migrate_from_old(old);
                 let v2 = Self::migrate_from_v1(v1);
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
@@ -481,7 +487,8 @@ impl ProjectStore {
                     .with_context(|| "Failed to parse v1 project store")?;
                 let v2 = Self::migrate_from_v1(v1);
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
@@ -489,20 +496,25 @@ impl ProjectStore {
                 let v2: ProjectStore =
                     serde_json::from_value(raw).with_context(|| "Failed to parse project store")?;
                 let v3 = Self::migrate_from_v2(v2);
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
             3 => {
                 let v3: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v3 project store")?;
-                let store = Self::migrate_from_v3(v3);
+                let mut store = Self::migrate_from_v3(v3);
+                store.normalize_legacy_review_modes();
                 store.save(path)?;
                 Ok(store)
             }
             4 => {
-                let store: ProjectStore = serde_json::from_value(raw)
+                let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v4 project store")?;
+                if store.normalize_legacy_review_modes() {
+                    store.save(path)?;
+                }
                 Ok(store)
             }
             _ => {
@@ -710,6 +722,16 @@ impl ProjectStore {
         }
         None
     }
+
+    fn normalize_legacy_review_modes(&mut self) -> bool {
+        let mut changed = false;
+        for project in &mut self.projects {
+            for feature in &mut project.features {
+                changed |= feature.normalize_legacy_review_mode();
+            }
+        }
+        changed
+    }
 }
 
 pub fn amf_config_dir() -> PathBuf {
@@ -907,6 +929,56 @@ mod tests {
         assert_eq!(term_sess.tmux_window, "terminal");
     }
 
+    #[test]
+    fn load_normalizes_legacy_review_mode() {
+        let v4_json = r#"{
+            "version": 4,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-repo",
+                    "collapsed": false,
+                    "features": [
+                        {
+                            "id": "feat-id",
+                            "name": "my-feature",
+                            "branch": "feat/my-feature",
+                            "workdir": "/home/user/my-repo/.worktrees/my-feature",
+                            "is_worktree": true,
+                            "tmux_session": "amf-my-feature",
+                            "sessions": [],
+                            "collapsed": true,
+                            "mode": "review",
+                            "review": false,
+                            "agent": "claude",
+                            "enable_chrome": false,
+                            "has_notes": false,
+                            "ready": false,
+                            "status": "idle",
+                            "created_at": "2024-06-01T12:00:00Z",
+                            "last_accessed": "2024-06-01T12:00:00Z"
+                        }
+                    ],
+                    "created_at": "2024-06-01T00:00:00Z",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": []
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), v4_json).unwrap();
+
+        let store = ProjectStore::load(tmp.path()).unwrap();
+        let feature = &store.projects[0].features[0];
+        assert_eq!(feature.mode, VibeMode::Vibeless);
+        assert!(feature.review);
+
+        let saved = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(saved.contains("\"mode\": \"vibeless\""));
+        assert!(saved.contains("\"review\": true"));
+    }
+
     // ── Feature::next_label ───────────────────────────────────
 
     #[test]
@@ -1004,7 +1076,7 @@ mod tests {
     }
 
     #[test]
-    fn vibe_mode_review_flags() {
+    fn vibe_mode_review_flags_match_vibeless_for_legacy_loads() {
         assert_eq!(VibeMode::Review.cli_flags(false), Vec::<String>::new());
         assert_eq!(VibeMode::Review.cli_flags(true), vec!["--chrome"]);
     }

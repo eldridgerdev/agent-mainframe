@@ -155,12 +155,7 @@ fn draw_create_feature_preset_picker(
                     Style::default().fg(theme.text.to_color())
                 };
                 let agent_str = preset.agent.display_name();
-                let mode_str = match &preset.mode {
-                    crate::project::VibeMode::Vibeless => "vibeless",
-                    crate::project::VibeMode::Vibe => "vibe",
-                    crate::project::VibeMode::SuperVibe => "supervibe",
-                    crate::project::VibeMode::Review => "review",
-                };
+                let mode_str = preset.mode.display_name().to_ascii_lowercase();
                 let detail = format!(
                     " {} | {}{}",
                     agent_str,

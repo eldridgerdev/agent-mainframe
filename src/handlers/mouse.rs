@@ -115,10 +115,9 @@ fn handle_click(
                 header_len += view.feature_name.len() as u16 + 2;
                 header_len += view.session_label.len() as u16 + 2;
                 header_len += match view.vibe_mode {
-                    crate::project::VibeMode::Vibeless => 11,
+                    crate::project::VibeMode::Vibeless | crate::project::VibeMode::Review => 11,
                     crate::project::VibeMode::Vibe => 7,
                     crate::project::VibeMode::SuperVibe => 11,
-                    crate::project::VibeMode::Review => 9,
                 };
                 if view.review {
                     header_len += 9;

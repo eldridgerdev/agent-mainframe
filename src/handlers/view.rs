@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 use crate::app::AppMode;
+use crate::app::util::read_latest_prompt;
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -295,8 +296,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
                 .map(|f| f.workdir.clone());
             let prompt = if let Some(wd) = workdir {
-                std::fs::read_to_string(wd.join(".claude").join("latest-prompt.txt"))
-                    .unwrap_or_else(|_| "(No prompt saved yet)".to_string())
+                read_latest_prompt(&wd).unwrap_or_else(|| "(No prompt saved yet)".to_string())
             } else {
                 "(No prompt saved yet)".to_string()
             };

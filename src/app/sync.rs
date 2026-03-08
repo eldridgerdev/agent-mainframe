@@ -224,10 +224,7 @@ impl App {
         let mut matched: Option<(String, String)> = None;
         for project in &self.store.projects {
             for feature in &project.features {
-                if feature.tmux_session != tmux_session
-                    || feature.agent != AgentKind::Codex
-                    || !feature.is_worktree
-                {
+                if feature.tmux_session != tmux_session || feature.agent != AgentKind::Codex {
                     continue;
                 }
                 let has_codex_window = feature

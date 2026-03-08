@@ -10,6 +10,12 @@ pub struct CodexSessionInfo {
     pub updated: i64,
 }
 
+#[derive(Debug, Clone)]
+struct ParsedCodexSession {
+    info: CodexSessionInfo,
+    latest_prompt: Option<String>,
+}
+
 pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(Vec::new());
@@ -50,13 +56,65 @@ fn fetch_codex_sessions_from_root(
     Ok(sessions)
 }
 
+pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    latest_prompt_for_workdir_from_root(workdir, &sessions_root)
+}
+
+fn latest_prompt_for_workdir_from_root(
+    workdir: &Path,
+    sessions_root: &Path,
+) -> Result<Option<String>> {
+    if !sessions_root.is_dir() {
+        return Ok(None);
+    }
+
+    let mut newest_prompt: Option<(i64, String)> = None;
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(parsed) = parse_codex_session_file_details(&path, workdir) else {
+                continue;
+            };
+            let Some(prompt) = parsed.latest_prompt else {
+                continue;
+            };
+            match &newest_prompt {
+                Some((updated, _)) if *updated >= parsed.info.updated => {}
+                _ => newest_prompt = Some((parsed.info.updated, prompt)),
+            }
+        }
+    }
+
+    Ok(newest_prompt.map(|(_, prompt)| prompt))
+}
+
 fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionInfo> {
+    parse_codex_session_file_details(path, workdir).map(|parsed| parsed.info)
+}
+
+fn parse_codex_session_file_details(path: &Path, workdir: &Path) -> Option<ParsedCodexSession> {
     let contents = std::fs::read_to_string(path).ok()?;
 
     let mut session_id: Option<String> = None;
     let mut session_cwd: Option<PathBuf> = None;
     let mut title: Option<String> = None;
     let mut updated = 0_i64;
+    let mut latest_prompt: Option<String> = None;
+    let mut latest_prompt_updated = 0_i64;
 
     for line in contents.lines() {
         let line = line.trim();
@@ -65,6 +123,11 @@ fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionI
         }
 
         let value: Value = serde_json::from_str(line).ok()?;
+        let line_updated = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(parse_timestamp)
+            .unwrap_or(updated);
 
         if let Some(ts) = value.get("timestamp").and_then(|v| v.as_str())
             && let Some(parsed) = parse_timestamp(ts)
@@ -95,10 +158,20 @@ fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionI
                 if title.is_none() {
                     title = extract_title_from_event(&value);
                 }
+                if let Some(prompt) = extract_prompt_from_event(&value) {
+                    latest_prompt = Some(prompt);
+                    latest_prompt_updated = line_updated;
+                }
             }
             Some("response_item") => {
                 if title.is_none() {
                     title = extract_title_from_response_item(&value);
+                }
+                if let Some(prompt) = extract_prompt_from_response_item(&value)
+                    && line_updated >= latest_prompt_updated
+                {
+                    latest_prompt = Some(prompt);
+                    latest_prompt_updated = line_updated;
                 }
             }
             _ => {}
@@ -110,23 +183,36 @@ fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionI
     }
 
     let id = session_id?;
-    Some(CodexSessionInfo {
-        id,
-        title: title.unwrap_or_else(|| "Untitled".to_string()),
-        updated,
+    Some(ParsedCodexSession {
+        info: CodexSessionInfo {
+            id,
+            title: title.unwrap_or_else(|| "Untitled".to_string()),
+            updated,
+        },
+        latest_prompt,
     })
 }
 
 fn extract_title_from_event(value: &Value) -> Option<String> {
+    title_from_text(&extract_prompt_from_event(value)?)
+}
+
+fn extract_title_from_response_item(value: &Value) -> Option<String> {
+    title_from_text(&extract_prompt_from_response_item(value)?)
+}
+
+fn extract_prompt_from_event(value: &Value) -> Option<String> {
     let payload = value.get("payload")?;
     if payload.get("type")?.as_str()? != "user_message" {
         return None;
     }
-    let message = payload.get("message")?.as_str()?;
-    title_from_text(message)
+    payload
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned)
 }
 
-fn extract_title_from_response_item(value: &Value) -> Option<String> {
+fn extract_prompt_from_response_item(value: &Value) -> Option<String> {
     let payload = value.get("payload")?;
     if payload.get("type")?.as_str()? != "message" {
         return None;
@@ -136,16 +222,17 @@ fn extract_title_from_response_item(value: &Value) -> Option<String> {
     }
 
     let content = payload.get("content")?.as_array()?;
-    for item in content {
-        if item.get("type").and_then(|v| v.as_str()) == Some("input_text")
-            && let Some(text) = item.get("text").and_then(|v| v.as_str())
-            && let Some(title) = title_from_text(text)
-        {
-            return Some(title);
-        }
-    }
+    let texts: Vec<&str> = content
+        .iter()
+        .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("input_text"))
+        .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+        .collect();
 
-    None
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    }
 }
 
 fn title_from_text(text: &str) -> Option<String> {
@@ -269,5 +356,60 @@ mod tests {
         assert_eq!(session.id, "sess-1");
         assert_eq!(session.title, "restore codex");
         assert_eq!(session.updated, 1_772_877_660);
+    }
+
+    #[test]
+    fn latest_prompt_for_workdir_uses_latest_matching_session_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/older.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-old\",\"timestamp\":\"2026-03-08T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T10:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"older prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/newer.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-new\",\"timestamp\":\"2026-03-08T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T11:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"latest prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let prompt = latest_prompt_for_workdir_from_root(&workdir, tmp.path()).unwrap();
+        assert_eq!(prompt.as_deref(), Some("latest prompt"));
+    }
+
+    #[test]
+    fn latest_prompt_for_workdir_ignores_other_workdirs() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+        let other = tmp.path().join("other");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/other.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-other\",\"timestamp\":\"2026-03-08T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T11:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"wrong prompt\"}}]}}}}\n"
+                ),
+                other.display()
+            ),
+        );
+
+        let prompt = latest_prompt_for_workdir_from_root(&workdir, tmp.path()).unwrap();
+        assert_eq!(prompt, None);
     }
 }

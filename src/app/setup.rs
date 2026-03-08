@@ -454,7 +454,7 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    is_worktree: bool,
+    _is_worktree: bool,
 ) {
     remove_old_diff_review_plugin(repo);
 
@@ -463,9 +463,7 @@ pub fn ensure_notification_hooks(
         return;
     }
     if matches!(agent, AgentKind::Codex) {
-        if is_worktree {
-            ensure_codex_notify_hook(workdir);
-        }
+        ensure_codex_notify_hook(workdir);
         return;
     }
 
@@ -680,6 +678,120 @@ pub fn ensure_notification_hooks(
     {
         use std::io::Write as _;
         let _ = f.write_all(b"latest-prompt.txt\n");
+    }
+}
+
+pub fn ensure_plan_mode_claude_md(
+    workdir: &Path,
+    repo: &Path,
+    enabled: bool,
+) {
+    const BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
+    const END: &str = "<!-- AMF:plan-instructions:end -->";
+
+    // The shared plan file lives at the repo root so all worktrees
+    // see the same file. Store it gitignored in a local-only location.
+    let plan_file = repo.join("PLAN.md");
+    let plan_path_str = plan_file.to_string_lossy();
+
+    let block = format!(
+        concat!(
+            "<!-- AMF:plan-instructions:begin -->\n\n",
+            "## Plan Mode\n\n",
+            "You are in **PLAN MODE**. A shared plan file is at:\n\n",
+            "```\n",
+            "{plan_file}\n",
+            "```\n\n",
+            "**Before doing any implementation work:**\n\n",
+            "1. Read the plan file to understand the current state\n",
+            "2. Update the plan with your intended approach\n",
+            "3. Keep the plan updated as you make progress\n\n",
+            "**Plan file format:**\n\n",
+            "```markdown\n",
+            "# Plan\n\n",
+            "## Goal\n",
+            "<overall objective>\n\n",
+            "## Tasks\n",
+            "- [ ] Task 1\n",
+            "- [x] Completed task\n\n",
+            "## Notes\n",
+            "<decisions, discoveries, blockers>\n",
+            "```\n\n",
+            "Update task checkboxes as you complete work. Other agents\n",
+            "working in parallel will read this same file.\n\n",
+            "<!-- AMF:plan-instructions:end -->\n",
+        ),
+        plan_file = plan_path_str,
+    );
+
+    // Ensure PLAN.md is gitignored at the repo root.
+    let gitignore_path = repo.join(".gitignore");
+    let needs_plan_ignore =
+        std::fs::read_to_string(&gitignore_path)
+            .map(|s| !s.contains("PLAN.md"))
+            .unwrap_or(true);
+    if needs_plan_ignore
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&gitignore_path)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(b"PLAN.md\n");
+    }
+
+    // Create a skeleton PLAN.md if enabling and file doesn't exist.
+    if enabled && !plan_file.exists() {
+        let _ = std::fs::write(
+            &plan_file,
+            "# Plan\n\n## Goal\n\n<describe the overall objective>\n\n\
+             ## Tasks\n\n- [ ] Task 1\n\n## Notes\n\n",
+        );
+    }
+
+    // Inject/remove plan instructions from workdir's CLAUDE.local.md.
+    let md_path = workdir.join("CLAUDE.local.md");
+    let current =
+        std::fs::read_to_string(&md_path).unwrap_or_default();
+    let has_block = current.contains(BEGIN);
+
+    // Ensure CLAUDE.local.md is gitignored at the workdir root.
+    let wt_gitignore = workdir.join(".gitignore");
+    let needs_ignore =
+        std::fs::read_to_string(&wt_gitignore)
+            .map(|s| !s.contains("CLAUDE.local.md"))
+            .unwrap_or(true);
+    if needs_ignore
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&wt_gitignore)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(b"CLAUDE.local.md\n");
+    }
+
+    if enabled {
+        if has_block {
+            return; // already injected
+        }
+        let content = if current.is_empty() {
+            block.clone()
+        } else {
+            format!("{}\n{}", current.trim_end(), block)
+        };
+        let _ = std::fs::write(&md_path, content);
+    } else if has_block {
+        let stripped =
+            strip_between_markers(&current, BEGIN, END);
+        if stripped.trim().is_empty() {
+            let _ = std::fs::remove_file(&md_path);
+        } else {
+            let _ = std::fs::write(
+                &md_path,
+                format!("{}\n", stripped.trim_end()),
+            );
+        }
     }
 }
 

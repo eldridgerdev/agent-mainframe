@@ -7,6 +7,7 @@ use crate::project::{AgentKind, VibeMode};
 pub const AUTOMATION_REQUEST_TYPE: &str = "automation";
 pub const AUTOMATION_RESULT_TYPE: &str = "automation-result";
 pub const CREATE_PROJECT_ACTION: &str = "create_project";
+pub const CREATE_FEATURE_ACTION: &str = "create_feature";
 pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +35,40 @@ impl CreateProjectRequest {
             "action": CREATE_PROJECT_ACTION,
             "path": self.path,
             "project_name": self.project_name,
+            "dry_run": self.dry_run,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CreateFeatureRequest {
+    pub project_name: String,
+    pub branch: String,
+    pub agent: AgentKind,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub use_worktree: Option<bool>,
+    pub enable_chrome: bool,
+    pub enable_notes: bool,
+    pub hook_choice: Option<String>,
+    pub dry_run: bool,
+}
+
+impl CreateFeatureRequest {
+    pub fn ipc_payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": AUTOMATION_REQUEST_TYPE,
+            "action": CREATE_FEATURE_ACTION,
+            "project_name": self.project_name,
+            "branch": self.branch,
+            "agent": self.agent,
+            "mode": self.mode,
+            "review": self.review,
+            "use_worktree": self.use_worktree,
+            "enable_chrome": self.enable_chrome,
+            "enable_notes": self.enable_notes,
+            "hook_choice": self.hook_choice,
             "dry_run": self.dry_run,
         })
     }
@@ -120,6 +155,55 @@ impl CreateProjectResponse {
             project_name: request.project_name.clone(),
             project_path,
             is_git,
+            message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateFeatureResponse {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub action: &'static str,
+    pub ok: bool,
+    pub dry_run: bool,
+    pub project_name: String,
+    pub branch: String,
+    pub workdir: PathBuf,
+    pub is_worktree: bool,
+    pub tmux_session: String,
+    pub started: bool,
+    pub worktree_hook_ran: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_hook_succeeded: Option<bool>,
+    pub message: String,
+}
+
+impl CreateFeatureResponse {
+    #[allow(clippy::too_many_arguments)]
+    pub fn success(
+        request: &CreateFeatureRequest,
+        workdir: PathBuf,
+        is_worktree: bool,
+        tmux_session: String,
+        started: bool,
+        worktree_hook_ran: bool,
+        worktree_hook_succeeded: Option<bool>,
+        message: String,
+    ) -> Self {
+        Self {
+            msg_type: AUTOMATION_RESULT_TYPE,
+            action: CREATE_FEATURE_ACTION,
+            ok: true,
+            dry_run: request.dry_run,
+            project_name: request.project_name.clone(),
+            branch: request.branch.clone(),
+            workdir,
+            is_worktree,
+            tmux_session,
+            started,
+            worktree_hook_ran,
+            worktree_hook_succeeded,
             message,
         }
     }

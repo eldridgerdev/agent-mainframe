@@ -88,6 +88,18 @@ enum AutomationCommands {
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
+    /// Create a single feature/worktree inside an existing AMF project from JSON input
+    CreateFeature {
+        /// Read request JSON from a file. Omit or pass `-` to read stdin.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Override the JSON payload and perform validation only.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Timeout in milliseconds while waiting for AMF to reply.
+        #[arg(long, default_value_t = 120000)]
+        timeout_ms: u64,
+    },
     /// Create one project with many parallel feature worktrees from JSON input
     CreateBatchFeatures {
         /// Read request JSON from a file. Omit or pass `-` to read stdin.
@@ -262,6 +274,27 @@ fn run_automation_command(command: AutomationCommands) -> Result<()> {
             let payload = read_json_input(file.as_ref())?;
             let mut request: automation::CreateProjectRequest =
                 serde_json::from_str(&payload).context("Invalid create_project JSON payload")?;
+            if dry_run {
+                request.dry_run = true;
+            }
+
+            let socket = ipc::socket_path();
+            let outbound = serde_json::to_string(&request.ipc_payload())?;
+            let reply = ipc::send_wait(&socket, &outbound, Duration::from_millis(timeout_ms))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply).unwrap_or_else(|_| "{}".to_string())
+            );
+            Ok(())
+        }
+        AutomationCommands::CreateFeature {
+            file,
+            dry_run,
+            timeout_ms,
+        } => {
+            let payload = read_json_input(file.as_ref())?;
+            let mut request: automation::CreateFeatureRequest =
+                serde_json::from_str(&payload).context("Invalid create_feature JSON payload")?;
             if dry_run {
                 request.dry_run = true;
             }

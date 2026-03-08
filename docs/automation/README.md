@@ -4,6 +4,7 @@ AMF now exposes machine-friendly automation entrypoints:
 
 ```bash
 amf automation create-project --file docs/automation/create-project.example.json
+amf automation create-feature --file docs/automation/create-feature.example.json
 amf automation create-batch-features --file docs/automation/create-batch-features.example.json
 ```
 
@@ -13,8 +14,9 @@ The command sends a request to the running AMF dashboard over the same local IPC
 
 - A normal `amf` dashboard instance must already be running.
 - For `create-project`, `path` must exist.
+- For `create-feature`, `project_name` must already exist in AMF.
 - For `create-batch-features`, `workspace_path` must be inside a git repository.
-- For both actions, `project_name` must not already exist in AMF.
+- For `create-project` and `create-batch-features`, `project_name` must not already exist in AMF.
 
 ## Create Project
 
@@ -46,6 +48,47 @@ Typical success response:
   "project_path": "/home/you/code/my-repo",
   "is_git": true,
   "message": "Created project 'my-repo'"
+}
+```
+
+## Create Feature
+
+Use [`create-feature.template.json`](create-feature.template.json) as the contract reference.
+
+Fields:
+
+- `project_name`: an existing AMF project
+- `branch`: feature / branch name to create
+- `agent`: `claude`, `codex`, or `opencode`
+- `mode`: `vibeless`, `vibe`, or `supervibe`
+- `review`: separate toggle for diff-review / final-review flows
+- `use_worktree`: whether to create a git worktree or reuse the project repo
+- `hook_choice`: optional answer for prompted `on_worktree_created` hooks
+- `dry_run`: validate and preview without changing AMF state
+
+Example:
+
+```bash
+cat docs/automation/create-feature.example.json | amf automation create-feature --dry-run
+amf automation create-feature --file docs/automation/create-feature.example.json
+```
+
+Typical success response:
+
+```json
+{
+  "type": "automation-result",
+  "action": "create_feature",
+  "ok": true,
+  "dry_run": false,
+  "project_name": "my-repo",
+  "branch": "automation-feature",
+  "workdir": "/home/you/code/my-repo/.worktrees/automation-feature",
+  "is_worktree": true,
+  "tmux_session": "amf-automation-feature",
+  "started": true,
+  "worktree_hook_ran": false,
+  "message": "Created and started feature 'automation-feature'"
 }
 ```
 

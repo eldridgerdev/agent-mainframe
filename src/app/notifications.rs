@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::automation::{
-    CREATE_BATCH_FEATURES_ACTION, CREATE_PROJECT_ACTION, CreateBatchFeaturesRequest,
-    CreateProjectRequest, automation_error_response,
+    CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
+    CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
+    automation_error_response,
 };
 
 impl App {
@@ -161,6 +162,41 @@ impl App {
                             },
                             Err(err) => automation_error_response(
                                 CREATE_PROJECT_ACTION,
+                                format!("Invalid automation payload: {err}"),
+                            ),
+                        }
+                    }
+                    CREATE_FEATURE_ACTION => {
+                        match serde_json::from_value::<CreateFeatureRequest>(raw.clone()) {
+                            Ok(request) => match self.create_feature_from_request(&request) {
+                                Ok(response) => {
+                                    self.log_info(
+                                        "automation",
+                                        format!(
+                                            "Automation created feature '{}' in project '{}'",
+                                            response.branch, response.project_name
+                                        ),
+                                    );
+                                    serde_json::to_value(response).unwrap_or_else(|err| {
+                                        automation_error_response(
+                                            CREATE_FEATURE_ACTION,
+                                            format!("Failed to serialize response: {err}"),
+                                        )
+                                    })
+                                }
+                                Err(err) => {
+                                    self.log_error(
+                                        "automation",
+                                        format!("Automation '{}' failed: {err}", CREATE_FEATURE_ACTION),
+                                    );
+                                    automation_error_response(
+                                        CREATE_FEATURE_ACTION,
+                                        err.to_string(),
+                                    )
+                                }
+                            },
+                            Err(err) => automation_error_response(
+                                CREATE_FEATURE_ACTION,
                                 format!("Invalid automation payload: {err}"),
                             ),
                         }

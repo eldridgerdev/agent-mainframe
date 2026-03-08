@@ -190,6 +190,7 @@ AMF exposes machine-friendly automation commands for external agents:
 
 ```bash
 amf automation create-project --file docs/automation/create-project.example.json
+amf automation create-feature --file docs/automation/create-feature.example.json
 amf automation create-batch-features --file docs/automation/create-batch-features.example.json
 ```
 

@@ -1,0 +1,12 @@
+{
+  "project_name": "agent-mainframe",
+  "branch": "automation-feature",
+  "agent": "codex",
+  "mode": "vibe",
+  "review": true,
+  "use_worktree": true,
+  "enable_chrome": false,
+  "enable_notes": true,
+  "hook_choice": null,
+  "dry_run": false
+}

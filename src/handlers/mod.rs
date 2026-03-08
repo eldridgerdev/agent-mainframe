@@ -24,6 +24,7 @@ pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
     handle_rename_feature_key, handle_rename_session_key, handle_session_config_key,
+    handle_steering_prompt_key,
     handle_theme_picker_key,
 };
 pub use feature_creation::handle_create_feature_key;
@@ -55,6 +56,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
         AppMode::Help(_) => handle_help_key(app, key.code),
+        AppMode::SteeringPrompt(_) => handle_steering_prompt_key(app, key.code),
         AppMode::NotificationPicker(_, _) => handle_notification_picker_key(app, key.code),
         AppMode::SessionSwitcher(_) => handle_session_switcher_key(app, key.code),
         AppMode::RenamingSession(_) => handle_rename_session_key(app, key.code),

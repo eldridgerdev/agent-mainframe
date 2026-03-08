@@ -1,6 +1,7 @@
 use super::setup::{
     cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
 };
+use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
 use super::util::{shorten_path, slugify};
 use super::*;
@@ -133,6 +134,40 @@ fn pane_shows_thinking_hint_detects_supported_markers() {
 fn pane_shows_thinking_hint_ignores_unrelated_text() {
     assert!(!pane_shows_thinking_hint("waiting for input"));
     assert!(!pane_shows_thinking_hint("all done"));
+}
+
+// ── prompt steering analysis ──────────────────────────────
+
+#[test]
+fn analyze_prompt_flags_missing_constraint_categories() {
+    let analysis = analyze_prompt("Add a steering coach dialog before launch.");
+
+    assert_eq!(analysis.score, 0);
+    assert_eq!(analysis.checks.len(), 5);
+    assert!(
+        analysis
+            .missing_checks()
+            .any(|check| check.constraint == PromptConstraint::FileScope)
+    );
+    assert!(
+        analysis
+            .missing_checks()
+            .any(|check| check.constraint == PromptConstraint::ValidationCommands)
+    );
+}
+
+#[test]
+fn analyze_prompt_rewards_concrete_constraints() {
+    let analysis = analyze_prompt(
+        "Update only src/app/feature_ops.rs and src/ui/dialogs/feature.rs. \
+         Done when the feature creation flow shows coaching before launch. \
+         Do not change the session picker flow. \
+         Run `cargo check`. \
+         Watch out for SuperVibe confirmation and tmux launch behavior.",
+    );
+
+    assert_eq!(analysis.score, analysis.max_score);
+    assert_eq!(analysis.missing_checks().count(), 0);
 }
 
 // ── ZaiPlanConfig::get_monthly_limit ─────────────────────
@@ -431,7 +466,11 @@ fn app_in_creating_feature_mode(
         use_worktree,
         enable_chrome: false,
         enable_notes: false,
+        steering_enabled: true,
         preset_index: 0,
+        task_prompt: String::new(),
+        prompt_analysis: analyze_prompt(""),
+        prepared_launch: None,
     };
     let mut app = App::new_for_test(
         store,
@@ -561,9 +600,200 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         AppMode::CreatingFeature(state) => {
             assert_eq!(state.agent, AgentKind::Codex);
             assert_eq!(state.agent_index, 0);
+            assert!(state.steering_enabled);
         }
         _ => panic!("expected CreatingFeature mode"),
     }
+}
+
+fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("coached");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+    };
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-coached")
+        .times(2)
+        .returning({
+            let mut calls = 0;
+            move |_| {
+                calls += 1;
+                calls > 1
+            }
+        });
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    match &agent {
+        AgentKind::Claude => {
+            tmux.expect_launch_claude()
+                .times(1)
+                .returning(|_, _, _, _| Ok(()));
+        }
+        AgentKind::Opencode => {
+            tmux.expect_launch_opencode()
+                .times(1)
+                .returning(|_, _| Ok(()));
+        }
+        AgentKind::Codex => {
+            tmux.expect_launch_codex()
+                .times(1)
+                .returning(|_, _, _| Ok(()));
+        }
+    }
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::CreatingFeature(CreateFeatureState {
+        project_name: "my-project".to_string(),
+        project_repo: repo.path().to_path_buf(),
+        branch: "coached".to_string(),
+        step: CreateFeatureStep::Mode,
+        agent: agent.clone(),
+        agent_index: 0,
+        mode: VibeMode::Vibeless,
+        mode_index: 0,
+        mode_focus: 0,
+        review: false,
+        source_index: 0,
+        worktrees: vec![],
+        worktree_index: 0,
+        use_worktree: true,
+        enable_chrome: false,
+        enable_notes: false,
+        steering_enabled: true,
+        preset_index: 0,
+        task_prompt: String::new(),
+        prompt_analysis: analyze_prompt(""),
+        prepared_launch: None,
+    });
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".to_string(),
+        branch: "coached".to_string(),
+        workdir: workdir.clone(),
+        is_worktree: true,
+        mode: VibeMode::Vibeless,
+        review: false,
+        agent,
+        enable_chrome: false,
+        enable_notes: false,
+        steering_enabled: true,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    match &app.mode {
+        AppMode::SteeringPrompt(state) => {
+            assert_eq!(state.view.window, expected_window);
+            assert_eq!(state.workdir, workdir);
+        }
+        _ => panic!("expected SteeringPrompt mode"),
+    }
+}
+
+#[test]
+fn finish_feature_launch_opens_startup_prompt_for_claude() {
+    startup_prompt_overlay_test(AgentKind::Claude, "claude");
+}
+
+#[test]
+fn finish_feature_launch_opens_startup_prompt_for_opencode() {
+    startup_prompt_overlay_test(AgentKind::Opencode, "opencode");
+}
+
+#[test]
+fn finish_feature_launch_opens_startup_prompt_for_codex() {
+    startup_prompt_overlay_test(AgentKind::Codex, "codex");
+}
+
+#[test]
+fn submit_steering_prompt_pastes_into_running_session() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("coached");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_paste_text()
+        .withf(|session, window, text| {
+            session == "amf-coached"
+                && window == "claude"
+                && text == "Implement steering coach automatically."
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-coached" && window == "claude" && key == "Enter"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::SteeringPrompt(SteeringPromptState {
+        view: ViewState::new(
+            "my-project".to_string(),
+            "coached".to_string(),
+            "amf-coached".to_string(),
+            "claude".to_string(),
+            "Claude 1".to_string(),
+            VibeMode::Vibeless,
+            false,
+        ),
+        workdir: workdir.clone(),
+        prompt: "Implement steering coach automatically.".to_string(),
+        prompt_analysis: analyze_prompt("Implement steering coach automatically."),
+    });
+
+    app.submit_steering_prompt().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session, "amf-coached");
+            assert_eq!(view.window, "claude");
+        }
+        _ => panic!("expected Viewing mode"),
+    }
+
+    let prompt_path = workdir.join(".claude").join("latest-prompt.txt");
+    assert_eq!(
+        std::fs::read_to_string(prompt_path).unwrap(),
+        "Implement steering coach automatically."
+    );
 }
 
 #[test]

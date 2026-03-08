@@ -156,6 +156,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
+        | AppMode::SteeringPrompt(_)
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)

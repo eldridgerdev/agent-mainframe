@@ -113,6 +113,7 @@ impl App {
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
         let enable_notes = state.enable_notes;
+        let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
@@ -196,6 +197,7 @@ impl App {
                             agent: state.agent.clone(),
                             enable_chrome,
                             enable_notes,
+                            steering_enabled,
                         },
                     );
                 } else {
@@ -209,6 +211,7 @@ impl App {
                         state.agent.clone(),
                         enable_chrome,
                         enable_notes,
+                        steering_enabled,
                         None,
                     );
                 }
@@ -220,8 +223,27 @@ impl App {
             (project_repo.clone(), false)
         };
 
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
+        let prepared = PreparedFeatureLaunch {
+            project_name: project_name.clone(),
+            branch: branch.clone(),
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            agent: state.agent.clone(),
+            enable_chrome,
+            enable_notes,
+            steering_enabled,
+            hook_succeeded: None,
+            startup_prompt: None,
+        };
+
+        self.finish_feature_launch(prepared)
+    }
+
+    pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
+        if prepared.enable_notes {
+            let claude_dir = prepared.workdir.join(".claude");
             if !claude_dir.exists() {
                 let _ = std::fs::create_dir_all(&claude_dir);
             }
@@ -235,25 +257,25 @@ impl App {
         }
 
         let feature = Feature::new(
-            branch.clone(),
-            branch.clone(),
-            workdir,
-            is_worktree,
-            mode,
-            review,
-            state.agent.clone(),
-            enable_chrome,
-            enable_notes,
+            prepared.branch.clone(),
+            prepared.branch.clone(),
+            prepared.workdir.clone(),
+            prepared.is_worktree,
+            prepared.mode,
+            prepared.review,
+            prepared.agent,
+            prepared.enable_chrome,
+            prepared.enable_notes,
         );
 
-        self.store.add_feature(&project_name, feature);
+        self.store.add_feature(&prepared.project_name, feature);
         self.save()?;
 
         if let Some(pi) = self
             .store
             .projects
             .iter()
-            .position(|p| p.name == project_name)
+            .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
@@ -266,15 +288,121 @@ impl App {
             .store
             .projects
             .iter()
-            .position(|p| p.name == project_name)
+            .position(|p| p.name == prepared.project_name)
         {
             let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
+            if prepared.steering_enabled {
+                self.open_startup_steering_prompt(pi, fi)?;
+                return Ok(());
+            }
         }
 
-        self.message = Some(format!("Created and started feature '{}'", branch));
+        match prepared.hook_succeeded {
+            Some(true) => {
+                self.message = Some(format!(
+                    "Created and started feature '{}' (hook succeeded)",
+                    prepared.branch
+                ));
+            }
+            Some(false) => {
+                self.report_logged_error(
+                    "hooks",
+                    format!(
+                        "Created and started feature '{}' but worktree hook failed",
+                        prepared.branch
+                    ),
+                );
+            }
+            None => {
+                self.message = Some(format!("Created and started feature '{}'", prepared.branch));
+            }
+        }
 
+        Ok(())
+    }
+
+    fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
+        let claude_dir = workdir.join(".claude");
+        if let Err(err) = std::fs::create_dir_all(&claude_dir) {
+            self.log_warn(
+                "steering",
+                format!("Failed to create .claude dir for startup prompt: {err}"),
+            );
+            return;
+        }
+
+        let path = claude_dir.join("latest-prompt.txt");
+        if let Err(err) = std::fs::write(&path, prompt) {
+            self.log_warn(
+                "steering",
+                format!("Failed to persist startup prompt at {}: {err}", path.display()),
+            );
+        }
+    }
+
+    pub fn open_startup_steering_prompt(&mut self, pi: usize, fi: usize) -> Result<()> {
+        self.selection = Selection::Feature(pi, fi);
+        self.enter_view()?;
+
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self.store.projects[pi].features[fi].workdir.clone();
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState {
+            view,
+            workdir,
+            prompt: String::new(),
+            prompt_analysis: analyze_prompt(""),
+        });
+        self.message = Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
+
+        Ok(())
+    }
+
+    pub fn cancel_steering_prompt(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::SteeringPrompt(state) => state.view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        self.mode = AppMode::Viewing(view);
+        self.message = Some("Steering prompt closed".into());
+    }
+
+    pub fn submit_steering_prompt(&mut self) -> Result<()> {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::SteeringPrompt(state) => state,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let prompt = state.prompt.trim().to_string();
+        if prompt.is_empty() {
+            self.mode = AppMode::SteeringPrompt(state);
+            self.message = Some("Task prompt cannot be empty".into());
+            return Ok(());
+        }
+
+        self.persist_startup_prompt(&state.workdir, &prompt);
+        self.tmux
+            .paste_text(&state.view.session, &state.view.window, &prompt)?;
+        self.tmux
+            .send_key_name(&state.view.session, &state.view.window, "Enter")?;
+
+        self.mode = AppMode::Viewing(state.view);
+        self.message = Some("Injected steering prompt".into());
         Ok(())
     }
 
@@ -1007,6 +1135,7 @@ impl App {
                         agent,
                         enable_chrome,
                         enable_notes,
+                        steering_enabled: false,
                     },
                 );
                 return Ok(());
@@ -1022,6 +1151,7 @@ impl App {
                 agent.clone(),
                 enable_chrome,
                 enable_notes,
+                false,
                 None,
             );
             return Ok(());

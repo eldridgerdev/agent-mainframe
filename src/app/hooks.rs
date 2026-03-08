@@ -143,6 +143,7 @@ impl App {
                 agent,
                 enable_chrome,
                 enable_notes,
+                steering_enabled,
             } => {
                 self.start_worktree_hook(
                     &state.script,
@@ -154,6 +155,7 @@ impl App {
                     agent,
                     enable_chrome,
                     enable_notes,
+                    steering_enabled,
                     Some(choice),
                 );
             }
@@ -180,6 +182,7 @@ impl App {
         agent: AgentKind,
         enable_chrome: bool,
         enable_notes: bool,
+        steering_enabled: bool,
         choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
@@ -236,6 +239,7 @@ impl App {
             agent,
             enable_chrome,
             enable_notes,
+            steering_enabled,
             child,
             output: String::new(),
             success: None,
@@ -290,6 +294,7 @@ impl App {
             agent,
             enable_chrome,
             enable_notes,
+            steering_enabled,
             success,
         ) = {
             match &self.mode {
@@ -302,6 +307,7 @@ impl App {
                     s.agent.clone(),
                     s.enable_chrome,
                     s.enable_notes,
+                    s.steering_enabled,
                     s.success,
                 ),
                 _ => return Ok(()),
@@ -315,75 +321,22 @@ impl App {
                 .map(|p| p.repo.clone())
                 .unwrap_or_default();
 
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
-        }
-
-        let feature = Feature::new(
-            branch.clone(),
-            branch.clone(),
-            workdir.clone(),
+        let prepared = PreparedFeatureLaunch {
+            project_name,
+            branch,
+            workdir,
             is_worktree,
             mode,
             review,
             agent,
             enable_chrome,
             enable_notes,
-        );
+            steering_enabled,
+            hook_succeeded: success,
+            startup_prompt: None,
+        };
 
-        self.store.add_feature(&project_name, feature);
-        self.save()?;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.store.projects[pi].collapsed = false;
-            self.selection = Selection::Feature(pi, fi);
-        }
-
-        self.mode = AppMode::Normal;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi].features.len().saturating_sub(1);
-            self.ensure_feature_running(pi, fi)?;
-            self.save()?;
-        }
-
-        if success.unwrap_or(false) {
-            self.message = Some(format!(
-                "Created and started feature '{}' (hook succeeded)",
-                branch
-            ));
-        } else {
-            self.report_logged_error(
-                "hooks",
-                format!(
-                    "Created and started feature '{}' but worktree hook failed",
-                    branch
-                ),
-            );
-        }
-
-        Ok(())
+        self.finish_feature_launch(prepared)
     }
 
     pub fn hide_running_hook(&mut self) {

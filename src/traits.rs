@@ -30,6 +30,7 @@ pub trait TmuxOps: Send + Sync {
     fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()>;
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
     fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
+    fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()>;
     fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()>;
     fn select_window(&self, session: &str, window: &str) -> Result<()>;
     fn kill_session(&self, session: &str) -> Result<()>;

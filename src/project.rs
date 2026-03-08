@@ -505,6 +505,11 @@ impl ProjectStore {
                     .with_context(|| "Failed to parse v4 project store")?;
                 Ok(store)
             }
+            version if version >= 5 => {
+                let store: ProjectStore = serde_json::from_value(raw)
+                    .with_context(|| format!("Failed to parse v{} project store", version))?;
+                Ok(store)
+            }
             _ => {
                 bail!("Unknown project store version: {}", version);
             }

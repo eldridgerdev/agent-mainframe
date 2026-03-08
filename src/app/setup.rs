@@ -681,11 +681,7 @@ pub fn ensure_notification_hooks(
     }
 }
 
-pub fn ensure_plan_mode_claude_md(
-    workdir: &Path,
-    repo: &Path,
-    enabled: bool,
-) {
+pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
     const BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
     const END: &str = "<!-- AMF:plan-instructions:end -->";
 
@@ -726,10 +722,9 @@ pub fn ensure_plan_mode_claude_md(
 
     // Ensure PLAN.md is gitignored at the repo root.
     let gitignore_path = repo.join(".gitignore");
-    let needs_plan_ignore =
-        std::fs::read_to_string(&gitignore_path)
-            .map(|s| !s.contains("PLAN.md"))
-            .unwrap_or(true);
+    let needs_plan_ignore = std::fs::read_to_string(&gitignore_path)
+        .map(|s| !s.contains("PLAN.md"))
+        .unwrap_or(true);
     if needs_plan_ignore
         && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -751,16 +746,14 @@ pub fn ensure_plan_mode_claude_md(
 
     // Inject/remove plan instructions from workdir's CLAUDE.local.md.
     let md_path = workdir.join("CLAUDE.local.md");
-    let current =
-        std::fs::read_to_string(&md_path).unwrap_or_default();
+    let current = std::fs::read_to_string(&md_path).unwrap_or_default();
     let has_block = current.contains(BEGIN);
 
     // Ensure CLAUDE.local.md is gitignored at the workdir root.
     let wt_gitignore = workdir.join(".gitignore");
-    let needs_ignore =
-        std::fs::read_to_string(&wt_gitignore)
-            .map(|s| !s.contains("CLAUDE.local.md"))
-            .unwrap_or(true);
+    let needs_ignore = std::fs::read_to_string(&wt_gitignore)
+        .map(|s| !s.contains("CLAUDE.local.md"))
+        .unwrap_or(true);
     if needs_ignore
         && let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -782,15 +775,11 @@ pub fn ensure_plan_mode_claude_md(
         };
         let _ = std::fs::write(&md_path, content);
     } else if has_block {
-        let stripped =
-            strip_between_markers(&current, BEGIN, END);
+        let stripped = strip_between_markers(&current, BEGIN, END);
         if stripped.trim().is_empty() {
             let _ = std::fs::remove_file(&md_path);
         } else {
-            let _ = std::fs::write(
-                &md_path,
-                format!("{}\n", stripped.trim_end()),
-            );
+            let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
         }
     }
 }

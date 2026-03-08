@@ -45,7 +45,13 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        self.mode = AppMode::CreatingProject(CreateProjectState::auto_detect());
+        let mut state = CreateProjectState::auto_detect();
+        state.agent = self.default_project_preferred_agent();
+        let path = PathBuf::from(&state.path);
+        let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+        self.mode = AppMode::CreatingProject(state);
         self.message = None;
     }
 
@@ -113,7 +119,12 @@ impl App {
             return Ok(());
         }
 
-        let project = Project::new("amf-settings".into(), settings_dir.clone(), false);
+        let project = Project::new(
+            "amf-settings".into(),
+            settings_dir.clone(),
+            false,
+            AgentKind::default(),
+        );
         self.store.add_project(project);
         self.save()?;
 
@@ -176,6 +187,12 @@ impl App {
         if let AppMode::BrowsingPath(mut state) = browse {
             state.create_state.path = path;
             state.create_state.step = CreateProjectStep::Path;
+            let (agent, agent_index) = self.normalize_agent_for_project_path(
+                &PathBuf::from(&state.create_state.path),
+                &state.create_state.agent,
+            );
+            state.create_state.agent = agent;
+            state.create_state.agent_index = agent_index;
             self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
@@ -244,11 +261,21 @@ impl App {
             return Ok(());
         }
 
-        let (project_path, is_git) = match WorktreeManager::repo_root(&path) {
+        let (project_path, is_git) = match self.worktree.repo_root(&path) {
             Ok(r) => (r, true),
             Err(_) => (path.clone(), false),
         };
-        let project = Project::new(name.clone(), project_path, is_git);
+
+        let preferred_agent = state.agent.clone();
+        if !self.allows_agent_for_repo(&project_path, &preferred_agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                preferred_agent.display_name()
+            ));
+            return Ok(());
+        }
+
+        let project = Project::new(name.clone(), project_path, is_git, preferred_agent);
 
         self.store.add_project(project);
         self.save()?;

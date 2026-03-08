@@ -485,8 +485,7 @@ fn draw_create_feature_branch_mode(
     frame.render_widget(review_widget, chunks[8]);
 
     // Plan mode checkbox (chunks[10])
-    let plan_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 3;
+    let plan_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 3;
     let plan_check = if state.plan_mode { "[x]" } else { "[ ]" };
     let plan_style = if plan_active {
         Style::default().fg(theme.text.to_color())

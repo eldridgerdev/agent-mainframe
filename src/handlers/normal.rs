@@ -165,9 +165,14 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             _ => {}
         },
-        KeyCode::Char('u') => {
-            app.start_session_config()?;
-        }
+        KeyCode::Char('u') => match &app.selection {
+            Selection::Project(_) => {
+                app.start_project_agent_config()?;
+            }
+            Selection::Feature(_, _) | Selection::Session(_, _, _) => {
+                app.start_session_config()?;
+            }
+        },
         KeyCode::Char('y') => match &app.selection {
             Selection::Feature(_, _) | Selection::Session(_, _, _) => {
                 app.toggle_feature_ready()?;

@@ -257,11 +257,6 @@ debug log with level ERROR.
   output and rendering through vt100 parser
 - Leader key (Ctrl+Space) activates a 2-second chord
   window for view-mode commands
-- Feature creation has exactly three vibe modes:
-  `Vibeless`, `Vibe`, and `SuperVibe`. `Review` is not a
-  vibe mode. It is a separate boolean/checkbox that can be
-  enabled alongside any vibe mode. Do not re-add `Review`
-  to `VibeMode`, mode pickers, or presets.
 - **Never modify `~/.claude/settings.json` (global) or
   `~/.config/opencode/` (global opencode config) to inject
   hooks or settings.** Instead, write to the worktree's

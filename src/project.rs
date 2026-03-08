@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
@@ -174,6 +176,10 @@ fn default_true() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Feature {
     pub id: String,
@@ -198,6 +204,8 @@ pub struct Feature {
     pub enable_chrome: bool,
     #[serde(default)]
     pub has_notes: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pending_worktree_script: bool,
     #[serde(default)]
     pub ready: bool,
     pub status: ProjectStatus,
@@ -270,6 +278,7 @@ impl<'de> Deserialize<'de> for Feature {
             agent: feature.agent,
             enable_chrome: feature.enable_chrome,
             has_notes: feature.has_notes,
+            pending_worktree_script: false,
             ready: feature.ready,
             status: feature.status,
             created_at: feature.created_at,
@@ -312,6 +321,7 @@ impl Feature {
             agent,
             enable_chrome,
             has_notes,
+            pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
             created_at: now,
@@ -477,7 +487,7 @@ fn default_session_bookmarks() -> Vec<SessionBookmark> {
     Vec::new()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectStore {
     pub version: u32,
     pub projects: Vec<Project>,
@@ -547,7 +557,7 @@ impl ProjectStore {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self {
-                version: 4,
+                version: CURRENT_PROJECT_STORE_VERSION,
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
                 extra: HashMap::new(),
@@ -604,19 +614,22 @@ impl ProjectStore {
             4 => {
                 let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v4 project store")?;
-                if store.normalize_legacy_review_modes() {
+                let mut needs_save = store.normalize_legacy_review_modes();
+                if store.version < CURRENT_PROJECT_STORE_VERSION {
+                    store.version = CURRENT_PROJECT_STORE_VERSION;
+                    needs_save = true;
+                }
+                if needs_save {
                     store.save(path)?;
                 }
                 Ok(store)
             }
-            5 => {
-                let store: ProjectStore = serde_json::from_value(raw)
-                    .with_context(|| "Failed to parse v5 project store")?;
-                Ok(store)
-            }
             version if version >= 5 => {
-                let store: ProjectStore = serde_json::from_value(raw)
+                let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| format!("Failed to parse v{} project store", version))?;
+                if store.normalize_legacy_review_modes() {
+                    store.save(path)?;
+                }
                 Ok(store)
             }
             _ => {
@@ -638,7 +651,7 @@ impl ProjectStore {
     fn migrate_from_v3(v3: ProjectStore) -> Self {
         // Add nickname field to features (serde default handles this)
         Self {
-            version: 4,
+            version: CURRENT_PROJECT_STORE_VERSION,
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
             extra: HashMap::new(),
@@ -752,6 +765,7 @@ impl ProjectStore {
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
+                            pending_worktree_script: false,
                             ready: false,
                             status: f.status,
                             created_at: f.created_at,
@@ -787,7 +801,13 @@ impl ProjectStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = serde_json::to_string_pretty(self)?;
+        let mut persisted = self.clone();
+        for project in &mut persisted.projects {
+            project
+                .features
+                .retain(|feature| !feature.pending_worktree_script);
+        }
+        let data = serde_json::to_string_pretty(&persisted)?;
         fs::write(path, data).with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(())
     }
@@ -890,6 +910,7 @@ mod tests {
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,
+            pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
             created_at: Utc::now(),
@@ -905,7 +926,7 @@ mod tests {
     #[test]
     fn projectstore_roundtrip() {
         let store = ProjectStore {
-            version: 4,
+            version: CURRENT_PROJECT_STORE_VERSION,
             projects: vec![Project {
                 id: "proj-id".to_string(),
                 name: "my-project".to_string(),
@@ -923,7 +944,7 @@ mod tests {
         store.save(tmp.path()).unwrap();
 
         let loaded = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(loaded.projects[0].name, "my-project");
         assert_eq!(
@@ -999,6 +1020,34 @@ mod tests {
         assert!(reloaded_json.get("guided_tours").is_some());
     }
 
+    #[test]
+    fn migration_v4_to_v5() {
+        let store = ProjectStore {
+            version: 4,
+            projects: vec![Project {
+                id: "proj-id".to_string(),
+                name: "my-project".to_string(),
+                repo: PathBuf::from("/home/user/my-project"),
+                collapsed: false,
+                features: vec![],
+                created_at: Utc::now(),
+                preferred_agent: AgentKind::Claude,
+                is_git: true,
+            }],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), serde_json::to_string_pretty(&store).unwrap()).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, CURRENT_PROJECT_STORE_VERSION);
+
+        let reloaded: ProjectStore =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path()).unwrap()).unwrap();
+        assert_eq!(reloaded.version, CURRENT_PROJECT_STORE_VERSION);
+    }
+
     // ── Migration v0 → v2 ────────────────────────────────────
 
     #[test]
@@ -1024,7 +1073,7 @@ mod tests {
         std::fs::write(tmp.path(), v0_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 4);
+        assert_eq!(store.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];
@@ -1080,7 +1129,7 @@ mod tests {
         std::fs::write(tmp.path(), v1_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 4);
+        assert_eq!(store.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];

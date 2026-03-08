@@ -5,6 +5,158 @@ use super::*;
 use crate::debug::{LogLevel, log_to_file};
 
 impl App {
+    pub(crate) fn feature_is_pending_worktree_script(&self, pi: usize, fi: usize) -> bool {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+            .map(|feature| feature.pending_worktree_script)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn block_if_feature_pending_worktree_script(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> bool {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return false;
+        };
+
+        if !feature.pending_worktree_script {
+            return false;
+        }
+
+        self.message = Some(format!(
+            "'{}' is still running its worktree script",
+            feature.name
+        ));
+        true
+    }
+
+    fn upsert_pending_worktree_feature(
+        &mut self,
+        project_name: &str,
+        branch: &str,
+        workdir: &Path,
+        mode: &VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: &AgentKind,
+        enable_chrome: bool,
+        enable_notes: bool,
+    ) -> Option<(usize, usize)> {
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|project| project.name == project_name)?;
+        let project = self.store.projects.get_mut(pi)?;
+        project.collapsed = false;
+
+        let fi = if let Some(fi) = project
+            .features
+            .iter()
+            .position(|feature| feature.name == branch)
+        {
+            fi
+        } else {
+            let mut feature = Feature::new(
+                branch.to_string(),
+                branch.to_string(),
+                workdir.to_path_buf(),
+                true,
+                mode.clone(),
+                review,
+                plan_mode,
+                agent.clone(),
+                enable_chrome,
+                enable_notes,
+            );
+            feature.pending_worktree_script = true;
+            project.features.push(feature);
+            project.features.len().saturating_sub(1)
+        };
+
+        if let Some(feature) = project.features.get_mut(fi) {
+            feature.workdir = workdir.to_path_buf();
+            feature.is_worktree = true;
+            feature.mode = mode.clone();
+            feature.review = review;
+            feature.plan_mode = plan_mode;
+            feature.agent = agent.clone();
+            feature.enable_chrome = enable_chrome;
+            feature.has_notes = enable_notes;
+            feature.pending_worktree_script = true;
+            feature.status = ProjectStatus::Stopped;
+        }
+
+        Some((pi, fi))
+    }
+
+    fn finalize_worktree_hook_feature(
+        &mut self,
+        workdir: PathBuf,
+        project_name: String,
+        branch: String,
+        mode: VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+        enable_notes: bool,
+        steering_enabled: bool,
+        focus_feature: bool,
+    ) -> Result<()> {
+        let Some((pi, fi)) = self.upsert_pending_worktree_feature(
+            &project_name,
+            &branch,
+            &workdir,
+            &mode,
+            review,
+            plan_mode,
+            &agent,
+            enable_chrome,
+            enable_notes,
+        ) else {
+            return Ok(());
+        };
+
+        if focus_feature {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        let is_worktree = workdir
+            != self
+                .store
+                .find_project(&project_name)
+                .map(|p| p.repo.clone())
+                .unwrap_or_default();
+
+        let prepared = PreparedFeatureLaunch {
+            project_name,
+            branch,
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            enable_notes,
+            steering_enabled,
+            hook_succeeded: None,
+            startup_prompt: None,
+        };
+
+        self.finish_feature_launch(prepared)
+    }
+
     fn hook_failure_detail(output: &str) -> String {
         output
             .lines()
@@ -205,6 +357,21 @@ impl App {
         if let Some(ref c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
+
+        if let Some((pi, fi)) = self.upsert_pending_worktree_feature(
+            &project_name,
+            &branch,
+            &workdir,
+            &mode,
+            review,
+            plan_mode,
+            &agent,
+            enable_chrome,
+            enable_notes,
+        ) {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
         let (tx, rx) = std::sync::mpsc::channel::<String>();
         let mut child = cmd.spawn().ok();
 
@@ -320,18 +487,25 @@ impl App {
             }
         };
 
-        let is_worktree = workdir
-            != self
-                .store
-                .find_project(&project_name)
-                .map(|p| p.repo.clone())
-                .unwrap_or_default();
+        if enable_notes {
+            let claude_dir = workdir.join(".claude");
+            if !claude_dir.exists() {
+                let _ = std::fs::create_dir_all(&claude_dir);
+            }
+            let notes_path = claude_dir.join("notes.md");
+            if !notes_path.exists() {
+                let _ = std::fs::write(
+                    &notes_path,
+                    "# Notes\n\nWrite instructions for Claude here.\n",
+                );
+            }
+        }
 
-        let prepared = PreparedFeatureLaunch {
-            project_name,
-            branch,
+        self.mode = AppMode::Normal;
+        self.finalize_worktree_hook_feature(
             workdir,
-            is_worktree,
+            project_name.clone(),
+            branch.clone(),
             mode,
             review,
             plan_mode,
@@ -339,11 +513,29 @@ impl App {
             enable_chrome,
             enable_notes,
             steering_enabled,
-            hook_succeeded: success,
-            startup_prompt: None,
-        };
+            true,
+        )?;
 
-        self.finish_feature_launch(prepared)
+        match success {
+            Some(true) => {
+                self.message = Some(format!(
+                    "Created and started feature '{}' (hook succeeded)",
+                    branch
+                ));
+            }
+            Some(false) => {
+                self.report_logged_error(
+                    "hooks",
+                    format!(
+                        "Created and started feature '{}' but worktree hook failed",
+                        branch
+                    ),
+                );
+            }
+            None => {}
+        }
+
+        Ok(())
     }
 
     pub fn hide_running_hook(&mut self) {
@@ -388,11 +580,37 @@ impl App {
 
         for key in completed {
             if let Some(hook) = self.background_hooks.remove(&key) {
-                if hook.success.unwrap_or(false) {
-                    let _ = self.save();
-                    self.message = Some("Hook completed".to_string());
+                if let Err(err) = self.finalize_worktree_hook_feature(
+                    hook.workdir.clone(),
+                    hook.project_name.clone(),
+                    hook.branch.clone(),
+                    hook.mode.clone(),
+                    hook.review,
+                    hook.plan_mode,
+                    hook.agent.clone(),
+                    hook.enable_chrome,
+                    hook.enable_notes,
+                    hook.steering_enabled,
+                    false,
+                ) {
+                    self.report_logged_error(
+                        "hooks",
+                        format!("Failed to finalize '{}': {}", hook.branch, err),
+                    );
+                } else if hook.success.unwrap_or(false) {
+                    self.message = Some(format!(
+                        "Created and started feature '{}' (hook succeeded)",
+                        hook.branch
+                    ));
                 } else {
-                    self.report_logged_error("hooks", Self::hook_failure_detail(&hook.output));
+                    self.report_logged_error(
+                        "hooks",
+                        format!(
+                            "Created and started feature '{}' but {}",
+                            hook.branch,
+                            Self::hook_failure_detail(&hook.output).to_lowercase()
+                        ),
+                    );
                 }
             }
         }

@@ -171,7 +171,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     let is_being_deleted =
                         app.is_feature_being_deleted(&project.name, &feature.name);
                     let is_hook_running = app.is_hook_running(&feature.workdir);
-                    let status_dot = if is_being_deleted {
+                    let is_pending_worktree_script = feature.pending_worktree_script;
+                    let status_dot = if is_pending_worktree_script {
+                        Span::styled(
+                            " ⚙ ",
+                            Style::default()
+                                .fg(theme.info.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        )
+                    } else if is_being_deleted {
                         let throbber = throbber_widgets_tui::Throbber::default()
                             .throbber_style(
                                 Style::default()
@@ -252,6 +260,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default()
                             .fg(theme.text_muted.to_color())
                             .add_modifier(Modifier::CROSSED_OUT)
+                    } else if is_pending_worktree_script {
+                        Style::default()
+                            .fg(theme.info.to_color())
+                            .add_modifier(Modifier::BOLD)
                     } else if is_selected {
                         Style::default()
                             .fg(theme.feature_title.to_color())
@@ -323,6 +335,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             " [deleting...]",
                             Style::default()
                                 .fg(theme.danger.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    if is_pending_worktree_script {
+                        line_spans.push(Span::styled(
+                            " [running worktree script...]",
+                            Style::default()
+                                .fg(theme.info.to_color())
                                 .add_modifier(Modifier::BOLD),
                         ));
                     }

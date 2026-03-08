@@ -3,6 +3,16 @@ use crate::tmux::TmuxManager;
 
 impl App {
     pub fn pick_claude_session(&mut self) {
+        let selected = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => Some((*pi, *fi)),
+            _ => None,
+        };
+        if let Some((pi, fi)) = selected
+            && self.block_if_feature_pending_worktree_script(pi, fi)
+        {
+            return;
+        }
+
         let workdir = match &self.selection {
             Selection::Feature(pi, fi) => self
                 .store

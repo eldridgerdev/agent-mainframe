@@ -53,6 +53,14 @@ impl App {
             return Ok(());
         };
 
+        if feature.pending_worktree_script {
+            self.message = Some(format!(
+                "'{}' is still running its worktree script",
+                feature.name
+            ));
+            return Ok(());
+        }
+
         if !feature.is_worktree {
             self.message = Some("Session config is only available for worktree features".into());
             return Ok(());

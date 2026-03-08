@@ -100,6 +100,7 @@ pub struct FeaturePreset {
     pub mode: VibeMode,
     pub agent: AgentKind,
     pub review: bool,
+    pub plan_mode: bool,
     pub enable_chrome: bool,
     pub enable_notes: bool,
 }

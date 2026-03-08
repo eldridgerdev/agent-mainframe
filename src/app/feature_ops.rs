@@ -1,8 +1,8 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::*;
+use super::setup::{ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md};
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -104,6 +104,7 @@ impl App {
         let branch = state.branch.clone();
         let mode = state.mode.clone();
         let review = state.review;
+        let plan_mode = state.plan_mode;
         let use_existing_worktree = state.source_index == 1 && !state.worktrees.is_empty();
         let selected_worktree = if use_existing_worktree {
             state.worktrees.get(state.worktree_index).cloned()
@@ -193,6 +194,7 @@ impl App {
                             branch,
                             mode,
                             review,
+                            plan_mode,
                             agent: state.agent.clone(),
                             enable_chrome,
                             enable_notes,
@@ -206,6 +208,7 @@ impl App {
                         branch,
                         mode,
                         review,
+                        plan_mode,
                         state.agent.clone(),
                         enable_chrome,
                         enable_notes,
@@ -241,6 +244,7 @@ impl App {
             is_worktree,
             mode,
             review,
+            plan_mode,
             state.agent.clone(),
             enable_chrome,
             enable_notes,
@@ -298,6 +302,7 @@ impl App {
             feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
@@ -1004,6 +1009,7 @@ impl App {
                         branch: new_branch,
                         mode,
                         review,
+                        plan_mode: false,
                         agent,
                         enable_chrome,
                         enable_notes,
@@ -1019,6 +1025,7 @@ impl App {
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                false,
                 agent.clone(),
                 enable_chrome,
                 enable_notes,
@@ -1048,6 +1055,7 @@ impl App {
             true,
             mode,
             review,
+            false,
             agent,
             enable_chrome,
             enable_notes,
@@ -1248,6 +1256,7 @@ impl App {
                 true,
                 mode.clone(),
                 review,
+                false,
                 agent.clone(),
                 enable_chrome,
                 enable_notes,

@@ -174,6 +174,8 @@ pub struct Feature {
     #[serde(default)]
     pub review: bool,
     #[serde(default)]
+    pub plan_mode: bool,
+    #[serde(default)]
     pub agent: AgentKind,
     #[serde(default)]
     pub enable_chrome: bool,
@@ -201,6 +203,7 @@ impl Feature {
         is_worktree: bool,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
         has_notes: bool,
@@ -218,6 +221,7 @@ impl Feature {
             collapsed: true,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
             has_notes,
@@ -644,6 +648,7 @@ impl ProjectStore {
                             collapsed: true,
                             mode: VibeMode::default(),
                             review: false,
+                            plan_mode: false,
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
@@ -779,6 +784,7 @@ mod tests {
             collapsed: true,
             mode: VibeMode::default(),
             review: false,
+            plan_mode: false,
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,

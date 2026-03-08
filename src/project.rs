@@ -355,11 +355,13 @@ pub struct Project {
     pub features: Vec<Feature>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
+    pub preferred_agent: AgentKind,
+    #[serde(default)]
     pub is_git: bool,
 }
 
 impl Project {
-    pub fn new(name: String, repo: PathBuf, is_git: bool) -> Self {
+    pub fn new(name: String, repo: PathBuf, is_git: bool, preferred_agent: AgentKind) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             name,
@@ -367,6 +369,7 @@ impl Project {
             collapsed: false,
             features: Vec::new(),
             created_at: Utc::now(),
+            preferred_agent,
             is_git,
         }
     }
@@ -389,6 +392,8 @@ pub struct ProjectStore {
     pub projects: Vec<Project>,
     #[serde(default = "default_session_bookmarks")]
     pub session_bookmarks: Vec<SessionBookmark>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 // --- V1 types for migration ---
@@ -454,6 +459,7 @@ impl ProjectStore {
                 version: 4,
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
+                extra: HashMap::new(),
             });
         }
         let data = fs::read_to_string(path)
@@ -505,6 +511,11 @@ impl ProjectStore {
                     .with_context(|| "Failed to parse v4 project store")?;
                 Ok(store)
             }
+            5 => {
+                let store: ProjectStore = serde_json::from_value(raw)
+                    .with_context(|| "Failed to parse v5 project store")?;
+                Ok(store)
+            }
             _ => {
                 bail!("Unknown project store version: {}", version);
             }
@@ -517,6 +528,7 @@ impl ProjectStore {
             version: 3,
             projects: v2.projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -526,6 +538,7 @@ impl ProjectStore {
             version: 4,
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -652,6 +665,7 @@ impl ProjectStore {
                     collapsed: p.collapsed,
                     features,
                     created_at: p.created_at,
+                    preferred_agent: AgentKind::default(),
                     is_git: true,
                 }
             })
@@ -661,6 +675,7 @@ impl ProjectStore {
             version: 2,
             projects,
             session_bookmarks: default_session_bookmarks(),
+            extra: HashMap::new(),
         }
     }
 
@@ -783,9 +798,11 @@ mod tests {
                 collapsed: false,
                 features: vec![],
                 created_at: Utc::now(),
+                preferred_agent: AgentKind::Codex,
                 is_git: true,
             }],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();
         store.save(tmp.path()).unwrap();
@@ -798,7 +815,73 @@ mod tests {
             loaded.projects[0].repo,
             PathBuf::from("/home/user/my-project")
         );
+        assert_eq!(loaded.projects[0].preferred_agent, AgentKind::Codex);
         assert!(loaded.projects[0].is_git);
+    }
+
+    #[test]
+    fn projectstore_load_defaults_missing_preferred_agent() {
+        let json = r#"{
+            "version": 4,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-project",
+                    "collapsed": false,
+                    "features": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": []
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), json).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.projects[0].preferred_agent, AgentKind::Claude);
+    }
+
+    #[test]
+    fn projectstore_loads_version_5_and_preserves_unknown_top_level_fields() {
+        let json = r#"{
+            "version": 5,
+            "projects": [
+                {
+                    "id": "proj-id",
+                    "name": "my-project",
+                    "repo": "/home/user/my-project",
+                    "collapsed": false,
+                    "features": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "preferred_agent": "codex",
+                    "is_git": true
+                }
+            ],
+            "session_bookmarks": [],
+            "guided_tours": {
+                "proj-id": {
+                    "summary": "tour",
+                    "highlights": [],
+                    "stops": [],
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "updated_at": "2024-01-01T00:00:00Z"
+                }
+            }
+        }"#;
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), json).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, 5);
+        assert!(loaded.extra.contains_key("guided_tours"));
+
+        loaded.save(tmp.path()).unwrap();
+
+        let reloaded_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path()).unwrap()).unwrap();
+        assert!(reloaded_json.get("guided_tours").is_some());
     }
 
     // ── Migration v0 → v2 ────────────────────────────────────
@@ -832,6 +915,7 @@ mod tests {
         let proj = &store.projects[0];
         // project name derived from repo basename
         assert_eq!(proj.name, "my-repo");
+        assert_eq!(proj.preferred_agent, AgentKind::Claude);
         assert_eq!(proj.features.len(), 1);
 
         let feat = &proj.features[0];
@@ -886,6 +970,7 @@ mod tests {
 
         let proj = &store.projects[0];
         assert_eq!(proj.name, "my-project");
+        assert_eq!(proj.preferred_agent, AgentKind::Claude);
 
         let feat = &proj.features[0];
         assert_eq!(feat.name, "my-feature");

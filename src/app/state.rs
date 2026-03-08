@@ -152,6 +152,14 @@ pub struct SessionConfigState {
     pub selected_agent: usize,
 }
 
+pub struct ProjectAgentConfigState {
+    pub project_idx: usize,
+    pub project_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
@@ -200,6 +208,7 @@ pub enum AppMode {
     RenamingSession(RenameSessionState),
     RenamingFeature(RenameFeatureState),
     SessionConfig(SessionConfigState),
+    ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
@@ -462,12 +471,15 @@ pub struct CreateProjectState {
     pub step: CreateProjectStep,
     pub name: String,
     pub path: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
 }
 
 #[derive(Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,
+    Agent,
 }
 
 impl CreateProjectState {
@@ -481,6 +493,8 @@ impl CreateProjectState {
             step: CreateProjectStep::Name,
             name: String::new(),
             path: repo_path,
+            agent: AgentKind::default(),
+            agent_index: 0,
         }
     }
 }

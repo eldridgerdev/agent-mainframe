@@ -5,6 +5,31 @@ use super::util::slugify;
 use super::*;
 use crate::tmux::TmuxManager;
 
+fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
+    match agent {
+        AgentKind::Claude => SessionKind::Claude,
+        AgentKind::Opencode => SessionKind::Opencode,
+        AgentKind::Codex => SessionKind::Codex,
+    }
+}
+
+fn label_for_agent(agent: &AgentKind) -> String {
+    match agent {
+        AgentKind::Claude => "Claude".to_string(),
+        AgentKind::Opencode => "Opencode".to_string(),
+        AgentKind::Codex => "Codex".to_string(),
+    }
+}
+
+fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
+    match kind {
+        SessionKind::Claude => Some(AgentKind::Claude),
+        SessionKind::Opencode => Some(AgentKind::Opencode),
+        SessionKind::Codex => Some(AgentKind::Codex),
+        _ => None,
+    }
+}
+
 impl App {
     /// Open the custom session picker for the currently
     pub fn open_session_picker(&mut self) -> Result<()> {
@@ -48,8 +73,7 @@ impl App {
             self.log_debug("session_picker", format!("  [{}] {}", i, name));
         }
 
-        let feature = self.store.projects[pi].features[fi].clone();
-        let agent = feature.agent.clone();
+        let project = self.store.projects[pi].clone();
 
         let vscode_available = std::process::Command::new("code")
             .arg("--version")
@@ -58,20 +82,17 @@ impl App {
             .status()
             .is_ok();
 
-        let builtin_sessions = vec![
-            BuiltinSessionOption {
-                kind: match agent {
-                    AgentKind::Claude => SessionKind::Claude,
-                    AgentKind::Opencode => SessionKind::Opencode,
-                    AgentKind::Codex => SessionKind::Codex,
-                },
-                label: match agent {
-                    AgentKind::Claude => "Claude".to_string(),
-                    AgentKind::Opencode => "Opencode (Claude)".to_string(),
-                    AgentKind::Codex => "Codex".to_string(),
-                },
+        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
+        let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
+            .iter()
+            .map(|agent| BuiltinSessionOption {
+                kind: session_kind_for_agent(agent),
+                label: label_for_agent(agent),
                 disabled: None,
-            },
+            })
+            .collect();
+
+        builtin_sessions.extend(vec![
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
@@ -91,7 +112,7 @@ impl App {
                     Some("code not found in PATH".to_string())
                 },
             },
-        ];
+        ]);
 
         let custom_sessions = self.active_extension.custom_sessions.clone();
 
@@ -107,10 +128,15 @@ impl App {
             None
         };
 
+        let selected = builtin_sessions
+            .iter()
+            .position(|session| session.kind == session_kind_for_agent(&project.preferred_agent))
+            .unwrap_or(0);
+
         self.mode = AppMode::SessionPicker(SessionPickerState {
             builtin_sessions,
             custom_sessions,
-            selected: 0,
+            selected,
             pi,
             fi,
             from_view,
@@ -149,8 +175,7 @@ impl App {
 
         self.reload_extension_config();
 
-        let feature = self.store.projects[pi].features[fi].clone();
-        let agent = feature.agent.clone();
+        let project = self.store.projects[pi].clone();
 
         let vscode_available = std::process::Command::new("code")
             .arg("--version")
@@ -159,20 +184,17 @@ impl App {
             .status()
             .is_ok();
 
-        let builtin_sessions = vec![
-            BuiltinSessionOption {
-                kind: match agent {
-                    AgentKind::Claude => SessionKind::Claude,
-                    AgentKind::Opencode => SessionKind::Opencode,
-                    AgentKind::Codex => SessionKind::Codex,
-                },
-                label: match agent {
-                    AgentKind::Claude => "Claude".to_string(),
-                    AgentKind::Opencode => "Opencode (Claude)".to_string(),
-                    AgentKind::Codex => "Codex".to_string(),
-                },
+        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
+        let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
+            .iter()
+            .map(|agent| BuiltinSessionOption {
+                kind: session_kind_for_agent(agent),
+                label: label_for_agent(agent),
                 disabled: None,
-            },
+            })
+            .collect();
+
+        builtin_sessions.extend(vec![
             BuiltinSessionOption {
                 kind: SessionKind::Terminal,
                 label: "Terminal".to_string(),
@@ -192,14 +214,18 @@ impl App {
                     Some("code not found in PATH".to_string())
                 },
             },
-        ];
+        ]);
 
         let custom_sessions = self.active_extension.custom_sessions.clone();
+        let selected = builtin_sessions
+            .iter()
+            .position(|session| session.kind == session_kind_for_agent(&project.preferred_agent))
+            .unwrap_or(0);
 
         self.mode = AppMode::SessionPicker(SessionPickerState {
             builtin_sessions,
             custom_sessions,
-            selected: 0,
+            selected,
             pi,
             fi,
             from_view: None,
@@ -285,7 +311,7 @@ impl App {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi),
             SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi),
             SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex => {
-                self.add_claude_session_for_picker(pi, fi)
+                self.add_agent_session_for_picker(pi, fi, kind)
             }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => {
@@ -403,8 +429,17 @@ impl App {
         Ok(())
     }
 
-    fn add_claude_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
+    fn add_agent_session_for_picker(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+    ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let Some(agent) = agent_for_session_kind(&kind) else {
+            self.message = Some("Unsupported agent session type".into());
+            return Ok(());
+        };
 
         let feature = match self
             .store
@@ -425,21 +460,15 @@ impl App {
         let tmux_session = feature.tmux_session.clone();
         let mode = feature.mode.clone();
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
-        let agent = feature.agent.clone();
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
-        let session_kind = match feature.agent {
-            AgentKind::Claude => SessionKind::Claude,
-            AgentKind::Opencode => SessionKind::Opencode,
-            AgentKind::Codex => SessionKind::Codex,
-        };
-        let session = feature.add_session(session_kind);
+        let session = feature.add_session(kind.clone());
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
         TmuxManager::create_window(&tmux_session, &window, &workdir)?;
         let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-        match feature.agent {
+        match agent {
             AgentKind::Claude => {
                 TmuxManager::launch_claude(&tmux_session, &window, None, &extra_refs)?;
             }
@@ -519,61 +548,16 @@ impl App {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
-
-        let repo = self.store.projects[pi].repo.clone();
-
-        let feature = match self
+        let Some(kind) = self
             .store
             .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-
-        if !TmuxManager::session_exists(&feature.tmux_session) {
-            self.message = Some("Error: Feature must be running to add a session".into());
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .map(|f| session_kind_for_agent(&f.agent))
+        else {
             return Ok(());
-        }
-
-        let workdir = feature.workdir.clone();
-        let tmux_session = feature.tmux_session.clone();
-        let mode = feature.mode.clone();
-        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
-        let agent = feature.agent.clone();
-        ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
-        ensure_review_claude_md(&workdir, feature.review);
-        let session_kind = match feature.agent {
-            AgentKind::Claude => SessionKind::Claude,
-            AgentKind::Opencode => SessionKind::Opencode,
-            AgentKind::Codex => SessionKind::Codex,
         };
-        let session = feature.add_session(session_kind);
-        let window = session.tmux_window.clone();
-        let label = session.label.clone();
-
-        TmuxManager::create_window(&tmux_session, &window, &workdir)?;
-        let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-        match feature.agent {
-            AgentKind::Claude => {
-                TmuxManager::launch_claude(&tmux_session, &window, None, &extra_refs)?;
-            }
-            AgentKind::Opencode => {
-                TmuxManager::launch_opencode(&tmux_session, &window)?;
-            }
-            AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window, None)?;
-            }
-        }
-
-        feature.collapsed = false;
-        let si = feature.sessions.len() - 1;
-        self.selection = Selection::Session(pi, fi, si);
-        self.save()?;
-        self.message = Some(format!("Added '{}'", label));
-
-        Ok(())
+        self.add_agent_session_for_picker(pi, fi, kind)
     }
 
     pub fn remove_session(&mut self) -> Result<()> {

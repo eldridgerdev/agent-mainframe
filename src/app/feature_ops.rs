@@ -65,11 +65,19 @@ impl App {
     }
 
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, is_first, used_workdirs) = match &self.selection {
+        let (project_name, project_repo, preferred_agent, is_first, used_workdirs) = match &self
+            .selection
+        {
             Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
                 if let Some(p) = self.store.projects.get(*pi) {
                     let used: Vec<PathBuf> = p.features.iter().map(|f| f.workdir.clone()).collect();
-                    (p.name.clone(), p.repo.clone(), p.features.is_empty(), used)
+                    (
+                        p.name.clone(),
+                        p.repo.clone(),
+                        p.preferred_agent.clone(),
+                        p.features.is_empty(),
+                        used,
+                    )
                 } else {
                     return;
                 }
@@ -85,7 +93,7 @@ impl App {
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
         self.active_extension = self.extension_for_repo(&project_repo);
-        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &state.agent);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.agent = agent;
         state.agent_index = agent_index;
 
@@ -1203,7 +1211,12 @@ impl App {
             return Ok(());
         }
 
-        let project = Project::new(project_name.clone(), project_repo.clone(), is_git);
+        let project = Project::new(
+            project_name.clone(),
+            project_repo.clone(),
+            is_git,
+            agent.clone(),
+        );
         self.store.add_project(project);
         self.save()?;
 

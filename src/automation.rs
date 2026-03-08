@@ -15,6 +15,7 @@ pub const CREATE_BATCH_FEATURES_ACTION: &str = "create_batch_features";
 pub struct CreateProjectRequest {
     pub path: PathBuf,
     pub project_name: String,
+    pub preferred_agent: Option<AgentKind>,
     pub dry_run: bool,
 }
 
@@ -23,6 +24,7 @@ impl Default for CreateProjectRequest {
         Self {
             path: PathBuf::new(),
             project_name: String::new(),
+            preferred_agent: None,
             dry_run: false,
         }
     }
@@ -35,6 +37,7 @@ impl CreateProjectRequest {
             "action": CREATE_PROJECT_ACTION,
             "path": self.path,
             "project_name": self.project_name,
+            "preferred_agent": self.preferred_agent,
             "dry_run": self.dry_run,
         })
     }

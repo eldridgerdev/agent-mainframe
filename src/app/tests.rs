@@ -6,6 +6,7 @@ use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify}
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+use std::collections::HashMap;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -99,6 +100,39 @@ fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
     assert!(!config.nerd_font);
+}
+
+#[test]
+fn app_config_missing_projects_uses_default_preferred_agent_none() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.projects.default_preferred_agent, None);
+}
+
+#[test]
+fn app_config_projects_default_preferred_agent_deserializes() {
+    let config: AppConfig =
+        serde_json::from_str(r#"{"projects":{"default_preferred_agent":"codex"}}"#).unwrap();
+    assert_eq!(
+        config.projects.default_preferred_agent,
+        Some(AgentKind::Codex)
+    );
+}
+
+#[test]
+fn default_project_preferred_agent_comes_from_config() {
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 4,
+            projects: vec![],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.projects.default_preferred_agent = Some(AgentKind::Opencode);
+
+    assert_eq!(app.default_project_preferred_agent(), AgentKind::Opencode);
 }
 
 // ── strip_between_markers ─────────────────────────────────
@@ -254,12 +288,14 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -295,12 +331,14 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -415,12 +453,14 @@ fn visible_items_prioritizes_non_worktree_features() {
             },
         ],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: true,
     };
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     };
 
     let app = App::new_for_test(
@@ -576,12 +616,14 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         collapsed: false,
         features: vec![],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
         store,
@@ -598,6 +640,149 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
             assert_eq!(state.agent_index, 0);
         }
         _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn create_project_persists_selected_preferred_agent() {
+    let repo = TempDir::new().unwrap();
+    let tmp = NamedTempFile::new().unwrap();
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+    let repo_path = repo.path().to_path_buf();
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_path.clone()));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::CreatingProject(CreateProjectState {
+        step: CreateProjectStep::Agent,
+        name: "my-project".to_string(),
+        path: repo.path().to_string_lossy().into_owned(),
+        agent: AgentKind::Codex,
+        agent_index: 0,
+    });
+
+    app.create_project().unwrap();
+
+    assert_eq!(app.store.projects.len(), 1);
+    assert_eq!(app.store.projects[0].preferred_agent, AgentKind::Codex);
+}
+
+#[test]
+fn start_create_feature_uses_project_preferred_agent_when_allowed() {
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Project(0);
+
+    app.start_create_feature();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.agent, AgentKind::Codex);
+            assert_eq!(state.agent_index, 2);
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn open_session_picker_selects_project_preferred_agent_by_default() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude, AgentKind::Codex]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: repo.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        has_notes: false,
+        ready: false,
+        status: ProjectStatus::Stopped,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: repo.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        preferred_agent: AgentKind::Codex,
+        is_git: true,
+    };
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert_eq!(state.selected, 1);
+            assert_eq!(state.builtin_sessions[0].kind, SessionKind::Claude);
+            assert_eq!(state.builtin_sessions[1].kind, SessionKind::Codex);
+        }
+        _ => panic!("expected SessionPicker mode"),
     }
 }
 
@@ -650,12 +835,14 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: true,
     };
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
         store,
@@ -1081,12 +1268,14 @@ fn store_with_worktree_agent(
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: true,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -1182,6 +1371,54 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
     );
 }
 
+#[test]
+fn apply_project_agent_config_updates_preferred_agent_only() {
+    let now = Utc::now();
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: PathBuf::from("/tmp/test-repo"),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        preferred_agent: AgentKind::Claude,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Project(0);
+
+    app.start_project_agent_config().unwrap();
+    if let AppMode::ProjectAgentConfig(state) = &mut app.mode {
+        state.selected_agent = state
+            .allowed_agents
+            .iter()
+            .position(|agent| *agent == AgentKind::Opencode)
+            .unwrap();
+    } else {
+        panic!("project config dialog should be open");
+    }
+
+    app.apply_session_config().unwrap();
+
+    assert_eq!(app.store.projects[0].preferred_agent, AgentKind::Opencode);
+    assert!(
+        app.store.projects[0].features.is_empty(),
+        "changing project preference should not create or mutate features"
+    );
+}
+
 // ── sync_session_status ──────────────────────────────────────
 
 use crate::project::{FeatureSession, SessionKind};
@@ -1230,12 +1467,14 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -1283,12 +1522,14 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -1442,12 +1683,14 @@ fn sync_session_status_skips_non_custom_sessions() {
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     };
 
     // Even if a status file exists for this ID, it should
@@ -1614,12 +1857,14 @@ fn store_with_single_claude_session() -> ProjectStore {
         collapsed: false,
         features: vec![feature],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: false,
     };
     ProjectStore {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -1671,12 +1916,14 @@ fn store_with_empty_project(repo: PathBuf, is_git: bool) -> ProjectStore {
         collapsed: false,
         features: vec![],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git,
     };
     ProjectStore {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     }
 }
 
@@ -1698,6 +1945,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
         Box::new(worktree),
@@ -1706,6 +1954,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
     let request = CreateProjectRequest {
         path: repo.clone(),
         project_name: "automation-project".to_string(),
+        preferred_agent: None,
         dry_run: true,
     };
 
@@ -1737,6 +1986,7 @@ fn create_project_automation_creates_project() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
         Box::new(worktree),
@@ -1747,6 +1997,7 @@ fn create_project_automation_creates_project() {
     let request = CreateProjectRequest {
         path: path.clone(),
         project_name: "automation-project".to_string(),
+        preferred_agent: None,
         dry_run: false,
     };
 
@@ -1971,6 +2222,7 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
         Box::new(worktree),
@@ -2010,6 +2262,7 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
@@ -2094,6 +2347,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            extra: HashMap::new(),
         },
         Box::new(tmux),
         Box::new(worktree),

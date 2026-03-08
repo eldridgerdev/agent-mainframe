@@ -46,7 +46,13 @@ impl App {
     }
 
     pub fn start_create_project(&mut self) {
-        self.mode = AppMode::CreatingProject(CreateProjectState::auto_detect());
+        let mut state = CreateProjectState::auto_detect();
+        state.agent = self.default_project_preferred_agent();
+        let path = PathBuf::from(&state.path);
+        let (agent, agent_index) = self.normalize_agent_for_project_path(&path, &state.agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+        self.mode = AppMode::CreatingProject(state);
         self.message = None;
     }
 
@@ -114,7 +120,12 @@ impl App {
             return Ok(());
         }
 
-        let project = Project::new("amf-settings".into(), settings_dir.clone(), false);
+        let project = Project::new(
+            "amf-settings".into(),
+            settings_dir.clone(),
+            false,
+            AgentKind::default(),
+        );
         self.store.add_project(project);
         self.save()?;
 
@@ -177,6 +188,12 @@ impl App {
         if let AppMode::BrowsingPath(mut state) = browse {
             state.create_state.path = path;
             state.create_state.step = CreateProjectStep::Path;
+            let (agent, agent_index) = self.normalize_agent_for_project_path(
+                &PathBuf::from(&state.create_state.path),
+                &state.create_state.agent,
+            );
+            state.create_state.agent = agent;
+            state.create_state.agent_index = agent_index;
             self.mode = AppMode::CreatingProject(state.create_state);
         }
     }
@@ -227,6 +244,7 @@ impl App {
         let request = CreateProjectRequest {
             path: PathBuf::from(&state.path),
             project_name: state.name.clone(),
+            preferred_agent: Some(state.agent.clone()),
             dry_run: false,
         };
 

@@ -121,6 +121,12 @@ impl App {
             Ok(repo) => (repo, true),
             Err(_) => (request.path.clone(), false),
         };
+        let preferred_agent = request
+            .preferred_agent
+            .clone()
+            .unwrap_or_else(|| self.default_project_preferred_agent());
+        let (preferred_agent, _) =
+            self.normalize_agent_for_project_path(&project_path, &preferred_agent);
 
         if request.dry_run {
             let message = format!("Dry run: would create project '{}'", request.project_name);
@@ -132,7 +138,12 @@ impl App {
             ));
         }
 
-        let project = Project::new(request.project_name.clone(), project_path.clone(), is_git);
+        let project = Project::new(
+            request.project_name.clone(),
+            project_path.clone(),
+            is_git,
+            preferred_agent,
+        );
         self.store.add_project(project);
         self.save()?;
 
@@ -420,7 +431,12 @@ impl App {
             ));
         }
 
-        let project = Project::new(request.project_name.clone(), project_repo.clone(), is_git);
+        let project = Project::new(
+            request.project_name.clone(),
+            project_repo.clone(),
+            is_git,
+            request.agent.clone(),
+        );
         self.store.add_project(project);
         self.save()?;
 

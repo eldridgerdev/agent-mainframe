@@ -282,10 +282,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             spans.push(Span::raw("]"));
                             spans
                         }
-                        VibeMode::Review => vec![Span::styled(
-                            " [review]",
-                            Style::default().fg(theme.mode_review.to_color()),
-                        )],
                     };
 
                     let has_pending_input = app.pending_inputs.iter().any(|p| {
@@ -316,6 +312,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         ));
                     }
                     line_spans.extend(mode_badge_spans);
+                    if feature.review {
+                        line_spans.push(Span::styled(
+                            " [review]",
+                            Style::default().fg(theme.mode_review.to_color()),
+                        ));
+                    }
                     if is_being_deleted {
                         line_spans.push(Span::styled(
                             " [deleting...]",

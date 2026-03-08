@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::project::{AgentKind, VibeMode};
+use crate::project::{AgentKind, StoredVibeMode, VibeMode};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -92,7 +92,7 @@ pub struct LifecycleHooks {
     pub on_worktree_created: Option<HookConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 #[serde(default)]
 pub struct FeaturePreset {
     pub name: String,
@@ -102,6 +102,37 @@ pub struct FeaturePreset {
     pub review: bool,
     pub enable_chrome: bool,
     pub enable_notes: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+struct FeaturePresetDe {
+    name: String,
+    branch_prefix: Option<String>,
+    mode: StoredVibeMode,
+    agent: AgentKind,
+    review: bool,
+    enable_chrome: bool,
+    enable_notes: bool,
+}
+
+impl<'de> Deserialize<'de> for FeaturePreset {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let preset = FeaturePresetDe::deserialize(deserializer)?;
+        let (mode, legacy_review) = preset.mode.into_mode_and_review();
+        Ok(Self {
+            name: preset.name,
+            branch_prefix: preset.branch_prefix,
+            mode,
+            agent: preset.agent,
+            review: preset.review || legacy_review,
+            enable_chrome: preset.enable_chrome,
+            enable_notes: preset.enable_notes,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -414,5 +445,19 @@ mod tests {
         };
 
         assert_eq!(config.allowed_agents(), AgentKind::ALL.to_vec());
+    }
+
+    #[test]
+    fn legacy_review_preset_migrates_to_review_flag() {
+        let preset: FeaturePreset = serde_json::from_str(
+            r#"{
+                "name": "legacy-review",
+                "mode": "review"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(preset.mode, VibeMode::Vibeless);
+        assert!(preset.review);
     }
 }

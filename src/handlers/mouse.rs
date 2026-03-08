@@ -118,7 +118,6 @@ fn handle_click(
                     crate::project::VibeMode::Vibeless => 11,
                     crate::project::VibeMode::Vibe => 7,
                     crate::project::VibeMode::SuperVibe => 11,
-                    crate::project::VibeMode::Review => 9,
                 };
                 if view.review {
                     header_len += 9;

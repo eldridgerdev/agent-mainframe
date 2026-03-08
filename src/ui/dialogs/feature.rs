@@ -159,7 +159,6 @@ fn draw_create_feature_preset_picker(
                     crate::project::VibeMode::Vibeless => "vibeless",
                     crate::project::VibeMode::Vibe => "vibe",
                     crate::project::VibeMode::SuperVibe => "supervibe",
-                    crate::project::VibeMode::Review => "review",
                 };
                 let detail = format!(
                     " {} | {}{}",

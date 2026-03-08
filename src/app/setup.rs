@@ -200,7 +200,7 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let _ = std::fs::remove_file(&dst_feedback_prompt);
     let _ = std::fs::remove_file(&dst_explain);
 
-    if matches!(mode, VibeMode::Vibeless | VibeMode::Review) {
+    if matches!(mode, VibeMode::Vibeless) {
         let src_change_tracker = repo
             .join(".opencode")
             .join("plugins")

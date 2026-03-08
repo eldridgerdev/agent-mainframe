@@ -96,7 +96,27 @@ pub enum VibeMode {
     Vibeless,
     Vibe,
     SuperVibe,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum StoredVibeMode {
+    #[default]
+    Vibeless,
+    Vibe,
+    SuperVibe,
     Review,
+}
+
+impl StoredVibeMode {
+    pub(crate) fn into_mode_and_review(self) -> (VibeMode, bool) {
+        match self {
+            StoredVibeMode::Vibeless => (VibeMode::Vibeless, false),
+            StoredVibeMode::Vibe => (VibeMode::Vibe, false),
+            StoredVibeMode::SuperVibe => (VibeMode::SuperVibe, false),
+            StoredVibeMode::Review => (VibeMode::Vibeless, true),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for VibeMode {
@@ -104,12 +124,9 @@ impl<'de> Deserialize<'de> for VibeMode {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(match s.as_str() {
-            "vibe" => VibeMode::Vibe,
-            "supervibe" => VibeMode::SuperVibe,
-            _ => VibeMode::Vibeless,
-        })
+        Ok(StoredVibeMode::deserialize(deserializer)?
+            .into_mode_and_review()
+            .0)
     }
 }
 
@@ -119,7 +136,6 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
-            VibeMode::Review => "Review",
         }
     }
 
@@ -128,7 +144,6 @@ impl VibeMode {
             VibeMode::Vibeless => "asks for approval for every change",
             VibeMode::Vibe => "auto-accepts edits",
             VibeMode::SuperVibe => "skips all permission prompts",
-            VibeMode::Review => "logs changes for final code review",
         }
     }
 
@@ -141,7 +156,6 @@ impl VibeMode {
             VibeMode::SuperVibe => {
                 vec!["--dangerously-skip-permissions".into()]
             }
-            VibeMode::Review => vec![],
         };
         if enable_chrome {
             flags.push("--chrome".into());
@@ -149,11 +163,10 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 4] = [
+    pub const ALL: [VibeMode; 3] = [
         VibeMode::Vibeless,
         VibeMode::Vibe,
         VibeMode::SuperVibe,
-        VibeMode::Review,
     ];
 }
 
@@ -161,7 +174,7 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Feature {
     pub id: String,
     pub name: String,
@@ -194,6 +207,73 @@ pub struct Feature {
     pub summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FeatureDe {
+    id: String,
+    name: String,
+    branch: String,
+    workdir: PathBuf,
+    is_worktree: bool,
+    tmux_session: String,
+    #[serde(default)]
+    sessions: Vec<FeatureSession>,
+    #[serde(default = "default_true")]
+    collapsed: bool,
+    #[serde(default)]
+    mode: StoredVibeMode,
+    #[serde(default)]
+    review: bool,
+    #[serde(default)]
+    agent: AgentKind,
+    #[serde(default)]
+    enable_chrome: bool,
+    #[serde(default)]
+    has_notes: bool,
+    #[serde(default)]
+    ready: bool,
+    status: ProjectStatus,
+    created_at: DateTime<Utc>,
+    last_accessed: DateTime<Utc>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    summary_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    nickname: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Feature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let feature = FeatureDe::deserialize(deserializer)?;
+        let (mode, legacy_review) = feature.mode.into_mode_and_review();
+        Ok(Self {
+            id: feature.id,
+            name: feature.name,
+            branch: feature.branch,
+            workdir: feature.workdir,
+            is_worktree: feature.is_worktree,
+            tmux_session: feature.tmux_session,
+            sessions: feature.sessions,
+            collapsed: feature.collapsed,
+            mode,
+            review: feature.review || legacy_review,
+            agent: feature.agent,
+            enable_chrome: feature.enable_chrome,
+            has_notes: feature.has_notes,
+            ready: feature.ready,
+            status: feature.status,
+            created_at: feature.created_at,
+            last_accessed: feature.last_accessed,
+            summary: feature.summary,
+            summary_updated_at: feature.summary_updated_at,
+            nickname: feature.nickname,
+        })
+    }
 }
 
 impl Feature {
@@ -1004,9 +1084,25 @@ mod tests {
     }
 
     #[test]
-    fn vibe_mode_review_flags() {
-        assert_eq!(VibeMode::Review.cli_flags(false), Vec::<String>::new());
-        assert_eq!(VibeMode::Review.cli_flags(true), vec!["--chrome"]);
+    fn legacy_review_feature_migrates_to_review_flag() {
+        let feature: Feature = serde_json::from_str(
+            r#"{
+                "id": "feat-id",
+                "name": "legacy-review",
+                "branch": "legacy-review",
+                "workdir": "/tmp/test",
+                "is_worktree": false,
+                "tmux_session": "amf-legacy-review",
+                "mode": "review",
+                "status": "stopped",
+                "created_at": "2024-01-01T00:00:00Z",
+                "last_accessed": "2024-01-01T00:00:00Z"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(feature.mode, VibeMode::Vibeless);
+        assert!(feature.review);
     }
 }
 

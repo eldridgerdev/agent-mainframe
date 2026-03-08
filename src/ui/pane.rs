@@ -100,15 +100,11 @@ pub fn draw(
                 header_spans.extend(rainbow_spans("supervibe", theme));
                 header_spans.push(Span::raw("] "));
             }
-            VibeMode::Review => header_spans.push(Span::styled(
-                "[review] ",
-                Style::default().fg(theme.mode_review.to_color()),
-            )),
         };
         if view.review {
             header_spans.push(Span::styled(
                 "[review] ",
-                Style::default().fg(theme.primary.to_color()),
+                Style::default().fg(theme.mode_review.to_color()),
             ));
         }
     }

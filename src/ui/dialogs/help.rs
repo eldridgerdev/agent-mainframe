@@ -113,7 +113,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w h / n p i r x f D ? H M 1-9)",
+            "Leader key (then: q t T w h / n p i r x f d D ? H M 1-9)",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));

@@ -267,6 +267,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('f') => {
             app.trigger_final_review()?;
         }
+        KeyCode::Char('d') => {
+            app.open_diff_viewer()?;
+        }
         KeyCode::Char('D') => {
             let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
@@ -310,8 +313,19 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
+
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tempfile::TempDir;
+
+    use crate::app::ViewState;
+    use crate::project::{
+        AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
+    };
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -386,5 +400,118 @@ mod tests {
         // Null is not handled in the match
         let k = key(KeyCode::Null);
         assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+
+    #[test]
+    fn leader_d_opens_diff_viewer_and_escape_closes_it() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if state.branch == "feature"
+                    && state.base_ref == "main"
+                    && state.files.iter().any(|file| file.path == "src.txt")
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    fn init_repo_with_branch_change() -> TempDir {
+        let repo = TempDir::new().unwrap();
+        git(repo.path(), &["init", "--initial-branch=main"]);
+        git(repo.path(), &["config", "user.name", "AMF Test"]);
+        git(repo.path(), &["config", "user.email", "amf@example.com"]);
+        std::fs::write(repo.path().join("src.txt"), "base\n").unwrap();
+        git(repo.path(), &["add", "src.txt"]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
+        repo
+    }
+
+    fn app_for_viewing_repo(repo: &Path) -> App {
+        let mut feature = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            repo.to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = ProjectStatus::Active;
+        let session = feature.add_session(SessionKind::Claude).clone();
+
+        let mut project = Project::new(
+            "demo".to_string(),
+            repo.to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(feature);
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::Viewing(ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            "amf-feature".to_string(),
+            session.tmux_window.clone(),
+            session.label.clone(),
+            VibeMode::Vibeless,
+            false,
+        ));
+        app
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

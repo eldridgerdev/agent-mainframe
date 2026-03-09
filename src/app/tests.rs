@@ -104,6 +104,12 @@ fn app_config_missing_leader_timeout_uses_default() {
 }
 
 #[test]
+fn app_config_missing_diff_viewer_layout_uses_unified() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.diff_viewer_layout, DiffViewerLayout::Unified);
+}
+
+#[test]
 fn app_config_missing_projects_uses_default_preferred_agent_none() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.projects.default_preferred_agent, None);
@@ -2581,9 +2587,7 @@ fn create_feature_automation_creates_and_starts_feature() {
         .returning(move |_, _, _| Ok(worktree_clone.clone()));
 
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists()
-        .times(1)
-        .returning(|_| false);
+    tmux.expect_session_exists().times(1).returning(|_| false);
     tmux.expect_create_session_with_window()
         .times(1)
         .returning(|_, _, _| Ok(()));
@@ -2596,9 +2600,7 @@ fn create_feature_automation_creates_and_starts_feature() {
     tmux.expect_launch_codex()
         .times(1)
         .returning(|_, _, _| Ok(()));
-    tmux.expect_send_keys()
-        .times(1)
-        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_keys().times(1).returning(|_, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -2681,7 +2683,10 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
     assert!(response.dry_run);
     assert_eq!(response.features.len(), 3);
     assert_eq!(response.features[0].branch, "plan-1");
-    assert_eq!(response.features[0].workdir, repo.join(".worktrees").join("plan-1"));
+    assert_eq!(
+        response.features[0].workdir,
+        repo.join(".worktrees").join("plan-1")
+    );
     assert!(app.store.projects.is_empty());
 }
 
@@ -2763,9 +2768,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .returning(move |_, _, _| Ok(worktree_two_clone.clone()));
 
     let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists()
-        .times(2)
-        .returning(|_| false);
+    tmux.expect_session_exists().times(2).returning(|_| false);
     tmux.expect_create_session_with_window()
         .times(2)
         .returning(|_, _, _| Ok(()));
@@ -2817,8 +2820,10 @@ fn batch_feature_automation_creates_project_and_starts_features() {
     assert_eq!(app.store.projects[0].features.len(), 2);
     assert_eq!(app.store.projects[0].features[0].branch, "plan-1");
     assert_eq!(app.store.projects[0].features[1].branch, "plan-2");
-    assert!(app.store.projects[0]
-        .features
-        .iter()
-        .all(|feature| feature.sessions.len() == 2));
+    assert!(
+        app.store.projects[0]
+            .features
+            .iter()
+            .all(|feature| feature.sessions.len() == 2)
+    );
 }

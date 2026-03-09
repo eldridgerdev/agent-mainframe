@@ -177,19 +177,19 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             if let AppMode::SteeringPrompt(state) = &mut app.mode {
                 state.prompt.push('\n');
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+                state.refresh_prompt_analysis();
             }
         }
         KeyCode::Backspace => {
             if let AppMode::SteeringPrompt(state) = &mut app.mode {
                 state.prompt.pop();
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+                state.refresh_prompt_analysis();
             }
         }
         KeyCode::Char(c) => {
             if let AppMode::SteeringPrompt(state) = &mut app.mode {
                 state.prompt.push(c);
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+                state.refresh_prompt_analysis();
             }
         }
         _ => {}

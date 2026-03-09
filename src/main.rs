@@ -11,6 +11,7 @@ mod http_client;
 mod ipc;
 mod project;
 mod summary;
+mod steering_config;
 mod theme;
 mod tmux;
 mod traits;

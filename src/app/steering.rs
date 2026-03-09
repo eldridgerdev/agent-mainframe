@@ -1,65 +1,16 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PromptConstraint {
-    FileScope,
-    AcceptanceCriteria,
-    Invariants,
-    ValidationCommands,
-    Risks,
-}
+use crate::steering_config::{
+    SteeringCoachConfig, SteeringConstraintConfig, SteeringDetectionMatcher,
+    default_detection_for,
+};
 
-impl PromptConstraint {
-    pub const ALL: [PromptConstraint; 5] = [
-        PromptConstraint::FileScope,
-        PromptConstraint::AcceptanceCriteria,
-        PromptConstraint::Invariants,
-        PromptConstraint::ValidationCommands,
-        PromptConstraint::Risks,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            PromptConstraint::FileScope => "File scope",
-            PromptConstraint::AcceptanceCriteria => "Acceptance criteria",
-            PromptConstraint::Invariants => "Invariants",
-            PromptConstraint::ValidationCommands => "Validation commands",
-            PromptConstraint::Risks => "Risks",
-        }
-    }
-
-    pub fn missing_explanation(self) -> &'static str {
-        match self {
-            PromptConstraint::FileScope => "The prompt does not clearly name what files or directories are in scope.",
-            PromptConstraint::AcceptanceCriteria => "The prompt does not say what \"done\" looks like.",
-            PromptConstraint::Invariants => "The prompt does not pin down behavior that must stay unchanged.",
-            PromptConstraint::ValidationCommands => "The prompt does not tell the agent how to verify the change.",
-            PromptConstraint::Risks => "The prompt does not call out sharp edges or likely regressions.",
-        }
-    }
-
-    pub fn teaching_tip(self) -> &'static str {
-        match self {
-            PromptConstraint::FileScope => {
-                "Add a line like: `Touch only src/app/... and src/ui/...; leave handlers unchanged unless needed.`"
-            }
-            PromptConstraint::AcceptanceCriteria => {
-                "Add a line like: `Done when the create-feature flow shows coaching before launch and still reaches cargo check.`"
-            }
-            PromptConstraint::Invariants => {
-                "Add a line like: `Keep the existing command/dialog flow and do not bypass the current create_feature path.`"
-            }
-            PromptConstraint::ValidationCommands => {
-                "Add an explicit command like: `Run cargo check before stopping.`"
-            }
-            PromptConstraint::Risks => {
-                "Add a watch-out like: `Be careful not to break SuperVibe confirmation or session launch defaults.`"
-            }
-        }
-    }
-}
+pub use crate::steering_config::SteeringConstraintKind as PromptConstraint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptCheck {
     pub constraint: PromptConstraint,
+    pub label: String,
+    pub missing_explanation: String,
+    pub teaching_tip: String,
     pub present: bool,
 }
 
@@ -83,23 +34,39 @@ impl PromptAnalysis {
 }
 
 pub fn analyze_prompt(prompt: &str) -> PromptAnalysis {
+    analyze_prompt_with_config(prompt, &SteeringCoachConfig::default())
+}
+
+pub fn analyze_prompt_with_config(prompt: &str, config: &SteeringCoachConfig) -> PromptAnalysis {
     let trimmed = prompt.trim();
     let lowercase = trimmed.to_lowercase();
 
-    let checks = PromptConstraint::ALL
+    let checks = config
+        .constraints
         .iter()
-        .copied()
         .map(|constraint| PromptCheck {
-            constraint,
+            constraint: constraint.constraint,
+            label: constraint.label.clone(),
+            missing_explanation: constraint.missing_explanation.clone(),
+            teaching_tip: constraint.teaching_tip.clone(),
             present: check_constraint(constraint, trimmed, &lowercase),
         })
         .collect::<Vec<_>>();
 
-    let score = checks.iter().filter(|check| check.present).count() as u8 * 2;
-    let max_score = (PromptConstraint::ALL.len() as u8) * 2;
+    let present_count = checks.iter().filter(|check| check.present).count();
     let missing = checks.iter().filter(|check| !check.present).count();
+    let score = scaled_score(present_count);
+    let max_score = scaled_score(checks.len());
 
-    let summary = if trimmed.is_empty() {
+    let summary = if checks.is_empty() {
+        if trimmed.is_empty() {
+            "No steering constraints are configured for this repo. Add some in .amf/steering.json or write the task directly."
+                .to_string()
+        } else {
+            "No steering constraints are configured for this repo. Launch when the prompt wording is ready."
+                .to_string()
+        }
+    } else if trimmed.is_empty() {
         "Start with the concrete task, then add scope, success criteria, validation, and watch-outs before launch."
             .to_string()
     } else if missing == 0 {
@@ -116,7 +83,7 @@ pub fn analyze_prompt(prompt: &str) -> PromptAnalysis {
     let teaching_tips = checks
         .iter()
         .filter(|check| !check.present)
-        .map(|check| check.constraint.teaching_tip().to_string())
+        .map(|check| check.teaching_tip.clone())
         .take(3)
         .collect();
 
@@ -129,133 +96,61 @@ pub fn analyze_prompt(prompt: &str) -> PromptAnalysis {
     }
 }
 
-fn check_constraint(constraint: PromptConstraint, prompt: &str, lowercase: &str) -> bool {
-    match constraint {
-        PromptConstraint::FileScope => has_file_scope(prompt, lowercase),
-        PromptConstraint::AcceptanceCriteria => has_acceptance_criteria(lowercase),
-        PromptConstraint::Invariants => has_invariants(lowercase),
-        PromptConstraint::ValidationCommands => has_validation_commands(prompt, lowercase),
-        PromptConstraint::Risks => has_risks(lowercase),
+fn scaled_score(count: usize) -> u8 {
+    let scaled = count.saturating_mul(2);
+    u8::try_from(scaled).unwrap_or(u8::MAX)
+}
+
+fn check_constraint(
+    constraint: &SteeringConstraintConfig,
+    prompt: &str,
+    lowercase: &str,
+) -> bool {
+    let matcher = constraint
+        .detection
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| default_detection_for(constraint.constraint));
+    matches_detection(&matcher, prompt, lowercase)
+}
+
+fn matches_detection(matcher: &SteeringDetectionMatcher, prompt: &str, lowercase: &str) -> bool {
+    match matcher {
+        SteeringDetectionMatcher::Any { matchers } => matchers
+            .iter()
+            .any(|matcher| matches_detection(matcher, prompt, lowercase)),
+        SteeringDetectionMatcher::All { matchers } => matchers
+            .iter()
+            .all(|matcher| matches_detection(matcher, prompt, lowercase)),
+        SteeringDetectionMatcher::ContainsAny { phrases } => phrases
+            .iter()
+            .map(|phrase| phrase.to_lowercase())
+            .any(|phrase| lowercase.contains(&phrase)),
+        SteeringDetectionMatcher::TokenContainsAny { snippets } => prompt_tokens(prompt).any(|token| {
+            snippets
+                .iter()
+                .map(|snippet| snippet.to_lowercase())
+                .any(|snippet| token.contains(&snippet))
+        }),
+        SteeringDetectionMatcher::TokenStartsWithAny { prefixes } => prompt_tokens(prompt).any(|token| {
+            prefixes
+                .iter()
+                .map(|prefix| prefix.to_lowercase())
+                .any(|prefix| token.starts_with(&prefix))
+        }),
+        SteeringDetectionMatcher::TokenEndsWithAny { suffixes } => prompt_tokens(prompt).any(|token| {
+            suffixes
+                .iter()
+                .map(|suffix| suffix.to_lowercase())
+                .any(|suffix| token.ends_with(&suffix))
+        }),
+        SteeringDetectionMatcher::PromptContains { text } => lowercase.contains(&text.to_lowercase()),
     }
 }
 
-fn has_file_scope(prompt: &str, lowercase: &str) -> bool {
-    if contains_any(
-        lowercase,
-        &[
-            "file scope",
-            "touch only",
-            "only touch",
-            "only edit",
-            "limit changes to",
-            "keep changes in",
-            "in scope",
-            "out of scope",
-        ],
-    ) {
-        return true;
-    }
-
-    prompt.split_whitespace().any(|word| {
-        let token = word.trim_matches(|c: char| "`'\",:;()[]{}".contains(c));
-        token.contains('/')
-            || token.starts_with("src")
-            || token.ends_with(".rs")
-            || token.ends_with(".toml")
-            || token.ends_with(".md")
-            || token.ends_with(".json")
-            || token.ends_with(".yaml")
-            || token.ends_with(".yml")
+fn prompt_tokens(prompt: &str) -> impl Iterator<Item = String> + '_ {
+    prompt.split_whitespace().map(|word| {
+        word.trim_matches(|c: char| "`'\",:;()[]{}".contains(c))
+            .to_lowercase()
     })
-}
-
-fn has_acceptance_criteria(lowercase: &str) -> bool {
-    contains_any(
-        lowercase,
-        &[
-            "acceptance criteria",
-            "done when",
-            "success looks like",
-            "should ",
-            "must ",
-            "expected result",
-            "expected behavior",
-            "so that ",
-            "when i ",
-        ],
-    )
-}
-
-fn has_invariants(lowercase: &str) -> bool {
-    contains_any(
-        lowercase,
-        &[
-            "must not",
-            "do not",
-            "don't",
-            "without changing",
-            "preserve",
-            "keep existing",
-            "leave ",
-            "avoid regression",
-            "invariant",
-            "non-goal",
-        ],
-    )
-}
-
-fn has_validation_commands(prompt: &str, lowercase: &str) -> bool {
-    contains_any(
-        lowercase,
-        &[
-            "cargo check",
-            "cargo test",
-            "cargo clippy",
-            "npm test",
-            "pnpm test",
-            "pytest",
-            "go test",
-            "just ",
-            "run ",
-            "verify with",
-        ],
-    ) || prompt.contains('`')
-            && contains_any(
-                lowercase,
-                &[
-                    "cargo",
-                    "npm",
-                    "pnpm",
-                    "pytest",
-                    "go test",
-                    "just",
-                    "uv run",
-                ],
-            )
-}
-
-fn has_risks(lowercase: &str) -> bool {
-    contains_any(
-        lowercase,
-        &[
-            "risk",
-            "risks",
-            "watch out",
-            "careful",
-            "edge case",
-            "gotcha",
-            "backward compatibility",
-            "backwards compatibility",
-            "regression",
-            "performance",
-            "perf",
-            "migration",
-            "hooks",
-            "tmux",
-        ],
-    )
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
 }

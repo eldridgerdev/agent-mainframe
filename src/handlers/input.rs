@@ -57,7 +57,7 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
         AppMode::SteeringPrompt(_) => {
             if let AppMode::SteeringPrompt(state) = &mut app.mode {
                 state.prompt.push_str(text);
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+                state.refresh_prompt_analysis();
             }
         }
         _ => {}

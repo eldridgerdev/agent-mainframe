@@ -1,0 +1,164 @@
+{
+  "constraints": [
+    {
+      "constraint": "file_scope",
+      "label": "File scope",
+      "missing_explanation": "The prompt does not clearly name what files or directories are in scope.",
+      "teaching_tip": "Add a line like: `Touch only src/app/... and src/ui/...; leave handlers unchanged unless needed.`",
+      "detection": {
+        "type": "any",
+        "matchers": [
+          {
+            "type": "contains_any",
+            "phrases": [
+              "file scope",
+              "touch only",
+              "only touch",
+              "only edit",
+              "limit changes to",
+              "keep changes in",
+              "in scope",
+              "out of scope"
+            ]
+          },
+          {
+            "type": "token_contains_any",
+            "snippets": [
+              "/"
+            ]
+          },
+          {
+            "type": "token_starts_with_any",
+            "prefixes": [
+              "src"
+            ]
+          },
+          {
+            "type": "token_ends_with_any",
+            "suffixes": [
+              ".rs",
+              ".toml",
+              ".md",
+              ".json",
+              ".yaml",
+              ".yml"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "constraint": "acceptance_criteria",
+      "label": "Acceptance criteria",
+      "missing_explanation": "The prompt does not say what \"done\" looks like.",
+      "teaching_tip": "Add a line like: `Done when the create-feature flow shows coaching before launch and still reaches cargo check.`",
+      "detection": {
+        "type": "contains_any",
+        "phrases": [
+          "acceptance criteria",
+          "done when",
+          "success looks like",
+          "should ",
+          "must ",
+          "expected result",
+          "expected behavior",
+          "so that ",
+          "when i "
+        ]
+      }
+    },
+    {
+      "constraint": "invariants",
+      "label": "Invariants",
+      "missing_explanation": "The prompt does not pin down behavior that must stay unchanged.",
+      "teaching_tip": "Add a line like: `Keep the existing command/dialog flow and do not bypass the current create_feature path.`",
+      "detection": {
+        "type": "contains_any",
+        "phrases": [
+          "must not",
+          "do not",
+          "don't",
+          "without changing",
+          "preserve",
+          "keep existing",
+          "leave ",
+          "avoid regression",
+          "invariant",
+          "non-goal"
+        ]
+      }
+    },
+    {
+      "constraint": "validation_commands",
+      "label": "Validation commands",
+      "missing_explanation": "The prompt does not tell the agent how to verify the change.",
+      "teaching_tip": "Add an explicit command like: `Run cargo check before stopping.`",
+      "detection": {
+        "type": "any",
+        "matchers": [
+          {
+            "type": "contains_any",
+            "phrases": [
+              "cargo check",
+              "cargo test",
+              "cargo clippy",
+              "npm test",
+              "pnpm test",
+              "pytest",
+              "go test",
+              "just ",
+              "run ",
+              "verify with"
+            ]
+          },
+          {
+            "type": "all",
+            "matchers": [
+              {
+                "type": "prompt_contains",
+                "text": "`"
+              },
+              {
+                "type": "contains_any",
+                "phrases": [
+                  "cargo",
+                  "npm",
+                  "pnpm",
+                  "pytest",
+                  "go test",
+                  "just",
+                  "uv run"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "constraint": "risks",
+      "label": "Risks",
+      "missing_explanation": "The prompt does not call out sharp edges or likely regressions.",
+      "teaching_tip": "Add a watch-out like: `Be careful not to break SuperVibe confirmation or session launch defaults.`",
+      "detection": {
+        "type": "contains_any",
+        "phrases": [
+          "risk",
+          "risks",
+          "watch out",
+          "careful",
+          "edge case",
+          "gotcha",
+          "backward compatibility",
+          "backwards compatibility",
+          "regression",
+          "performance",
+          "perf",
+          "migration",
+          "hooks",
+          "tmux"
+        ]
+      }
+    }
+  ]
+}

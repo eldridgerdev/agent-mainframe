@@ -5,6 +5,7 @@ use std::process::Child;
 use super::PromptAnalysis;
 use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
+use crate::steering_config::SteeringCoachConfig;
 use crate::worktree::WorktreeInfo;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,9 +199,18 @@ pub struct BookmarkPickerState {
 #[derive(Clone)]
 pub struct SteeringPromptState {
     pub view: ViewState,
+    pub project_repo: PathBuf,
     pub workdir: PathBuf,
     pub prompt: String,
     pub prompt_analysis: PromptAnalysis,
+    pub steering_config: SteeringCoachConfig,
+}
+
+impl SteeringPromptState {
+    pub fn refresh_prompt_analysis(&mut self) {
+        self.prompt_analysis =
+            crate::app::analyze_prompt_with_config(&self.prompt, &self.steering_config);
+    }
 }
 
 #[derive(Clone)]
@@ -565,6 +575,7 @@ pub struct CreateFeatureState {
     pub enable_chrome: bool,
     pub enable_notes: bool,
     pub steering_enabled: bool,
+    pub steering_config: SteeringCoachConfig,
     pub preset_index: usize,
     pub task_prompt: String,
     pub prompt_analysis: PromptAnalysis,
@@ -576,6 +587,7 @@ impl CreateFeatureState {
         project_name: String,
         project_repo: PathBuf,
         worktrees: Vec<WorktreeInfo>,
+        steering_config: SteeringCoachConfig,
         is_first_feature: bool,
     ) -> Self {
         let cwd = std::env::current_dir().unwrap_or_default();
@@ -608,15 +620,17 @@ impl CreateFeatureState {
             enable_chrome: false,
             enable_notes: false,
             steering_enabled: true,
+            steering_config: steering_config.clone(),
             preset_index: 0,
             task_prompt: String::new(),
-            prompt_analysis: crate::app::analyze_prompt(""),
+            prompt_analysis: crate::app::analyze_prompt_with_config("", &steering_config),
             prepared_launch: None,
         }
     }
 
     pub fn refresh_prompt_analysis(&mut self) {
-        self.prompt_analysis = crate::app::analyze_prompt(&self.task_prompt);
+        self.prompt_analysis =
+            crate::app::analyze_prompt_with_config(&self.task_prompt, &self.steering_config);
     }
 }
 

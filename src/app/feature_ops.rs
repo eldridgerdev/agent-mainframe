@@ -93,8 +93,14 @@ impl App {
             .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
-        let mut state =
-            CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
+        let steering_config = crate::steering_config::ensure_steering_config(&project_repo);
+        let mut state = CreateFeatureState::new(
+            project_name,
+            project_repo.clone(),
+            worktrees,
+            steering_config,
+            is_first,
+        );
         self.active_extension = self.extension_for_repo(&project_repo);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.agent = agent;
@@ -395,12 +401,16 @@ impl App {
             }
         };
 
+        let project_repo = self.store.projects[pi].repo.clone();
         let workdir = self.store.projects[pi].features[fi].workdir.clone();
+        let steering_config = crate::steering_config::ensure_steering_config(&project_repo);
         self.mode = AppMode::SteeringPrompt(SteeringPromptState {
             view,
+            project_repo,
             workdir,
             prompt: String::new(),
-            prompt_analysis: analyze_prompt(""),
+            prompt_analysis: analyze_prompt_with_config("", &steering_config),
+            steering_config,
         });
         self.message = Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
 

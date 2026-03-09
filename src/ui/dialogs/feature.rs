@@ -780,23 +780,19 @@ fn prompt_checklist_lines(analysis: &PromptAnalysis, theme: &Theme) -> Vec<Line<
 
     for check in &analysis.checks {
         let (marker, color, detail) = if check.present {
-            (
-                "[x]",
-                theme.success.to_color(),
-                "covered",
-            )
+            ("[x]", theme.success.to_color(), "covered".to_string())
         } else {
             (
                 "[ ]",
                 theme.warning.to_color(),
-                check.constraint.missing_explanation(),
+                check.missing_explanation.clone(),
             )
         };
 
         lines.push(Line::from(vec![
             Span::styled(format!(" {} ", marker), Style::default().fg(color)),
             Span::styled(
-                check.constraint.label(),
+                check.label.clone(),
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),

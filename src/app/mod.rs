@@ -47,7 +47,9 @@ use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 pub use self::setup::load_config;
-pub use steering::{PromptAnalysis, analyze_prompt};
+pub use steering::{PromptAnalysis, analyze_prompt_with_config};
+#[cfg(test)]
+pub use steering::analyze_prompt;
 pub use state::*;
 
 pub struct CommandEntry {

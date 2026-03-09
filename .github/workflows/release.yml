@@ -119,6 +119,9 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Flatten artifacts
+        run: find artifacts -type f -exec mv {} artifacts/ \; && find artifacts -type d -empty -delete
+
       - name: Validate changelog for major/minor releases
         run: |
           CURRENT_TAG="${GITHUB_REF_NAME}"

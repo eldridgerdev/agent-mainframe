@@ -5,15 +5,23 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::path::Path;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState},
     diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind},
+    highlight,
     theme::Theme,
 };
 
 use super::super::dashboard::centered_rect;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StyledChunk {
+    text: String,
+    style: Style,
+}
 
 pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
     let area = centered_rect(96, 90, frame.area());
@@ -318,7 +326,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
         lines.extend(wrap_gutter_line(
             None,
             None,
-            meta,
+            plain_chunks(meta, meta_style(meta, theme)),
             meta_style(meta, theme),
             number_width,
             text_width,
@@ -329,7 +337,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
         lines.extend(wrap_gutter_line(
             None,
             None,
-            &hunk.header,
+            plain_chunks(&hunk.header, hunk_header_style(theme)),
             hunk_header_style(theme),
             number_width,
             text_width,
@@ -343,7 +351,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         Some(new_line),
-                        &diff_line.text,
+                        diff_chunks(file, &diff_line.text, context_row_style(theme), theme),
                         context_row_style(theme),
                         number_width,
                         text_width,
@@ -355,7 +363,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
-                        &diff_line.text,
+                        diff_chunks(file, &diff_line.text, removed_row_style(theme), theme),
                         removed_row_style(theme),
                         number_width,
                         text_width,
@@ -366,7 +374,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
-                        &diff_line.text,
+                        diff_chunks(file, &diff_line.text, added_row_style(theme), theme),
                         added_row_style(theme),
                         number_width,
                         text_width,
@@ -377,7 +385,7 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         None,
                         None,
-                        &diff_line.text,
+                        plain_chunks(&diff_line.text, meta_subtle_style(theme)),
                         meta_subtle_style(theme),
                         number_width,
                         text_width,
@@ -440,10 +448,11 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                 DiffLineKind::Context => {
                     let text = trim_diff_prefix(&hunk.lines[index]).to_string();
                     lines.extend(side_by_side_rows(
+                        file,
                         Some(old_line),
                         Some(new_line),
-                        &format!(" {text}"),
-                        &format!(" {text}"),
+                        format!(" {text}"),
+                        format!(" {text}"),
                         context_row_style(theme),
                         context_row_style(theme),
                         number_width,
@@ -471,10 +480,11 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                         let left_number = removed.get(row).map(|_| old_line + row);
                         let right_number = added.get(row).map(|_| new_line + row);
                         lines.extend(side_by_side_rows(
+                            file,
                             left_number,
                             right_number,
-                            &left,
-                            &right,
+                            left,
+                            right,
                             removed_row_style(theme),
                             added_row_style(theme),
                             number_width,
@@ -490,10 +500,11 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                     let added = collect_run(&hunk.lines, &mut index, DiffLineKind::Added);
                     for (row, line) in added.iter().enumerate() {
                         lines.extend(side_by_side_rows(
+                            file,
                             None,
                             Some(new_line + row),
-                            "",
-                            &format!("+{}", trim_diff_prefix(line)),
+                            String::new(),
+                            format!("+{}", trim_diff_prefix(line)),
                             neutral_side_style(theme),
                             added_row_style(theme),
                             number_width,
@@ -557,10 +568,11 @@ fn trim_diff_prefix(line: &DiffLine) -> &str {
 }
 
 fn side_by_side_rows(
+    file: &DiffFile,
     left_number: Option<usize>,
     right_number: Option<usize>,
-    left: &str,
-    right: &str,
+    left: String,
+    right: String,
     left_style: Style,
     right_style: Style,
     number_width: usize,
@@ -568,8 +580,30 @@ fn side_by_side_rows(
     separator: &str,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let left_wrapped = wrap_text_to_width(left, text_width);
-    let right_wrapped = wrap_text_to_width(right, text_width);
+    let left_wrapped = if left_number.is_none() && left.is_empty() {
+        vec![plain_chunks(
+            &hatch_fill(text_width, 0),
+            hatched_side_style(right_style, theme),
+        )]
+    } else {
+        wrap_chunks(
+            &diff_chunks(file, &left, left_style, theme),
+            text_width,
+            left_style,
+        )
+    };
+    let right_wrapped = if right_number.is_none() && right.is_empty() {
+        vec![plain_chunks(
+            &hatch_fill(text_width, 0),
+            hatched_side_style(left_style, theme),
+        )]
+    } else {
+        wrap_chunks(
+            &diff_chunks(file, &right, right_style, theme),
+            text_width,
+            right_style,
+        )
+    };
     let row_count = left_wrapped.len().max(right_wrapped.len());
     let mut rows = Vec::with_capacity(row_count);
     let left_bg = left_style.bg.unwrap_or_else(|| popup_base_bg(theme));
@@ -599,31 +633,42 @@ fn side_by_side_rows(
             right_style
         };
         let left_cell = if left_missing {
-            hatch_fill(text_width, row)
-        } else {
-            pad_cell(
-                left_wrapped.get(row).map(String::as_str).unwrap_or(""),
+            pad_chunks_to_width(
+                plain_chunks(&hatch_fill(text_width, row), left_cell_style),
                 text_width,
+                left_cell_style,
+            )
+        } else {
+            pad_chunks_to_width(
+                left_wrapped.get(row).cloned().unwrap_or_default(),
+                text_width,
+                left_style,
             )
         };
         let right_cell = if right_missing {
-            hatch_fill(text_width, row)
-        } else {
-            pad_cell(
-                right_wrapped.get(row).map(String::as_str).unwrap_or(""),
+            pad_chunks_to_width(
+                plain_chunks(&hatch_fill(text_width, row), right_cell_style),
                 text_width,
+                right_cell_style,
+            )
+        } else {
+            pad_chunks_to_width(
+                right_wrapped.get(row).cloned().unwrap_or_default(),
+                text_width,
+                right_style,
             )
         };
-        rows.push(Line::from(vec![
-            Span::styled(format!("{left_prefix}{left_cell}"), left_cell_style),
-            Span::styled(
-                separator.to_string(),
-                Style::default()
-                    .fg(theme.text_muted.to_color())
-                    .bg(blend_color(left_bg, right_bg, 0.5)),
-            ),
-            Span::styled(format!("{right_prefix}{right_cell}"), right_cell_style),
-        ]));
+        let mut line = vec![Span::styled(left_prefix, left_cell_style)];
+        line.extend(chunks_to_spans(left_cell));
+        line.push(Span::styled(
+            separator.to_string(),
+            Style::default()
+                .fg(theme.text_muted.to_color())
+                .bg(blend_color(left_bg, right_bg, 0.5)),
+        ));
+        line.push(Span::styled(right_prefix, right_cell_style));
+        line.extend(chunks_to_spans(right_cell));
+        rows.push(Line::from(line));
     }
 
     rows
@@ -642,15 +687,15 @@ fn raw_patch_wrapped_lines(file: &DiffFile, width: usize, theme: &Theme) -> Vec<
 fn wrap_gutter_line(
     old_number: Option<usize>,
     new_number: Option<usize>,
-    text: &str,
+    chunks: Vec<StyledChunk>,
     style: Style,
     number_width: usize,
     text_width: usize,
 ) -> Vec<Line<'static>> {
-    let wrapped = wrap_text_to_width(text, text_width);
+    let wrapped = wrap_chunks(&chunks, text_width, style);
     let mut lines = Vec::with_capacity(wrapped.len());
     let row_bg = style.bg.unwrap_or(Color::Black);
-    for (index, chunk) in wrapped.into_iter().enumerate() {
+    for (index, chunk_line) in wrapped.into_iter().enumerate() {
         let old_label = if index == 0 {
             line_number_label(old_number, number_width)
         } else {
@@ -661,7 +706,7 @@ fn wrap_gutter_line(
         } else {
             blank_line_number_label(number_width)
         };
-        lines.push(Line::from(vec![
+        let mut line = vec![
             Span::styled(
                 old_label,
                 Style::default()
@@ -676,10 +721,151 @@ fn wrap_gutter_line(
                     .bg(row_bg),
             ),
             Span::styled(" ", Style::default().bg(row_bg)),
-            Span::styled(chunk, style),
-        ]));
+        ];
+        line.extend(chunks_to_spans(chunk_line));
+        lines.push(Line::from(line));
     }
     lines
+}
+
+fn diff_chunks(file: &DiffFile, text: &str, row_style: Style, theme: &Theme) -> Vec<StyledChunk> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chars = text.chars();
+    let first = chars.next().expect("diff chunk text should not be empty");
+    let (prefix, content) = if matches!(first, '+' | '-' | ' ') {
+        (Some(first), chars.as_str())
+    } else {
+        (None, text)
+    };
+
+    let mut chunks = Vec::new();
+    if let Some(prefix) = prefix {
+        chunks.push(StyledChunk {
+            text: prefix.to_string(),
+            style: row_style,
+        });
+    }
+
+    if !content.is_empty() {
+        let highlighted = highlight::highlight_line(Some(Path::new(&file.path)), None, content);
+        if highlighted.spans.is_empty() {
+            chunks.push(StyledChunk {
+                text: content.to_string(),
+                style: row_style,
+            });
+        } else {
+            for span in highlighted.spans {
+                chunks.push(StyledChunk {
+                    text: span.text,
+                    style: row_style.patch(highlight::style_for_class(span.class, theme)),
+                });
+            }
+        }
+    }
+
+    chunks
+}
+
+fn plain_chunks(text: &str, style: Style) -> Vec<StyledChunk> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![StyledChunk {
+            text: text.to_string(),
+            style,
+        }]
+    }
+}
+
+fn wrap_chunks(
+    chunks: &[StyledChunk],
+    width: usize,
+    fallback_style: Style,
+) -> Vec<Vec<StyledChunk>> {
+    if width == 0 {
+        return vec![Vec::new()];
+    }
+    if chunks.is_empty() {
+        return vec![Vec::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = Vec::new();
+    let mut used = 0usize;
+
+    for chunk in chunks {
+        for ch in chunk.text.chars() {
+            let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0; 4])).max(1);
+            if used + ch_width > width && !current.is_empty() {
+                lines.push(current);
+                current = Vec::new();
+                used = 0;
+            }
+
+            push_chunk_char(&mut current, chunk.style, ch);
+            used += ch_width;
+
+            if used >= width {
+                lines.push(current);
+                current = Vec::new();
+                used = 0;
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(plain_chunks("", fallback_style));
+    }
+
+    lines
+}
+
+fn push_chunk_char(chunks: &mut Vec<StyledChunk>, style: Style, ch: char) {
+    if let Some(last) = chunks.last_mut()
+        && last.style == style
+    {
+        last.text.push(ch);
+        return;
+    }
+    chunks.push(StyledChunk {
+        text: ch.to_string(),
+        style,
+    });
+}
+
+fn chunks_to_spans(chunks: Vec<StyledChunk>) -> Vec<Span<'static>> {
+    chunks
+        .into_iter()
+        .map(|chunk| Span::styled(chunk.text, chunk.style))
+        .collect()
+}
+
+fn pad_chunks_to_width(
+    mut chunks: Vec<StyledChunk>,
+    width: usize,
+    pad_style: Style,
+) -> Vec<StyledChunk> {
+    let used = chunks_width(&chunks);
+    if used < width {
+        chunks.push(StyledChunk {
+            text: " ".repeat(width - used),
+            style: pad_style,
+        });
+    }
+    chunks
+}
+
+fn chunks_width(chunks: &[StyledChunk]) -> usize {
+    chunks
+        .iter()
+        .map(|chunk| UnicodeWidthStr::width(chunk.text.as_str()))
+        .sum()
 }
 
 fn line_number_width(file: &DiffFile) -> usize {

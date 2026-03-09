@@ -8,6 +8,7 @@ mod debug;
 mod diff;
 mod extension;
 mod handlers;
+mod highlight;
 mod http_client;
 mod ipc;
 mod project;

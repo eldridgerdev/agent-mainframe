@@ -39,10 +39,53 @@ use std::time::Duration;
 use app::App;
 use tmux::TmuxManager;
 
+const AUTOMATION_HELP: &str = "\
+Automation for agents:
+  AMF exposes machine-friendly automation commands over its local IPC socket.
+  Start a normal `amf` dashboard first, then call one of these:
+
+    amf automation create-project --file request.json
+    amf automation create-feature --file request.json
+    amf automation create-batch-features --file request.json
+
+  Requests are JSON. Use `--file <path>` to read a payload from disk, or omit
+  `--file` / pass `--file -` to read JSON from stdin. Add `--dry-run` to validate
+  and preview the result without changing AMF state.
+
+  Useful next commands:
+    amf automation --help
+    amf automation create-project --help
+    amf automation create-feature --help
+    amf automation create-batch-features --help
+
+  Reference examples:
+    docs/automation/README.md
+    docs/automation/*.template.json
+    docs/automation/*.example.json
+";
+
+const AUTOMATION_COMMAND_HELP: &str = "\
+Workflow:
+  1. Start a normal `amf` dashboard in another terminal.
+  2. Choose one of the automation commands above.
+  3. Send a JSON request with `--file <path>` or via stdin.
+  4. Use `--dry-run` first to validate and preview the JSON response.
+
+Examples:
+  amf automation create-project --file docs/automation/create-project.example.json
+  cat docs/automation/create-feature.example.json | amf automation create-feature --dry-run
+  amf automation create-batch-features --file docs/automation/create-batch-features.example.json
+
+Reference contracts:
+  docs/automation/README.md
+  docs/automation/*.template.json
+";
+
 #[derive(Parser, Debug)]
 #[command(name = "amf")]
 #[command(version, disable_version_flag = true)]
 #[command(about = "Run many AI coding agents in parallel", long_about = None)]
+#[command(after_long_help = AUTOMATION_HELP)]
 struct Cli {
     #[arg(short = 'V', long = "version")]
     version: bool,
@@ -56,6 +99,7 @@ enum Commands {
     /// Upgrade amf to the latest release
     Upgrade,
     /// Run machine-friendly automation actions against a running AMF instance
+    #[command(after_long_help = AUTOMATION_COMMAND_HELP)]
     Automation {
         #[command(subcommand)]
         command: AutomationCommands,

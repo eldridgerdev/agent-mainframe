@@ -294,11 +294,21 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::LatestPrompt(_, _) => Line::from(vec![
-            Span::styled(" Esc", key_style()),
-            Span::styled("/q", key_style()),
-            Span::raw(" close"),
-        ]),
+        AppMode::LatestPrompt(state) => {
+            let mut spans = vec![
+                Span::styled(" Esc", key_style()),
+                Span::styled("/q", key_style()),
+                Span::raw(" close  "),
+                Span::styled("drag", key_style()),
+                Span::raw(" copy"),
+            ];
+            if state.can_rerun {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled("r", key_style()));
+                spans.push(Span::raw("/Enter rerun"));
+            }
+            Line::from(spans)
+        }
         AppMode::ForkingFeature(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" confirm  "),

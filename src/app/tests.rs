@@ -1072,6 +1072,90 @@ fn submit_steering_prompt_pastes_into_running_session() {
 }
 
 #[test]
+fn rerun_latest_prompt_pastes_into_running_session() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_paste_text()
+        .withf(|session, window, text| {
+            session == "amf-my-feat" && window == "claude" && text == "Repeat the last request."
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-my-feat" && window == "claude" && key == "Enter"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_single_claude_session(),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::LatestPrompt(LatestPromptState {
+        view: ViewState::new(
+            "my-project".to_string(),
+            "my-feat".to_string(),
+            "amf-my-feat".to_string(),
+            "claude".to_string(),
+            "Claude 1".to_string(),
+            VibeMode::Vibeless,
+            false,
+        ),
+        prompt: "Repeat the last request.".to_string(),
+        can_rerun: true,
+        selection: TextSelection::default(),
+    });
+
+    app.rerun_latest_prompt().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert_eq!(app.message.as_deref(), Some("Re-ran latest prompt"));
+}
+
+#[test]
+fn rerun_latest_prompt_marks_codex_session_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_paste_text()
+        .withf(|session, window, text| {
+            session == "amf-my-feat" && window == "codex" && text == "Repeat codex prompt."
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-my-feat" && window == "codex" && key == "Enter"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_codex_session(workdir.path(), true),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::LatestPrompt(LatestPromptState {
+        view: ViewState::new(
+            "my-project".to_string(),
+            "my-feat".to_string(),
+            "amf-my-feat".to_string(),
+            "codex".to_string(),
+            "Codex".to_string(),
+            VibeMode::Vibeless,
+            false,
+        ),
+        prompt: "Repeat codex prompt.".to_string(),
+        can_rerun: true,
+        selection: TextSelection::default(),
+    });
+
+    app.rerun_latest_prompt().unwrap();
+
+    assert!(app.ipc_thinking_sessions.contains("amf-my-feat"));
+}
+
+#[test]
 fn create_project_persists_selected_preferred_agent() {
     let repo = TempDir::new().unwrap();
     let tmp = NamedTempFile::new().unwrap();

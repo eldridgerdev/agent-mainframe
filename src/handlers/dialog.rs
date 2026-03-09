@@ -152,14 +152,10 @@ pub fn handle_help_key(app: &mut App, key: KeyCode) -> Result<()> {
 pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
-            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                AppMode::LatestPrompt(_, v) => v,
-                other => {
-                    app.mode = other;
-                    return Ok(());
-                }
-            };
-            app.mode = AppMode::Viewing(view);
+            app.close_latest_prompt();
+        }
+        KeyCode::Char('r') | KeyCode::Enter => {
+            app.rerun_latest_prompt()?;
         }
         _ => {}
     }
@@ -221,6 +217,117 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{LatestPromptState, TextSelection, ViewState};
+    use crate::project::{
+        AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind,
+        VibeMode,
+    };
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    fn store_with_claude_session() -> ProjectStore {
+        let now = Utc::now();
+        let session = FeatureSession {
+            id: "sess-1".to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude 1".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: None,
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        };
+        let feature = Feature {
+            id: "feat-1".to_string(),
+            name: "my-feat".to_string(),
+            branch: "my-feat".to_string(),
+            workdir: std::path::PathBuf::from("/tmp/test-workdir"),
+            is_worktree: false,
+            tmux_session: "amf-my-feat".to_string(),
+            sessions: vec![session],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            has_notes: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: std::path::PathBuf::from("/tmp/test-repo"),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: false,
+        };
+        ProjectStore {
+            version: 4,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn latest_prompt_r_key_reruns_prompt() {
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_paste_text()
+            .withf(|session, window, text| {
+                session == "amf-my-feat" && window == "claude" && text == "rerun me"
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|session, window, key| {
+                session == "amf-my-feat" && window == "claude" && key == "Enter"
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let mut app = App::new_for_test(
+            store_with_claude_session(),
+            Box::new(tmux),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::LatestPrompt(LatestPromptState {
+            view: ViewState::new(
+                "my-project".to_string(),
+                "my-feat".to_string(),
+                "amf-my-feat".to_string(),
+                "claude".to_string(),
+                "Claude 1".to_string(),
+                VibeMode::Vibeless,
+                false,
+            ),
+            prompt: "rerun me".to_string(),
+            can_rerun: true,
+            selection: TextSelection::default(),
+        });
+
+        handle_latest_prompt_key(&mut app, KeyCode::Char('r')).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.message.as_deref(), Some("Re-ran latest prompt"));
+    }
 }
 
 pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {

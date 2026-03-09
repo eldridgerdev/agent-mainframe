@@ -19,7 +19,7 @@ pub use feature::{
 pub use help::draw_help;
 pub use hooks::{
     draw_change_reason_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
-    draw_running_hook_dialog,
+    draw_running_hook_dialog, latest_prompt_dialog_layout, latest_prompt_selected_text,
 };
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use search::draw_search_dialog;

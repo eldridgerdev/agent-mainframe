@@ -1,9 +1,11 @@
 use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use std::time::Instant;
 
 use crate::app::{App, AppMode, Selection, VisibleItem};
 use crate::tmux::TmuxManager;
+use crate::ui::{latest_prompt_dialog_layout, latest_prompt_selected_text};
 
 static mut LAST_CLICK_TIME: Option<Instant> = None;
 static mut LAST_CLICK_ROW: Option<u16> = None;
@@ -32,6 +34,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
 }
 
 fn handle_scroll_up(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::LatestPrompt(_)) {
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -40,6 +45,9 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
 }
 
 fn handle_scroll_down(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::LatestPrompt(_)) {
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Down, visible_rows);
         return;
@@ -92,6 +100,27 @@ fn handle_click(
     button: crossterm::event::MouseButton,
     visible_rows: u16,
 ) -> Result<()> {
+    let latest_prompt_content = latest_prompt_content_area(app, visible_rows);
+    if let AppMode::LatestPrompt(state) = &mut app.mode {
+        if button != MouseButton::Left {
+            return Ok(());
+        }
+
+        let Some((content_col, content_row)) = relative_point(latest_prompt_content, col, row)
+        else {
+            return Ok(());
+        };
+
+        app.message = None;
+        state.selection.start_row = content_row;
+        state.selection.start_col = content_col;
+        state.selection.end_row = content_row;
+        state.selection.end_col = content_col;
+        state.selection.is_selecting = true;
+        state.selection.has_selection = false;
+        return Ok(());
+    }
+
     if let AppMode::Viewing(view) = &mut app.mode {
         if row == 0 {
             let name_start = 2;
@@ -266,6 +295,18 @@ fn handle_double_click(app: &mut App, item: &VisibleItem, col: u16) -> Result<()
 }
 
 fn handle_drag(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result<()> {
+    let latest_prompt_content = latest_prompt_content_area(app, 0);
+    if let AppMode::LatestPrompt(state) = &mut app.mode
+        && button == MouseButton::Left
+        && state.selection.is_selecting
+    {
+        let (content_col, content_row) = clamped_relative_point(latest_prompt_content, col, row);
+        state.selection.end_row = content_row;
+        state.selection.end_col = content_col;
+        state.selection.has_selection = true;
+        return Ok(());
+    }
+
     if let AppMode::Viewing(view) = &mut app.mode
         && button == MouseButton::Left
         && view.selection.is_selecting
@@ -280,6 +321,28 @@ fn handle_drag(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result
 }
 
 fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result<()> {
+    let latest_prompt_content = latest_prompt_content_area(app, 0);
+    if let AppMode::LatestPrompt(state) = &mut app.mode
+        && button == MouseButton::Left
+        && state.selection.is_selecting
+    {
+        state.selection.is_selecting = false;
+
+        if state.selection.has_selection {
+            let (content_col, content_row) = clamped_relative_point(latest_prompt_content, col, row);
+            state.selection.end_row = content_row;
+            state.selection.end_col = content_col;
+
+            let text =
+                latest_prompt_selected_text(&state.prompt, latest_prompt_content.width.max(1), &state.selection);
+            if !text.is_empty() {
+                copy_to_clipboard_osc52(&text);
+                app.message = Some(format!("Copied {} chars", text.len()));
+            }
+        }
+        return Ok(());
+    }
+
     if let AppMode::Viewing(view) = &mut app.mode
         && button == MouseButton::Left
         && view.selection.is_selecting
@@ -307,6 +370,40 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
         }
     }
     Ok(())
+}
+
+fn latest_prompt_content_area(app: &App, visible_rows: u16) -> Rect {
+    let (width, height) = crossterm::terminal::size().unwrap_or_else(|_| {
+        let width = app.pane_content_cols.max(1);
+        let height = if visible_rows > 0 {
+            visible_rows.saturating_add(3)
+        } else {
+            app.pane_content_rows.saturating_add(1).max(1)
+        };
+        (width, height)
+    });
+    latest_prompt_dialog_layout(Rect::new(0, 0, width, height)).content
+}
+
+fn relative_point(content: Rect, col: u16, row: u16) -> Option<(u16, u16)> {
+    if col < content.x
+        || row < content.y
+        || col >= content.x.saturating_add(content.width)
+        || row >= content.y.saturating_add(content.height)
+    {
+        return None;
+    }
+
+    Some((col - content.x, row - content.y))
+}
+
+fn clamped_relative_point(content: Rect, col: u16, row: u16) -> (u16, u16) {
+    let max_col = content.width.saturating_sub(1);
+    let max_row = content.height.saturating_sub(1);
+    (
+        col.saturating_sub(content.x).min(max_col),
+        row.saturating_sub(content.y).min(max_row),
+    )
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.

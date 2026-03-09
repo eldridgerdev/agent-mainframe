@@ -1,15 +1,209 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthChar;
 
-use crate::app::{ChangeReasonState, HookPromptState, RunningHookState};
+use crate::app::{
+    ChangeReasonState, HookPromptState, LatestPromptState, RunningHookState, TextSelection,
+};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
+
+const LATEST_PROMPT_WIDTH_PERCENT: u16 = 80;
+const LATEST_PROMPT_HEIGHT_PERCENT: u16 = 70;
+
+#[derive(Clone, Debug)]
+pub struct WrappedPromptLine {
+    start: usize,
+    end: usize,
+    columns: Vec<usize>,
+}
+
+impl WrappedPromptLine {
+    fn column_count(&self) -> usize {
+        self.columns.len()
+    }
+
+    fn byte_at_col(&self, col: usize) -> usize {
+        self.columns.get(col).copied().unwrap_or(self.end)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LatestPromptDialogLayout {
+    pub area: Rect,
+    pub content: Rect,
+    pub hint: Rect,
+}
+
+pub fn latest_prompt_dialog_layout(frame_area: Rect) -> LatestPromptDialogLayout {
+    let area = centered_rect(LATEST_PROMPT_WIDTH_PERCENT, LATEST_PROMPT_HEIGHT_PERCENT, frame_area);
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    LatestPromptDialogLayout {
+        area,
+        content: chunks[0],
+        hint: chunks[1],
+    }
+}
+
+pub fn wrap_latest_prompt(prompt: &str, width: u16) -> Vec<WrappedPromptLine> {
+    let width = width.max(1) as usize;
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    let mut line_end = 0;
+    let mut line_width = 0;
+    let mut line_columns = Vec::new();
+
+    for (idx, ch) in prompt.char_indices() {
+        if ch == '\n' {
+            lines.push(WrappedPromptLine {
+                start: line_start,
+                end: line_end,
+                columns: std::mem::take(&mut line_columns),
+            });
+            line_start = idx + ch.len_utf8();
+            line_end = line_start;
+            line_width = 0;
+            continue;
+        }
+
+        let char_width = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        if line_width + char_width > width && !line_columns.is_empty() {
+            lines.push(WrappedPromptLine {
+                start: line_start,
+                end: line_end,
+                columns: std::mem::take(&mut line_columns),
+            });
+            line_start = idx;
+            line_width = 0;
+        }
+
+        for _ in 0..char_width {
+            line_columns.push(idx);
+        }
+        line_end = idx + ch.len_utf8();
+        line_width += char_width;
+    }
+
+    if !line_columns.is_empty() || lines.is_empty() || prompt.ends_with('\n') {
+        lines.push(WrappedPromptLine {
+            start: line_start,
+            end: line_end,
+            columns: line_columns,
+        });
+    }
+
+    lines
+}
+
+pub fn latest_prompt_selected_text(prompt: &str, width: u16, selection: &TextSelection) -> String {
+    if !selection.has_selection {
+        return String::new();
+    }
+
+    let lines = wrap_latest_prompt(prompt, width);
+    let (start_row, start_col, end_row, end_col) = selection.normalized();
+    let Some(start_line) = lines.get(start_row as usize) else {
+        return String::new();
+    };
+    let Some(end_line) = lines.get(end_row as usize) else {
+        return String::new();
+    };
+
+    let start_byte = start_line.byte_at_col(start_col as usize);
+    let end_byte = end_line.byte_at_col(end_col as usize);
+    if start_byte >= end_byte {
+        return String::new();
+    }
+
+    prompt[start_byte..end_byte].to_string()
+}
+
+fn latest_prompt_lines(
+    prompt: &str,
+    width: u16,
+    height: u16,
+    selection: &TextSelection,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let wrapped = wrap_latest_prompt(prompt, width);
+    let mut lines = Vec::with_capacity(height as usize);
+    let (sel_start_row, sel_start_col, sel_end_row, sel_end_col) = selection.normalized();
+
+    for (row_idx, line) in wrapped.iter().enumerate().take(height as usize) {
+        if line.start == line.end {
+            lines.push(Line::raw(""));
+            continue;
+        }
+
+        let row_u16 = row_idx as u16;
+        let line_len = line.column_count();
+        let selected_range = if selection.has_selection
+            && row_u16 >= sel_start_row
+            && row_u16 <= sel_end_row
+        {
+            let start = if row_u16 == sel_start_row {
+                (sel_start_col as usize).min(line_len)
+            } else {
+                0
+            };
+            let end = if row_u16 == sel_end_row {
+                (sel_end_col as usize).min(line_len)
+            } else {
+                line_len
+            };
+            (start < end).then_some((start, end))
+        } else {
+            None
+        };
+
+        if let Some((start, end)) = selected_range {
+            let before_end = line.byte_at_col(start);
+            let selected_end = line.byte_at_col(end);
+            let mut spans = Vec::with_capacity(3);
+            if before_end > line.start {
+                spans.push(Span::styled(
+                    prompt[line.start..before_end].to_string(),
+                    Style::default().fg(theme.text.to_color()),
+                ));
+            }
+            spans.push(Span::styled(
+                prompt[before_end..selected_end].to_string(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .bg(theme.effective_selection_bg()),
+            ));
+            if selected_end < line.end {
+                spans.push(Span::styled(
+                    prompt[selected_end..line.end].to_string(),
+                    Style::default().fg(theme.text.to_color()),
+                ));
+            }
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(Line::from(Span::styled(
+                prompt[line.start..line.end].to_string(),
+                Style::default().fg(theme.text.to_color()),
+            )));
+        }
+    }
+
+    while lines.len() < height as usize {
+        lines.push(Line::raw(""));
+    }
+
+    lines
+}
 
 pub fn draw_change_reason_dialog(frame: &mut Frame, state: &ChangeReasonState, theme: &Theme) {
     let area = centered_rect(80, 60, frame.area());
@@ -327,8 +521,9 @@ pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState, theme
     frame.render_widget(hints, chunks[1]);
 }
 
-pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: &str, theme: &Theme) {
-    let area = centered_rect(80, 70, frame.area());
+pub fn draw_latest_prompt_dialog(frame: &mut Frame, state: &LatestPromptState, theme: &Theme) {
+    let layout = latest_prompt_dialog_layout(frame.area());
+    let area = layout.area;
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -337,23 +532,71 @@ pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: &str, theme: &Theme)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
 
-    let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
+    let paragraph = Paragraph::new(latest_prompt_lines(
+        &state.prompt,
+        layout.content.width,
+        layout.content.height,
+        &state.selection,
+        theme,
+    ))
+    .style(Style::default().fg(theme.text.to_color()));
+    frame.render_widget(paragraph, layout.content);
 
-    let paragraph = Paragraph::new(prompt)
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(theme.text.to_color()));
-    frame.render_widget(paragraph, chunks[0]);
-
-    let hint = Paragraph::new(Line::from(vec![
+    let mut hint_spans = vec![
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled("/q", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
-    ]));
-    frame.render_widget(hint, chunks[1]);
+        Span::styled(" close  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("drag", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" copy", Style::default().fg(theme.text_muted.to_color())),
+    ];
+    if state.can_rerun {
+        hint_spans.push(Span::styled(
+            "  r/Enter",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        hint_spans.push(Span::styled(
+            " rerun",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+
+    let hint = Paragraph::new(Line::from(hint_spans));
+    frame.render_widget(hint, layout.hint);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_prompt_selection_preserves_soft_wraps() {
+        let prompt = "abcdefgh";
+        let selection = TextSelection {
+            start_row: 0,
+            start_col: 2,
+            end_row: 1,
+            end_col: 2,
+            is_selecting: false,
+            has_selection: true,
+        };
+
+        assert_eq!(latest_prompt_selected_text(prompt, 4, &selection), "cdef");
+    }
+
+    #[test]
+    fn latest_prompt_selection_preserves_real_newlines() {
+        let prompt = "ab\ncd";
+        let selection = TextSelection {
+            start_row: 0,
+            start_col: 1,
+            end_row: 1,
+            end_col: 1,
+            is_selecting: false,
+            has_selection: true,
+        };
+
+        assert_eq!(latest_prompt_selected_text(prompt, 4, &selection), "b\nc");
+    }
 }

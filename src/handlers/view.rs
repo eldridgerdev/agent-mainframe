@@ -3,7 +3,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 use crate::app::AppMode;
-use crate::app::util::read_latest_prompt;
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -281,26 +280,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             });
         }
         KeyCode::Char('l') => {
-            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                AppMode::Viewing(v) => v,
-                other => {
-                    app.mode = other;
-                    return Ok(());
-                }
-            };
-            let workdir = app
-                .store
-                .projects
-                .iter()
-                .find(|p| p.name == view.project_name)
-                .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
-                .map(|f| f.workdir.clone());
-            let prompt = if let Some(wd) = workdir {
-                read_latest_prompt(&wd).unwrap_or_else(|| "(No prompt saved yet)".to_string())
-            } else {
-                "(No prompt saved yet)".to_string()
-            };
-            app.mode = AppMode::LatestPrompt(prompt, view);
+            app.open_latest_prompt();
         }
         _ => {}
     }

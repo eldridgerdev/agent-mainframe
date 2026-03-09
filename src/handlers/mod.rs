@@ -79,7 +79,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),
         AppMode::HookPrompt(_) => handle_hook_prompt_key(app, key.code),
-        AppMode::LatestPrompt(_, _) => handle_latest_prompt_key(app, key.code),
+        AppMode::LatestPrompt(_) => handle_latest_prompt_key(app, key.code),
         AppMode::ForkingFeature(_) => handle_fork_feature_key(app, key.code),
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),

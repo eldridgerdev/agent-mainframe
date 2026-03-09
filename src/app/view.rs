@@ -1,7 +1,10 @@
 use anyhow::Result;
 
 use super::*;
+use super::util::read_latest_prompt;
 use crate::tmux::TmuxManager;
+
+const NO_LATEST_PROMPT_MESSAGE: &str = "(No prompt saved yet)";
 
 impl App {
     pub fn enter_view(&mut self) -> Result<()> {
@@ -94,6 +97,79 @@ impl App {
         self.pane_content.clear();
         self.tmux_cursor = None;
         self.message = Some("Returned to dashboard".into());
+    }
+
+    pub fn open_latest_prompt(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let prompt = self
+            .store
+            .projects
+            .iter()
+            .find(|p| p.name == view.project_name)
+            .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
+            .and_then(|f| read_latest_prompt(&f.workdir));
+        let can_rerun = prompt.is_some();
+
+        self.mode = AppMode::LatestPrompt(LatestPromptState {
+            view,
+            prompt: prompt.unwrap_or_else(|| NO_LATEST_PROMPT_MESSAGE.to_string()),
+            can_rerun,
+            selection: TextSelection::default(),
+        });
+    }
+
+    pub fn close_latest_prompt(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::LatestPrompt(state) => state.view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.mode = AppMode::Viewing(view);
+    }
+
+    pub fn rerun_latest_prompt(&mut self) -> Result<()> {
+        let (session, window, prompt, can_rerun) = match &self.mode {
+            AppMode::LatestPrompt(state) => (
+                state.view.session.clone(),
+                state.view.window.clone(),
+                state.prompt.clone(),
+                state.can_rerun,
+            ),
+            _ => return Ok(()),
+        };
+
+        if !can_rerun || prompt.trim().is_empty() {
+            self.message = Some("No saved prompt to rerun".into());
+            return Ok(());
+        }
+
+        self.tmux.paste_text(&session, &window, &prompt)?;
+        self.tmux.send_key_name(&session, &window, "Enter")?;
+
+        let is_codex_window = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|p| p.features.iter())
+            .filter(|f| f.tmux_session == session)
+            .flat_map(|f| f.sessions.iter())
+            .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
+        if is_codex_window {
+            self.note_codex_prompt_submit(&session, &window);
+        }
+
+        self.close_latest_prompt();
+        self.message = Some("Re-ran latest prompt".into());
+        Ok(())
     }
 
     pub fn activate_leader(&mut self) {

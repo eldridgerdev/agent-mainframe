@@ -203,6 +203,14 @@ pub struct SteeringPromptState {
     pub prompt_analysis: PromptAnalysis,
 }
 
+#[derive(Clone)]
+pub struct LatestPromptState {
+    pub view: ViewState,
+    pub prompt: String,
+    pub can_rerun: bool,
+    pub selection: TextSelection,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -242,7 +250,7 @@ pub enum AppMode {
     ChangeReasonPrompt(ChangeReasonState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
-    LatestPrompt(String, ViewState),
+    LatestPrompt(LatestPromptState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     DebugLog(DebugLogState),

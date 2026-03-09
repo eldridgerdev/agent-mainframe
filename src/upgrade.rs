@@ -50,16 +50,18 @@ fn detect_platform() -> Result<Platform> {
         },
         ("x86_64", "macos") => Platform {
             binary_name: "amf-aarch64-apple-darwin".to_string(),
-            pretty_name: "macOS (Apple Silicon)".to_string(),
+            pretty_name: "macOS x86_64 (via Rosetta)".to_string(),
+        },
+        ("aarch64", "macos") => Platform {
+            binary_name: "amf-aarch64-apple-darwin".to_string(),
+            pretty_name: "macOS Apple Silicon".to_string(),
         },
         ("aarch64", "linux") => Platform {
             binary_name: "amf-aarch64-unknown-linux-gnu".to_string(),
             pretty_name: "Linux aarch64".to_string(),
         },
         _ => anyhow::bail!(
-            "Unsupported platform: {}-{}. Please upgrade manually from GitHub releases.",
-            arch,
-            os
+            "Unsupported platform: {arch}-{os}. Please upgrade manually from GitHub releases."
         ),
     };
 

@@ -54,6 +54,10 @@ impl App {
             return Ok(());
         }
 
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
+
         self.reload_extension_config();
 
         let session_names: Vec<(usize, String)> = self
@@ -494,6 +498,10 @@ impl App {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
+
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
 
         let feature = match self
             .store

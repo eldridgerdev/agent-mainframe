@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
@@ -96,8 +98,27 @@ pub enum VibeMode {
     Vibeless,
     Vibe,
     SuperVibe,
-    // Legacy alias normalized to Vibeless + review=true.
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum StoredVibeMode {
+    #[default]
+    Vibeless,
+    Vibe,
+    SuperVibe,
     Review,
+}
+
+impl StoredVibeMode {
+    pub(crate) fn into_mode_and_review(self) -> (VibeMode, bool) {
+        match self {
+            StoredVibeMode::Vibeless => (VibeMode::Vibeless, false),
+            StoredVibeMode::Vibe => (VibeMode::Vibe, false),
+            StoredVibeMode::SuperVibe => (VibeMode::SuperVibe, false),
+            StoredVibeMode::Review => (VibeMode::Vibeless, true),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for VibeMode {
@@ -105,13 +126,9 @@ impl<'de> Deserialize<'de> for VibeMode {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        Ok(match s.as_str() {
-            "vibe" => VibeMode::Vibe,
-            "supervibe" => VibeMode::SuperVibe,
-            "review" => VibeMode::Review,
-            _ => VibeMode::Vibeless,
-        })
+        Ok(StoredVibeMode::deserialize(deserializer)?
+            .into_mode_and_review()
+            .0)
     }
 }
 
@@ -121,7 +138,6 @@ impl VibeMode {
             VibeMode::Vibeless => "Vibeless",
             VibeMode::Vibe => "Vibe",
             VibeMode::SuperVibe => "SuperVibe",
-            VibeMode::Review => "Vibeless",
         }
     }
 
@@ -130,13 +146,12 @@ impl VibeMode {
             VibeMode::Vibeless => "asks for approval for every change",
             VibeMode::Vibe => "auto-accepts edits",
             VibeMode::SuperVibe => "skips all permission prompts",
-            VibeMode::Review => "asks for approval for every change",
         }
     }
 
     pub fn cli_flags(&self, enable_chrome: bool) -> Vec<String> {
         let mut flags = match self {
-            VibeMode::Vibeless | VibeMode::Review => vec![],
+            VibeMode::Vibeless => vec![],
             VibeMode::Vibe => {
                 vec!["--permission-mode".into(), "acceptEdits".into()]
             }
@@ -150,14 +165,22 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 3] = [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
+    pub const ALL: [VibeMode; 3] = [
+        VibeMode::Vibeless,
+        VibeMode::Vibe,
+        VibeMode::SuperVibe,
+    ];
 }
 
 fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Feature {
     pub id: String,
     pub name: String,
@@ -181,6 +204,8 @@ pub struct Feature {
     pub enable_chrome: bool,
     #[serde(default)]
     pub has_notes: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pending_worktree_script: bool,
     #[serde(default)]
     pub ready: bool,
     pub status: ProjectStatus,
@@ -192,6 +217,77 @@ pub struct Feature {
     pub summary_updated_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nickname: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FeatureDe {
+    id: String,
+    name: String,
+    branch: String,
+    workdir: PathBuf,
+    is_worktree: bool,
+    tmux_session: String,
+    #[serde(default)]
+    sessions: Vec<FeatureSession>,
+    #[serde(default = "default_true")]
+    collapsed: bool,
+    #[serde(default)]
+    mode: StoredVibeMode,
+    #[serde(default)]
+    review: bool,
+    #[serde(default)]
+    plan_mode: bool,
+    #[serde(default)]
+    agent: AgentKind,
+    #[serde(default)]
+    enable_chrome: bool,
+    #[serde(default)]
+    has_notes: bool,
+    #[serde(default)]
+    ready: bool,
+    status: ProjectStatus,
+    created_at: DateTime<Utc>,
+    last_accessed: DateTime<Utc>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    summary_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    nickname: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Feature {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let feature = FeatureDe::deserialize(deserializer)?;
+        let (mode, legacy_review) = feature.mode.into_mode_and_review();
+        Ok(Self {
+            id: feature.id,
+            name: feature.name,
+            branch: feature.branch,
+            workdir: feature.workdir,
+            is_worktree: feature.is_worktree,
+            tmux_session: feature.tmux_session,
+            sessions: feature.sessions,
+            collapsed: feature.collapsed,
+            mode,
+            review: feature.review || legacy_review,
+            plan_mode: feature.plan_mode,
+            agent: feature.agent,
+            enable_chrome: feature.enable_chrome,
+            has_notes: feature.has_notes,
+            pending_worktree_script: false,
+            ready: feature.ready,
+            status: feature.status,
+            created_at: feature.created_at,
+            last_accessed: feature.last_accessed,
+            summary: feature.summary,
+            summary_updated_at: feature.summary_updated_at,
+            nickname: feature.nickname,
+        })
+    }
 }
 
 impl Feature {
@@ -225,6 +321,7 @@ impl Feature {
             agent,
             enable_chrome,
             has_notes,
+            pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
             created_at: now,
@@ -240,11 +337,6 @@ impl Feature {
     }
 
     pub fn normalize_legacy_review_mode(&mut self) -> bool {
-        if self.mode == VibeMode::Review {
-            self.mode = VibeMode::Vibeless;
-            self.review = true;
-            return true;
-        }
         false
     }
 
@@ -395,7 +487,7 @@ fn default_session_bookmarks() -> Vec<SessionBookmark> {
     Vec::new()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectStore {
     pub version: u32,
     pub projects: Vec<Project>,
@@ -465,7 +557,7 @@ impl ProjectStore {
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self {
-                version: 4,
+                version: CURRENT_PROJECT_STORE_VERSION,
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
                 extra: HashMap::new(),
@@ -522,19 +614,22 @@ impl ProjectStore {
             4 => {
                 let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| "Failed to parse v4 project store")?;
-                if store.normalize_legacy_review_modes() {
+                let mut needs_save = store.normalize_legacy_review_modes();
+                if store.version < CURRENT_PROJECT_STORE_VERSION {
+                    store.version = CURRENT_PROJECT_STORE_VERSION;
+                    needs_save = true;
+                }
+                if needs_save {
                     store.save(path)?;
                 }
                 Ok(store)
             }
-            5 => {
-                let store: ProjectStore = serde_json::from_value(raw)
-                    .with_context(|| "Failed to parse v5 project store")?;
-                Ok(store)
-            }
             version if version >= 5 => {
-                let store: ProjectStore = serde_json::from_value(raw)
+                let mut store: ProjectStore = serde_json::from_value(raw)
                     .with_context(|| format!("Failed to parse v{} project store", version))?;
+                if store.normalize_legacy_review_modes() {
+                    store.save(path)?;
+                }
                 Ok(store)
             }
             _ => {
@@ -556,7 +651,7 @@ impl ProjectStore {
     fn migrate_from_v3(v3: ProjectStore) -> Self {
         // Add nickname field to features (serde default handles this)
         Self {
-            version: 4,
+            version: CURRENT_PROJECT_STORE_VERSION,
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
             extra: HashMap::new(),
@@ -670,6 +765,7 @@ impl ProjectStore {
                             agent: AgentKind::default(),
                             enable_chrome: false,
                             has_notes: false,
+                            pending_worktree_script: false,
                             ready: false,
                             status: f.status,
                             created_at: f.created_at,
@@ -705,7 +801,13 @@ impl ProjectStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = serde_json::to_string_pretty(self)?;
+        let mut persisted = self.clone();
+        for project in &mut persisted.projects {
+            project
+                .features
+                .retain(|feature| !feature.pending_worktree_script);
+        }
+        let data = serde_json::to_string_pretty(&persisted)?;
         fs::write(path, data).with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(())
     }
@@ -808,6 +910,7 @@ mod tests {
             agent: AgentKind::default(),
             enable_chrome: false,
             has_notes: false,
+            pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
             created_at: Utc::now(),
@@ -823,7 +926,7 @@ mod tests {
     #[test]
     fn projectstore_roundtrip() {
         let store = ProjectStore {
-            version: 4,
+            version: CURRENT_PROJECT_STORE_VERSION,
             projects: vec![Project {
                 id: "proj-id".to_string(),
                 name: "my-project".to_string(),
@@ -841,7 +944,7 @@ mod tests {
         store.save(tmp.path()).unwrap();
 
         let loaded = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(loaded.version, 4);
+        assert_eq!(loaded.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(loaded.projects.len(), 1);
         assert_eq!(loaded.projects[0].name, "my-project");
         assert_eq!(
@@ -917,6 +1020,34 @@ mod tests {
         assert!(reloaded_json.get("guided_tours").is_some());
     }
 
+    #[test]
+    fn migration_v4_to_v5() {
+        let store = ProjectStore {
+            version: 4,
+            projects: vec![Project {
+                id: "proj-id".to_string(),
+                name: "my-project".to_string(),
+                repo: PathBuf::from("/home/user/my-project"),
+                collapsed: false,
+                features: vec![],
+                created_at: Utc::now(),
+                preferred_agent: AgentKind::Claude,
+                is_git: true,
+            }],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+        let tmp = NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), serde_json::to_string_pretty(&store).unwrap()).unwrap();
+
+        let loaded = ProjectStore::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, CURRENT_PROJECT_STORE_VERSION);
+
+        let reloaded: ProjectStore =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path()).unwrap()).unwrap();
+        assert_eq!(reloaded.version, CURRENT_PROJECT_STORE_VERSION);
+    }
+
     // ── Migration v0 → v2 ────────────────────────────────────
 
     #[test]
@@ -942,7 +1073,7 @@ mod tests {
         std::fs::write(tmp.path(), v0_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 4);
+        assert_eq!(store.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];
@@ -998,7 +1129,7 @@ mod tests {
         std::fs::write(tmp.path(), v1_json).unwrap();
 
         let store = ProjectStore::load(tmp.path()).unwrap();
-        assert_eq!(store.version, 4);
+        assert_eq!(store.version, CURRENT_PROJECT_STORE_VERSION);
         assert_eq!(store.projects.len(), 1);
 
         let proj = &store.projects[0];
@@ -1172,9 +1303,25 @@ mod tests {
     }
 
     #[test]
-    fn vibe_mode_review_flags_match_vibeless_for_legacy_loads() {
-        assert_eq!(VibeMode::Review.cli_flags(false), Vec::<String>::new());
-        assert_eq!(VibeMode::Review.cli_flags(true), vec!["--chrome"]);
+    fn legacy_review_feature_migrates_to_review_flag() {
+        let feature: Feature = serde_json::from_str(
+            r#"{
+                "id": "feat-id",
+                "name": "legacy-review",
+                "branch": "legacy-review",
+                "workdir": "/tmp/test",
+                "is_worktree": false,
+                "tmux_session": "amf-legacy-review",
+                "mode": "review",
+                "status": "stopped",
+                "created_at": "2024-01-01T00:00:00Z",
+                "last_accessed": "2024-01-01T00:00:00Z"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(feature.mode, VibeMode::Vibeless);
+        assert!(feature.review);
     }
 }
 

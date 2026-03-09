@@ -372,6 +372,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status,
         created_at: now,
@@ -415,6 +416,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status,
         created_at: now,
@@ -519,6 +521,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 agent: AgentKind::default(),
                 enable_chrome: false,
                 has_notes: false,
+                pending_worktree_script: false,
                 ready: false,
                 status: ProjectStatus::Stopped,
                 created_at: now + Duration::minutes(1),
@@ -542,6 +545,7 @@ fn visible_items_prioritizes_non_worktree_features() {
                 agent: AgentKind::default(),
                 enable_chrome: false,
                 has_notes: false,
+                pending_worktree_script: false,
                 ready: false,
                 status: ProjectStatus::Stopped,
                 created_at: now,
@@ -572,6 +576,196 @@ fn visible_items_prioritizes_non_worktree_features() {
     assert!(matches!(visible[0], VisibleItem::Project(0)));
     assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
     assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
+}
+
+#[test]
+fn start_worktree_hook_adds_pending_feature_immediately() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: true,
+            features: vec![],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        extra: std::collections::HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.start_worktree_hook(
+        "true",
+        workdir.path().to_path_buf(),
+        "my-project".to_string(),
+        "new-feature".to_string(),
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+        false,
+        None,
+    );
+
+    assert!(matches!(app.mode, AppMode::RunningHook(_)));
+    assert!(matches!(app.selection, Selection::Feature(0, 0)));
+    assert_eq!(app.store.projects[0].features.len(), 1);
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.name, "new-feature");
+    assert_eq!(feature.workdir, workdir.path());
+    assert!(feature.is_worktree);
+    assert!(feature.pending_worktree_script);
+    assert_eq!(feature.status, ProjectStatus::Stopped);
+}
+
+#[test]
+fn start_feature_is_blocked_while_worktree_script_pending() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.store.projects[0].features[0].pending_worktree_script = true;
+
+    app.start_feature().unwrap();
+
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("worktree script")
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
+fn complete_running_hook_clears_pending_state_and_starts_feature() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let now = Utc::now();
+    let mut feature = Feature::new(
+        "new-feature".to_string(),
+        "new-feature".to_string(),
+        workdir.path().to_path_buf(),
+        true,
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+    );
+    feature.pending_worktree_script = true;
+    let store = ProjectStore {
+        version: 2,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        extra: std::collections::HashMap::new(),
+    };
+
+    let workdir_path = workdir.path().to_path_buf();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-new-feature")
+        .times(1)
+        .return_const(false);
+    let expected_workdir = workdir_path.clone();
+    tmux.expect_create_session_with_window()
+        .withf(move |session, window, workdir| {
+            session == "amf-new-feature" && window == "claude" && workdir == expected_workdir
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .withf(|session, key, value| {
+            session == "amf-new-feature" && key == "AMF_SESSION" && value == "amf-new-feature"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    let expected_workdir = workdir_path.clone();
+    tmux.expect_create_window()
+        .withf(move |session, window, workdir| {
+            session == "amf-new-feature" && window == "terminal" && workdir == expected_workdir
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|session, window, resume_id, extra_args| {
+            session == "amf-new-feature"
+                && window == "claude"
+                && resume_id.is_none()
+                && extra_args.is_empty()
+        })
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .withf(|session, window| session == "amf-new-feature" && window == "claude")
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    app.mode = AppMode::RunningHook(RunningHookState {
+        script: "true".to_string(),
+        workdir: workdir_path,
+        project_name: "my-project".to_string(),
+        branch: "new-feature".to_string(),
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        enable_notes: false,
+        steering_enabled: false,
+        child: None,
+        output: String::new(),
+        success: Some(true),
+        output_rx: None,
+    });
+
+    app.complete_running_hook().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(app.selection, Selection::Feature(0, 0)));
+    let feature = &app.store.projects[0].features[0];
+    assert!(!feature.pending_worktree_script);
+    assert_eq!(feature.status, ProjectStatus::Idle);
+    assert_eq!(feature.sessions.len(), 2);
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("Created and started feature 'new-feature'")
+    );
 }
 
 // ── create_feature validation ─────────────────────────────────
@@ -761,7 +955,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         collapsed: false,
         features: vec![],
         created_at: now,
-        preferred_agent: AgentKind::default(),
+        preferred_agent: agent.clone(),
         is_git: true,
     };
     let store = ProjectStore {
@@ -1049,6 +1243,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         agent: AgentKind::Claude,
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Stopped,
         created_at: now,
@@ -1126,6 +1321,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Stopped,
         created_at: now,
@@ -1559,6 +1755,7 @@ fn store_with_worktree_agent(
         agent,
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status,
         created_at: now,
@@ -1758,6 +1955,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
@@ -1813,6 +2011,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         agent: AgentKind::Codex,
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
@@ -1974,6 +2173,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
@@ -2148,6 +2348,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         agent: AgentKind::default(),
         enable_chrome: false,
         has_notes: false,
+        pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
         created_at: now,
@@ -2401,7 +2602,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
 }
 
 #[test]
-fn create_feature_automation_rejects_review_as_a_mode() {
+fn create_feature_automation_accepts_review_flag_with_vibeless_mode() {
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -2416,7 +2617,7 @@ fn create_feature_automation_rejects_review_as_a_mode() {
         project_name: "automation-project".to_string(),
         branch: "feature-1".to_string(),
         agent: AgentKind::Codex,
-        mode: VibeMode::Review,
+        mode: VibeMode::Vibeless,
         review: true,
         plan_mode: false,
         use_worktree: Some(true),
@@ -2426,11 +2627,10 @@ fn create_feature_automation_rejects_review_as_a_mode() {
         dry_run: true,
     };
 
-    let err = app.create_feature_from_request(&request).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Use `review: true` with a non-review mode; `mode: review` is not supported"
-    );
+    let response = app.create_feature_from_request(&request).unwrap();
+    assert!(response.dry_run);
+    assert_eq!(response.project_name, "automation-project");
+    assert_eq!(response.branch, "feature-1");
 }
 
 #[test]
@@ -2563,6 +2763,13 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(1)
+        .returning(move |_| Ok(repo_clone.clone()));
+
     let mut app = App::new_for_test(
         ProjectStore {
             version: 4,
@@ -2571,7 +2778,7 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
+        Box::new(worktree),
     );
 
     let request = CreateBatchFeaturesRequest {
@@ -2580,18 +2787,17 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
         feature_count: 2,
         feature_prefix: "plan-".to_string(),
         agent: AgentKind::Codex,
-        mode: VibeMode::Review,
+        mode: VibeMode::Vibeless,
         review: true,
         enable_chrome: false,
         enable_notes: false,
         dry_run: true,
     };
 
-    let err = app.create_batch_features_from_request(&request).unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Use `review: true` with a non-review mode; `mode: review` is not supported"
-    );
+    let response = app.create_batch_features_from_request(&request).unwrap();
+    assert!(response.dry_run);
+    assert_eq!(response.features.len(), 2);
+    assert_eq!(response.project_name, "plan-batch");
 }
 
 #[test]

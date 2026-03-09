@@ -11,6 +11,10 @@ impl App {
             _ => return Ok(()),
         };
 
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
+
         self.ensure_feature_running(pi, fi)?;
 
         let (

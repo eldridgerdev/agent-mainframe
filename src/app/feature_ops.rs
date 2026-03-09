@@ -270,20 +270,53 @@ impl App {
             }
         }
 
-        let feature = Feature::new(
-            prepared.branch.clone(),
-            prepared.branch.clone(),
-            prepared.workdir.clone(),
-            prepared.is_worktree,
-            prepared.mode,
-            prepared.review,
-            prepared.plan_mode,
-            prepared.agent,
-            prepared.enable_chrome,
-            prepared.enable_notes,
-        );
+        let existing_pending = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == prepared.project_name)
+            .and_then(|pi| {
+                self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| f.name == prepared.branch && f.pending_worktree_script)
+                    .map(|fi| (pi, fi))
+            });
 
-        self.store.add_feature(&prepared.project_name, feature);
+        if let Some((pi, fi)) = existing_pending {
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|project| project.features.get_mut(fi))
+            {
+                feature.workdir = prepared.workdir.clone();
+                feature.is_worktree = prepared.is_worktree;
+                feature.mode = prepared.mode.clone();
+                feature.review = prepared.review;
+                feature.plan_mode = prepared.plan_mode;
+                feature.agent = prepared.agent.clone();
+                feature.enable_chrome = prepared.enable_chrome;
+                feature.has_notes = prepared.enable_notes;
+                feature.pending_worktree_script = false;
+            }
+        } else {
+            let feature = Feature::new(
+                prepared.branch.clone(),
+                prepared.branch.clone(),
+                prepared.workdir.clone(),
+                prepared.is_worktree,
+                prepared.mode,
+                prepared.review,
+                prepared.plan_mode,
+                prepared.agent,
+                prepared.enable_chrome,
+                prepared.enable_notes,
+            );
+
+            self.store.add_feature(&prepared.project_name, feature);
+        }
+
         self.save()?;
         if let Some(pi) = self
             .store
@@ -583,6 +616,10 @@ impl App {
             _ => return Ok(()),
         };
 
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
+
         let status = self
             .store
             .projects
@@ -666,6 +703,10 @@ impl App {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
+
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
 
         let feature = match self
             .store

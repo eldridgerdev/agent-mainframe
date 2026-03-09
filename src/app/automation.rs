@@ -168,10 +168,6 @@ impl App {
             bail!("Branch name cannot be empty");
         }
 
-        if request.mode == VibeMode::Review {
-            bail!("Use `review: true` with a non-review mode; `mode: review` is not supported");
-        }
-
         let (
             project_repo,
             stored_is_git,
@@ -388,10 +384,6 @@ impl App {
 
         if request.feature_prefix.trim().is_empty() {
             bail!("Feature prefix cannot be empty");
-        }
-
-        if request.mode == VibeMode::Review {
-            bail!("Use `review: true` with a non-review mode; `mode: review` is not supported");
         }
 
         let (project_repo, is_git) = match self.worktree.repo_root(&request.workspace_path) {

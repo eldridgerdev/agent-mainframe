@@ -31,6 +31,8 @@ if [ -z "$CURRENT" ]; then
   exit 1
 fi
 
+echo "Current version: $CURRENT"
+
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
 
 # Compute new version

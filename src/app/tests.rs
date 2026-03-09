@@ -7,6 +7,9 @@ use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify}
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+use crate::steering_config::{
+    SteeringCoachConfig, SteeringConstraintConfig, SteeringDetectionMatcher,
+};
 use std::collections::HashMap;
 
 // ── slugify ───────────────────────────────────────────────
@@ -232,6 +235,67 @@ fn analyze_prompt_rewards_concrete_constraints() {
 
     assert_eq!(analysis.score, analysis.max_score);
     assert_eq!(analysis.missing_checks().count(), 0);
+}
+
+#[test]
+fn analyze_prompt_with_config_uses_custom_constraint_text() {
+    let config = SteeringCoachConfig {
+        constraints: vec![SteeringConstraintConfig {
+            constraint: PromptConstraint::Risks,
+            label: "Sharp edges".to_string(),
+            missing_explanation: "Call out the risky paths.".to_string(),
+            teaching_tip: "Mention the likely regression.".to_string(),
+            detection: Some(SteeringDetectionMatcher::ContainsAny {
+                phrases: vec!["danger zone".to_string()],
+            }),
+        }],
+    };
+
+    let analysis = analyze_prompt_with_config(
+        "Add a steering coach dialog before launch.",
+        &config,
+    );
+
+    assert_eq!(analysis.score, 0);
+    assert_eq!(analysis.max_score, 2);
+    assert_eq!(analysis.checks[0].label, "Sharp edges");
+    assert_eq!(analysis.checks[0].missing_explanation, "Call out the risky paths.");
+    assert_eq!(
+        analysis.teaching_tips,
+        vec!["Mention the likely regression.".to_string()]
+    );
+}
+
+#[test]
+fn analyze_prompt_with_config_uses_custom_detection_rules() {
+    let config = SteeringCoachConfig {
+        constraints: vec![SteeringConstraintConfig {
+            constraint: PromptConstraint::ValidationCommands,
+            label: "Verification".to_string(),
+            missing_explanation: "Name the verification command.".to_string(),
+            teaching_tip: "Add the repo's verification phrase.".to_string(),
+            detection: Some(SteeringDetectionMatcher::All {
+                matchers: vec![
+                    SteeringDetectionMatcher::ContainsAny {
+                        phrases: vec!["verify with".to_string()],
+                    },
+                    SteeringDetectionMatcher::ContainsAny {
+                        phrases: vec!["bin/check-steering".to_string()],
+                    },
+                ],
+            }),
+        }],
+    };
+
+    let missing =
+        analyze_prompt_with_config("Run cargo check before stopping.", &config);
+    let present = analyze_prompt_with_config(
+        "Verify with bin/check-steering before stopping.",
+        &config,
+    );
+
+    assert_eq!(missing.score, 0);
+    assert_eq!(present.score, present.max_score);
 }
 
 // ── ZaiPlanConfig::get_monthly_limit ─────────────────────
@@ -542,9 +606,10 @@ fn app_in_creating_feature_mode(
         enable_chrome: false,
         enable_notes: false,
         steering_enabled: true,
+        steering_config: SteeringCoachConfig::default(),
         preset_index: 0,
         task_prompt: String::new(),
-        prompt_analysis: analyze_prompt(""),
+        prompt_analysis: analyze_prompt_with_config("", &SteeringCoachConfig::default()),
         prepared_launch: None,
     };
     let mut app = App::new_for_test(
@@ -696,12 +761,14 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         collapsed: false,
         features: vec![],
         created_at: now,
+        preferred_agent: AgentKind::default(),
         is_git: true,
     };
     let store = ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        extra: HashMap::new(),
     };
 
     let mut tmux = MockTmuxOps::new();
@@ -759,6 +826,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         mode_index: 0,
         mode_focus: 0,
         review: false,
+        plan_mode: false,
         source_index: 0,
         worktrees: vec![],
         worktree_index: 0,
@@ -766,9 +834,10 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         enable_chrome: false,
         enable_notes: false,
         steering_enabled: true,
+        steering_config: SteeringCoachConfig::default(),
         preset_index: 0,
         task_prompt: String::new(),
-        prompt_analysis: analyze_prompt(""),
+        prompt_analysis: analyze_prompt_with_config("", &SteeringCoachConfig::default()),
         prepared_launch: None,
     });
 
@@ -793,6 +862,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         AppMode::SteeringPrompt(state) => {
             assert_eq!(state.view.window, expected_window);
             assert_eq!(state.workdir, workdir);
+            assert!(repo.path().join(".amf").join("steering.json").exists());
         }
         _ => panic!("expected SteeringPrompt mode"),
     }
@@ -852,9 +922,14 @@ fn submit_steering_prompt_pastes_into_running_session() {
             VibeMode::Vibeless,
             false,
         ),
+        project_repo: repo.path().to_path_buf(),
         workdir: workdir.clone(),
         prompt: "Implement steering coach automatically.".to_string(),
-        prompt_analysis: analyze_prompt("Implement steering coach automatically."),
+        prompt_analysis: analyze_prompt_with_config(
+            "Implement steering coach automatically.",
+            &SteeringCoachConfig::default(),
+        ),
+        steering_config: SteeringCoachConfig::default(),
     });
 
     app.submit_steering_prompt().unwrap();
@@ -888,7 +963,7 @@ fn create_project_persists_selected_preferred_agent() {
     let mut worktree = MockWorktreeOps::new();
     worktree
         .expect_repo_root()
-        .times(1)
+        .times(2)
         .returning(move |_| Ok(repo_path.clone()));
     let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
     app.store_path = tmp.path().to_path_buf();
@@ -2168,7 +2243,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
     let repo_clone = repo.clone();
     worktree
         .expect_repo_root()
-        .times(1)
+        .times(2)
         .returning(move |_| Ok(repo_clone.clone()));
 
     let mut app = App::new_for_test(
@@ -2209,7 +2284,7 @@ fn create_project_automation_creates_project() {
     let repo_clone = path.clone();
     worktree
         .expect_repo_root()
-        .times(1)
+        .times(2)
         .returning(move |_| Ok(repo_clone.clone()));
 
     let mut app = App::new_for_test(

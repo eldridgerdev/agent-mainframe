@@ -71,6 +71,8 @@ impl App {
             }
         });
 
+        let pending_project_name = project_name.clone();
+        let pending_feature_name = feature_name.clone();
         let view = ViewState::new(
             project_name,
             feature_name,
@@ -85,6 +87,20 @@ impl App {
         self.pane_content.clear();
 
         self.mode = AppMode::Viewing(view);
+
+        if self.use_custom_diff_review_viewer()
+            && let Some(idx) = self.pending_inputs.iter().position(|input| {
+                let is_structured_diff_review = input.notification_type == "change-reason"
+                    || input.notification_type == "diff-review";
+                is_structured_diff_review
+                    && input.project_name.as_deref() == Some(&pending_project_name)
+                    && input.feature_name.as_deref() == Some(&pending_feature_name)
+            })
+        {
+            let input = self.pending_inputs.remove(idx);
+            self.open_diff_review_prompt(&input);
+            let _ = std::fs::remove_file(&input.file_path);
+        }
 
         Ok(())
     }

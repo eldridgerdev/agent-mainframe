@@ -192,7 +192,7 @@ fn handle_click(
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)
             | AppMode::NotificationPicker(_, _)
-            | AppMode::ChangeReasonPrompt(_)
+            | AppMode::DiffReviewPrompt(_)
             | AppMode::RunningHook(_)
     ) {
         return Ok(());

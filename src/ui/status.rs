@@ -225,14 +225,31 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("n/Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::ChangeReasonPrompt(_) => Line::from(vec![
-            Span::styled("Enter", key_style()),
-            Span::raw(" accept  "),
-            Span::styled("Esc", key_style()),
-            Span::raw(" skip  "),
-            Span::styled("r", Style::default().fg(theme.danger.to_color())),
-            Span::raw(" reject"),
-        ]),
+        AppMode::DiffReviewPrompt(state) => {
+            if state.editing_feedback {
+                Line::from(vec![
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" submit reject  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" back  "),
+                    Span::styled("Ctrl+U", key_style()),
+                    Span::raw(" clear"),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" approve  "),
+                    Span::styled("e", Style::default().fg(theme.info.to_color())),
+                    Span::raw(" explain  "),
+                    Span::styled("v", key_style()),
+                    Span::raw(" layout  "),
+                    Span::styled("r", Style::default().fg(theme.danger.to_color())),
+                    Span::raw(" feedback  "),
+                    Span::styled("Esc", key_style()),
+                    Span::raw(" cancel"),
+                ])
+            }
+        }
         AppMode::Viewing(_) => {
             let mut spans = vec![
                 Span::styled("Ctrl+Space", key_style()),

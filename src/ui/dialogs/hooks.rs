@@ -6,17 +6,17 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{ChangeReasonState, HookPromptState, RunningHookState};
+use crate::app::{DiffReviewState, HookPromptState, RunningHookState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
-pub fn draw_change_reason_dialog(frame: &mut Frame, state: &ChangeReasonState, theme: &Theme) {
-    let area = centered_rect(80, 60, frame.area());
+pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme: &Theme) {
+    let area = centered_rect(88, 74, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Review change ")
+        .title(" Diff Review ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -29,10 +29,8 @@ pub fn draw_change_reason_dialog(frame: &mut Frame, state: &ChangeReasonState, t
         .constraints([
             Constraint::Length(1), // file
             Constraint::Length(1), // tool
-            Constraint::Length(1), // separator
-            Constraint::Length(6), // diff
-            Constraint::Length(1), // separator
-            Constraint::Length(2), // reason
+            Constraint::Min(7),    // diff
+            Constraint::Min(6),    // explanation
             Constraint::Length(1), // hints
         ])
         .split(inner);
@@ -59,75 +57,212 @@ pub fn draw_change_reason_dialog(frame: &mut Frame, state: &ChangeReasonState, t
     ]));
     frame.render_widget(tool_line, chunks[1]);
 
-    let mut diff_lines = vec![];
+    if state.side_by_side {
+        let diff_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(chunks[2]);
 
-    // Show old content (removed)
-    if !state.old_snippet.is_empty() {
+        let old_lines = if state.old_snippet.is_empty() {
+            vec![Line::from(Span::styled(
+                " (no removed content)",
+                Style::default().fg(theme.text_muted.to_color()),
+            ))]
+        } else {
+            state
+                .old_snippet
+                .lines()
+                .take(8)
+                .map(|line| {
+                    let truncated = if line.len() > 44 { &line[..44] } else { line };
+                    Line::from(Span::styled(
+                        format!("- {truncated}"),
+                        Style::default().fg(theme.danger.to_color()),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        let new_lines = if state.new_snippet.is_empty() {
+            vec![Line::from(Span::styled(
+                " (no added content)",
+                Style::default().fg(theme.text_muted.to_color()),
+            ))]
+        } else {
+            state
+                .new_snippet
+                .lines()
+                .take(8)
+                .map(|line| {
+                    let truncated = if line.len() > 44 { &line[..44] } else { line };
+                    Line::from(Span::styled(
+                        format!("+ {truncated}"),
+                        Style::default().fg(theme.success.to_color()),
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let old_widget = Paragraph::new(old_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(
+                        " removed ",
+                        Style::default().fg(theme.danger.to_color()),
+                    ))
+                    .border_style(Style::default().fg(theme.danger.to_color())),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(old_widget, diff_chunks[0]);
+
+        let new_widget = Paragraph::new(new_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(
+                        " added ",
+                        Style::default().fg(theme.success.to_color()),
+                    ))
+                    .border_style(Style::default().fg(theme.success.to_color())),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(new_widget, diff_chunks[1]);
+    } else {
+        let mut diff_lines = vec![];
+
+        if !state.old_snippet.is_empty() {
+            diff_lines.push(Line::from(Span::styled(
+                " Removed:",
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for line in state.old_snippet.lines().take(3) {
+                let truncated = if line.len() > 70 { &line[..70] } else { line };
+                diff_lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(truncated, Style::default().fg(theme.danger.to_color())),
+                ]));
+            }
+            if state.old_snippet.lines().count() > 3 {
+                diff_lines.push(Line::from(Span::styled(
+                    "  ...",
+                    Style::default().fg(theme.text_muted.to_color()),
+                )));
+            }
+        }
+
+        diff_lines.push(Line::from(""));
         diff_lines.push(Line::from(Span::styled(
-            " Removed:",
+            " Added:",
             Style::default()
-                .fg(theme.danger.to_color())
+                .fg(theme.success.to_color())
                 .add_modifier(Modifier::BOLD),
         )));
-        for line in state.old_snippet.lines().take(3) {
-            let truncated = if line.len() > 70 { &line[..70] } else { line };
-            diff_lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(truncated, Style::default().fg(theme.danger.to_color())),
-            ]));
-        }
-        if state.old_snippet.lines().count() > 3 {
-            diff_lines.push(Line::from(Span::styled(
-                "  ...",
-                Style::default().fg(theme.text_muted.to_color()),
-            )));
-        }
+
+        let new_preview: String = state
+            .new_snippet
+            .lines()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let truncated = if new_preview.len() > 60 {
+            format!("{}...", &new_preview[..57])
+        } else {
+            new_preview
+        };
+        diff_lines.push(Line::from(vec![
+            Span::styled(" + ", Style::default().fg(theme.success.to_color())),
+            Span::styled(truncated, Style::default().fg(theme.success.to_color())),
+        ]));
+
+        let diff_widget = Paragraph::new(diff_lines).wrap(Wrap { trim: false });
+        frame.render_widget(diff_widget, chunks[2]);
     }
 
-    // Show new content (added)
-    diff_lines.push(Line::from(""));
-    diff_lines.push(Line::from(Span::styled(
-        " Added:",
-        Style::default()
-            .fg(theme.success.to_color())
-            .add_modifier(Modifier::BOLD),
-    )));
-
-    let new_preview: String = state
-        .new_snippet
-        .lines()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join(" ");
-    let truncated = if new_preview.len() > 60 {
-        format!("{}...", &new_preview[..57])
+    let explanation_lines = if let Some(explanation) = &state.explanation {
+        explanation
+            .lines()
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {line}"),
+                    Style::default().fg(theme.text.to_color()),
+                ))
+            })
+            .collect::<Vec<_>>()
     } else {
-        new_preview
+        vec![Line::from(Span::styled(
+            " Press e to explain these changes.",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))]
     };
-    diff_lines.push(Line::from(vec![
-        Span::styled(" + ", Style::default().fg(theme.success.to_color())),
-        Span::styled(truncated, Style::default().fg(theme.success.to_color())),
-    ]));
-
-    let diff_widget = Paragraph::new(diff_lines);
-    frame.render_widget(diff_widget, chunks[2]);
-
-    let reason_line = Paragraph::new(Line::from(vec![
-        Span::styled(" Reason: ", Style::default().fg(theme.success.to_color())),
-        Span::styled(&state.reason, Style::default().fg(theme.text.to_color())),
-        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
-    ]));
-    frame.render_widget(reason_line, chunks[3]);
+    let explanation_widget = Paragraph::new(explanation_lines)
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(theme.text_muted.to_color()))
+                .title(Span::styled(
+                    " explanation ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                )),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(explanation_widget, chunks[3]);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" accept  "),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" skip  "),
+        Span::raw(" approve  "),
+        Span::styled("e", Style::default().fg(theme.info.to_color())),
+        Span::raw(" explain  "),
+        Span::styled("v", Style::default().fg(theme.primary.to_color())),
+        Span::raw(if state.side_by_side {
+            " stacked  "
+        } else {
+            " side-by-side  "
+        }),
         Span::styled("r", Style::default().fg(theme.danger.to_color())),
-        Span::raw(" reject"),
+        Span::raw(" feedback  "),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" cancel"),
     ]));
-    frame.render_widget(hints, chunks[5]);
+    frame.render_widget(hints, chunks[4]);
+
+    if state.editing_feedback {
+        let feedback_area = centered_rect(64, 18, frame.area());
+        frame.render_widget(Clear, feedback_area);
+
+        let feedback_block = Block::default()
+            .title(" Reject With Feedback ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.danger.to_color()));
+        let feedback_inner = feedback_block.inner(feedback_area);
+        frame.render_widget(feedback_block, feedback_area);
+
+        let feedback_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(1),
+            ])
+            .split(feedback_inner);
+
+        let feedback_line = Paragraph::new(Line::from(vec![
+            Span::styled(" Feedback: ", Style::default().fg(theme.success.to_color())),
+            Span::styled(&state.reason, Style::default().fg(theme.text.to_color())),
+            Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
+        ]))
+        .wrap(Wrap { trim: false });
+        frame.render_widget(feedback_line, feedback_chunks[0]);
+
+        let feedback_hints = Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(theme.danger.to_color())),
+            Span::raw(" submit reject  "),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" back"),
+        ]));
+        frame.render_widget(feedback_hints, feedback_chunks[1]);
+    }
 }
 
 pub fn draw_running_hook_dialog(

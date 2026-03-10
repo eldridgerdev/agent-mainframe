@@ -174,6 +174,11 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
+    let refreshed_claude = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
+    app.log_info(
+        "setup",
+        format!("Refreshed Claude hooks for {refreshed_claude} feature(s)"),
+    );
     let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
     app.log_info(
         "setup",

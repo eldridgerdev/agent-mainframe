@@ -116,6 +116,14 @@ pub struct PendingInput {
     pub message: String,
     pub notification_type: String,
     pub file_path: PathBuf,
+    pub target_file_path: Option<String>,
+    pub relative_path: Option<String>,
+    pub change_id: Option<String>,
+    pub tool: Option<String>,
+    pub old_snippet: Option<String>,
+    pub new_snippet: Option<String>,
+    pub reason: Option<String>,
+    pub response_file: Option<String>,
     pub project_name: Option<String>,
     pub feature_name: Option<String>,
     pub proceed_signal: Option<String>,
@@ -239,7 +247,7 @@ pub enum AppMode {
     BookmarkPicker(BookmarkPickerState),
     SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
-    ChangeReasonPrompt(ChangeReasonState),
+    DiffReviewPrompt(DiffReviewState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
     LatestPrompt(String, ViewState),
@@ -300,8 +308,9 @@ pub struct BuiltinSessionOption {
     pub disabled: Option<String>,
 }
 
-pub struct ChangeReasonState {
+pub struct DiffReviewState {
     pub session_id: String,
+    pub workdir: PathBuf,
     pub file_path: String,
     pub relative_path: String,
     pub change_id: String,
@@ -309,10 +318,14 @@ pub struct ChangeReasonState {
     pub old_snippet: String,
     pub new_snippet: String,
     pub reason: String,
+    pub editing_feedback: bool,
+    pub side_by_side: bool,
+    pub explanation: Option<String>,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
     pub request_id: Option<String>,
     pub reply_socket: Option<String>,
+    pub return_to_view: Option<ViewState>,
 }
 
 pub enum HookNext {

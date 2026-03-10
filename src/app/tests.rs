@@ -97,10 +97,28 @@ fn app_config_default_leader_timeout_is_five_seconds() {
 }
 
 #[test]
+fn app_config_default_diff_review_viewer_is_custom() {
+    let config = AppConfig::default();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Custom);
+}
+
+#[test]
 fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
     assert!(!config.nerd_font);
+}
+
+#[test]
+fn app_config_missing_diff_review_viewer_uses_custom_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Custom);
+}
+
+#[test]
+fn app_config_diff_review_viewer_deserializes_legacy() {
+    let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"legacy"}"#).unwrap();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Legacy);
 }
 
 #[test]
@@ -827,6 +845,24 @@ fn create_feature_disallowed_agent_sets_error() {
 }
 
 #[test]
+fn create_feature_codex_vibeless_sets_error() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", false);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.agent = AgentKind::Codex;
+        state.mode = VibeMode::Vibeless;
+    }
+
+    app.create_feature().unwrap();
+
+    let msg = app.message.as_deref().unwrap_or("");
+    assert!(
+        msg.contains("Codex does not support Vibeless diff review"),
+        "got: {msg}"
+    );
+}
+
+#[test]
 fn start_create_feature_defaults_to_first_allowed_agent() {
     let repo = TempDir::new().unwrap();
     let amf_dir = repo.path().join(".amf");
@@ -881,6 +917,11 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
     let repo = TempDir::new().unwrap();
     let workdir = repo.path().join(".worktrees").join("coached");
     std::fs::create_dir_all(&workdir).unwrap();
+    let mode = if agent == AgentKind::Codex {
+        VibeMode::Vibe
+    } else {
+        VibeMode::Vibeless
+    };
 
     let now = Utc::now();
     let project = Project {
@@ -951,7 +992,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         step: CreateFeatureStep::Mode,
         agent: agent.clone(),
         agent_index: 0,
-        mode: VibeMode::Vibeless,
+        mode: mode.clone(),
         mode_index: 0,
         mode_focus: 0,
         review: false,
@@ -974,7 +1015,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         branch: "coached".to_string(),
         workdir: workdir.clone(),
         is_worktree: true,
-        mode: VibeMode::Vibeless,
+        mode,
         review: false,
         plan_mode: false,
         agent,
@@ -1008,6 +1049,64 @@ fn finish_feature_launch_opens_startup_prompt_for_opencode() {
 #[test]
 fn finish_feature_launch_opens_startup_prompt_for_codex() {
     startup_prompt_overlay_test(AgentKind::Codex, "codex");
+}
+
+#[test]
+fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_creation() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("diffy");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".to_string(),
+        branch: "diffy".to_string(),
+        workdir: workdir.clone(),
+        is_worktree: true,
+        mode: VibeMode::Vibeless,
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        enable_notes: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    let settings = std::fs::read_to_string(workdir.join(".claude").join("settings.json")).unwrap();
+    assert!(
+        settings.contains("custom-diff-review.sh"),
+        "expected vibeless worktree creation to inject custom diff review hook, got: {settings}"
+    );
+    assert!(
+        settings.contains("\"matcher\": \"Edit|Write\""),
+        "expected vibeless PreToolUse matcher to be limited to Edit|Write, got: {settings}"
+    );
 }
 
 #[test]
@@ -1350,6 +1449,24 @@ fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is
     ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
+fn call_ensure_hooks_for_with_config(
+    workdir: &TempDir,
+    mode: VibeMode,
+    agent: AgentKind,
+    is_worktree: bool,
+    config: &AppConfig,
+) {
+    let repo = workdir.path(); // repo = workdir in tests
+    super::setup::ensure_notification_hooks_with_config(
+        workdir.path(),
+        repo,
+        &mode,
+        &agent,
+        is_worktree,
+        config,
+    );
+}
+
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
     call_ensure_hooks_for(workdir, mode, AgentKind::Claude, true);
 }
@@ -1423,31 +1540,30 @@ fn notification_hook_is_removed() {
 }
 
 #[test]
-fn vibeless_pre_tool_use_includes_diff_review_when_script_present() {
+fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_default() {
     let workdir = TempDir::new().unwrap();
-    // Create the diff-review script so it gets picked up.
+    // Create the custom diff-review script so it gets picked up.
     let scripts_dir = workdir
         .path()
         .join("plugins")
         .join("diff-review")
         .join("scripts");
     std::fs::create_dir_all(&scripts_dir).unwrap();
-    std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
+    std::fs::write(scripts_dir.join("custom-diff-review.sh"), "").unwrap();
 
     call_ensure_hooks(&workdir, VibeMode::Vibeless);
 
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
     assert!(
-        cmds.iter().any(|c| c.contains("diff-review.sh")),
-        "Vibeless PreToolUse should include diff-review; got: {cmds:?}"
+        cmds.iter().any(|c| c.contains("custom-diff-review.sh")),
+        "Vibeless PreToolUse should include custom-diff-review; got: {cmds:?}"
     );
 }
 
 #[test]
-fn vibeless_permissions_include_edit_and_write() {
+fn vibeless_pre_tool_use_can_use_legacy_diff_review_when_configured() {
     let workdir = TempDir::new().unwrap();
-    // Need diff-review script for vibeless path to complete.
     let scripts_dir = workdir
         .path()
         .join("plugins")
@@ -1455,6 +1571,32 @@ fn vibeless_permissions_include_edit_and_write() {
         .join("scripts");
     std::fs::create_dir_all(&scripts_dir).unwrap();
     std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
+
+    let config = AppConfig {
+        diff_review_viewer: DiffReviewViewer::Legacy,
+        ..AppConfig::default()
+    };
+    call_ensure_hooks_for_with_config(&workdir, VibeMode::Vibeless, AgentKind::Claude, true, &config);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "PreToolUse");
+    assert!(
+        cmds.iter().any(|c| c.contains("diff-review.sh")),
+        "Vibeless PreToolUse should include legacy diff-review; got: {cmds:?}"
+    );
+}
+
+#[test]
+fn vibeless_permissions_include_edit_and_write() {
+    let workdir = TempDir::new().unwrap();
+    // Need custom diff-review script for vibeless path to complete.
+    let scripts_dir = workdir
+        .path()
+        .join("plugins")
+        .join("diff-review")
+        .join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    std::fs::write(scripts_dir.join("custom-diff-review.sh"), "").unwrap();
 
     call_ensure_hooks(&workdir, VibeMode::Vibeless);
 
@@ -1751,13 +1893,14 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
         },
     ];
 
-    let store = store_with_worktree_agent(
+    let mut store = store_with_worktree_agent(
         repo.path(),
         workdir.path(),
         AgentKind::Claude,
         ProjectStatus::Stopped,
         sessions,
     );
+    store.projects[0].features[0].mode = VibeMode::Vibe;
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists()
         .withf(|session| session == "amf-my-feat")
@@ -2007,6 +2150,14 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
         message: "Codex finished and is waiting for input".to_string(),
         notification_type: "input-request".to_string(),
         file_path: PathBuf::new(),
+        target_file_path: None,
+        relative_path: None,
+        change_id: None,
+        tool: None,
+        old_snippet: None,
+        new_snippet: None,
+        reason: None,
+        response_file: None,
         project_name: Some("my-project".to_string()),
         feature_name: Some("my-feat".to_string()),
         proceed_signal: None,
@@ -2024,6 +2175,134 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
         app.pending_inputs.is_empty(),
         "prompt submit should clear stale input-request notifications"
     );
+}
+
+#[test]
+fn custom_diff_review_notification_opens_prompt_while_viewing() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_worktree_agent(
+        workdir.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Idle,
+        vec![FeatureSession {
+            id: "claude-1".to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        }],
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "claude".to_string(),
+        "Claude".to_string(),
+        VibeMode::Vibe,
+        false,
+    ));
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let notification = serde_json::json!({
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/main.rs",
+        "type": "diff-review",
+        "file_path": workdir.path().join("src/main.rs").display().to_string(),
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-1",
+        "old_snippet": "old",
+        "new_snippet": "new",
+        "response_file": workdir.path().join("response.json").display().to_string(),
+        "proceed_signal": workdir.path().join("proceed").display().to_string()
+    });
+    std::fs::write(
+        notify_dir.join("diff-review.json"),
+        serde_json::to_string(&notification).unwrap(),
+    )
+    .unwrap();
+
+    app.scan_notifications();
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            assert_eq!(state.relative_path, "src/main.rs");
+            assert_eq!(state.tool, "edit");
+            assert_eq!(state.old_snippet, "old");
+            assert_eq!(state.new_snippet, "new");
+        }
+        _ => panic!("expected diff review prompt"),
+    }
+}
+
+#[test]
+fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_view() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "amf-my-feat");
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(true);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.mode = AppMode::Normal;
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let notification = serde_json::json!({
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/lib.rs",
+        "type": "diff-review",
+        "file_path": workdir.path().join("src/lib.rs").display().to_string(),
+        "relative_path": "src/lib.rs",
+        "tool": "write",
+        "change_id": "chg-2",
+        "old_snippet": "",
+        "new_snippet": "new body",
+        "response_file": workdir.path().join("response.json").display().to_string(),
+        "proceed_signal": workdir.path().join("proceed").display().to_string()
+    });
+    std::fs::write(
+        notify_dir.join("diff-review.json"),
+        serde_json::to_string(&notification).unwrap(),
+    )
+    .unwrap();
+
+    app.scan_notifications();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert_eq!(app.pending_inputs.len(), 1);
+
+    app.selection = Selection::Feature(0, 0);
+    app.enter_view().unwrap();
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            assert_eq!(state.relative_path, "src/lib.rs");
+            assert!(state.return_to_view.is_some());
+        }
+        _ => panic!("expected diff review prompt after entering view"),
+    }
+    assert!(app.pending_inputs.is_empty());
 }
 
 #[test]
@@ -2530,7 +2809,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
 }
 
 #[test]
-fn create_feature_automation_accepts_review_flag_with_vibeless_mode() {
+fn create_feature_automation_rejects_codex_vibeless_mode() {
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -2555,10 +2834,12 @@ fn create_feature_automation_accepts_review_flag_with_vibeless_mode() {
         dry_run: true,
     };
 
-    let response = app.create_feature_from_request(&request).unwrap();
-    assert!(response.dry_run);
-    assert_eq!(response.project_name, "automation-project");
-    assert_eq!(response.branch, "feature-1");
+    let err = app.create_feature_from_request(&request).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Codex does not support Vibeless diff review"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -2722,10 +3003,12 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
         dry_run: true,
     };
 
-    let response = app.create_batch_features_from_request(&request).unwrap();
-    assert!(response.dry_run);
-    assert_eq!(response.features.len(), 2);
-    assert_eq!(response.project_name, "plan-batch");
+    let err = app.create_batch_features_from_request(&request).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Codex does not support Vibeless diff review"),
+        "got: {err}"
+    );
 }
 
 #[test]

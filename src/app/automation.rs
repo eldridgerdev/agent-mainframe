@@ -203,6 +203,7 @@ impl App {
                 request.agent.display_name()
             );
         }
+        self.ensure_agent_mode_supported(&request.agent, &request.mode)?;
 
         let use_worktree = request.use_worktree.unwrap_or(has_any_features);
         let is_git = stored_is_git || self.worktree.repo_root(&project_repo).is_ok();
@@ -401,6 +402,7 @@ impl App {
                 request.agent.display_name()
             );
         }
+        self.ensure_agent_mode_supported(&request.agent, &request.mode)?;
 
         let planned_features = Self::planned_batch_feature_results(request, &project_repo);
         for feature in &planned_features {

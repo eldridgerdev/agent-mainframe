@@ -317,8 +317,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
     }
 
-    if let AppMode::ChangeReasonPrompt(state) = &app.mode {
-        super::dialogs::draw_change_reason_dialog(frame, state, &app.theme);
+    if let AppMode::DiffReviewPrompt(state) = &app.mode {
+        super::dialogs::draw_diff_review_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::RunningHook(state) = &app.mode {

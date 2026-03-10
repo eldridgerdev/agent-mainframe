@@ -443,6 +443,58 @@ mod tests {
         assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
+    #[test]
+    fn new_file_forces_unified_without_losing_side_by_side_preference() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('j')).unwrap();
+
+        assert!(app.diff_viewer_selected_file_is_new());
+        assert!(matches!(
+            app.diff_viewer_layout(),
+            Some(crate::app::DiffViewerLayout::Unified)
+        ));
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('k')).unwrap();
+        assert!(!app.diff_viewer_selected_file_is_new());
+        assert!(matches!(
+            app.diff_viewer_layout(),
+            Some(crate::app::DiffViewerLayout::SideBySide)
+        ));
+
+        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state)
+                if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
+        ));
+    }
+
     fn init_repo_with_branch_change() -> TempDir {
         let repo = TempDir::new().unwrap();
         git(repo.path(), &["init", "--initial-branch=main"]);
@@ -453,6 +505,7 @@ mod tests {
         git(repo.path(), &["commit", "-m", "initial"]);
         git(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
+        std::fs::write(repo.path().join("z_new.txt"), "brand new\n").unwrap();
         repo
     }
 

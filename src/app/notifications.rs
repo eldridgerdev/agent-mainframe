@@ -107,7 +107,7 @@ impl App {
             .filter(|path| !path.is_empty())
             .or_else(|| input.target_file_path.clone())
             .unwrap_or_default();
-        let (diff_file, diff_error) =
+        let (mut diff_file, diff_error) =
             match (input.original_file.as_deref(), input.proposed_file.as_deref()) {
                 (Some(original), Some(proposed)) => match crate::diff::load_review_file(
                     Path::new(original),
@@ -119,6 +119,13 @@ impl App {
                 },
                 _ => (None, None),
             };
+        if input.is_new_file == Some(true)
+            && let Some(file) = &mut diff_file
+        {
+            file.status = crate::diff::DiffFileStatus::Added;
+            file.old_path = None;
+            file.deletions = 0;
+        }
         self.mode = AppMode::DiffReviewPrompt(DiffReviewState {
             session_id: input.session_id.clone(),
             workdir: PathBuf::from(&input.cwd),
@@ -132,8 +139,9 @@ impl App {
             diff_error,
             reason: input.reason.clone().unwrap_or_default(),
             editing_feedback: false,
-            side_by_side: matches!(self.config.diff_viewer_layout, DiffViewerLayout::SideBySide),
+            layout: self.preferred_diff_viewer_layout(),
             explanation: None,
+            explanation_child: None,
             response_file: PathBuf::from(response_file),
             proceed_signal: PathBuf::from(proceed_signal),
             request_id: input.request_id.clone(),
@@ -169,6 +177,7 @@ impl App {
             response_file: Option<String>,
             original_file: Option<String>,
             proposed_file: Option<String>,
+            is_new_file: Option<bool>,
             reason: Option<String>,
             prompt: Option<String>,
         }
@@ -449,13 +458,14 @@ impl App {
                     target_file_path: msg.file_path,
                     relative_path: msg.relative_path,
                     change_id: msg.change_id,
-                        tool: msg.tool.or(msg.tool_name),
-                        old_snippet: msg.old_snippet,
-                        new_snippet: msg.new_snippet,
-                        original_file: msg.original_file,
-                        proposed_file: msg.proposed_file,
-                        reason: msg.reason,
-                        response_file: msg.response_file,
+                    tool: msg.tool.or(msg.tool_name),
+                    old_snippet: msg.old_snippet,
+                    new_snippet: msg.new_snippet,
+                    original_file: msg.original_file,
+                    proposed_file: msg.proposed_file,
+                    is_new_file: msg.is_new_file,
+                    reason: msg.reason,
+                    response_file: msg.response_file,
                     project_name: None,
                     feature_name: found_feature_name_for_open,
                     proceed_signal: msg.proceed_signal,
@@ -528,6 +538,7 @@ impl App {
                 new_snippet: msg.new_snippet,
                 original_file: msg.original_file,
                 proposed_file: msg.proposed_file,
+                is_new_file: msg.is_new_file,
                 reason: msg.reason,
                 response_file: msg.response_file,
                 project_name,
@@ -560,6 +571,7 @@ impl App {
             response_file: Option<String>,
             original_file: Option<String>,
             proposed_file: Option<String>,
+            is_new_file: Option<bool>,
             reason: Option<String>,
         }
 
@@ -612,6 +624,7 @@ impl App {
                             new_snippet: notif.new_snippet,
                             original_file: notif.original_file,
                             proposed_file: notif.proposed_file,
+                            is_new_file: notif.is_new_file,
                             reason: notif.reason,
                             response_file: notif.response_file,
                             project_name: Some(project.name.clone()),
@@ -639,6 +652,7 @@ impl App {
                         new_snippet: notif.new_snippet,
                         original_file: notif.original_file,
                         proposed_file: notif.proposed_file,
+                        is_new_file: notif.is_new_file,
                         reason: notif.reason,
                         response_file: notif.response_file,
                         project_name: Some(project.name.clone()),
@@ -697,6 +711,7 @@ impl App {
                         new_snippet: notif.new_snippet,
                         original_file: notif.original_file,
                         proposed_file: notif.proposed_file,
+                        is_new_file: notif.is_new_file,
                         reason: notif.reason,
                         response_file: notif.response_file,
                         project_name: None,
@@ -726,6 +741,7 @@ impl App {
                     new_snippet: notif.new_snippet,
                     original_file: notif.original_file,
                     proposed_file: notif.proposed_file,
+                    is_new_file: notif.is_new_file,
                     reason: notif.reason,
                     response_file: notif.response_file,
                     project_name,

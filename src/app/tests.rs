@@ -2170,6 +2170,7 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
         new_snippet: None,
         original_file: None,
         proposed_file: None,
+        is_new_file: None,
         reason: None,
         response_file: None,
         project_name: Some("my-project".to_string()),
@@ -2258,6 +2259,73 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             assert_eq!(state.tool, "edit");
             assert_eq!(state.old_snippet, "old");
             assert_eq!(state.new_snippet, "new");
+        }
+        _ => panic!("expected diff review prompt"),
+    }
+}
+
+#[test]
+fn custom_diff_review_notification_marks_new_files_as_added() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "amf-my-feat");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "claude".to_string(),
+        "Claude".to_string(),
+        VibeMode::Vibeless,
+        false,
+    ));
+
+    let temp_dir = workdir.path().join("tmp-review");
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let original = temp_dir.join("original.md");
+    let proposed = temp_dir.join("proposed.md");
+    std::fs::write(&original, "").unwrap();
+    std::fs::write(&proposed, "# Plan\n").unwrap();
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let notification = serde_json::json!({
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: plans/new.md",
+        "type": "diff-review",
+        "file_path": workdir.path().join("plans/new.md").display().to_string(),
+        "relative_path": "plans/new.md",
+        "tool": "write",
+        "change_id": "chg-new",
+        "old_snippet": "",
+        "new_snippet": "# Plan\n",
+        "original_file": original.display().to_string(),
+        "proposed_file": proposed.display().to_string(),
+        "is_new_file": true,
+        "response_file": workdir.path().join("response.json").display().to_string(),
+        "proceed_signal": workdir.path().join("proceed").display().to_string()
+    });
+    std::fs::write(
+        notify_dir.join("diff-review-new-file.json"),
+        serde_json::to_string(&notification).unwrap(),
+    )
+    .unwrap();
+
+    app.scan_notifications();
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            let file = state.diff_file.as_ref().expect("expected parsed diff file");
+            assert_eq!(file.status, crate::diff::DiffFileStatus::Added);
+            assert_eq!(file.path, "plans/new.md");
+            assert_eq!(state.layout, app.config.diff_viewer_layout);
         }
         _ => panic!("expected diff review prompt"),
     }

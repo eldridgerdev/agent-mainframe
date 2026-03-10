@@ -40,6 +40,10 @@ RESPONSE_FILE="$TEMP_DIR/response.json"
 PROCEED_SIGNAL="$TEMP_DIR/proceed"
 NOTIFY_DIR="${CWD}/.claude/notifications"
 NOTIFICATION_FILE="$NOTIFY_DIR/${SESSION_ID}-diff-${INVOCATION_ID}.json"
+IS_NEW_FILE=false
+if [[ ! -f "$FILE_PATH" ]]; then
+    IS_NEW_FILE=true
+fi
 
 cleanup() {
     rm -f "$NOTIFICATION_FILE" 2>/dev/null || true
@@ -113,6 +117,7 @@ build_payload() {
         --arg proposed_file "$PROPOSED_FILE" \
         --arg response_file "$RESPONSE_FILE" \
         --arg proceed_signal "$PROCEED_SIGNAL" \
+        --argjson is_new_file "$IS_NEW_FILE" \
         '{
             type: "diff-review",
             session_id: $sid,
@@ -126,6 +131,7 @@ build_payload() {
             new_snippet: $new,
             original_file: $original_file,
             proposed_file: $proposed_file,
+            is_new_file: $is_new_file,
             response_file: $response_file,
             proceed_signal: $proceed_signal
         }' > "$payload_file"

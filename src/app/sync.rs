@@ -167,6 +167,7 @@ impl App {
                         new_snippet: None,
                         original_file: None,
                         proposed_file: None,
+                        is_new_file: None,
                         reason: None,
                         response_file: None,
                         project_name: Some(project_name),

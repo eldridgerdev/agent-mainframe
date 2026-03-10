@@ -41,6 +41,8 @@ static REGISTRY: OnceLock<Result<Registry, String>> = OnceLock::new();
 struct Registry {
     bash: HighlightConfiguration,
     json: HighlightConfiguration,
+    markdown: HighlightConfiguration,
+    markdown_inline: HighlightConfiguration,
     rust: HighlightConfiguration,
     toml: HighlightConfiguration,
     yaml: HighlightConfiguration,
@@ -54,7 +56,9 @@ pub fn highlight_source(language: HighlightLanguage, source: &str) -> Result<Hig
     let mut classes = vec![SyntaxClass::Plain];
 
     let highlights = highlighter
-        .highlight(config, source.as_bytes(), None, |_| None)
+        .highlight(config, source.as_bytes(), None, |name| {
+            registry.injection_config(name)
+        })
         .with_context(|| format!("failed to start tree-sitter highlighter for {language:?}"))?;
 
     for event in highlights {
@@ -114,6 +118,22 @@ impl Registry {
                 "",
                 "",
             )?,
+            markdown: build_config_named(
+                HighlightLanguage::Markdown,
+                "markdown",
+                tree_sitter_md::LANGUAGE.into(),
+                tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+                tree_sitter_md::INJECTION_QUERY_BLOCK,
+                "",
+            )?,
+            markdown_inline: build_config_named(
+                HighlightLanguage::Markdown,
+                "markdown_inline",
+                tree_sitter_md::INLINE_LANGUAGE.into(),
+                tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+                tree_sitter_md::INJECTION_QUERY_INLINE,
+                "",
+            )?,
             rust: build_config(
                 HighlightLanguage::Rust,
                 tree_sitter_rust::LANGUAGE.into(),
@@ -142,9 +162,23 @@ impl Registry {
         match language {
             HighlightLanguage::Bash => &self.bash,
             HighlightLanguage::Json => &self.json,
+            HighlightLanguage::Markdown => &self.markdown,
             HighlightLanguage::Rust => &self.rust,
             HighlightLanguage::Toml => &self.toml,
             HighlightLanguage::Yaml => &self.yaml,
+        }
+    }
+
+    fn injection_config(&self, name: &str) -> Option<&HighlightConfiguration> {
+        match name {
+            "bash" | "sh" | "shell" | "zsh" => Some(&self.bash),
+            "json" | "jsonc" | "jsonl" => Some(&self.json),
+            "markdown" => Some(&self.markdown),
+            "markdown_inline" | "markdown-inline" | "md" => Some(&self.markdown_inline),
+            "rust" | "rs" => Some(&self.rust),
+            "toml" => Some(&self.toml),
+            "yaml" | "yml" => Some(&self.yaml),
+            _ => None,
         }
     }
 }
@@ -156,9 +190,27 @@ fn build_config(
     injections_query: &str,
     locals_query: &str,
 ) -> Result<HighlightConfiguration> {
+    build_config_named(
+        language,
+        language.display_name(),
+        tree_sitter_language,
+        highlights_query,
+        injections_query,
+        locals_query,
+    )
+}
+
+fn build_config_named(
+    language: HighlightLanguage,
+    language_name: &str,
+    tree_sitter_language: tree_sitter::Language,
+    highlights_query: &str,
+    injections_query: &str,
+    locals_query: &str,
+) -> Result<HighlightConfiguration> {
     let mut config = HighlightConfiguration::new(
         tree_sitter_language,
-        language.display_name(),
+        language_name,
         highlights_query,
         injections_query,
         locals_query,
@@ -293,6 +345,25 @@ mod tests {
                 .spans
                 .iter()
                 .any(|span| span.class == SyntaxClass::String && span.text.contains("from users"))
+        );
+    }
+
+    #[test]
+    fn markdown_fenced_rust_block_uses_injected_highlighting() {
+        let highlighted = crate::highlight::service::highlight_source(
+            crate::highlight::model::HighlightRequest {
+                path: Some(Path::new("README.md")),
+                language_hint: None,
+                source: "# Demo\n\n```rust\nfn main() {}\n```\n",
+            },
+        );
+
+        assert_eq!(highlighted.language_name.as_deref(), Some("markdown"));
+        assert!(
+            highlighted.lines[3]
+                .spans
+                .iter()
+                .any(|span| span.class != SyntaxClass::Plain)
         );
     }
 }

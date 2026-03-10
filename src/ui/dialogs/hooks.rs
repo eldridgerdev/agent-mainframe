@@ -10,10 +10,24 @@ use crate::app::{DiffReviewState, DiffViewerLayout, HookPromptState, RunningHook
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
-use super::diff::draw_review_patch;
+use super::diff::{draw_patch_panel, PatchPanelOptions};
 
-pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme: &Theme) {
-    let area = centered_rect(88, 74, frame.area());
+fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
+    state.diff_file.as_ref().is_some_and(|file| {
+        matches!(
+            file.status,
+            crate::diff::DiffFileStatus::Added | crate::diff::DiffFileStatus::Untracked
+        )
+    })
+}
+
+pub fn draw_diff_review_dialog(
+    frame: &mut Frame,
+    state: &DiffReviewState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = centered_rect(92, 82, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -25,13 +39,19 @@ pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let explanation_loading = state.explanation_child.is_some();
+    let explanation_open = state.explanation.is_some() || explanation_loading;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // file
             Constraint::Length(1), // tool
             Constraint::Min(7),    // diff
-            Constraint::Min(6),    // explanation
+            if explanation_open {
+                Constraint::Length(6)
+            } else {
+                Constraint::Length(2)
+            },
             Constraint::Length(1), // hints
         ])
         .split(inner);
@@ -58,17 +78,30 @@ pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme
     ]));
     frame.render_widget(tool_line, chunks[1]);
 
+    let new_file_presentation = diff_review_uses_new_file_presentation(state);
+    let patch_layout = if new_file_presentation {
+        DiffViewerLayout::Unified
+    } else {
+        state.layout.clone()
+    };
+
     if let Some(file) = &state.diff_file {
-        draw_review_patch(
+        draw_patch_panel(
             frame,
             chunks[2],
-            file,
-            if state.side_by_side {
-                DiffViewerLayout::SideBySide
-            } else {
-                DiffViewerLayout::Unified
+            Some(file),
+            PatchPanelOptions {
+                layout: patch_layout.clone(),
+                title: if new_file_presentation {
+                    format!("New File: {}", state.relative_path)
+                } else {
+                    format!("Patch: {}", state.relative_path)
+                },
+                border_color: theme.primary.to_color(),
+                scroll: 0,
+                include_prologue: new_file_presentation,
+                new_file_presentation,
             },
-            &format!("Patch: {}", state.relative_path),
             theme,
         );
     } else {
@@ -132,23 +165,24 @@ pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme
         frame.render_widget(diff_widget, chunks[2]);
     }
 
-    let explanation_lines = if let Some(explanation) = &state.explanation {
-        explanation
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    format!(" {line}"),
-                    Style::default().fg(theme.text.to_color()),
-                ))
-            })
-            .collect::<Vec<_>>()
-    } else {
-        vec![Line::from(Span::styled(
-            " Press e to explain these changes.",
-            Style::default().fg(theme.text_muted.to_color()),
-        ))]
-    };
-    let explanation_widget = Paragraph::new(explanation_lines)
+    if explanation_loading {
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let span = throbber.to_symbol_span(throbber_state);
+        let explanation_widget = Paragraph::new(Line::from(vec![
+            Span::styled(" ", Style::default()),
+            span,
+            Span::styled(
+                " Generating explanation...",
+                Style::default().fg(theme.info.to_color()),
+            ),
+        ]))
         .block(
             Block::default()
                 .borders(Borders::TOP)
@@ -157,26 +191,84 @@ pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme
                     " explanation ",
                     Style::default().fg(theme.text_muted.to_color()),
                 )),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(explanation_widget, chunks[3]);
+        );
+        frame.render_widget(explanation_widget, chunks[3]);
+    } else if let Some(explanation) = &state.explanation {
+        let explanation_lines = explanation
+            .lines()
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {line}"),
+                    Style::default().fg(theme.text.to_color()),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let explanation_widget = Paragraph::new(explanation_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(theme.text_muted.to_color()))
+                    .title(Span::styled(
+                        " explanation ",
+                        Style::default().fg(theme.text_muted.to_color()),
+                    )),
+            )
+            .wrap(Wrap { trim: false });
+        frame.render_widget(explanation_widget, chunks[3]);
+    } else {
+        let explanation_hint = Paragraph::new(Line::from(vec![
+            Span::styled(" e", Style::default().fg(theme.info.to_color())),
+            Span::styled(
+                " explain these changes",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(theme.text_muted.to_color())),
+        );
+        frame.render_widget(explanation_hint, chunks[3]);
+    }
 
-    let hints = Paragraph::new(Line::from(vec![
-        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" approve  "),
-        Span::styled("e", Style::default().fg(theme.info.to_color())),
-        Span::raw(" explain  "),
-        Span::styled("v", Style::default().fg(theme.primary.to_color())),
-        Span::raw(if state.side_by_side {
-            " stacked  "
-        } else {
-            " side-by-side  "
-        }),
-        Span::styled("r", Style::default().fg(theme.danger.to_color())),
-        Span::raw(" feedback  "),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" cancel"),
-    ]));
+    let hints = if explanation_loading {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" e", Style::default().fg(theme.info.to_color())),
+            Span::raw(" generating explanation..."),
+        ]))
+    } else if new_file_presentation {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" approve  "),
+            Span::styled("e", Style::default().fg(theme.info.to_color())),
+            Span::raw(" explain  "),
+            Span::styled(
+                "new file uses unified view  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("r", Style::default().fg(theme.danger.to_color())),
+            Span::raw(" feedback  "),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" cancel"),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" approve  "),
+            Span::styled("e", Style::default().fg(theme.info.to_color())),
+            Span::raw(" explain  "),
+            Span::styled("v", Style::default().fg(theme.primary.to_color())),
+            Span::raw(if state.layout == DiffViewerLayout::SideBySide {
+                " stacked  "
+            } else {
+                " side-by-side  "
+            }),
+            Span::styled("r", Style::default().fg(theme.danger.to_color())),
+            Span::raw(" feedback  "),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" cancel"),
+        ]))
+    };
     frame.render_widget(hints, chunks[4]);
 
     if state.editing_feedback {

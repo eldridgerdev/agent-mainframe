@@ -364,7 +364,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::DiffReviewPrompt(state) = &app.mode {
-        super::dialogs::draw_diff_review_dialog(frame, state, &app.theme);
+        super::dialogs::draw_diff_review_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 
     if let AppMode::RunningHook(state) = &app.mode {

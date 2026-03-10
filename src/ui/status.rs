@@ -226,7 +226,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" cancel"),
         ]),
         AppMode::DiffReviewPrompt(state) => {
-            if state.editing_feedback {
+            if state.explanation_child.is_some() {
+                Line::from(Span::styled(
+                    "Generating explanation...",
+                    Style::default().fg(theme.info.to_color()),
+                ))
+            } else if state.editing_feedback {
                 Line::from(vec![
                     Span::styled("Enter", key_style()),
                     Span::raw(" submit reject  "),
@@ -316,20 +321,32 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("/q", key_style()),
             Span::raw(" close"),
         ]),
-        AppMode::DiffViewer(_) => Line::from(vec![
-            Span::styled(" Tab", key_style()),
-            Span::raw(" focus  "),
-            Span::styled("v", key_style()),
-            Span::raw(" layout  "),
-            Span::styled("j/k", key_style()),
-            Span::raw(" move  "),
-            Span::styled("PgUp/PgDn", key_style()),
-            Span::raw(" scroll  "),
-            Span::styled("r", key_style()),
-            Span::raw(" refresh  "),
-            Span::styled("Esc", key_style()),
-            Span::raw(" close"),
-        ]),
+        AppMode::DiffViewer(_) => {
+            let mut spans = vec![
+                Span::styled(" Tab", key_style()),
+                Span::raw(" focus  "),
+            ];
+            if app.diff_viewer_selected_file_is_new() {
+                spans.push(Span::styled(
+                    " new file uses unified view  ",
+                    Style::default().fg(theme.info.to_color()),
+                ));
+            } else {
+                spans.push(Span::styled("v", key_style()));
+                spans.push(Span::raw(" layout  "));
+            }
+            spans.extend(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" move  "),
+                Span::styled("PgUp/PgDn", key_style()),
+                Span::raw(" scroll  "),
+                Span::styled("r", key_style()),
+                Span::raw(" refresh  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" close"),
+            ]);
+            Line::from(spans)
+        }
         AppMode::MarkdownViewer(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" scroll  "),

@@ -182,7 +182,7 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &The
 }
 
 fn body_constraints(area: Rect, state: &DiffViewerState) -> [Constraint; 2] {
-    match (&state.layout, &state.focus) {
+    match (&effective_layout(state), &state.focus) {
         (DiffViewerLayout::SideBySide, DiffViewerFocus::Patch) => {
             let file_width = area.width.saturating_mul(22) / 100;
             [Constraint::Length(file_width.max(24)), Constraint::Min(40)]
@@ -250,71 +250,98 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Th
         theme.primary.to_color()
     };
     let file = state.files.get(state.selected_file);
-    let layout_label = match state.layout {
+    let effective_layout = effective_layout(state);
+    let title = file
+        .map(|file| {
+            if is_new_diff_file(file) {
+                format!("New File: {}", file.path)
+            } else {
+                format!("Patch: {}", file.path)
+            }
+        })
+        .unwrap_or_else(|| "Patch".to_string());
+
+    draw_patch_panel(
+        frame,
+        area,
+        file,
+        PatchPanelOptions {
+            layout: effective_layout,
+            title,
+            border_color: border,
+            scroll: state.patch_scroll,
+            include_prologue: true,
+            new_file_presentation: file.map(is_new_diff_file).unwrap_or(false),
+        },
+        theme,
+    );
+}
+
+pub(crate) struct PatchPanelOptions {
+    pub layout: DiffViewerLayout,
+    pub title: String,
+    pub border_color: Color,
+    pub scroll: usize,
+    pub include_prologue: bool,
+    pub new_file_presentation: bool,
+}
+
+pub(crate) fn draw_patch_panel(
+    frame: &mut Frame,
+    area: Rect,
+    file: Option<&DiffFile>,
+    options: PatchPanelOptions,
+    theme: &Theme,
+) {
+    let layout_label = match options.layout {
         DiffViewerLayout::Unified => "unified",
         DiffViewerLayout::SideBySide => "side-by-side",
     };
-    let title = file
-        .map(|file| format!(" Patch: {} [{layout_label}] ", file.path))
-        .unwrap_or_else(|| " Patch ".to_string());
-
-    let scroll = u16::try_from(state.patch_scroll).unwrap_or(u16::MAX);
+    let title = if options.new_file_presentation {
+        Span::styled(
+            format!(" {} [{layout_label}] ", options.title),
+            Style::default()
+                .fg(theme.success.to_color())
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw(format!(" {} [{layout_label}] ", options.title))
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border));
+        .border_style(Style::default().fg(options.border_color));
 
+    let scroll = u16::try_from(options.scroll).unwrap_or(u16::MAX);
     match file {
-        Some(file) if matches!(state.layout, DiffViewerLayout::SideBySide) => {
-            let lines = side_by_side_lines(file, area.width.saturating_sub(2), theme, true);
-            let patch = Paragraph::new(lines).block(block).scroll((scroll, 0));
-            frame.render_widget(patch, area);
+        Some(file) if matches!(options.layout, DiffViewerLayout::SideBySide) => {
+            let lines = side_by_side_lines(
+                file,
+                area.width.saturating_sub(2),
+                theme,
+                options.include_prologue,
+            );
+            frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
         }
         Some(file) => {
-            let lines = patch_lines(file, area.width.saturating_sub(2), theme, true);
-            let patch = Paragraph::new(lines)
-                .block(block)
-                .scroll((scroll, 0))
-                .wrap(Wrap { trim: false });
-            frame.render_widget(patch, area);
+            let lines = patch_lines(
+                file,
+                area.width.saturating_sub(2),
+                theme,
+                options.include_prologue,
+                options.new_file_presentation,
+            );
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(block)
+                    .scroll((scroll, 0))
+                    .wrap(Wrap { trim: false }),
+                area,
+            );
         }
         None => {
             let patch = Paragraph::new("No file selected").block(block);
             frame.render_widget(patch, area);
-        }
-    }
-}
-
-pub(crate) fn draw_review_patch(
-    frame: &mut Frame,
-    area: Rect,
-    file: &DiffFile,
-    layout: DiffViewerLayout,
-    title: &str,
-    theme: &Theme,
-) {
-    let layout_label = match layout {
-        DiffViewerLayout::Unified => "unified",
-        DiffViewerLayout::SideBySide => "side-by-side",
-    };
-    let block = Block::default()
-        .title(format!(" {title} [{layout_label}] "))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.primary.to_color()));
-
-    match layout {
-        DiffViewerLayout::SideBySide => {
-            let lines = side_by_side_lines(file, area.width.saturating_sub(2), theme, false);
-            frame.render_widget(Paragraph::new(lines).block(block), area);
-        }
-        DiffViewerLayout::Unified => {
-            let lines = patch_lines(file, area.width.saturating_sub(2), theme, false);
-            frame.render_widget(
-                Paragraph::new(lines)
-                    .block(block)
-                    .wrap(Wrap { trim: false }),
-                area,
-            );
         }
     }
 }
@@ -324,15 +351,29 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         DiffViewerFocus::FileList => "files",
         DiffViewerFocus::Patch => "patch",
     };
-    let layout = match state.layout {
+    let new_file_selected = state
+        .files
+        .get(state.selected_file)
+        .map(is_new_diff_file)
+        .unwrap_or(false);
+    let layout = match effective_layout(state) {
         DiffViewerLayout::Unified => "unified",
         DiffViewerLayout::SideBySide => "side-by-side",
     };
-    let footer = Paragraph::new(Line::from(vec![
+    let mut spans = vec![
         Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(format!(" focus:{focus}  ")),
-        Span::styled("v", Style::default().fg(theme.warning.to_color())),
-        Span::raw(format!(" layout:{layout}  ")),
+    ];
+    if new_file_selected {
+        spans.push(Span::styled(
+            format!(" layout:{layout} (new file)  "),
+            Style::default().fg(theme.info.to_color()),
+        ));
+    } else {
+        spans.push(Span::styled("v", Style::default().fg(theme.warning.to_color())));
+        spans.push(Span::raw(format!(" layout:{layout}  ")));
+    }
+    spans.extend(vec![
         Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::raw(" move  "),
         Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
@@ -343,7 +384,8 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         Span::raw(" refresh  "),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" close"),
-    ]));
+    ]);
+    let footer = Paragraph::new(Line::from(spans));
     frame.render_widget(footer, area);
 }
 
@@ -352,6 +394,7 @@ fn patch_lines(
     width: u16,
     theme: &Theme,
     include_prologue: bool,
+    new_file_presentation: bool,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
     if file.is_binary || file.hunks.is_empty() || content_width < 16 {
@@ -365,6 +408,16 @@ fn patch_lines(
     }
     let text_width = content_width - gutter_width;
     let highlights = file_highlights(file);
+    let added_style = if new_file_presentation {
+        new_file_added_row_style(theme)
+    } else {
+        added_row_style(theme)
+    };
+    let hunk_style = if new_file_presentation {
+        new_file_hunk_header_style(theme)
+    } else {
+        hunk_header_style(theme)
+    };
 
     let mut lines = Vec::new();
     if include_prologue {
@@ -380,12 +433,15 @@ fn patch_lines(
         }
     }
 
-    for hunk in &file.hunks {
+    for (idx, hunk) in file.hunks.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::from(""));
+        }
         lines.extend(wrap_gutter_line(
             None,
             None,
-            plain_chunks(&hunk.header, hunk_header_style(theme)),
-            hunk_header_style(theme),
+            plain_chunks(&format_hunk_header(hunk), hunk_style),
+            hunk_style,
             number_width,
             text_width,
         ));
@@ -434,11 +490,11 @@ fn patch_lines(
                         Some(new_line),
                         diff_chunks(
                             &diff_line.text,
-                            added_row_style(theme),
+                            added_style,
                             theme,
                             highlighted_line(highlights.new.as_ref(), new_line),
                         ),
-                        added_row_style(theme),
+                        added_style,
                         number_width,
                         text_width,
                     ));
@@ -468,7 +524,7 @@ fn side_by_side_lines(
     include_prologue: bool,
 ) -> Vec<Line<'static>> {
     if file.is_binary || file.hunks.is_empty() || width < 24 {
-        return patch_lines(file, width, theme, include_prologue);
+        return patch_lines(file, width, theme, include_prologue, false);
     }
 
     let inner_width = width as usize;
@@ -477,7 +533,7 @@ fn side_by_side_lines(
     let number_width = line_number_width(file);
     let cell_prefix_width = number_width + 2;
     if column_width <= cell_prefix_width + 6 {
-        return patch_lines(file, width, theme, include_prologue);
+        return patch_lines(file, width, theme, include_prologue, false);
     }
     let cell_text_width = column_width - cell_prefix_width;
     let highlights = file_highlights(file);
@@ -505,9 +561,12 @@ fn side_by_side_lines(
         }
     }
 
-    for hunk in &file.hunks {
+    for (idx, hunk) in file.hunks.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::from(""));
+        }
         lines.push(Line::from(Span::styled(
-            hunk.header.clone(),
+            format_hunk_header(hunk),
             hunk_header_style(theme),
         )));
 
@@ -605,6 +664,35 @@ fn side_by_side_lines(
     lines
 }
 
+fn format_hunk_header(hunk: &crate::diff::DiffHunk) -> String {
+    format!(
+        " Change: base {} -> current {} ",
+        format_hunk_range(hunk.old_start, hunk.old_lines),
+        format_hunk_range(hunk.new_start, hunk.new_lines)
+    )
+}
+
+fn format_hunk_range(start: usize, len: usize) -> String {
+    match len {
+        0 => format!("{start}"),
+        1 => format!("{start}"),
+        _ => format!("{start}-{}", start + len - 1),
+    }
+}
+
+fn effective_layout(state: &DiffViewerState) -> DiffViewerLayout {
+    state
+        .files
+        .get(state.selected_file)
+        .filter(|file| is_new_diff_file(file))
+        .map(|_| DiffViewerLayout::Unified)
+        .unwrap_or_else(|| state.layout.clone())
+}
+
+fn is_new_diff_file(file: &DiffFile) -> bool {
+    matches!(file.status, DiffFileStatus::Added | DiffFileStatus::Untracked)
+}
+
 fn status_label(status: &DiffFileStatus) -> &'static str {
     match status {
         DiffFileStatus::Added => "A",
@@ -657,6 +745,11 @@ fn side_by_side_rows(
     separator: &str,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    let base_bg = popup_base_bg(theme);
+    let paired_change_row = left_number.is_some()
+        && right_number.is_some()
+        && left_style.bg != Some(base_bg)
+        && right_style.bg != Some(base_bg);
     let left_wrapped = if left_number.is_none() && left.is_empty() {
         vec![plain_chunks(
             &hatch_fill(text_width, 0),
@@ -683,12 +776,18 @@ fn side_by_side_rows(
     };
     let row_count = left_wrapped.len().max(right_wrapped.len());
     let mut rows = Vec::with_capacity(row_count);
-    let left_bg = left_style.bg.unwrap_or_else(|| popup_base_bg(theme));
-    let right_bg = right_style.bg.unwrap_or_else(|| popup_base_bg(theme));
     let left_missing = left_number.is_none() && left.is_empty();
     let right_missing = right_number.is_none() && right.is_empty();
 
     for row in 0..row_count {
+        let left_has_content = left_wrapped
+            .get(row)
+            .map(|chunks| !chunks.is_empty())
+            .unwrap_or(false);
+        let right_has_content = right_wrapped
+            .get(row)
+            .map(|chunks| !chunks.is_empty())
+            .unwrap_or(false);
         let left_prefix = if row == 0 {
             line_number_label(left_number, number_width)
         } else {
@@ -701,14 +800,20 @@ fn side_by_side_rows(
         };
         let left_cell_style = if left_missing {
             hatched_side_style(right_style, theme)
-        } else {
+        } else if left_has_content {
             left_style
+        } else {
+            context_row_style(theme)
         };
         let right_cell_style = if right_missing {
             hatched_side_style(left_style, theme)
-        } else {
+        } else if right_has_content {
             right_style
+        } else {
+            context_row_style(theme)
         };
+        let left_bg = left_cell_style.bg.unwrap_or_else(|| popup_base_bg(theme));
+        let right_bg = right_cell_style.bg.unwrap_or_else(|| popup_base_bg(theme));
         let left_cell = if left_missing {
             pad_chunks_to_width(
                 plain_chunks(&hatch_fill(text_width, row), left_cell_style),
@@ -719,7 +824,7 @@ fn side_by_side_rows(
             pad_chunks_to_width(
                 left_wrapped.get(row).cloned().unwrap_or_default(),
                 text_width,
-                left_style,
+                if paired_change_row { Style::default().bg(base_bg) } else { left_style },
             )
         };
         let right_cell = if right_missing {
@@ -732,7 +837,7 @@ fn side_by_side_rows(
             pad_chunks_to_width(
                 right_wrapped.get(row).cloned().unwrap_or_default(),
                 text_width,
-                right_style,
+                if paired_change_row { Style::default().bg(base_bg) } else { right_style },
             )
         };
         let mut line = vec![Span::styled(left_prefix, left_cell_style)];
@@ -747,7 +852,11 @@ fn side_by_side_rows(
             separator.to_string(),
             Style::default()
                 .fg(theme.text_muted.to_color())
-                .bg(blend_color(left_bg, right_bg, 0.5)),
+                .bg(if paired_change_row && (!left_has_content || !right_has_content) {
+                    base_bg
+                } else {
+                    blend_color(left_bg, right_bg, 0.5)
+                }),
         ));
         line.push(Span::styled(right_prefix, right_cell_style));
         line.push(Span::styled(
@@ -1063,6 +1172,9 @@ fn line_number_width(file: &DiffFile) -> usize {
 }
 
 fn patch_prologue(file: &DiffFile) -> Vec<&str> {
+    if is_new_diff_file(file) {
+        return vec!["NEW FILE added in this branch"];
+    }
     file.patch
         .lines()
         .take_while(|line| !line.starts_with("@@ "))
@@ -1070,7 +1182,9 @@ fn patch_prologue(file: &DiffFile) -> Vec<&str> {
 }
 
 fn meta_style(line: &str, theme: &Theme) -> Style {
-    if line.starts_with("diff --git ")
+    if line.starts_with("NEW FILE ") || line.starts_with("New file ") {
+        new_file_hunk_header_style(theme)
+    } else if line.starts_with("diff --git ")
         || line.starts_with("index ")
         || line.starts_with("new file mode ")
         || line.starts_with("deleted file mode ")
@@ -1147,6 +1261,23 @@ fn hunk_header_style(theme: &Theme) -> Style {
             popup_base_bg(theme),
             theme.info.to_color(),
             0.12,
+        ))
+        .add_modifier(Modifier::BOLD)
+}
+
+fn new_file_added_row_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.success.to_color())
+        .bg(popup_base_bg(theme))
+}
+
+fn new_file_hunk_header_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.success.to_color())
+        .bg(blend_color(
+            popup_base_bg(theme),
+            theme.success.to_color(),
+            0.18,
         ))
         .add_modifier(Modifier::BOLD)
 }

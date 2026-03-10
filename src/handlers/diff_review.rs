@@ -5,7 +5,27 @@ use std::fs;
 use crate::app::{App, AppMode};
 use crate::claude::ClaudeLauncher;
 
+fn diff_review_uses_new_file_presentation(app: &App) -> bool {
+    matches!(
+        &app.mode,
+        AppMode::DiffReviewPrompt(state)
+            if state.diff_file.as_ref().is_some_and(|file| {
+                matches!(
+                    file.status,
+                    crate::diff::DiffFileStatus::Added | crate::diff::DiffFileStatus::Untracked
+                )
+            })
+    )
+}
+
 pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(
+        &app.mode,
+        AppMode::DiffReviewPrompt(state) if state.explanation_child.is_some()
+    ) {
+        return Ok(());
+    }
+
     let editing_feedback = matches!(
         &app.mode,
         AppMode::DiffReviewPrompt(state) if state.editing_feedback
@@ -57,15 +77,19 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
             generate_diff_review_explanation(app);
         }
         KeyCode::Char('v') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
-                state.side_by_side = !state.side_by_side;
-                app.config.diff_viewer_layout = if state.side_by_side {
-                    crate::app::DiffViewerLayout::SideBySide
-                } else {
-                    crate::app::DiffViewerLayout::Unified
-                };
+            if diff_review_uses_new_file_presentation(app) {
+                return Ok(());
             }
-            app.save_config();
+            let next_layout = match &app.mode {
+                AppMode::DiffReviewPrompt(state) => Some(app.toggled_diff_viewer_layout(&state.layout)),
+                _ => None,
+            };
+            if let Some(layout) = next_layout {
+                app.persist_diff_viewer_layout(layout.clone());
+                if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+                    state.layout = layout;
+                }
+            }
         }
         KeyCode::Char('q') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             submit_diff_review(app, false, true)?;
@@ -183,17 +207,29 @@ fn generate_diff_review_explanation(app: &mut App) {
         _ => return,
     };
 
-    let explanation = find_review_note(&workdir, &relative_path).unwrap_or_else(|| {
-        let prompt = format!(
-            "Explain these code changes concisely. What is being changed and why?\n\nFile: {relative_path}\n\nOld:\n```\n{old_snippet}\n```\n\nNew:\n```\n{new_snippet}\n```"
-        );
-        ClaudeLauncher::run_headless(&workdir, &prompt).unwrap_or_else(|err| {
-            format!("Explanation unavailable: {err}")
-        })
-    });
+    if let Some(explanation) = find_review_note(&workdir, &relative_path) {
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.explanation = Some(explanation.trim().to_string());
+        }
+        return;
+    }
 
-    if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
-        state.explanation = Some(explanation.trim().to_string());
+    let prompt = format!(
+        "Explain these code changes concisely. What is being changed and why?\n\nFile: {relative_path}\n\nOld:\n```\n{old_snippet}\n```\n\nNew:\n```\n{new_snippet}\n```"
+    );
+
+    match ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+        Ok(child) => {
+            if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+                state.explanation = None;
+                state.explanation_child = Some(child);
+            }
+        }
+        Err(err) => {
+            if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+                state.explanation = Some(format!("Explanation unavailable: {err}"));
+            }
+        }
     }
 }
 
@@ -232,6 +268,7 @@ fn find_review_note(workdir: &std::path::Path, relative_path: &str) -> Option<St
 mod tests {
     use super::*;
     use crate::app::DiffReviewState;
+    use crate::diff::{DiffFile, DiffFileStatus};
     use crate::project::ProjectStore;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -262,8 +299,9 @@ mod tests {
             diff_error: None,
             reason: String::new(),
             editing_feedback: false,
-            side_by_side: false,
+            layout: crate::app::DiffViewerLayout::Unified,
             explanation: None,
+            explanation_child: None,
             response_file: workdir.join("response.json"),
             proceed_signal: workdir.join("proceed"),
             request_id: None,
@@ -271,6 +309,21 @@ mod tests {
             return_to_view: None,
         });
         app
+    }
+
+    fn make_new_file_diff(path: &str) -> DiffFile {
+        DiffFile {
+            old_path: None,
+            path: path.to_string(),
+            status: DiffFileStatus::Added,
+            additions: 2,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: Some("hello\nworld\n".to_string()),
+            patch: String::new(),
+            hunks: vec![],
+        }
     }
 
     #[test]
@@ -388,7 +441,7 @@ mod tests {
 
         match &app.mode {
             AppMode::DiffReviewPrompt(state) => {
-                assert!(state.side_by_side);
+                assert_eq!(state.layout, crate::app::DiffViewerLayout::SideBySide);
                 assert_eq!(
                     app.config.diff_viewer_layout,
                     crate::app::DiffViewerLayout::SideBySide
@@ -405,10 +458,38 @@ mod tests {
 
         match &app.mode {
             AppMode::DiffReviewPrompt(state) => {
-                assert!(!state.side_by_side);
+                assert_eq!(state.layout, crate::app::DiffViewerLayout::Unified);
                 assert_eq!(
                     app.config.diff_viewer_layout,
                     crate::app::DiffViewerLayout::Unified
+                );
+            }
+            _ => panic!("expected diff review prompt"),
+        }
+    }
+
+    #[test]
+    fn v_does_not_toggle_layout_for_new_file_review() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        app.config.diff_viewer_layout = crate::app::DiffViewerLayout::SideBySide;
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.layout = crate::app::DiffViewerLayout::SideBySide;
+            state.diff_file = Some(make_new_file_diff("src/new.rs"));
+        }
+
+        handle_diff_review_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => {
+                assert_eq!(state.layout, crate::app::DiffViewerLayout::SideBySide);
+                assert_eq!(
+                    app.config.diff_viewer_layout,
+                    crate::app::DiffViewerLayout::SideBySide
                 );
             }
             _ => panic!("expected diff review prompt"),

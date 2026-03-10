@@ -23,20 +23,43 @@ const MARKDOWN_VIEW_CANDIDATES: &[&str] = &[
     "plan.md",
 ];
 
-pub fn collect_markdown_view_paths(workdir: &Path) -> Vec<PathBuf> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkdownViewScope {
+    Worktree,
+    RepoRoot,
+    Other,
+}
+
+pub fn collect_markdown_view_paths(workdir: &Path, repo_root: Option<&Path>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     let mut paths = Vec::new();
 
+    collect_markdown_paths_in_root(workdir, &mut seen, &mut paths);
+
+    if let Some(repo_root) = repo_root
+        && repo_root != workdir
+    {
+        collect_markdown_paths_in_root(repo_root, &mut seen, &mut paths);
+    }
+
+    paths
+}
+
+fn collect_markdown_paths_in_root(
+    root: &Path,
+    seen: &mut HashSet<PathBuf>,
+    paths: &mut Vec<PathBuf>,
+) {
     for candidate in MARKDOWN_VIEW_CANDIDATES
         .iter()
-        .map(|candidate| workdir.join(candidate))
+        .map(|candidate| root.join(candidate))
     {
         if candidate.is_file() && seen.insert(candidate.clone()) {
             paths.push(candidate);
         }
     }
 
-    for extra_dir in [workdir.to_path_buf(), workdir.join(".claude")] {
+    for extra_dir in [root.to_path_buf(), root.join(".claude")] {
         let Ok(entries) = std::fs::read_dir(&extra_dir) else {
             continue;
         };
@@ -55,8 +78,65 @@ pub fn collect_markdown_view_paths(workdir: &Path) -> Vec<PathBuf> {
             }
         }
     }
+}
 
-    paths
+pub fn markdown_view_label(path: &Path, workdir: &Path, repo_root: Option<&Path>) -> String {
+    match markdown_view_scope(path, workdir, repo_root) {
+        MarkdownViewScope::Worktree => {
+            let relative = path.strip_prefix(workdir).unwrap_or(path);
+            if repo_root.is_some() {
+                format!("[worktree] {}", relative.display())
+            } else {
+                relative.display().to_string()
+            }
+        }
+        MarkdownViewScope::RepoRoot => {
+            let relative = repo_root
+                .and_then(|root| path.strip_prefix(root).ok())
+                .unwrap_or(path);
+            format!("[repo root] {}", relative.display())
+        }
+        MarkdownViewScope::Other => path.display().to_string(),
+    }
+}
+
+pub fn markdown_view_scope(
+    path: &Path,
+    workdir: &Path,
+    repo_root: Option<&Path>,
+) -> MarkdownViewScope {
+    if path.strip_prefix(workdir).is_ok() {
+        return MarkdownViewScope::Worktree;
+    }
+
+    if let Some(repo_root) = repo_root
+        && path.strip_prefix(repo_root).is_ok()
+    {
+        return MarkdownViewScope::RepoRoot;
+    }
+
+    MarkdownViewScope::Other
+}
+
+pub fn markdown_view_relative_label(
+    path: &Path,
+    workdir: &Path,
+    repo_root: Option<&Path>,
+) -> String {
+    if let Ok(relative) = path.strip_prefix(workdir) {
+        if repo_root.is_some() {
+            return relative.display().to_string();
+        }
+        return relative.display().to_string();
+    }
+
+    if let Some(repo_root) = repo_root
+        && let Ok(relative) = path.strip_prefix(repo_root)
+    {
+        return relative.display().to_string();
+    }
+
+    path.display().to_string()
 }
 
 pub fn render_markdown(markdown: &str, theme: &Theme) -> Vec<Line<'static>> {
@@ -157,9 +237,7 @@ impl<'a> MarkdownRenderer<'a> {
                 };
                 self.current.push(Span::styled(
                     marker,
-                    Style::default()
-                        .fg(color)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ));
             }
             Event::FootnoteReference(label) => {
@@ -413,12 +491,14 @@ impl<'a> MarkdownRenderer<'a> {
         if self.current.is_empty() {
             return;
         }
-        self.lines.push(Line::from(std::mem::take(&mut self.current)));
+        self.lines
+            .push(Line::from(std::mem::take(&mut self.current)));
     }
 
     fn ensure_blank_line(&mut self) {
         self.flush_current_line();
-        if !matches!(self.lines.last(), Some(line) if line.spans.is_empty()) && !self.lines.is_empty()
+        if !matches!(self.lines.last(), Some(line) if line.spans.is_empty())
+            && !self.lines.is_empty()
         {
             self.lines.push(Line::raw(""));
         }
@@ -448,7 +528,7 @@ mod tests {
         std::fs::write(claude_dir.join("context.md"), "# Context").unwrap();
         std::fs::write(claude_dir.join("plan.md"), "# Plan").unwrap();
 
-        let found = collect_markdown_view_paths(dir.path());
+        let found = collect_markdown_view_paths(dir.path(), None);
         assert_eq!(found.first(), Some(&claude_dir.join("plan.md")));
     }
 
@@ -460,9 +540,64 @@ mod tests {
         std::fs::write(claude_dir.join("notes.md"), "# Notes").unwrap();
         std::fs::write(dir.path().join("RETRO.md"), "# Retro").unwrap();
 
-        let found = collect_markdown_view_paths(dir.path());
+        let found = collect_markdown_view_paths(dir.path(), None);
         assert!(found.contains(&claude_dir.join("notes.md")));
         assert!(found.contains(&dir.path().join("RETRO.md")));
+    }
+
+    #[test]
+    fn markdown_path_collection_includes_repo_root_for_worktree() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = repo.path().join(".worktrees").join("feature-a");
+        let worktree_claude = worktree.join(".claude");
+        std::fs::create_dir_all(&worktree_claude).unwrap();
+        std::fs::write(worktree_claude.join("plan.md"), "# Worktree Plan").unwrap();
+        std::fs::write(repo.path().join("RETRO.md"), "# Repo Retro").unwrap();
+
+        let found = collect_markdown_view_paths(&worktree, Some(repo.path()));
+        assert!(found.contains(&worktree_claude.join("plan.md")));
+        assert!(found.contains(&repo.path().join("RETRO.md")));
+    }
+
+    #[test]
+    fn markdown_view_label_marks_repo_root_files() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = repo.path().join(".worktrees").join("feature-a");
+        let repo_path = repo.path().join(".claude").join("plan.md");
+
+        assert_eq!(
+            markdown_view_label(&repo_path, &worktree, Some(repo.path())),
+            "[repo root] .claude/plan.md"
+        );
+    }
+
+    #[test]
+    fn markdown_view_label_marks_worktree_files_when_repo_root_is_present() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = repo.path().join(".worktrees").join("feature-a");
+        let worktree_path = worktree.join(".claude").join("plan.md");
+
+        assert_eq!(
+            markdown_view_label(&worktree_path, &worktree, Some(repo.path())),
+            "[worktree] .claude/plan.md"
+        );
+    }
+
+    #[test]
+    fn markdown_view_scope_distinguishes_worktree_from_repo_root() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = repo.path().join(".worktrees").join("feature-a");
+        let worktree_path = worktree.join(".claude").join("plan.md");
+        let repo_path = repo.path().join(".claude").join("context.md");
+
+        assert_eq!(
+            markdown_view_scope(&worktree_path, &worktree, Some(repo.path())),
+            MarkdownViewScope::Worktree
+        );
+        assert_eq!(
+            markdown_view_scope(&repo_path, &worktree, Some(repo.path())),
+            MarkdownViewScope::RepoRoot
+        );
     }
 
     #[test]

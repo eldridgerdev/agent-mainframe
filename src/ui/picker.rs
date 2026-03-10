@@ -213,10 +213,22 @@ pub fn draw_markdown_file_picker(
     state: &MarkdownFilePickerState,
     theme: &Theme,
 ) {
-    let area = centered_rect(62, 52, frame.area());
+    let showing_repo_root = state.repo_root.is_some();
+    let area = if showing_repo_root {
+        centered_rect(70, 60, frame.area())
+    } else {
+        centered_rect(62, 52, frame.area())
+    };
     frame.render_widget(Clear, area);
 
-    let title = format!(" Markdown Files ({}) ", state.files.len());
+    let title = if showing_repo_root {
+        format!(
+            " Markdown Files: Worktree + Repo Root ({}) ",
+            state.files.len()
+        )
+    } else {
+        format!(" Markdown Files ({}) ", state.files.len())
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -228,8 +240,53 @@ pub fn draw_markdown_file_picker(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints(if showing_repo_root {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![Constraint::Min(1), Constraint::Length(2)]
+        })
         .split(inner);
+
+    if showing_repo_root {
+        let legend = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  WORKTREE",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = current feature dir    ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(
+                "REPO ROOT",
+                Style::default()
+                    .fg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = main repo dir",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+        frame.render_widget(legend, chunks[0]);
+    }
+
+    let list_chunk = if showing_repo_root {
+        chunks[1]
+    } else {
+        chunks[0]
+    };
+    let hint_chunk = if showing_repo_root {
+        chunks[2]
+    } else {
+        chunks[1]
+    };
 
     let items: Vec<ListItem> = state
         .files
@@ -237,16 +294,42 @@ pub fn draw_markdown_file_picker(
         .enumerate()
         .map(|(i, path)| {
             let is_selected = i == state.selected;
-            let label = path
-                .strip_prefix(&state.workdir)
-                .unwrap_or(path.as_path())
-                .display()
-                .to_string();
+            let scope = crate::markdown::markdown_view_scope(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
+            let scope_label = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => " WORKTREE ",
+                crate::markdown::MarkdownViewScope::RepoRoot => " REPO ROOT ",
+                crate::markdown::MarkdownViewScope::Other => " PATH ",
+            };
+            let scope_style = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::RepoRoot => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::Other => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::BOLD),
+            };
+            let label = crate::markdown::markdown_view_relative_label(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "  > " } else { "    " },
                     Style::default().fg(theme.warning.to_color()),
                 ),
+                Span::styled(scope_label, scope_style),
+                Span::styled(" ", Style::default().fg(theme.text_muted.to_color())),
                 Span::styled(
                     label,
                     if is_selected {
@@ -266,7 +349,10 @@ pub fn draw_markdown_file_picker(
         })
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected));
+    frame.render_stateful_widget(list, list_chunk, &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -282,7 +368,7 @@ pub fn draw_markdown_file_picker(
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));
-    frame.render_widget(hints, chunks[1]);
+    frame.render_widget(hints, hint_chunk);
 }
 
 pub fn draw_bookmark_picker(

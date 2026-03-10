@@ -24,6 +24,7 @@ ureq = { version = "3", default-features = false, features = ["gzip", "rustls"] 
 unicode-width = "0.1"
 regex = "1"
 toml = "0.8"
+pulldown-cmark = "0.13"
 
 [dev-dependencies]
 mockall = "0.13"

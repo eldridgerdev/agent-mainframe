@@ -302,6 +302,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             };
             app.mode = AppMode::LatestPrompt(prompt, view);
         }
+        KeyCode::Char('m') => {
+            app.open_markdown_viewer_from_view()?;
+        }
         _ => {}
     }
 

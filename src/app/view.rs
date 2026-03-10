@@ -96,6 +96,89 @@ impl App {
         self.message = Some("Returned to dashboard".into());
     }
 
+    pub fn open_markdown_viewer_from_view(&mut self) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir);
+        if files.is_empty() {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md)".into(),
+            );
+            return Ok(());
+        }
+
+        if files.len() == 1 {
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, view);
+        }
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected: 0,
+            workdir,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    pub fn open_markdown_viewer_path(
+        &mut self,
+        path: PathBuf,
+        workdir: PathBuf,
+        view: ViewState,
+    ) -> Result<()> {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                self.mode = AppMode::Viewing(view);
+                self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
+                return Ok(());
+            }
+        };
+
+        let title = path
+            .strip_prefix(&workdir)
+            .unwrap_or(path.as_path())
+            .display()
+            .to_string();
+
+        self.mode = AppMode::MarkdownViewer(crate::app::MarkdownViewerState {
+            title,
+            source_path: path,
+            content,
+            scroll_offset: 0,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
+    }
+
     pub fn activate_leader(&mut self) {
         self.leader_active = true;
         self.leader_activated_at = Some(std::time::Instant::now());

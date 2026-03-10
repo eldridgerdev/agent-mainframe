@@ -4,6 +4,7 @@ mod debug;
 mod feature;
 mod help;
 mod hooks;
+mod markdown;
 mod project;
 mod search;
 mod session;
@@ -21,6 +22,7 @@ pub use hooks::{
     draw_change_reason_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
     draw_running_hook_dialog,
 };
+pub use markdown::draw_markdown_viewer;
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use search::draw_search_dialog;
 pub use session::{

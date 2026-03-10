@@ -111,6 +111,22 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::MarkdownViewer(state) = &mut app.mode {
+        if let Some(view) = &state.from_view {
+            super::pane::draw(
+                frame,
+                view,
+                &app.pane_content,
+                false,
+                app.pending_inputs.len(),
+                app.tmux_cursor,
+                &app.theme,
+            );
+        }
+        super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
+        return;
+    }
+
     if let AppMode::SteeringPrompt(state) = &app.mode {
         super::pane::draw(
             frame,
@@ -139,6 +155,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.theme,
         );
         super::picker::draw_command_picker(frame, state, &app.theme);
+        return;
+    }
+
+    if let AppMode::MarkdownFilePicker(state) = &app.mode
+        && state.from_view.is_some()
+    {
+        let view = state.from_view.as_ref().unwrap();
+        super::pane::draw(
+            frame,
+            view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        super::picker::draw_markdown_file_picker(frame, state, &app.theme);
         return;
     }
 

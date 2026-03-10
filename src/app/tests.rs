@@ -97,9 +97,9 @@ fn app_config_default_leader_timeout_is_five_seconds() {
 }
 
 #[test]
-fn app_config_default_diff_review_viewer_is_custom() {
+fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Custom);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -116,9 +116,9 @@ fn app_config_missing_leader_timeout_uses_default() {
 }
 
 #[test]
-fn app_config_missing_diff_review_viewer_uses_custom_default() {
+fn app_config_missing_diff_review_viewer_uses_amf_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Custom);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -128,9 +128,27 @@ fn app_config_missing_diff_viewer_layout_uses_unified_default() {
 }
 
 #[test]
-fn app_config_diff_review_viewer_deserializes_legacy() {
+fn app_config_diff_review_viewer_deserializes_amf() {
+    let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"amf"}"#).unwrap();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
+}
+
+#[test]
+fn app_config_diff_review_viewer_deserializes_nvim() {
+    let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"nvim"}"#).unwrap();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
+}
+
+#[test]
+fn app_config_diff_review_viewer_accepts_custom_alias() {
+    let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"custom"}"#).unwrap();
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
+}
+
+#[test]
+fn app_config_diff_review_viewer_accepts_legacy_alias() {
     let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"legacy"}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Legacy);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
 }
 
 #[test]
@@ -1091,7 +1109,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
     let tmp = NamedTempFile::new().unwrap();
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = tmp.path().to_path_buf();
-    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
 
     app.finish_feature_launch(PreparedFeatureLaunch {
         project_name: "my-project".to_string(),
@@ -1585,7 +1603,7 @@ fn vibeless_pre_tool_use_can_use_legacy_diff_review_when_configured() {
     std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
 
     let config = AppConfig {
-        diff_review_viewer: DiffReviewViewer::Legacy,
+        diff_review_viewer: DiffReviewViewer::Nvim,
         ..AppConfig::default()
     };
     call_ensure_hooks_for_with_config(&workdir, VibeMode::Vibeless, AgentKind::Claude, true, &config);
@@ -2218,7 +2236,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Viewing(ViewState::new(
         "my-project".to_string(),
         "my-feat".to_string(),
@@ -2275,7 +2293,7 @@ fn custom_diff_review_notification_marks_new_files_as_added() {
     );
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
-    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Viewing(ViewState::new(
         "my-project".to_string(),
         "my-feat".to_string(),
@@ -2344,7 +2362,7 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
     );
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
-    app.config.diff_review_viewer = DiffReviewViewer::Custom;
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Normal;
 
     let notify_dir = workdir.path().join(".claude").join("notifications");

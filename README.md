@@ -406,7 +406,9 @@ In Vibeless mode, `amf` installs a local diff-review hook in the
 feature's `.claude/settings.json`. The hook intercepts every `Edit`,
 `Write`, and `MultiEdit` tool call before it executes and shows you
 the diff. Codex worktrees do not support this hook path, so Codex
-features must use `Vibe` or `SuperVibe` instead:
+features must use `Vibe` or `SuperVibe` instead. By default this uses
+the AMF in-app diff viewer; set `"diff_review_viewer": "nvim"` in
+`~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
 
 ```text
   ╭─ Diff Review ──────────────────────────────────────────────╮
@@ -479,6 +481,7 @@ automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
+| `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI: `"amf"` uses the in-app reviewer and `"nvim"` uses the legacy tmux/neovim popup. Older `"custom"` and `"legacy"` values are still accepted. |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |

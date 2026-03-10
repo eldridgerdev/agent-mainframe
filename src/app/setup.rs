@@ -495,8 +495,8 @@ fn resolve_diff_review_command(
     viewer: &DiffReviewViewer,
 ) -> Option<String> {
     let script_name = match viewer {
-        DiffReviewViewer::Custom => "custom-diff-review.sh",
-        DiffReviewViewer::Legacy => "diff-review.sh",
+        DiffReviewViewer::Amf => "custom-diff-review.sh",
+        DiffReviewViewer::Nvim => "diff-review.sh",
     };
     let script_suffix = ["plugins", "diff-review", "scripts", script_name];
     let amf_root = std::env::current_exe()

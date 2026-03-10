@@ -148,11 +148,12 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
 pub enum DiffReviewViewer {
     #[default]
-    Custom,
-    Legacy,
+    #[serde(rename = "amf", alias = "custom")]
+    Amf,
+    #[serde(rename = "nvim", alias = "legacy")]
+    Nvim,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -434,7 +435,7 @@ impl App {
     }
 
     pub(crate) fn use_custom_diff_review_viewer(&self) -> bool {
-        matches!(self.config.diff_review_viewer, DiffReviewViewer::Custom)
+        matches!(self.config.diff_review_viewer, DiffReviewViewer::Amf)
     }
 
     pub(crate) fn ensure_agent_mode_supported(

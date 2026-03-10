@@ -23,6 +23,11 @@ struct StyledChunk {
     style: Style,
 }
 
+struct FileHighlights {
+    old: Option<highlight::HighlightedText>,
+    new: Option<highlight::HighlightedText>,
+}
+
 pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
     let area = centered_rect(96, 90, frame.area());
     frame.render_widget(Clear, area);
@@ -315,11 +320,12 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
     }
 
     let number_width = line_number_width(file);
-    let gutter_width = number_width * 2 + 3;
+    let gutter_width = number_width * 2 + 4;
     if content_width <= gutter_width + 4 {
         return raw_patch_wrapped_lines(file, content_width, theme);
     }
     let text_width = content_width - gutter_width;
+    let highlights = file_highlights(file);
 
     let mut lines = Vec::new();
     for meta in patch_prologue(file) {
@@ -351,7 +357,13 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         Some(new_line),
-                        diff_chunks(file, &diff_line.text, context_row_style(theme), theme),
+                        diff_chunks(
+                            &diff_line.text,
+                            context_row_style(theme),
+                            theme,
+                            highlighted_line(highlights.new.as_ref(), new_line)
+                                .or_else(|| highlighted_line(highlights.old.as_ref(), old_line)),
+                        ),
                         context_row_style(theme),
                         number_width,
                         text_width,
@@ -363,7 +375,12 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
-                        diff_chunks(file, &diff_line.text, removed_row_style(theme), theme),
+                        diff_chunks(
+                            &diff_line.text,
+                            removed_row_style(theme),
+                            theme,
+                            highlighted_line(highlights.old.as_ref(), old_line),
+                        ),
                         removed_row_style(theme),
                         number_width,
                         text_width,
@@ -374,7 +391,12 @@ fn patch_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'static>>
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
-                        diff_chunks(file, &diff_line.text, added_row_style(theme), theme),
+                        diff_chunks(
+                            &diff_line.text,
+                            added_row_style(theme),
+                            theme,
+                            highlighted_line(highlights.new.as_ref(), new_line),
+                        ),
                         added_row_style(theme),
                         number_width,
                         text_width,
@@ -407,11 +429,12 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
     let separator = " | ";
     let column_width = inner_width.saturating_sub(separator.len()) / 2;
     let number_width = line_number_width(file);
-    let cell_prefix_width = number_width + 1;
+    let cell_prefix_width = number_width + 2;
     if column_width <= cell_prefix_width + 6 {
         return patch_lines(file, width, theme);
     }
     let cell_text_width = column_width - cell_prefix_width;
+    let highlights = file_highlights(file);
 
     let mut lines = vec![Line::from(vec![
         Span::styled(
@@ -448,11 +471,12 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                 DiffLineKind::Context => {
                     let text = trim_diff_prefix(&hunk.lines[index]).to_string();
                     lines.extend(side_by_side_rows(
-                        file,
                         Some(old_line),
                         Some(new_line),
                         format!(" {text}"),
                         format!(" {text}"),
+                        highlighted_line(highlights.old.as_ref(), old_line),
+                        highlighted_line(highlights.new.as_ref(), new_line),
                         context_row_style(theme),
                         context_row_style(theme),
                         number_width,
@@ -480,11 +504,14 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                         let left_number = removed.get(row).map(|_| old_line + row);
                         let right_number = added.get(row).map(|_| new_line + row);
                         lines.extend(side_by_side_rows(
-                            file,
                             left_number,
                             right_number,
                             left,
                             right,
+                            left_number
+                                .and_then(|line| highlighted_line(highlights.old.as_ref(), line)),
+                            right_number
+                                .and_then(|line| highlighted_line(highlights.new.as_ref(), line)),
                             removed_row_style(theme),
                             added_row_style(theme),
                             number_width,
@@ -500,11 +527,12 @@ fn side_by_side_lines(file: &DiffFile, width: u16, theme: &Theme) -> Vec<Line<'s
                     let added = collect_run(&hunk.lines, &mut index, DiffLineKind::Added);
                     for (row, line) in added.iter().enumerate() {
                         lines.extend(side_by_side_rows(
-                            file,
                             None,
                             Some(new_line + row),
                             String::new(),
                             format!("+{}", trim_diff_prefix(line)),
+                            None,
+                            highlighted_line(highlights.new.as_ref(), new_line + row),
                             neutral_side_style(theme),
                             added_row_style(theme),
                             number_width,
@@ -568,11 +596,12 @@ fn trim_diff_prefix(line: &DiffLine) -> &str {
 }
 
 fn side_by_side_rows(
-    file: &DiffFile,
     left_number: Option<usize>,
     right_number: Option<usize>,
     left: String,
     right: String,
+    left_highlight: Option<&highlight::HighlightedLine>,
+    right_highlight: Option<&highlight::HighlightedLine>,
     left_style: Style,
     right_style: Style,
     number_width: usize,
@@ -587,7 +616,7 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(file, &left, left_style, theme),
+            &diff_chunks(&left, left_style, theme, left_highlight),
             text_width,
             left_style,
         )
@@ -599,7 +628,7 @@ fn side_by_side_rows(
         )]
     } else {
         wrap_chunks(
-            &diff_chunks(file, &right, right_style, theme),
+            &diff_chunks(&right, right_style, theme, right_highlight),
             text_width,
             right_style,
         )
@@ -659,6 +688,12 @@ fn side_by_side_rows(
             )
         };
         let mut line = vec![Span::styled(left_prefix, left_cell_style)];
+        line.push(Span::styled(
+            "│ ",
+            Style::default()
+                .fg(line_number_fg(left_cell_style, left_bg))
+                .bg(left_bg),
+        ));
         line.extend(chunks_to_spans(left_cell));
         line.push(Span::styled(
             separator.to_string(),
@@ -667,6 +702,12 @@ fn side_by_side_rows(
                 .bg(blend_color(left_bg, right_bg, 0.5)),
         ));
         line.push(Span::styled(right_prefix, right_cell_style));
+        line.push(Span::styled(
+            "│ ",
+            Style::default()
+                .fg(line_number_fg(right_cell_style, right_bg))
+                .bg(right_bg),
+        ));
         line.extend(chunks_to_spans(right_cell));
         rows.push(Line::from(line));
     }
@@ -721,6 +762,12 @@ fn wrap_gutter_line(
                     .bg(row_bg),
             ),
             Span::styled(" ", Style::default().bg(row_bg)),
+            Span::styled(
+                "│ ",
+                Style::default()
+                    .fg(line_number_fg(style, row_bg))
+                    .bg(row_bg),
+            ),
         ];
         line.extend(chunks_to_spans(chunk_line));
         lines.push(Line::from(line));
@@ -728,7 +775,12 @@ fn wrap_gutter_line(
     lines
 }
 
-fn diff_chunks(file: &DiffFile, text: &str, row_style: Style, theme: &Theme) -> Vec<StyledChunk> {
+fn diff_chunks(
+    text: &str,
+    row_style: Style,
+    theme: &Theme,
+    highlighted_line: Option<&highlight::HighlightedLine>,
+) -> Vec<StyledChunk> {
     if text.is_empty() {
         return Vec::new();
     }
@@ -750,23 +802,108 @@ fn diff_chunks(file: &DiffFile, text: &str, row_style: Style, theme: &Theme) -> 
     }
 
     if !content.is_empty() {
-        let highlighted = highlight::highlight_line(Some(Path::new(&file.path)), None, content);
-        if highlighted.spans.is_empty() {
-            chunks.push(StyledChunk {
-                text: content.to_string(),
-                style: row_style,
-            });
-        } else {
-            for span in highlighted.spans {
-                chunks.push(StyledChunk {
-                    text: span.text,
-                    style: row_style.patch(highlight::style_for_class(span.class, theme)),
-                });
-            }
-        }
+        append_highlighted_content(&mut chunks, content, row_style, theme, highlighted_line);
     }
 
     chunks
+}
+
+fn append_highlighted_content(
+    chunks: &mut Vec<StyledChunk>,
+    content: &str,
+    row_style: Style,
+    theme: &Theme,
+    highlighted_line: Option<&highlight::HighlightedLine>,
+) {
+    let Some(highlighted_line) = highlighted_line else {
+        chunks.push(StyledChunk {
+            text: content.to_string(),
+            style: row_style,
+        });
+        return;
+    };
+
+    if highlighted_line.spans.is_empty() {
+        chunks.push(StyledChunk {
+            text: content.to_string(),
+            style: row_style,
+        });
+        return;
+    }
+
+    let mut rendered_any = false;
+    let mut remaining = content;
+    for span in &highlighted_line.spans {
+        if remaining.is_empty() {
+            break;
+        }
+        if span.text.is_empty() {
+            continue;
+        }
+
+        let consumed = consume_shared_prefix(remaining, &span.text);
+        if consumed.is_empty() {
+            continue;
+        }
+
+        chunks.push(StyledChunk {
+            text: consumed.to_string(),
+            style: row_style.patch(highlight::style_for_class(span.class, theme)),
+        });
+        remaining = &remaining[consumed.len()..];
+        rendered_any = true;
+    }
+
+    if !remaining.is_empty() {
+        chunks.push(StyledChunk {
+            text: remaining.to_string(),
+            style: row_style,
+        });
+    } else if !rendered_any {
+        chunks.push(StyledChunk {
+            text: content.to_string(),
+            style: row_style,
+        });
+    }
+}
+
+fn consume_shared_prefix<'a>(content: &'a str, highlighted: &str) -> &'a str {
+    let mut end = 0usize;
+    for (left, right) in content.chars().zip(highlighted.chars()) {
+        if left != right {
+            break;
+        }
+        end += left.len_utf8();
+    }
+    &content[..end]
+}
+
+fn file_highlights(file: &DiffFile) -> FileHighlights {
+    let old = file.old_content.as_deref().map(|source| {
+        highlight::highlight_source(highlight::HighlightRequest {
+            path: file.old_path.as_deref().map(Path::new),
+            language_hint: None,
+            source,
+        })
+    });
+    let new = file.new_content.as_deref().map(|source| {
+        highlight::highlight_source(highlight::HighlightRequest {
+            path: Some(Path::new(&file.path)),
+            language_hint: None,
+            source,
+        })
+    });
+
+    FileHighlights { old, new }
+}
+
+fn highlighted_line(
+    highlighted: Option<&highlight::HighlightedText>,
+    line_number: usize,
+) -> Option<&highlight::HighlightedLine> {
+    line_number
+        .checked_sub(1)
+        .and_then(|index| highlighted.and_then(|text| text.lines.get(index)))
 }
 
 fn plain_chunks(text: &str, style: Style) -> Vec<StyledChunk> {
@@ -991,17 +1128,8 @@ fn hatch_fill(width: usize, row: usize) -> String {
     if width == 0 {
         return String::new();
     }
-
-    let pattern = if row % 2 == 0 { '/' } else { ' ' };
-    if pattern == '/' {
-        "/".repeat(width)
-    } else {
-        let mut out = String::with_capacity(width);
-        for index in 0..width {
-            out.push(if index % 2 == 0 { ' ' } else { '/' });
-        }
-        out
-    }
+    let _ = row;
+    " ".repeat(width)
 }
 
 fn blend_color(base: Color, overlay: Color, alpha: f32) -> Color {

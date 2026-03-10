@@ -32,6 +32,8 @@ pub struct DiffFile {
     pub additions: usize,
     pub deletions: usize,
     pub is_binary: bool,
+    pub old_content: Option<String>,
+    pub new_content: Option<String>,
     pub patch: String,
     pub hunks: Vec<DiffHunk>,
 }
@@ -88,6 +90,7 @@ pub fn load_snapshot(workdir: &Path) -> Result<DiffSnapshot> {
     )?;
 
     let mut files = parse_unified_diff(&tracked_patch)?;
+    hydrate_file_contents(workdir, &base.base_commit, &mut files)?;
 
     for rel_path in list_untracked_files(workdir)? {
         let patch = git_capture(
@@ -112,6 +115,8 @@ pub fn load_snapshot(workdir: &Path) -> Result<DiffSnapshot> {
             if file.path.is_empty() {
                 file.path = rel_path.clone();
             }
+            file.old_content = None;
+            file.new_content = read_worktree_file(workdir, &file.path)?;
             files.push(file);
         }
     }
@@ -129,6 +134,40 @@ pub fn load_snapshot(workdir: &Path) -> Result<DiffSnapshot> {
         total_additions,
         total_deletions,
     })
+}
+
+fn hydrate_file_contents(workdir: &Path, base_commit: &str, files: &mut [DiffFile]) -> Result<()> {
+    for file in files {
+        if file.is_binary {
+            file.old_content = None;
+            file.new_content = None;
+            continue;
+        }
+
+        file.old_content = match file.status {
+            DiffFileStatus::Added | DiffFileStatus::Untracked => None,
+            DiffFileStatus::Deleted
+            | DiffFileStatus::Modified
+            | DiffFileStatus::Renamed
+            | DiffFileStatus::Copied
+            | DiffFileStatus::TypeChanged => {
+                let path = file.old_path.as_deref().unwrap_or(file.path.as_str());
+                git_show_file(workdir, base_commit, path)?
+            }
+        };
+
+        file.new_content = match file.status {
+            DiffFileStatus::Deleted => None,
+            DiffFileStatus::Added
+            | DiffFileStatus::Untracked
+            | DiffFileStatus::Modified
+            | DiffFileStatus::Renamed
+            | DiffFileStatus::Copied
+            | DiffFileStatus::TypeChanged => read_worktree_file(workdir, &file.path)?,
+        };
+    }
+
+    Ok(())
 }
 
 pub fn resolve_base_ref(workdir: &Path) -> Result<ResolvedBase> {
@@ -314,6 +353,8 @@ fn parse_file_section(lines: &[String]) -> Result<DiffFile> {
         additions,
         deletions,
         is_binary,
+        old_content: None,
+        new_content: None,
         patch,
         hunks,
     })
@@ -467,6 +508,39 @@ fn git_capture(workdir: &Path, args: &[&str], allow_diff_exit_code: bool) -> Res
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+fn git_show_file(workdir: &Path, commit: &str, path: &str) -> Result<Option<String>> {
+    let spec = format!("{commit}:{path}");
+    let output = Command::new("git")
+        .args(["show", &spec])
+        .current_dir(workdir)
+        .output()
+        .with_context(|| format!("failed to run git show {spec}"))?;
+
+    if output.status.success() {
+        return Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()));
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("exists on disk, but not in")
+        || stderr.contains("does not exist in")
+        || stderr.contains("pathspec")
+        || stderr.contains("bad object")
+    {
+        return Ok(None);
+    }
+
+    bail!("git show {spec} failed: {}", stderr.trim());
+}
+
+fn read_worktree_file(workdir: &Path, rel_path: &str) -> Result<Option<String>> {
+    let path = workdir.join(rel_path);
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
 fn dedupe_preserving_order(values: &mut Vec<String>) {
     let mut seen = std::collections::HashSet::new();
     values.retain(|value| seen.insert(value.clone()));
@@ -507,6 +581,28 @@ index 1111111..2222222 100644
         assert_eq!(file.hunks.len(), 1);
         assert_eq!(file.hunks[0].old_start, 1);
         assert_eq!(file.hunks[0].new_start, 1);
+        assert_eq!(file.old_content, None);
+        assert_eq!(file.new_content, None);
+    }
+
+    #[test]
+    fn load_snapshot_hydrates_old_and_new_file_contents() {
+        let repo = init_repo_with_main();
+        std::fs::write(repo.path().join("src.txt"), "base\nline two\n").unwrap();
+        git(repo.path(), &["add", "src.txt"]);
+        git(repo.path(), &["commit", "-m", "add src"]);
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\nline changed\n").unwrap();
+
+        let snapshot = load_snapshot(repo.path()).unwrap();
+        let file = snapshot
+            .files
+            .iter()
+            .find(|file| file.path == "src.txt")
+            .unwrap();
+
+        assert_eq!(file.old_content.as_deref(), Some("base\nline two\n"));
+        assert_eq!(file.new_content.as_deref(), Some("base\nline changed\n"));
     }
 
     #[test]

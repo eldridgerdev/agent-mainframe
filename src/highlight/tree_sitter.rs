@@ -277,4 +277,22 @@ mod tests {
         assert_eq!(highlighted.lines.len(), 1);
         assert_eq!(highlighted.lines[0].spans[0].class, SyntaxClass::Plain);
     }
+
+    #[test]
+    fn rust_multiline_raw_string_keeps_inner_line_as_string() {
+        let highlighted = crate::highlight::service::highlight_source(
+            crate::highlight::model::HighlightRequest {
+                path: Some(Path::new("src/query.rs")),
+                language_hint: None,
+                source: "let query = r#\"\nfrom users\n\"#;\n",
+            },
+        );
+
+        assert!(
+            highlighted.lines[1]
+                .spans
+                .iter()
+                .any(|span| span.class == SyntaxClass::String && span.text.contains("from users"))
+        );
+    }
 }

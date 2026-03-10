@@ -8,7 +8,8 @@ use ratatui::{
 
 use crate::app::{
     BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
-    OpencodeSessionPickerState, PendingInput, SessionPickerState, SessionSwitcherState,
+    MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
+    SessionSwitcherState,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -201,6 +202,83 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(" send  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+    ]));
+    frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_markdown_file_picker(
+    frame: &mut Frame,
+    state: &MarkdownFilePickerState,
+    theme: &Theme,
+) {
+    let area = centered_rect(62, 52, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(" Markdown Files ({}) ", state.files.len());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.info.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let items: Vec<ListItem> = state
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let is_selected = i == state.selected;
+            let label = path
+                .strip_prefix(&state.workdir)
+                .unwrap_or(path.as_path())
+                .display()
+                .to_string();
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(
+                    label,
+                    if is_selected {
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text.to_color())
+                    },
+                ),
+            ]);
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));

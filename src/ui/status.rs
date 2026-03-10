@@ -299,6 +299,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("/q", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::MarkdownViewer(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" scroll  "),
+            Span::styled("PgUp/PgDn", key_style()),
+            Span::raw(" page  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::MarkdownFilePicker(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" open  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::ForkingFeature(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),
             Span::raw(" confirm  "),

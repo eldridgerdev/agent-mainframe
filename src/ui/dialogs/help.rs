@@ -113,7 +113,20 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w h / n p i r x f D ? H M 1-9)",
+            "Leader key (then: q t T w h / n p i l m r x f D ? H M 1-9)",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "m"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Markdown file picker/viewer",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));

@@ -59,7 +59,13 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('v') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
                 state.side_by_side = !state.side_by_side;
+                app.config.diff_viewer_layout = if state.side_by_side {
+                    crate::app::DiffViewerLayout::SideBySide
+                } else {
+                    crate::app::DiffViewerLayout::Unified
+                };
             }
+            app.save_config();
         }
         KeyCode::Char('q') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             submit_diff_review(app, false, true)?;
@@ -252,6 +258,8 @@ mod tests {
             tool: "edit".to_string(),
             old_snippet: "old".to_string(),
             new_snippet: "new".to_string(),
+            diff_file: None,
+            diff_error: None,
             reason: String::new(),
             editing_feedback: false,
             side_by_side: false,
@@ -370,6 +378,7 @@ mod tests {
     fn v_toggles_side_by_side_mode() {
         let tmp = TempDir::new().unwrap();
         let mut app = make_app_with_prompt(tmp.path());
+        app.config.diff_viewer_layout = crate::app::DiffViewerLayout::Unified;
 
         handle_diff_review_key(
             &mut app,
@@ -378,7 +387,13 @@ mod tests {
         .unwrap();
 
         match &app.mode {
-            AppMode::DiffReviewPrompt(state) => assert!(state.side_by_side),
+            AppMode::DiffReviewPrompt(state) => {
+                assert!(state.side_by_side);
+                assert_eq!(
+                    app.config.diff_viewer_layout,
+                    crate::app::DiffViewerLayout::SideBySide
+                );
+            }
             _ => panic!("expected diff review prompt"),
         }
 
@@ -389,7 +404,13 @@ mod tests {
         .unwrap();
 
         match &app.mode {
-            AppMode::DiffReviewPrompt(state) => assert!(!state.side_by_side),
+            AppMode::DiffReviewPrompt(state) => {
+                assert!(!state.side_by_side);
+                assert_eq!(
+                    app.config.diff_viewer_layout,
+                    crate::app::DiffViewerLayout::Unified
+                );
+            }
             _ => panic!("expected diff review prompt"),
         }
     }

@@ -267,6 +267,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('f') => {
             app.trigger_final_review()?;
         }
+        KeyCode::Char('d') => {
+            app.open_diff_viewer()?;
+        }
         KeyCode::Char('D') => {
             let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,

@@ -101,6 +101,24 @@ impl App {
             AppMode::Viewing(view) => Some(view.clone()),
             _ => None,
         };
+        let diff_path = input
+            .relative_path
+            .clone()
+            .filter(|path| !path.is_empty())
+            .or_else(|| input.target_file_path.clone())
+            .unwrap_or_default();
+        let (diff_file, diff_error) =
+            match (input.original_file.as_deref(), input.proposed_file.as_deref()) {
+                (Some(original), Some(proposed)) => match crate::diff::load_review_file(
+                    Path::new(original),
+                    Path::new(proposed),
+                    &diff_path,
+                ) {
+                    Ok(file) => (Some(file), None),
+                    Err(err) => (None, Some(err.to_string())),
+                },
+                _ => (None, None),
+            };
         self.mode = AppMode::DiffReviewPrompt(DiffReviewState {
             session_id: input.session_id.clone(),
             workdir: PathBuf::from(&input.cwd),
@@ -110,9 +128,11 @@ impl App {
             tool: input.tool.clone().unwrap_or_default(),
             old_snippet: input.old_snippet.clone().unwrap_or_default(),
             new_snippet: input.new_snippet.clone().unwrap_or_default(),
+            diff_file,
+            diff_error,
             reason: input.reason.clone().unwrap_or_default(),
             editing_feedback: false,
-            side_by_side: false,
+            side_by_side: matches!(self.config.diff_viewer_layout, DiffViewerLayout::SideBySide),
             explanation: None,
             response_file: PathBuf::from(response_file),
             proceed_signal: PathBuf::from(proceed_signal),
@@ -147,6 +167,8 @@ impl App {
             new_snippet: Option<String>,
             content_preview: Option<String>,
             response_file: Option<String>,
+            original_file: Option<String>,
+            proposed_file: Option<String>,
             reason: Option<String>,
             prompt: Option<String>,
         }
@@ -427,11 +449,13 @@ impl App {
                     target_file_path: msg.file_path,
                     relative_path: msg.relative_path,
                     change_id: msg.change_id,
-                    tool: msg.tool.or(msg.tool_name),
-                    old_snippet: msg.old_snippet,
-                    new_snippet: msg.new_snippet,
-                    reason: msg.reason,
-                    response_file: msg.response_file,
+                        tool: msg.tool.or(msg.tool_name),
+                        old_snippet: msg.old_snippet,
+                        new_snippet: msg.new_snippet,
+                        original_file: msg.original_file,
+                        proposed_file: msg.proposed_file,
+                        reason: msg.reason,
+                        response_file: msg.response_file,
                     project_name: None,
                     feature_name: found_feature_name_for_open,
                     proceed_signal: msg.proceed_signal,
@@ -502,6 +526,8 @@ impl App {
                 tool: msg.tool.or(msg.tool_name),
                 old_snippet: msg.old_snippet,
                 new_snippet: msg.new_snippet,
+                original_file: msg.original_file,
+                proposed_file: msg.proposed_file,
                 reason: msg.reason,
                 response_file: msg.response_file,
                 project_name,
@@ -532,6 +558,8 @@ impl App {
             new_snippet: Option<String>,
             content_preview: Option<String>,
             response_file: Option<String>,
+            original_file: Option<String>,
+            proposed_file: Option<String>,
             reason: Option<String>,
         }
 
@@ -582,6 +610,8 @@ impl App {
                             tool: notif.tool,
                             old_snippet: notif.old_snippet,
                             new_snippet: notif.new_snippet,
+                            original_file: notif.original_file,
+                            proposed_file: notif.proposed_file,
                             reason: notif.reason,
                             response_file: notif.response_file,
                             project_name: Some(project.name.clone()),
@@ -607,6 +637,8 @@ impl App {
                         tool: notif.tool,
                         old_snippet: notif.old_snippet,
                         new_snippet: notif.new_snippet,
+                        original_file: notif.original_file,
+                        proposed_file: notif.proposed_file,
                         reason: notif.reason,
                         response_file: notif.response_file,
                         project_name: Some(project.name.clone()),
@@ -663,6 +695,8 @@ impl App {
                         tool: notif.tool,
                         old_snippet: notif.old_snippet,
                         new_snippet: notif.new_snippet,
+                        original_file: notif.original_file,
+                        proposed_file: notif.proposed_file,
                         reason: notif.reason,
                         response_file: notif.response_file,
                         project_name: None,
@@ -690,6 +724,8 @@ impl App {
                     tool: notif.tool,
                     old_snippet: notif.old_snippet,
                     new_snippet: notif.new_snippet,
+                    original_file: notif.original_file,
+                    proposed_file: notif.proposed_file,
                     reason: notif.reason,
                     response_file: notif.response_file,
                     project_name,

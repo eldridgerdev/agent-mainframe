@@ -4,6 +4,7 @@ mod claude_sessions;
 mod codex_session_picker;
 mod codex_sessions;
 pub mod commands;
+mod diff;
 mod feature_ops;
 mod harpoon;
 mod hooks;
@@ -137,6 +138,7 @@ pub struct AppConfig {
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
     pub diff_review_viewer: DiffReviewViewer,
+    pub diff_viewer_layout: DiffViewerLayout,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub projects: ProjectsConfig,
@@ -166,6 +168,7 @@ impl Default for AppConfig {
             nerd_font: true,
             leader_timeout_seconds: 5,
             diff_review_viewer: DiffReviewViewer::default(),
+            diff_viewer_layout: DiffViewerLayout::Unified,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             projects: ProjectsConfig::default(),
@@ -467,6 +470,10 @@ impl App {
         self.theme = theme;
         self.mode = AppMode::Normal;
 
+        self.save_config();
+    }
+
+    pub fn save_config(&self) {
         let config_path = crate::project::amf_config_dir().join("config.json");
         let dir = config_path.parent().unwrap();
         let _ = std::fs::create_dir_all(dir);

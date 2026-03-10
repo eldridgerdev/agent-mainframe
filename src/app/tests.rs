@@ -103,6 +103,12 @@ fn app_config_default_diff_review_viewer_is_custom() {
 }
 
 #[test]
+fn app_config_default_diff_viewer_layout_is_unified() {
+    let config = AppConfig::default();
+    assert_eq!(config.diff_viewer_layout, DiffViewerLayout::Unified);
+}
+
+#[test]
 fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
@@ -113,6 +119,12 @@ fn app_config_missing_leader_timeout_uses_default() {
 fn app_config_missing_diff_review_viewer_uses_custom_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Custom);
+}
+
+#[test]
+fn app_config_missing_diff_viewer_layout_uses_unified_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.diff_viewer_layout, DiffViewerLayout::Unified);
 }
 
 #[test]
@@ -2156,6 +2168,8 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
         tool: None,
         old_snippet: None,
         new_snippet: None,
+        original_file: None,
+        proposed_file: None,
         reason: None,
         response_file: None,
         project_name: Some("my-project".to_string()),

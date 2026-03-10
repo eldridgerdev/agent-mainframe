@@ -109,6 +109,8 @@ build_payload() {
         --arg change_id "$INVOCATION_ID" \
         --arg old "$(old_snippet)" \
         --arg new "$(new_snippet)" \
+        --arg original_file "$ORIGINAL_FILE" \
+        --arg proposed_file "$PROPOSED_FILE" \
         --arg response_file "$RESPONSE_FILE" \
         --arg proceed_signal "$PROCEED_SIGNAL" \
         '{
@@ -122,6 +124,8 @@ build_payload() {
             change_id: $change_id,
             old_snippet: $old,
             new_snippet: $new,
+            original_file: $original_file,
+            proposed_file: $proposed_file,
             response_file: $response_file,
             proceed_signal: $proceed_signal
         }' > "$payload_file"

@@ -6,10 +6,11 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{DiffReviewState, HookPromptState, RunningHookState};
+use crate::app::{DiffReviewState, DiffViewerLayout, HookPromptState, RunningHookState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
+use super::diff::draw_review_patch;
 
 pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme: &Theme) {
     let area = centered_rect(88, 74, frame.area());
@@ -57,78 +58,29 @@ pub fn draw_diff_review_dialog(frame: &mut Frame, state: &DiffReviewState, theme
     ]));
     frame.render_widget(tool_line, chunks[1]);
 
-    if state.side_by_side {
-        let diff_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[2]);
-
-        let old_lines = if state.old_snippet.is_empty() {
-            vec![Line::from(Span::styled(
-                " (no removed content)",
-                Style::default().fg(theme.text_muted.to_color()),
-            ))]
-        } else {
-            state
-                .old_snippet
-                .lines()
-                .take(8)
-                .map(|line| {
-                    let truncated = if line.len() > 44 { &line[..44] } else { line };
-                    Line::from(Span::styled(
-                        format!("- {truncated}"),
-                        Style::default().fg(theme.danger.to_color()),
-                    ))
-                })
-                .collect::<Vec<_>>()
-        };
-        let new_lines = if state.new_snippet.is_empty() {
-            vec![Line::from(Span::styled(
-                " (no added content)",
-                Style::default().fg(theme.text_muted.to_color()),
-            ))]
-        } else {
-            state
-                .new_snippet
-                .lines()
-                .take(8)
-                .map(|line| {
-                    let truncated = if line.len() > 44 { &line[..44] } else { line };
-                    Line::from(Span::styled(
-                        format!("+ {truncated}"),
-                        Style::default().fg(theme.success.to_color()),
-                    ))
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let old_widget = Paragraph::new(old_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(
-                        " removed ",
-                        Style::default().fg(theme.danger.to_color()),
-                    ))
-                    .border_style(Style::default().fg(theme.danger.to_color())),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(old_widget, diff_chunks[0]);
-
-        let new_widget = Paragraph::new(new_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(Span::styled(
-                        " added ",
-                        Style::default().fg(theme.success.to_color()),
-                    ))
-                    .border_style(Style::default().fg(theme.success.to_color())),
-            )
-            .wrap(Wrap { trim: false });
-        frame.render_widget(new_widget, diff_chunks[1]);
+    if let Some(file) = &state.diff_file {
+        draw_review_patch(
+            frame,
+            chunks[2],
+            file,
+            if state.side_by_side {
+                DiffViewerLayout::SideBySide
+            } else {
+                DiffViewerLayout::Unified
+            },
+            &format!("Patch: {}", state.relative_path),
+            theme,
+        );
     } else {
         let mut diff_lines = vec![];
+
+        if let Some(error) = &state.diff_error {
+            diff_lines.push(Line::from(Span::styled(
+                format!(" Diff preview unavailable: {error}"),
+                Style::default().fg(theme.warning.to_color()),
+            )));
+            diff_lines.push(Line::from(""));
+        }
 
         if !state.old_snippet.is_empty() {
             diff_lines.push(Line::from(Span::styled(

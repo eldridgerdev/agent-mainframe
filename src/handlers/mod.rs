@@ -1,5 +1,6 @@
 mod batch_creation;
 mod browse;
+mod diff;
 mod diff_review;
 mod dialog;
 mod feature_creation;
@@ -19,6 +20,7 @@ use crate::app::App;
 
 pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
+pub use diff::handle_diff_viewer_key;
 pub use diff_review::handle_diff_review_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
@@ -75,6 +77,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
+        AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key.code),
         AppMode::DiffReviewPrompt(_) => handle_diff_review_key(app, key),
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),

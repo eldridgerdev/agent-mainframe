@@ -12,6 +12,43 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.7.0] - 2026-03-09
+
+### Added
+
+- Full automation system for creating projects, features, and batch features via CLI and IPC
+  - `amf automation create-project` for programmatic project creation
+  - `amf automation create-feature` for programmatic feature creation
+  - `amf automation create-batch-features` for parallel multi-feature creation
+  - JSON-based request/response interface with timeout and dry-run support
+- Steering Coach startup prompt overlay for coaching new features
+- Plan mode for collaborative planning sessions with shared PLAN.md
+- Show pending worktree scripts in project list with visual indicators
+- Project preferred agents configuration per workspace
+- Worktree session configuration dialog for customizing sessions
+- Mouse wheel support for pane scrolling in view mode
+- Codex session restore functionality
+- Release session now displays current version before prompting for new version
+
+### Changed
+
+- Release session moved from global to local repo configuration
+- Better error handling and status messaging throughout the application
+- Improved review mode selection and behavior
+- Enhanced Codex thinking detection for repo-root features
+- Fixed Codex latest prompt lookup
+- Worktree script visibility improved with blocking operations
+
+### Fixed
+
+- Review mode selection now correctly handles feature states
+- Codex thinking detection properly works for features using repo root directly
+- Session restore functionality works across different agent types
+
+### Migration
+
+- No manual migration required, but review the new automation interface if integrating AMF into CI/CD workflows
+
 ## [v0.6.1] - 2026-03-06
 
 ### Fixed

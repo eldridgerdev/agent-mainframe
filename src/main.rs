@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 
-mod automation;
 mod app;
+mod automation;
 mod claude;
 mod codex;
 mod debug;
+mod diff;
 mod extension;
 mod handlers;
+mod highlight;
 mod http_client;
 mod ipc;
 mod markdown;
@@ -34,8 +36,8 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
-use std::path::PathBuf;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use app::App;

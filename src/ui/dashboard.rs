@@ -111,6 +111,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::DiffViewer(state) = &app.mode {
+        super::pane::draw(
+            frame,
+            &state.from_view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        super::dialogs::draw_diff_viewer(frame, state, &app.theme);
+        return;
+    }
+
     if let AppMode::MarkdownViewer(state) = &mut app.mode {
         if let Some(view) = &state.from_view {
             super::pane::draw(

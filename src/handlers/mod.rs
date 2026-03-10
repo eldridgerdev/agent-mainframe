@@ -2,6 +2,7 @@ mod batch_creation;
 mod browse;
 mod change_reason;
 mod dialog;
+mod diff;
 mod feature_creation;
 mod fork;
 mod hooks;
@@ -24,9 +25,9 @@ pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
     handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
-    handle_session_config_key, handle_steering_prompt_key,
-    handle_theme_picker_key,
+    handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
+pub use diff::handle_diff_viewer_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
@@ -77,6 +78,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
+        AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key.code),
         AppMode::ChangeReasonPrompt(_) => handle_change_reason_key(app, key),
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),

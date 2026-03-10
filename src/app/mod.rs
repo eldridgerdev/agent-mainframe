@@ -4,6 +4,7 @@ mod claude_sessions;
 mod codex_session_picker;
 mod codex_sessions;
 pub mod commands;
+mod diff;
 mod feature_ops;
 mod harpoon;
 mod hooks;
@@ -17,8 +18,8 @@ mod search;
 mod session_config;
 mod session_ops;
 pub mod setup;
-mod steering;
 mod state;
+mod steering;
 mod switcher;
 mod sync;
 pub mod util;
@@ -47,8 +48,8 @@ use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 pub use self::setup::load_config;
-pub use steering::{PromptAnalysis, analyze_prompt};
 pub use state::*;
+pub use steering::{PromptAnalysis, analyze_prompt};
 
 pub struct CommandEntry {
     pub name: String,
@@ -142,6 +143,7 @@ pub struct AppConfig {
     pub extension: ExtensionConfig,
     pub theme: crate::theme::ThemeName,
     pub transparent_background: bool,
+    pub diff_viewer_layout: DiffViewerLayout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -162,6 +164,7 @@ impl Default for AppConfig {
             extension: ExtensionConfig::default(),
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
+            diff_viewer_layout: DiffViewerLayout::Unified,
         }
     }
 }
@@ -439,14 +442,7 @@ impl App {
         theme.set_transparent(self.config.transparent_background);
         self.theme = theme;
         self.mode = AppMode::Normal;
-
-        let config_path = crate::project::amf_config_dir().join("config.json");
-        let dir = config_path.parent().unwrap();
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&self.config).unwrap_or_default(),
-        );
+        self.save_config();
     }
 
     pub fn log_debug(&mut self, context: &str, message: String) {
@@ -476,5 +472,18 @@ impl App {
             "Error: {} Check debug log for details.",
             message.into()
         ));
+    }
+
+    pub fn save_config(&self) {
+        if self.store_path.as_os_str().is_empty() {
+            return;
+        }
+        let config_path = crate::project::amf_config_dir().join("config.json");
+        let dir = config_path.parent().unwrap();
+        let _ = std::fs::create_dir_all(dir);
+        let _ = std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&self.config).unwrap_or_default(),
+        );
     }
 }

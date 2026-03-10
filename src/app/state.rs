@@ -1,4 +1,5 @@
 use ratatui_explorer::FileExplorer;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Child;
 
@@ -195,6 +196,52 @@ pub struct BookmarkPickerState {
     pub from_view: Option<ViewState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffViewerFocus {
+    FileList,
+    Patch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffViewerLayout {
+    Unified,
+    SideBySide,
+}
+
+#[derive(Clone)]
+pub struct DiffViewerState {
+    pub from_view: ViewState,
+    pub workdir: PathBuf,
+    pub branch: String,
+    pub base_ref: String,
+    pub base_commit: String,
+    pub files: Vec<crate::diff::DiffFile>,
+    pub selected_file: usize,
+    pub patch_scroll: usize,
+    pub focus: DiffViewerFocus,
+    pub layout: DiffViewerLayout,
+    pub error: Option<String>,
+}
+
+impl DiffViewerState {
+    pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
+        Self {
+            from_view,
+            workdir,
+            branch: String::new(),
+            base_ref: String::new(),
+            base_commit: String::new(),
+            files: Vec::new(),
+            selected_file: 0,
+            patch_scroll: 0,
+            focus: DiffViewerFocus::FileList,
+            layout: DiffViewerLayout::Unified,
+            error: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SteeringPromptState {
     pub view: ViewState,
@@ -237,6 +284,7 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffViewer(DiffViewerState),
     SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
     ChangeReasonPrompt(ChangeReasonState),

@@ -32,6 +32,9 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
 }
 
 fn handle_scroll_up(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -40,6 +43,9 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
 }
 
 fn handle_scroll_down(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Down, visible_rows);
         return;
@@ -188,6 +194,7 @@ fn handle_click(
             | AppMode::ConfirmingCodexSession { .. }
             | AppMode::SessionPicker(_)
             | AppMode::BookmarkPicker(_)
+            | AppMode::DiffViewer(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)

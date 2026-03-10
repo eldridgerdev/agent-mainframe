@@ -187,7 +187,6 @@ pub fn load_review_file(original: &Path, proposed: &Path, display_path: &str) ->
 
     Ok(file)
 }
-
 fn hydrate_file_contents(workdir: &Path, base_commit: &str, files: &mut [DiffFile]) -> Result<()> {
     for file in files {
         if file.is_binary {

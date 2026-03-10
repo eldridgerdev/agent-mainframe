@@ -249,7 +249,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" cancel"),
                 ])
             }
-        }
+        },
         AppMode::Viewing(_) => {
             let mut spans = vec![
                 Span::styled("Ctrl+Space", key_style()),
@@ -272,7 +272,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
             Line::from(spans)
-        }
+        },
         AppMode::RunningHook(state) => {
             if state.child.is_some() {
                 Line::from(Span::styled(
@@ -329,6 +329,22 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" refresh  "),
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
+        ]),
+        AppMode::MarkdownViewer(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" scroll  "),
+            Span::styled("PgUp/PgDn", key_style()),
+            Span::raw(" page  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::MarkdownFilePicker(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" open  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
         ]),
         AppMode::ForkingFeature(_) => Line::from(vec![
             Span::styled(" Enter", key_style()),

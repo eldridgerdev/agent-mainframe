@@ -13,6 +13,7 @@ const THINKING_STOP_SH: &str = include_str!("../../scripts/thinking-stop.sh");
 const TOOL_START_SH: &str = include_str!("../../scripts/tool-start.sh");
 const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
 const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
+const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 const CUSTOM_DIFF_REVIEW_SH: &str =
     include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
@@ -44,6 +45,8 @@ pub fn ensure_notify_scripts() {
     let _ = std::fs::write(&thinking_stop_path, THINKING_STOP_SH);
     let _ = std::fs::write(&tool_start_path, TOOL_START_SH);
     let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
+    let codex_diff_review_path = config_dir.join("codex-diff-review.sh");
+    let _ = std::fs::write(&codex_diff_review_path, CODEX_DIFF_REVIEW_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -54,6 +57,10 @@ pub fn ensure_notify_scripts() {
             std::fs::set_permissions(&thinking_stop_path, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::set_permissions(&tool_start_path, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::set_permissions(&tool_stop_path, std::fs::Permissions::from_mode(0o755));
+        let _ = std::fs::set_permissions(
+            &codex_diff_review_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
     }
     let plugins_dir = config_dir.join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);

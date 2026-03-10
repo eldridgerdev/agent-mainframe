@@ -166,6 +166,55 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_markdown_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::MarkdownViewer(state) => state.from_view,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            if let Some(view) = from_view {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_add(1);
+            }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            }
+        }
+        KeyCode::PageDown => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_add(10);
+            }
+        }
+        KeyCode::PageUp => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = 0;
+            }
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            if let AppMode::MarkdownViewer(state) = &mut app.mode {
+                state.scroll_offset = usize::MAX;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_steering_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc => {

@@ -83,6 +83,55 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::MarkdownFilePicker(state) = old_mode
+                && let Some(view) = state.from_view
+            {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
+                let len = state.files.len();
+                if len > 0 {
+                    state.selected = (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
+                let len = state.files.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter => {
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::MarkdownFilePicker(state) = old_mode {
+                let path = state.files.get(state.selected).cloned();
+                if let (Some(path), Some(view)) = (path, state.from_view) {
+                    return app.open_markdown_viewer_path(
+                        path,
+                        state.workdir,
+                        state.repo_root,
+                        view,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 pub fn handle_notification_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {

@@ -294,9 +294,9 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffViewer(DiffViewerState),
     SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
-    DiffViewer(DiffViewerState),
     DiffReviewPrompt(DiffReviewState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
@@ -304,6 +304,8 @@ pub enum AppMode {
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     DebugLog(DebugLogState),
+    MarkdownViewer(MarkdownViewerState),
+    MarkdownFilePicker(MarkdownFilePickerState),
     CreatingBatchFeatures(CreateBatchFeaturesState),
 }
 
@@ -338,6 +340,22 @@ pub struct ThemePickerState {
 
 pub struct DebugLogState {
     pub scroll_offset: usize,
+    pub from_view: Option<ViewState>,
+}
+
+pub struct MarkdownViewerState {
+    pub title: String,
+    pub source_path: PathBuf,
+    pub content: String,
+    pub scroll_offset: usize,
+    pub from_view: Option<ViewState>,
+}
+
+pub struct MarkdownFilePickerState {
+    pub files: Vec<PathBuf>,
+    pub selected: usize,
+    pub workdir: PathBuf,
+    pub repo_root: Option<PathBuf>,
     pub from_view: Option<ViewState>,
 }
 

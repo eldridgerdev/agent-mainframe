@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::*;
 use crate::tmux::TmuxManager;
+use crate::worktree::WorktreeManager;
 
 impl App {
     pub fn enter_view(&mut self) -> Result<()> {
@@ -110,6 +111,93 @@ impl App {
         self.pane_content.clear();
         self.tmux_cursor = None;
         self.message = Some("Returned to dashboard".into());
+    }
+
+    pub fn open_markdown_viewer_from_view(&mut self) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let repo_root = WorktreeManager::is_worktree(&workdir)
+            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
+            .flatten()
+            .filter(|root| root != &workdir);
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return Ok(());
+        }
+
+        if files.len() == 1 {
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view);
+        }
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected: 0,
+            workdir,
+            repo_root,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    pub fn open_markdown_viewer_path(
+        &mut self,
+        path: PathBuf,
+        workdir: PathBuf,
+        repo_root: Option<PathBuf>,
+        view: ViewState,
+    ) -> Result<()> {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                self.mode = AppMode::Viewing(view);
+                self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
+                return Ok(());
+            }
+        };
+
+        let title = crate::markdown::markdown_view_label(&path, &workdir, repo_root.as_deref());
+
+        self.mode = AppMode::MarkdownViewer(crate::app::MarkdownViewerState {
+            title,
+            source_path: path,
+            content,
+            scroll_offset: 0,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
     }
 
     pub fn activate_leader(&mut self) {

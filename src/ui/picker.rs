@@ -8,7 +8,8 @@ use ratatui::{
 
 use crate::app::{
     BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
-    OpencodeSessionPickerState, PendingInput, SessionPickerState, SessionSwitcherState,
+    MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
+    SessionSwitcherState,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -205,6 +206,169 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));
     frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_markdown_file_picker(
+    frame: &mut Frame,
+    state: &MarkdownFilePickerState,
+    theme: &Theme,
+) {
+    let showing_repo_root = state.repo_root.is_some();
+    let area = if showing_repo_root {
+        centered_rect(70, 60, frame.area())
+    } else {
+        centered_rect(62, 52, frame.area())
+    };
+    frame.render_widget(Clear, area);
+
+    let title = if showing_repo_root {
+        format!(
+            " Markdown Files: Worktree + Repo Root ({}) ",
+            state.files.len()
+        )
+    } else {
+        format!(" Markdown Files ({}) ", state.files.len())
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.info.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if showing_repo_root {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![Constraint::Min(1), Constraint::Length(2)]
+        })
+        .split(inner);
+
+    if showing_repo_root {
+        let legend = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  WORKTREE",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = current feature dir    ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(
+                "REPO ROOT",
+                Style::default()
+                    .fg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = main repo dir",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+        frame.render_widget(legend, chunks[0]);
+    }
+
+    let list_chunk = if showing_repo_root {
+        chunks[1]
+    } else {
+        chunks[0]
+    };
+    let hint_chunk = if showing_repo_root {
+        chunks[2]
+    } else {
+        chunks[1]
+    };
+
+    let items: Vec<ListItem> = state
+        .files
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let is_selected = i == state.selected;
+            let scope = crate::markdown::markdown_view_scope(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
+            let scope_label = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => " WORKTREE ",
+                crate::markdown::MarkdownViewScope::RepoRoot => " REPO ROOT ",
+                crate::markdown::MarkdownViewScope::Other => " PATH ",
+            };
+            let scope_style = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::RepoRoot => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::Other => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::BOLD),
+            };
+            let label = crate::markdown::markdown_view_relative_label(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(scope_label, scope_style),
+                Span::styled(" ", Style::default().fg(theme.text_muted.to_color())),
+                Span::styled(
+                    label,
+                    if is_selected {
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text.to_color())
+                    },
+                ),
+            ]);
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected));
+    frame.render_stateful_widget(list, list_chunk, &mut list_state);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(
+            "  j/k or \u{2191}/\u{2193}",
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+    ]));
+    frame.render_widget(hints, hint_chunk);
 }
 
 pub fn draw_bookmark_picker(

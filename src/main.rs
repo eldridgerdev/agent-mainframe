@@ -11,6 +11,7 @@ mod handlers;
 mod highlight;
 mod http_client;
 mod ipc;
+mod markdown;
 mod project;
 mod summary;
 mod theme;
@@ -25,6 +26,7 @@ mod worktree;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
+    cursor::SetCursorStyle,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
         Event,
@@ -213,7 +215,8 @@ fn main() -> Result<()> {
         stdout,
         EnterAlternateScreen,
         EnableBracketedPaste,
-        EnableMouseCapture
+        EnableMouseCapture,
+        SetCursorStyle::SteadyBlock
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -225,6 +228,7 @@ fn main() -> Result<()> {
         terminal.backend_mut(),
         DisableBracketedPaste,
         DisableMouseCapture,
+        SetCursorStyle::DefaultUserShape,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;

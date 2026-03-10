@@ -519,8 +519,32 @@ impl App {
                         .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Codex => {
-                    self.tmux
-                        .launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
+                    // In vibeless mode, launch a diff-review watcher alongside
+                    // Codex so each file change can be approved/rejected via
+                    // the AMF popup.
+                    let watcher_path = crate::project::amf_config_dir()
+                        .join("codex-diff-review.sh");
+                    if matches!(feature.mode, crate::project::VibeMode::Vibeless)
+                        && watcher_path.exists()
+                    {
+                        let cmd = format!(
+                            "env AMF_SESSION={0} {1} {2} & env AMF_SESSION={0} codex",
+                            feature.tmux_session,
+                            watcher_path.display(),
+                            feature.workdir.display(),
+                        );
+                        self.tmux.send_keys(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &cmd,
+                        )?;
+                    } else {
+                        self.tmux.launch_codex(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            None,
+                        )?;
+                    }
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {

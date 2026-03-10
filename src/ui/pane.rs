@@ -19,6 +19,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("i", "Pending inputs"),
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
+    ("m", "Markdown viewer"),
     ("o", "Scroll mode"),
     ("r", "Refresh statuses"),
     ("x", "Stop session"),

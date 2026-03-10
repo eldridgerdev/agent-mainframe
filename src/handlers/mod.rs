@@ -24,8 +24,8 @@ pub use change_reason::handle_change_reason_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
-    handle_rename_feature_key, handle_rename_session_key, handle_session_config_key,
-    handle_steering_prompt_key, handle_theme_picker_key,
+    handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
+    handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
 pub use diff::handle_diff_viewer_key;
 pub use feature_creation::handle_create_feature_key;
@@ -37,7 +37,8 @@ pub use normal::handle_normal_key;
 pub use picker::{
     handle_bookmark_picker_key, handle_claude_session_confirm_key,
     handle_claude_session_picker_key, handle_codex_session_confirm_key,
-    handle_codex_session_picker_key, handle_command_picker_key, handle_notification_picker_key,
+    handle_codex_session_picker_key, handle_command_picker_key,
+    handle_markdown_file_picker_key, handle_notification_picker_key,
     handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
     handle_session_picker_key, handle_session_switcher_key,
 };
@@ -65,6 +66,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::SessionConfig(_) => handle_session_config_key(app, key.code),
         AppMode::ProjectAgentConfig(_) => handle_session_config_key(app, key.code),
         AppMode::CommandPicker(_) => handle_command_picker_key(app, key.code),
+        AppMode::MarkdownFilePicker(_) => handle_markdown_file_picker_key(app, key.code),
         AppMode::Searching(_) => handle_search_key(app, key.code),
         AppMode::OpencodeSessionPicker(_) => handle_opencode_session_picker_key(app, key.code),
         AppMode::ConfirmingOpencodeSession { .. } => {
@@ -85,5 +87,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ForkingFeature(_) => handle_fork_feature_key(app, key.code),
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),
+        AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key.code),
     }
 }

@@ -43,6 +43,23 @@ impl WorktreeManager {
         Ok(PathBuf::from(root))
     }
 
+    /// Return the primary worktree path for a repository.
+    pub fn primary_worktree_root(path: &Path) -> Result<PathBuf> {
+        let output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(path)
+            .output()
+            .context("Failed to list git worktrees")?;
+
+        if !output.status.success() {
+            bail!("git worktree list failed");
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_primary_worktree_root(&stdout)
+            .context("Failed to determine primary worktree root from git worktree list")
+    }
+
     /// Check if a path is a git worktree (not the main working tree)
     pub fn is_worktree(path: &Path) -> bool {
         let output = Command::new("git")
@@ -385,6 +402,13 @@ impl WorktreeManager {
     }
 }
 
+fn parse_primary_worktree_root(stdout: &str) -> Result<PathBuf> {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree ").map(PathBuf::from))
+        .context("No worktree entries found")
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
@@ -410,5 +434,28 @@ impl WorktreeOps for WorktreeManager {
         base: &str,
     ) -> Result<PathBuf> {
         WorktreeManager::create_from(repo, name, new_branch, base)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_primary_worktree_root_returns_first_worktree_entry() {
+        let stdout = "\
+worktree /repo/main
+HEAD abcdef
+branch refs/heads/master
+
+worktree /repo/.worktrees/feature
+HEAD 123456
+branch refs/heads/feature
+";
+
+        assert_eq!(
+            parse_primary_worktree_root(stdout).unwrap(),
+            PathBuf::from("/repo/main")
+        );
     }
 }

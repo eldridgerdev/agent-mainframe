@@ -118,7 +118,12 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
             if let AppMode::MarkdownFilePicker(state) = old_mode {
                 let path = state.files.get(state.selected).cloned();
                 if let (Some(path), Some(view)) = (path, state.from_view) {
-                    return app.open_markdown_viewer_path(path, state.workdir, view);
+                    return app.open_markdown_viewer_path(
+                        path,
+                        state.workdir,
+                        state.repo_root,
+                        view,
+                    );
                 }
             }
         }

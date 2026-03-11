@@ -345,6 +345,7 @@ pub struct MarkdownFilePickerState {
     pub files: Vec<PathBuf>,
     pub selected: usize,
     pub workdir: PathBuf,
+    pub repo_root: Option<PathBuf>,
     pub from_view: Option<ViewState>,
 }
 

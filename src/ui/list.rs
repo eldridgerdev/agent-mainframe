@@ -98,14 +98,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let visible = app.visible_items();
 
-    let start = app.scroll_offset;
-    let end_idx = (start + visible_height).min(visible.len());
+    let start = if visible.is_empty() {
+        0
+    } else {
+        app.scroll_offset.min(visible.len() - 1)
+    };
+    let end_idx = app.visible_window_end_for_items(&visible, visible_height);
     let visible_slice = &visible[start..end_idx];
 
     let items: Vec<ListItem> = visible_slice
         .iter()
         .enumerate()
         .map(|(idx, item)| {
+            let absolute_idx = start + idx;
             let is_selected = match (&app.selection, item) {
                 (Selection::Project(a), VisibleItem::Project(b)) => a == b,
                 (Selection::Feature(a1, a2), VisibleItem::Feature(b1, b2)) => a1 == b1 && a2 == b2,
@@ -152,7 +157,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 VisibleItem::Feature(pi, fi) => {
                     let project = &app.store.projects[*pi];
                     let feature = &project.features[*fi];
-                    let is_last_feature = !visible_slice[idx + 1..].iter().any(|i| {
+                    let is_last_feature = !visible[absolute_idx + 1..].iter().any(|i| {
                         matches!(
                             i,
                             VisibleItem::Feature(p, _)
@@ -392,7 +397,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     let feature = &project.features[*fi];
                     let session = &feature.sessions[*si];
 
-                    let is_last_feature = !visible_slice[idx + 1..].iter().any(|i| {
+                    let is_last_feature = !visible[absolute_idx + 1..].iter().any(|i| {
                         matches!(
                             i,
                             VisibleItem::Feature(p, _)

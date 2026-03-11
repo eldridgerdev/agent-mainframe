@@ -12,6 +12,35 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.8.0] - 2026-03-11
+
+### Added
+
+- Built-in in-app diff viewer for view mode with a file list, patch pane,
+  unified and side-by-side layouts, refresh support, and keyboard
+  navigation.
+- Tree-sitter syntax highlighting for the diff viewer, plus contextual
+  line highlighting and clearer diff gutters.
+- In-app markdown file picker and viewer for `.claude/*.md` files and
+  top-level `*.md` files while viewing a feature.
+- Repo-root markdown discovery for worktree features, so shared files
+  like `PLAN.md` can be opened without leaving the current session.
+- Vibeless-mode Codex diff review automation that watches file writes,
+  opens the change-reason prompt, and reverts rejected changes.
+
+### Changed
+
+- Diff review and markdown-reading workflows now stay inside AMF instead
+  of requiring an external tool or a separate terminal flow.
+- Markdown picker labels now distinguish worktree files from repo-root
+  files when both scopes are available.
+
+### Migration
+
+- No store migration is required.
+- If you use Codex vibeless-mode diff review, install `inotifywait`
+  (usually provided by `inotify-tools`) so the watcher can run.
+
 ## [v0.7.0] - 2026-03-09
 
 ### Added

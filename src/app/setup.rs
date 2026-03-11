@@ -17,6 +17,285 @@ const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 const CUSTOM_DIFF_REVIEW_SH: &str =
     include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
+const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
+const CLAUDE_SETTINGS_JSON: &str = "settings.json";
+const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
+const CODEX_CONFIG_TOML: &str = "config.toml";
+
+#[derive(Default)]
+struct ClaudeSettingsState {
+    permissions_added: Vec<String>,
+}
+
+impl ClaudeSettingsState {
+    fn load(path: &Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|value| {
+                value
+                    .get("permissions_added")
+                    .and_then(|v| v.as_array())
+                    .map(|entries| Self {
+                        permissions_added: entries
+                            .iter()
+                            .filter_map(|entry| entry.as_str().map(ToOwned::to_owned))
+                            .collect(),
+                    })
+            })
+            .unwrap_or_default()
+    }
+
+    fn save(&self, path: &Path) {
+        if self.permissions_added.is_empty() {
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let _ = std::fs::write(
+            path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "permissions_added": self.permissions_added,
+            }))
+            .unwrap_or_default()
+                + "\n",
+        );
+    }
+}
+
+fn read_json_object(path: &Path) -> serde_json::Value {
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    {
+        Some(value) if value.is_object() => value,
+        _ => serde_json::json!({}),
+    }
+}
+
+fn write_json_object(path: &Path, value: &serde_json::Value) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::to_string_pretty(value).unwrap_or_default() + "\n",
+    );
+}
+
+fn ensure_gitignore_entry(path: &Path, entry: &str) {
+    let needs_entry = std::fs::read_to_string(path)
+        .map(|s| !s.lines().any(|line| line == entry))
+        .unwrap_or(true);
+    if needs_entry
+        && let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        use std::io::Write as _;
+        let _ = f.write_all(format!("{entry}\n").as_bytes());
+    }
+}
+
+fn claude_managed_commands() -> Vec<String> {
+    let config_dir = crate::project::amf_config_dir();
+    [
+        "notify.sh",
+        "clear-notify.sh",
+        "save-prompt.sh",
+        "thinking-start.sh",
+        "thinking-stop.sh",
+        "tool-start.sh",
+        "tool-stop.sh",
+    ]
+    .into_iter()
+    .map(|name| config_dir.join(name).to_string_lossy().into_owned())
+    .collect()
+}
+
+fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[String]) -> bool {
+    entry["hooks"].as_array().is_some_and(|hooks| {
+        hooks.iter().any(|hook| {
+            hook["command"]
+                .as_str()
+                .is_some_and(|command| managed_commands.iter().any(|managed| managed == command))
+        })
+    })
+}
+
+fn remove_amf_claude_hooks(
+    settings: &mut serde_json::Value,
+    managed_commands: &[String],
+) -> bool {
+    let Some(hooks_obj) = settings.get_mut("hooks").and_then(|value| value.as_object_mut()) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for event in ["Stop", "Notification", "PreToolUse", "PostToolUse", "UserPromptSubmit"] {
+        let Some(entries) = hooks_obj.get_mut(event).and_then(|value| value.as_array_mut()) else {
+            continue;
+        };
+        let before = entries.len();
+        entries.retain(|entry| !is_amf_claude_hook_entry(entry, managed_commands));
+        changed |= entries.len() != before;
+    }
+
+    hooks_obj.retain(|_, value| value.as_array().is_none_or(|entries| !entries.is_empty()));
+
+    if hooks_obj.is_empty() {
+        settings.as_object_mut().unwrap().remove("hooks");
+        changed = true;
+    }
+
+    changed
+}
+
+fn push_claude_hook_entry(settings: &mut serde_json::Value, event: &str, entry: serde_json::Value) {
+    let root = settings.as_object_mut().unwrap();
+    let hooks = root
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap();
+    let entries = hooks
+        .entry(event.to_string())
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .unwrap();
+    entries.push(entry);
+}
+
+fn update_claude_permissions(
+    settings: &mut serde_json::Value,
+    state_path: &Path,
+    wants_diff_review: bool,
+) {
+    let mut state = ClaudeSettingsState::load(state_path);
+
+    if wants_diff_review {
+        {
+            let perms = settings
+                .as_object_mut()
+                .unwrap()
+                .entry("permissions")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+                .unwrap();
+            let allow = perms
+                .entry("allow")
+                .or_insert_with(|| serde_json::json!([]))
+                .as_array_mut()
+                .unwrap();
+
+            for permission in ["Edit", "Write"] {
+                if !allow.iter().any(|value| value.as_str() == Some(permission)) {
+                    allow.push(serde_json::json!(permission));
+                    if !state.permissions_added.iter().any(|value| value == permission) {
+                        state.permissions_added.push(permission.to_string());
+                    }
+                }
+            }
+        }
+    } else if let Some(allow) = settings
+        .pointer_mut("/permissions/allow")
+        .and_then(|value| value.as_array_mut())
+    {
+        allow.retain(|value| {
+            value
+                .as_str()
+                .is_none_or(|permission| !state.permissions_added.iter().any(|added| added == permission))
+        });
+        state.permissions_added.clear();
+    }
+
+    if settings
+        .pointer("/permissions/allow")
+        .and_then(|value| value.as_array())
+        .is_some_and(|allow| allow.is_empty())
+        && let Some(permissions) = settings
+            .get_mut("permissions")
+            .and_then(|value| value.as_object_mut())
+    {
+        permissions.remove("allow");
+    }
+
+    if settings
+        .get("permissions")
+        .and_then(|value| value.as_object())
+        .is_some_and(|permissions| permissions.is_empty())
+    {
+        settings.as_object_mut().unwrap().remove("permissions");
+    }
+
+    state.save(state_path);
+}
+
+fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
+    if !path.exists() {
+        return;
+    }
+
+    let managed_commands = claude_managed_commands();
+    let mut settings = read_json_object(path);
+    let had_amf_hooks = remove_amf_claude_hooks(&mut settings, &managed_commands);
+
+    if let Some(state_path) = state_path {
+        update_claude_permissions(&mut settings, state_path, false);
+    } else if had_amf_hooks
+        && let Some(allow) = settings
+            .pointer_mut("/permissions/allow")
+            .and_then(|value| value.as_array_mut())
+    {
+        allow.retain(|value| value.as_str() != Some("Edit") && value.as_str() != Some("Write"));
+
+        if settings
+            .pointer("/permissions/allow")
+            .and_then(|value| value.as_array())
+            .is_some_and(|entries| entries.is_empty())
+            && let Some(permissions) = settings
+                .get_mut("permissions")
+                .and_then(|value| value.as_object_mut())
+        {
+            permissions.remove("allow");
+        }
+
+        if settings
+            .get("permissions")
+            .and_then(|value| value.as_object())
+            .is_some_and(|permissions| permissions.is_empty())
+        {
+            settings.as_object_mut().unwrap().remove("permissions");
+        }
+    }
+
+    if settings.as_object().is_some_and(|root| root.is_empty()) {
+        let _ = std::fs::remove_file(path);
+    } else {
+        write_json_object(path, &settings);
+    }
+}
+
+fn parse_codex_notify_commands(value: Option<&toml::Value>) -> Option<Vec<String>> {
+    let Some(value) = value else {
+        return Some(vec![]);
+    };
+
+    if let Some(arr) = value.as_array() {
+        let values: Option<Vec<String>> = arr
+            .iter()
+            .map(|item| item.as_str().map(ToOwned::to_owned))
+            .collect();
+        return values;
+    }
+
+    value.as_str().map(|command| vec![command.to_string()])
+}
 
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
@@ -174,7 +453,7 @@ pub fn update_opencode_theme(theme: &str) -> anyhow::Result<()> {
 }
 
 pub fn remove_old_diff_review_plugin(repo: &Path) {
-    let settings_path = repo.join(".claude").join("settings.local.json");
+    let settings_path = repo.join(".claude").join(CLAUDE_SETTINGS_LOCAL_JSON);
     if !settings_path.exists() {
         return;
     }
@@ -297,7 +576,7 @@ fn ensure_codex_notify_hook(workdir: &Path) {
         let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
 
-    let config_path = codex_dir.join("config.toml");
+    let config_path = codex_dir.join(CODEX_CONFIG_TOML);
     let mut config = if config_path.exists() {
         match std::fs::read_to_string(&config_path)
             .ok()
@@ -314,32 +593,21 @@ fn ensure_codex_notify_hook(workdir: &Path) {
         return;
     };
     let hook_cmd = hook_path.to_string_lossy().to_string();
-    let existing_notify = table.get("notify").and_then(|notify| {
-        if let Some(arr) = notify.as_array() {
-            let values: Option<Vec<String>> = arr
-                .iter()
-                .map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            values.filter(|v| !v.is_empty())
-        } else {
-            notify.as_str().map(|s| vec![s.to_string()])
-        }
-    });
-
-    if let Some(existing) = existing_notify {
-        if existing != vec![hook_cmd.clone()] {
-            if let Ok(rendered) = serde_json::to_string_pretty(&existing) {
-                let _ = std::fs::write(&original_notify_path, rendered);
-            }
-        } else {
-            let _ = std::fs::remove_file(&original_notify_path);
-        }
-    } else {
-        let _ = std::fs::remove_file(&original_notify_path);
+    let Some(mut notify_entries) = parse_codex_notify_commands(table.get("notify")) else {
+        return;
+    };
+    if !notify_entries.iter().any(|entry| entry == &hook_cmd) {
+        notify_entries.push(hook_cmd);
     }
+    let _ = std::fs::remove_file(&original_notify_path);
     table.insert(
         "notify".to_string(),
-        toml::Value::Array(vec![toml::Value::String(hook_cmd)]),
+        toml::Value::Array(
+            notify_entries
+                .into_iter()
+                .map(toml::Value::String)
+                .collect(),
+        ),
     );
 
     if let Ok(rendered) = toml::to_string_pretty(&config) {
@@ -349,62 +617,11 @@ fn ensure_codex_notify_hook(workdir: &Path) {
 
 fn cleanup_claude_notification_hooks(workdir: &Path) {
     let claude_dir = workdir.join(".claude");
-    let settings_path = claude_dir.join("settings.json");
-
-    if settings_path.exists() {
-        let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-
-        if let Some(hooks) = settings.get_mut("hooks").and_then(|v| v.as_object_mut()) {
-            hooks.remove("Stop");
-            hooks.remove("Notification");
-            hooks.remove("PreToolUse");
-            hooks.remove("PostToolUse");
-            hooks.remove("UserPromptSubmit");
-        }
-
-        if settings
-            .get("hooks")
-            .and_then(|v| v.as_object())
-            .is_some_and(|hooks| hooks.is_empty())
-        {
-            settings.as_object_mut().unwrap().remove("hooks");
-        }
-
-        if let Some(allow) = settings
-            .pointer_mut("/permissions/allow")
-            .and_then(|v| v.as_array_mut())
-        {
-            allow.retain(|value| value.as_str() != Some("Edit") && value.as_str() != Some("Write"));
-        }
-
-        if settings
-            .pointer("/permissions/allow")
-            .and_then(|v| v.as_array())
-            .is_some_and(|allow| allow.is_empty())
-            && let Some(permissions) = settings
-                .get_mut("permissions")
-                .and_then(|v| v.as_object_mut())
-        {
-            permissions.remove("allow");
-        }
-
-        if settings
-            .get("permissions")
-            .and_then(|v| v.as_object())
-            .is_some_and(|permissions| permissions.is_empty())
-        {
-            settings.as_object_mut().unwrap().remove("permissions");
-        }
-
-        if settings.as_object().is_some_and(|obj| obj.is_empty()) {
-            let _ = std::fs::remove_file(&settings_path);
-        } else if let Ok(rendered) = serde_json::to_string_pretty(&settings) {
-            let _ = std::fs::write(&settings_path, rendered);
-        }
-    }
+    cleanup_claude_settings_file(
+        &claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON),
+        Some(&claude_dir.join(CLAUDE_STATE_JSON)),
+    );
+    cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
     let _ = std::fs::remove_file(claude_dir.join("latest-prompt.txt"));
     let _ = std::fs::remove_dir_all(claude_dir.join("notifications"));
@@ -432,7 +649,7 @@ fn cleanup_opencode_plugins(workdir: &Path) {
 
 fn cleanup_codex_notify_hook(workdir: &Path) {
     let codex_dir = workdir.join(".codex");
-    let config_path = codex_dir.join("config.toml");
+    let config_path = codex_dir.join(CODEX_CONFIG_TOML);
     let hook_path = codex_dir.join("amf-codex-notify.sh");
     let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
     let hook_cmd = hook_path.to_string_lossy().to_string();
@@ -443,30 +660,20 @@ fn cleanup_codex_notify_hook(workdir: &Path) {
             .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
         && let Some(table) = config.as_table_mut()
     {
-        let uses_amf_hook = table
-            .get("notify")
-            .map(|notify| match notify {
-                toml::Value::String(cmd) => cmd == &hook_cmd,
-                toml::Value::Array(values) => values
-                    .iter()
-                    .any(|value| value.as_str() == Some(hook_cmd.as_str())),
-                _ => false,
-            })
-            .unwrap_or(false);
-
-        if uses_amf_hook {
-            let original_notify = std::fs::read_to_string(&original_notify_path)
-                .ok()
-                .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
-                .filter(|entries| !entries.is_empty());
-
-            if let Some(entries) = original_notify {
+        if let Some(mut notify_entries) = parse_codex_notify_commands(table.get("notify")) {
+            notify_entries.retain(|entry| entry != &hook_cmd);
+            if notify_entries.is_empty() {
+                table.remove("notify");
+            } else {
                 table.insert(
                     "notify".to_string(),
-                    toml::Value::Array(entries.into_iter().map(toml::Value::String).collect()),
+                    toml::Value::Array(
+                        notify_entries
+                            .into_iter()
+                            .map(toml::Value::String)
+                            .collect(),
+                    ),
                 );
-            } else {
-                table.remove("notify");
             }
         }
 
@@ -560,18 +767,14 @@ pub fn ensure_notification_hooks_with_config(
     }
 
     let claude_dir = workdir.join(".claude");
-    let settings_path = claude_dir.join("settings.json");
+    let settings_path = claude_dir.join(CLAUDE_SETTINGS_LOCAL_JSON);
+    let state_path = claude_dir.join(CLAUDE_STATE_JSON);
 
     let config_dir = crate::project::amf_config_dir();
+    let managed_commands = claude_managed_commands();
     let notify_cmd = config_dir.join("notify.sh").to_string_lossy().into_owned();
-    let clear_cmd = config_dir
-        .join("clear-notify.sh")
-        .to_string_lossy()
-        .into_owned();
-    let save_prompt_cmd = config_dir
-        .join("save-prompt.sh")
-        .to_string_lossy()
-        .into_owned();
+    let clear_cmd = config_dir.join("clear-notify.sh").to_string_lossy().into_owned();
+    let save_prompt_cmd = config_dir.join("save-prompt.sh").to_string_lossy().into_owned();
     let thinking_start_cmd = config_dir
         .join("thinking-start.sh")
         .to_string_lossy()
@@ -596,36 +799,21 @@ pub fn ensure_notification_hooks_with_config(
         None
     };
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        std::fs::read_to_string(&settings_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    let hooks_obj = hooks.as_object_mut().unwrap();
+    let mut settings = read_json_object(&settings_path);
+    remove_amf_claude_hooks(&mut settings, &managed_commands);
 
     // Stop: clear active thinking + write stop notification.
-    hooks_obj.insert(
-        "Stop".to_string(),
-        serde_json::json!([{
+    push_claude_hook_entry(
+        &mut settings,
+        "Stop",
+        serde_json::json!({
             "matcher": "",
             "hooks": [
                 { "type": "command", "command": thinking_stop_cmd },
                 { "type": "command", "command": notify_cmd }
             ]
-        }]),
+        }),
     );
-
-    // Remove legacy Notification hook (replaced by Stop above).
-    hooks_obj.remove("Notification");
 
     // PreToolUse: set thinking + tool-running + clear notification,
     // plus diff-review for vibeless mode.
@@ -652,115 +840,54 @@ pub fn ensure_notification_hooks_with_config(
             }));
         }
     }
-    hooks_obj.insert(
-        "PreToolUse".to_string(),
-        serde_json::json!([{
+    push_claude_hook_entry(
+        &mut settings,
+        "PreToolUse",
+        serde_json::json!({
             "matcher": if wants_diff_review && diff_review_cmd.is_some() {
                 "Edit|Write"
             } else {
                 ""
             },
             "hooks": pre_tool_hooks
-        }]),
+        }),
     );
 
-    hooks_obj.insert(
-        "PostToolUse".to_string(),
-        serde_json::json!([{
+    push_claude_hook_entry(
+        &mut settings,
+        "PostToolUse",
+        serde_json::json!({
             "matcher": "",
             "hooks": [
                 { "type": "command", "command": tool_stop_cmd }
             ]
-        }]),
+        }),
     );
 
     // UserPromptSubmit: set thinking + persist latest prompt.
-    hooks_obj.insert(
-        "UserPromptSubmit".to_string(),
-        serde_json::json!([{
+    push_claude_hook_entry(
+        &mut settings,
+        "UserPromptSubmit",
+        serde_json::json!({
             "matcher": "",
             "hooks": [
                 { "type": "command", "command": thinking_start_cmd },
                 { "type": "command", "command": save_prompt_cmd }
             ]
-        }]),
+        }),
     );
 
-    if wants_diff_review {
-        let perms = settings
-            .as_object_mut()
-            .unwrap()
-            .entry("permissions")
-            .or_insert_with(|| serde_json::json!({}));
-        let allow = perms
-            .as_object_mut()
-            .unwrap()
-            .entry("allow")
-            .or_insert_with(|| serde_json::json!([]));
-        let arr = allow.as_array_mut().unwrap();
-        if !arr.iter().any(|v| v.as_str() == Some("Edit")) {
-            arr.push(serde_json::json!("Edit"));
-        }
-        if !arr.iter().any(|v| v.as_str() == Some("Write")) {
-            arr.push(serde_json::json!("Write"));
-        }
-    } else if let Some(arr) = settings
-        .pointer_mut("/permissions/allow")
-        .and_then(|v| v.as_array_mut())
-    {
-        arr.retain(|v| v.as_str() != Some("Edit") && v.as_str() != Some("Write"));
-    }
+    update_claude_permissions(&mut settings, &state_path, wants_diff_review);
 
     let _ = std::fs::create_dir_all(&claude_dir);
-    let _ = std::fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&settings).unwrap_or_default(),
-    );
+    write_json_object(&settings_path, &settings);
+    cleanup_claude_settings_file(&claude_dir.join(CLAUDE_SETTINGS_JSON), None);
 
     // Ensure notifications/ is gitignored within .claude/
     let claude_gitignore = claude_dir.join(".gitignore");
-    let gitignore_entry = "notifications/\n";
-    let needs_entry = std::fs::read_to_string(&claude_gitignore)
-        .map(|s| !s.contains("notifications/"))
-        .unwrap_or(true);
-    if needs_entry {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&claude_gitignore);
-        if let Ok(ref mut file) = f {
-            use std::io::Write;
-            let _ = file.write_all(gitignore_entry.as_bytes());
-        }
-    }
-
-    // Ensure review-notes.md is gitignored within .claude/
-    let needs_review_entry = std::fs::read_to_string(&claude_gitignore)
-        .map(|s| !s.contains("review-notes.md"))
-        .unwrap_or(true);
-    if needs_review_entry
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&claude_gitignore)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(b"review-notes.md\n");
-    }
-
-    // Ensure latest-prompt.txt is gitignored within .claude/
-    let needs_prompt_entry = std::fs::read_to_string(&claude_gitignore)
-        .map(|s| !s.contains("latest-prompt.txt"))
-        .unwrap_or(true);
-    if needs_prompt_entry
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&claude_gitignore)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(b"latest-prompt.txt\n");
-    }
+    ensure_gitignore_entry(&claude_gitignore, "notifications/");
+    ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
+    ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
 }
 
 pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
@@ -804,18 +931,7 @@ pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
 
     // Ensure PLAN.md is gitignored at the repo root.
     let gitignore_path = repo.join(".gitignore");
-    let needs_plan_ignore = std::fs::read_to_string(&gitignore_path)
-        .map(|s| !s.contains("PLAN.md"))
-        .unwrap_or(true);
-    if needs_plan_ignore
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&gitignore_path)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(b"PLAN.md\n");
-    }
+    ensure_gitignore_entry(&gitignore_path, "PLAN.md");
 
     // Create a skeleton PLAN.md if enabling and file doesn't exist.
     if enabled && !plan_file.exists() {
@@ -833,18 +949,7 @@ pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
 
     // Ensure CLAUDE.local.md is gitignored at the workdir root.
     let wt_gitignore = workdir.join(".gitignore");
-    let needs_ignore = std::fs::read_to_string(&wt_gitignore)
-        .map(|s| !s.contains("CLAUDE.local.md"))
-        .unwrap_or(true);
-    if needs_ignore
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&wt_gitignore)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(b"CLAUDE.local.md\n");
-    }
+    ensure_gitignore_entry(&wt_gitignore, "CLAUDE.local.md");
 
     if enabled {
         if has_block {
@@ -918,18 +1023,7 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
 
     // Ensure CLAUDE.local.md is gitignored at the workdir root.
     let gitignore_path = workdir.join(".gitignore");
-    let needs_ignore = std::fs::read_to_string(&gitignore_path)
-        .map(|s| !s.contains("CLAUDE.local.md"))
-        .unwrap_or(true);
-    if needs_ignore
-        && let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&gitignore_path)
-    {
-        use std::io::Write as _;
-        let _ = f.write_all(b"CLAUDE.local.md\n");
-    }
+    ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
 
     if enabled {
         if has_block {

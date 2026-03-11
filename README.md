@@ -402,12 +402,12 @@ the agent handles permissions:
 
 ### Diff-Review Hook
 
-In Vibeless mode, `amf` installs a local diff-review hook in the
-feature's `.claude/settings.json`. The hook intercepts every `Edit`,
-`Write`, and `MultiEdit` tool call before it executes and shows you
-the diff. Codex worktrees do not support this hook path, so Codex
-features must use `Vibe` or `SuperVibe` instead. By default this uses
-the AMF in-app diff viewer; set `"diff_review_viewer": "nvim"` in
+In Vibeless mode, `amf` installs a Claude Code hook in the feature's
+`.claude/settings.local.json`. The hook intercepts every `Edit`, `Write`,
+and `MultiEdit` tool call before it executes and shows you the diff.
+Codex worktrees do not support this hook path, so Codex features must
+use `Vibe` or `SuperVibe` instead. By default this uses the AMF in-app
+diff viewer; set `"diff_review_viewer": "nvim"` in
 `~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
 
 ```text
@@ -428,7 +428,7 @@ the AMF in-app diff viewer; set `"diff_review_viewer": "nvim"` in
 Press `Enter` to accept the change, `r` to reject it (the agent is
 told the edit was refused), or `Esc` to skip review and allow it.
 
-The hook is written to the worktree's local `.claude/settings.json`
+The hook is written to the worktree's local `.claude/settings.local.json`
 only — your global Claude Code settings are never modified.
 
 ### Notifications
@@ -452,7 +452,7 @@ needs attention:
 ```
 
 Claude hooks are configured in the feature's local
-`.claude/settings.json`, Codex notifications are written into the
+`.claude/settings.local.json`, Codex notifications are written into the
 worktree's `.codex/config.toml`, and Opencode plugins are refreshed
 into `.opencode/plugins/` automatically. Diff review is only available
 through the hook-based Claude and Opencode paths.
@@ -848,7 +848,7 @@ src/
   through a vt100 parser into ratatui spans
 - The embedded tmux view renders agent output directly in the TUI
   without leaving the dashboard
-- Hook files are written to the worktree's local `.claude/settings.json`
+- Hook files are written to the worktree's local `.claude/settings.local.json`
   only — global settings are never modified. On startup,
   `cleanup_global_hooks()` removes any previously-injected entries.
 

@@ -332,7 +332,7 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 // ── Phase 3: App integration tests using mock trait objects ──
 
-use crate::project::{AgentKind, Feature, Project};
+use crate::project::{AgentKind, Feature, FeatureSession, Project, SessionKind};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
 use chrono::{Duration, Utc};
 use tempfile::NamedTempFile;
@@ -424,6 +424,21 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         extra: HashMap::new(),
+    }
+}
+
+fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
+    FeatureSession {
+        id: format!("session-{label}"),
+        kind: SessionKind::Claude,
+        label: label.to_string(),
+        tmux_window: label.to_string(),
+        claude_session_id: None,
+        created_at: Utc::now(),
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: status_text.map(str::to_string),
     }
 }
 
@@ -560,6 +575,48 @@ fn visible_items_prioritizes_non_worktree_features() {
     assert!(matches!(visible[0], VisibleItem::Project(0)));
     assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
     assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
+}
+
+#[test]
+fn ensure_selection_visible_accounts_for_multi_line_sessions() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].sessions = vec![
+        make_session("claude-1", Some("running")),
+        make_session("claude-2", Some("running")),
+        make_session("claude-3", None),
+    ];
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.ensure_selection_visible(4);
+
+    assert_eq!(app.scroll_offset, 2);
+}
+
+#[test]
+fn item_index_at_visible_row_maps_status_line_to_same_session() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].sessions = vec![
+        make_session("claude-1", Some("running")),
+        make_session("claude-2", None),
+    ];
+
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    assert!(matches!(app.item_index_at_visible_row(0, 4), Some(0)));
+    assert!(matches!(app.item_index_at_visible_row(1, 4), Some(1)));
+    assert!(matches!(app.item_index_at_visible_row(2, 4), Some(2)));
+    assert!(matches!(app.item_index_at_visible_row(3, 4), Some(2)));
+    assert_eq!(app.item_index_at_visible_row(4, 4), None);
 }
 
 #[test]
@@ -1005,6 +1062,9 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         AgentKind::Codex => {
             tmux.expect_launch_codex()
                 .times(1)
+                .withf(|session, window, resume| {
+                    session == "amf-coached" && window == "codex" && resume.is_none()
+                })
                 .returning(|_, _, _| Ok(()));
         }
     }
@@ -1128,7 +1188,8 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
     })
     .unwrap();
 
-    let settings = std::fs::read_to_string(workdir.join(".claude").join("settings.json")).unwrap();
+    let settings =
+        std::fs::read_to_string(workdir.join(".claude").join("settings.local.json")).unwrap();
     assert!(
         settings.contains("custom-diff-review.sh"),
         "expected vibeless worktree creation to inject custom diff review hook, got: {settings}"
@@ -1453,8 +1514,8 @@ fn stop_feature_transitions_idle_to_stopped() {
 use tempfile::TempDir;
 
 fn read_settings(dir: &TempDir) -> serde_json::Value {
-    let path = dir.path().join(".claude").join("settings.json");
-    let s = std::fs::read_to_string(&path).expect("settings.json should exist");
+    let path = dir.path().join(".claude").join("settings.local.json");
+    let s = std::fs::read_to_string(&path).expect("settings.local.json should exist");
     serde_json::from_str(&s).expect("valid JSON")
 }
 
@@ -1554,11 +1615,27 @@ fn notification_hook_is_removed() {
     let workdir = TempDir::new().unwrap();
     // Pre-populate with the legacy Notification hook.
     let claude_dir = workdir.path().join(".claude");
+    let notify_cmd = crate::project::amf_config_dir()
+        .join("notify.sh")
+        .to_string_lossy()
+        .into_owned();
     std::fs::create_dir_all(&claude_dir).unwrap();
     std::fs::write(
-        claude_dir.join("settings.json"),
-        r#"{"hooks":{"Notification":[{"matcher":"","hooks":[{"type":"command","command":"/old/notify.sh"}]}]}}"#,
-    ).unwrap();
+        claude_dir.join("settings.local.json"),
+        serde_json::json!({
+            "hooks": {
+                "Notification": [{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": notify_cmd
+                    }]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
 
     call_ensure_hooks(&workdir, VibeMode::Vibe);
 
@@ -1566,6 +1643,59 @@ fn notification_hook_is_removed() {
     assert!(
         s["hooks"].get("Notification").is_none(),
         "legacy Notification hook should be removed"
+    );
+}
+
+#[test]
+fn claude_hooks_use_settings_local_json() {
+    let workdir = TempDir::new().unwrap();
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    assert!(
+        workdir
+            .path()
+            .join(".claude")
+            .join("settings.local.json")
+            .exists(),
+        "Claude hooks should be written to settings.local.json"
+    );
+    assert!(
+        !workdir
+            .path()
+            .join(".claude")
+            .join("settings.json")
+            .exists(),
+        "Claude hook injection should avoid settings.json"
+    );
+}
+
+#[test]
+fn claude_hooks_preserve_existing_user_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{"hooks":{"Stop":[{"matcher":"custom","hooks":[{"type":"command","command":"/tmp/user-stop.sh"}]}]}}"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let stop_entries = s["hooks"]["Stop"].as_array().cloned().unwrap_or_default();
+    assert!(
+        stop_entries.iter().any(|entry| entry["matcher"].as_str() == Some("custom")),
+        "custom Stop hook should be preserved"
+    );
+    let cmds = hook_commands_for(&s, "Stop");
+    assert!(
+        cmds.iter().any(|cmd| cmd == "/tmp/user-stop.sh"),
+        "custom Stop command should still exist"
+    );
+    assert!(
+        cmds.iter().any(|cmd| cmd.contains("thinking-stop.sh")),
+        "AMF Stop command should still be injected"
     );
 }
 
@@ -1647,8 +1777,13 @@ fn vibe_mode_strips_edit_write_permissions_left_from_vibeless() {
     let claude_dir = workdir.path().join(".claude");
     std::fs::create_dir_all(&claude_dir).unwrap();
     std::fs::write(
-        claude_dir.join("settings.json"),
+        claude_dir.join("settings.local.json"),
         r#"{"permissions":{"allow":["Edit","Write","Bash"]}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        claude_dir.join("amf-hook-state.json"),
+        r#"{"permissions_added":["Edit","Write"]}"#,
     )
     .unwrap();
 
@@ -1744,6 +1879,10 @@ fn codex_hook_merges_existing_notify_entries() {
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect();
     assert!(
+        entries.iter().any(|entry| entry == "/tmp/existing-hook.sh"),
+        "existing Codex notify entry should be preserved"
+    );
+    assert!(
         entries
             .iter()
             .any(|e| e.ends_with("/.codex/amf-codex-notify.sh")),
@@ -1751,21 +1890,8 @@ fn codex_hook_merges_existing_notify_entries() {
     );
     assert_eq!(
         entries.len(),
-        1,
-        "notify should be rewritten to AMF wrapper command"
-    );
-
-    let original = codex_dir.join("amf-codex-notify-original.json");
-    assert!(
-        original.exists(),
-        "existing notify command should be preserved in sidecar file"
-    );
-    let original_cmds: Vec<String> =
-        serde_json::from_str(&std::fs::read_to_string(&original).unwrap()).unwrap();
-    assert_eq!(
-        original_cmds,
-        vec!["/tmp/existing-hook.sh".to_string()],
-        "sidecar file should preserve original notify command argv"
+        2,
+        "notify should merge user and AMF commands"
     );
 }
 
@@ -1780,10 +1906,10 @@ fn cleanup_claude_hooks_removes_amf_artifacts() {
 
     cleanup_agent_injected_files(workdir.path(), &AgentKind::Claude);
 
-    let settings_path = claude_dir.join("settings.json");
+    let settings_path = claude_dir.join("settings.local.json");
     assert!(
         !settings_path.exists(),
-        "cleanup should remove settings.json when only AMF hooks were present"
+        "cleanup should remove settings.local.json when only AMF hooks were present"
     );
     assert!(
         !claude_dir.join("notifications").exists(),
@@ -1793,6 +1919,32 @@ fn cleanup_claude_hooks_removes_amf_artifacts() {
         !claude_dir.join("latest-prompt.txt").exists(),
         "cleanup should remove Claude latest prompt file"
     );
+}
+
+#[test]
+fn cleanup_claude_hooks_preserves_user_settings() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{"hooks":{"Stop":[{"matcher":"custom","hooks":[{"type":"command","command":"/tmp/user-stop.sh"}]}]},"permissions":{"allow":["Bash"]}}"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Claude, true);
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Claude);
+
+    let rendered = std::fs::read_to_string(claude_dir.join("settings.local.json")).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+    let cmds = hook_commands_for(&settings, "Stop");
+    assert_eq!(cmds, vec!["/tmp/user-stop.sh".to_string()]);
+    let allow = settings["permissions"]["allow"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let strs: Vec<&str> = allow.iter().filter_map(|value| value.as_str()).collect();
+    assert_eq!(strs, vec!["Bash"]);
 }
 
 #[test]
@@ -1828,7 +1980,7 @@ fn cleanup_codex_hooks_restores_previous_notify_command() {
     );
     assert!(
         !codex_dir.join("amf-codex-notify-original.json").exists(),
-        "cleanup should remove Codex sidecar backup"
+        "cleanup should remove any legacy Codex sidecar backup"
     );
 }
 
@@ -1965,7 +2117,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
         !workdir
             .path()
             .join(".claude")
-            .join("settings.json")
+            .join("settings.local.json")
             .exists(),
         "Claude hook settings should be removed after switching away"
     );
@@ -2024,8 +2176,6 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
 }
 
 // ── sync_session_status ──────────────────────────────────────
-
-use crate::project::{FeatureSession, SessionKind};
 
 fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> ProjectStore {
     let now = Utc::now();

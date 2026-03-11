@@ -11,7 +11,6 @@ own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
 attention, and get notified the moment one is waiting for input.
 
-NOTE: I'll add real screenshots eventually
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 ## Features

@@ -515,11 +515,8 @@ AMF polls the status file every 5 seconds and displays the
 first line in the dashboard. The text appears in a muted
 style below the session name:
 
-```text
-  │   ├─ $ Dev Servers
-  │   │   API :3000 | DB :5432
-  │   └─ > terminal
-```
+<img width="521" height="108" alt="image" src="https://github.com/user-attachments/assets/06a40ecc-a7f5-4eb4-a3ce-afeb520abeae" />
+
 
 To clear the status, delete the file or write an empty
 string. The `.amf/` directory is local to the worktree and

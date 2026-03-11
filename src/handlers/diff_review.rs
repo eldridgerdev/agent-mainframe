@@ -5,6 +5,9 @@ use std::fs;
 use crate::app::{App, AppMode};
 use crate::claude::ClaudeLauncher;
 
+const PATCH_SCROLL_STEP: usize = 1;
+const PATCH_PAGE_STEP: usize = 20;
+
 fn diff_review_uses_new_file_presentation(app: &App) -> bool {
     matches!(
         &app.mode,
@@ -81,15 +84,36 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 return Ok(());
             }
             let next_layout = match &app.mode {
-                AppMode::DiffReviewPrompt(state) => Some(app.toggled_diff_viewer_layout(&state.layout)),
+                AppMode::DiffReviewPrompt(state) => {
+                    Some(app.toggled_diff_viewer_layout(&state.layout))
+                }
                 _ => None,
             };
             if let Some(layout) = next_layout {
                 app.persist_diff_viewer_layout(layout.clone());
                 if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
                     state.layout = layout;
+                    state.patch_scroll = 0;
                 }
             }
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+        }
+        KeyCode::PageDown => {
+            app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);
+        }
+        KeyCode::PageUp => {
+            app.diff_review_scroll_patch_up(PATCH_PAGE_STEP);
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            app.diff_review_scroll_patch_top();
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            app.diff_review_scroll_patch_bottom();
         }
         KeyCode::Char('q') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             submit_diff_review(app, false, true)?;
@@ -106,24 +130,18 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
-    let (
-        response_file,
-        proceed_signal,
-        reason,
-        request_id,
-        reply_socket,
-        return_to_view,
-    ) = match &app.mode {
-        AppMode::DiffReviewPrompt(state) => (
-            state.response_file.clone(),
-            state.proceed_signal.clone(),
-            state.reason.clone(),
-            state.request_id.clone(),
-            state.reply_socket.clone(),
-            state.return_to_view.clone(),
-        ),
-        _ => return Ok(()),
-    };
+    let (response_file, proceed_signal, reason, request_id, reply_socket, return_to_view) =
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => (
+                state.response_file.clone(),
+                state.proceed_signal.clone(),
+                state.reason.clone(),
+                state.request_id.clone(),
+                state.reply_socket.clone(),
+                state.return_to_view.clone(),
+            ),
+            _ => return Ok(()),
+        };
 
     let response = if skip {
         serde_json::json!({
@@ -297,6 +315,7 @@ mod tests {
             new_snippet: "new".to_string(),
             diff_file: None,
             diff_error: None,
+            patch_scroll: 0,
             reason: String::new(),
             editing_feedback: false,
             layout: crate::app::DiffViewerLayout::Unified,
@@ -331,15 +350,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut app = make_app_with_prompt(tmp.path());
 
-        handle_diff_review_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        let response: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("response.json")).unwrap(),
         )
         .unwrap();
-
-        let response: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("response.json")).unwrap())
-                .unwrap();
         assert_eq!(response["decision"], "proceed");
         assert_eq!(response["type"], "review-response");
     }
@@ -353,11 +370,13 @@ mod tests {
             state.reason = "try a smaller change".to_string();
         }
 
-        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
 
-        let response: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("response.json")).unwrap())
-                .unwrap();
+        let response: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("response.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(response["decision"], "reject");
         assert_eq!(response["reason"], "try a smaller change");
     }
@@ -512,12 +531,87 @@ mod tests {
             ));
         }
 
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn scroll_keys_move_diff_review_patch() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.diff_file = Some(DiffFile {
+                old_path: Some("src/main.rs".to_string()),
+                path: "src/main.rs".to_string(),
+                status: DiffFileStatus::Modified,
+                additions: 40,
+                deletions: 40,
+                is_binary: false,
+                old_content: None,
+                new_content: None,
+                patch: (0..120)
+                    .map(|idx| format!("line-{idx}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                hunks: vec![],
+            });
+        }
+
         handle_diff_review_key(
             &mut app,
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_diff_review_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
         )
         .unwrap();
 
-        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => assert_eq!(state.patch_scroll, 21),
+            _ => panic!("expected diff review prompt"),
+        }
+
+        handle_diff_review_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => assert_eq!(state.patch_scroll, 119),
+            _ => panic!("expected diff review prompt"),
+        }
+
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)).unwrap();
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => assert_eq!(state.patch_scroll, 0),
+            _ => panic!("expected diff review prompt"),
+        }
+    }
+
+    #[test]
+    fn toggling_layout_resets_diff_review_scroll() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        if let AppMode::DiffReviewPrompt(state) = &mut app.mode {
+            state.patch_scroll = 17;
+        }
+
+        handle_diff_review_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => {
+                assert_eq!(state.layout, crate::app::DiffViewerLayout::SideBySide);
+                assert_eq!(state.patch_scroll, 0);
+            }
+            _ => panic!("expected diff review prompt"),
+        }
     }
 }

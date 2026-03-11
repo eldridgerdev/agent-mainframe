@@ -138,6 +138,32 @@ impl App {
         }
     }
 
+    pub fn diff_review_scroll_patch_up(&mut self, amount: usize) {
+        if let AppMode::DiffReviewPrompt(state) = &mut self.mode {
+            state.patch_scroll = state.patch_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn diff_review_scroll_patch_down(&mut self, amount: usize) {
+        let max_scroll = self.diff_review_patch_line_count().saturating_sub(1);
+        if let AppMode::DiffReviewPrompt(state) = &mut self.mode {
+            state.patch_scroll = (state.patch_scroll + amount).min(max_scroll);
+        }
+    }
+
+    pub fn diff_review_scroll_patch_top(&mut self) {
+        if let AppMode::DiffReviewPrompt(state) = &mut self.mode {
+            state.patch_scroll = 0;
+        }
+    }
+
+    pub fn diff_review_scroll_patch_bottom(&mut self) {
+        let max_scroll = self.diff_review_patch_line_count().saturating_sub(1);
+        if let AppMode::DiffReviewPrompt(state) = &mut self.mode {
+            state.patch_scroll = max_scroll;
+        }
+    }
+
     pub fn diff_viewer_toggle_layout(&mut self) {
         if self.diff_viewer_selected_file_is_new() {
             return;
@@ -271,12 +297,30 @@ impl App {
             AppMode::DiffViewer(state) => state
                 .files
                 .get(state.selected_file)
-                .map(|file| match self
-                    .diff_viewer_layout()
-                    .unwrap_or_else(|| state.layout.clone())
-                {
-                    DiffViewerLayout::Unified => file.patch.lines().count(),
-                    DiffViewerLayout::SideBySide => side_by_side_line_count(file),
+                .map(|file| {
+                    diff_patch_line_count(
+                        file,
+                        self.diff_viewer_layout()
+                            .unwrap_or_else(|| state.layout.clone()),
+                    )
+                })
+                .unwrap_or(0),
+            _ => 0,
+        }
+    }
+
+    fn diff_review_patch_line_count(&self) -> usize {
+        match &self.mode {
+            AppMode::DiffReviewPrompt(state) => state
+                .diff_file
+                .as_ref()
+                .map(|file| {
+                    let layout = if is_new_diff_file(file) {
+                        DiffViewerLayout::Unified
+                    } else {
+                        state.layout.clone()
+                    };
+                    diff_patch_line_count(file, layout)
                 })
                 .unwrap_or(0),
             _ => 0,
@@ -323,6 +367,13 @@ fn side_by_side_line_count(file: &crate::diff::DiffFile) -> usize {
         }
     }
     count
+}
+
+fn diff_patch_line_count(file: &crate::diff::DiffFile, layout: DiffViewerLayout) -> usize {
+    match layout {
+        DiffViewerLayout::Unified => file.patch.lines().count(),
+        DiffViewerLayout::SideBySide => side_by_side_line_count(file),
+    }
 }
 
 fn consume_kind(

@@ -4,12 +4,12 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::app::util::latest_prompt_path;
 use crate::automation::{
     CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
     CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
     automation_error_response,
 };
-use crate::app::util::latest_prompt_path;
 
 impl App {
     fn touch_feature_for_session(&mut self, session_id: &str) {
@@ -69,7 +69,12 @@ impl App {
     fn project_feature_for_cwd(
         &self,
         cwd_path: &Path,
-    ) -> (Option<String>, Option<String>, Option<String>, Option<(usize, usize)>) {
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<(usize, usize)>,
+    ) {
         let mut project_name = None;
         let mut feature_name = None;
         let mut agent_name = None;
@@ -107,18 +112,20 @@ impl App {
             .filter(|path| !path.is_empty())
             .or_else(|| input.target_file_path.clone())
             .unwrap_or_default();
-        let (mut diff_file, diff_error) =
-            match (input.original_file.as_deref(), input.proposed_file.as_deref()) {
-                (Some(original), Some(proposed)) => match crate::diff::load_review_file(
-                    Path::new(original),
-                    Path::new(proposed),
-                    &diff_path,
-                ) {
-                    Ok(file) => (Some(file), None),
-                    Err(err) => (None, Some(err.to_string())),
-                },
-                _ => (None, None),
-            };
+        let (mut diff_file, diff_error) = match (
+            input.original_file.as_deref(),
+            input.proposed_file.as_deref(),
+        ) {
+            (Some(original), Some(proposed)) => match crate::diff::load_review_file(
+                Path::new(original),
+                Path::new(proposed),
+                &diff_path,
+            ) {
+                Ok(file) => (Some(file), None),
+                Err(err) => (None, Some(err.to_string())),
+            },
+            _ => (None, None),
+        };
         if input.is_new_file == Some(true)
             && let Some(file) = &mut diff_file
         {
@@ -137,6 +144,7 @@ impl App {
             new_snippet: input.new_snippet.clone().unwrap_or_default(),
             diff_file,
             diff_error,
+            patch_scroll: 0,
             reason: input.reason.clone().unwrap_or_default(),
             editing_feedback: false,
             layout: self.preferred_diff_viewer_layout(),
@@ -240,7 +248,10 @@ impl App {
                                 Err(err) => {
                                     self.log_error(
                                         "automation",
-                                        format!("Automation '{}' failed: {err}", CREATE_PROJECT_ACTION),
+                                        format!(
+                                            "Automation '{}' failed: {err}",
+                                            CREATE_PROJECT_ACTION
+                                        ),
                                     );
                                     automation_error_response(
                                         CREATE_PROJECT_ACTION,
@@ -275,7 +286,10 @@ impl App {
                                 Err(err) => {
                                     self.log_error(
                                         "automation",
-                                        format!("Automation '{}' failed: {err}", CREATE_FEATURE_ACTION),
+                                        format!(
+                                            "Automation '{}' failed: {err}",
+                                            CREATE_FEATURE_ACTION
+                                        ),
                                     );
                                     automation_error_response(
                                         CREATE_FEATURE_ACTION,
@@ -291,9 +305,10 @@ impl App {
                     }
                     CREATE_BATCH_FEATURES_ACTION => {
                         match serde_json::from_value::<CreateBatchFeaturesRequest>(raw.clone()) {
-                            Ok(request) => match self.create_batch_features_from_request(&request) {
-                                Ok(response) => {
-                                    self.log_info(
+                            Ok(request) => {
+                                match self.create_batch_features_from_request(&request) {
+                                    Ok(response) => {
+                                        self.log_info(
                                         "automation",
                                         format!(
                                             "Automation created batch project '{}' with {} features",
@@ -301,27 +316,28 @@ impl App {
                                             response.features.len()
                                         ),
                                     );
-                                    serde_json::to_value(response).unwrap_or_else(|err| {
+                                        serde_json::to_value(response).unwrap_or_else(|err| {
+                                            automation_error_response(
+                                                CREATE_BATCH_FEATURES_ACTION,
+                                                format!("Failed to serialize response: {err}"),
+                                            )
+                                        })
+                                    }
+                                    Err(err) => {
+                                        self.log_error(
+                                            "automation",
+                                            format!(
+                                                "Automation '{}' failed: {err}",
+                                                CREATE_BATCH_FEATURES_ACTION
+                                            ),
+                                        );
                                         automation_error_response(
                                             CREATE_BATCH_FEATURES_ACTION,
-                                            format!("Failed to serialize response: {err}"),
+                                            err.to_string(),
                                         )
-                                    })
+                                    }
                                 }
-                                Err(err) => {
-                                    self.log_error(
-                                        "automation",
-                                        format!(
-                                            "Automation '{}' failed: {err}",
-                                            CREATE_BATCH_FEATURES_ACTION
-                                        ),
-                                    );
-                                    automation_error_response(
-                                        CREATE_BATCH_FEATURES_ACTION,
-                                        err.to_string(),
-                                    )
-                                }
-                            },
+                            }
                             Err(err) => automation_error_response(
                                 CREATE_BATCH_FEATURES_ACTION,
                                 format!("Invalid automation payload: {err}"),
@@ -329,7 +345,11 @@ impl App {
                         }
                     }
                     _ => automation_error_response(
-                        if action.is_empty() { "unknown" } else { &action },
+                        if action.is_empty() {
+                            "unknown"
+                        } else {
+                            &action
+                        },
                         format!(
                             "Unknown automation action '{}'",
                             if action.is_empty() {
@@ -477,7 +497,8 @@ impl App {
             }
 
             // Resolve project/feature from cwd.
-            let (project_name, feature_name, agent_name, _) = self.project_feature_for_cwd(&cwd_path);
+            let (project_name, feature_name, agent_name, _) =
+                self.project_feature_for_cwd(&cwd_path);
 
             // For diff-review while viewing the matching
             // feature, write the proceed signal immediately when
@@ -692,7 +713,8 @@ impl App {
                     || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
 
                 let cwd_path = PathBuf::from(&cwd);
-                let (_, found_feature_name_for_open, _, _) = self.project_feature_for_cwd(&cwd_path);
+                let (_, found_feature_name_for_open, _, _) =
+                    self.project_feature_for_cwd(&cwd_path);
                 if is_structured_diff_review
                     && let AppMode::Viewing(view) = &self.mode
                     && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
@@ -854,7 +876,9 @@ impl App {
                     .iter()
                     .position(|f| &f.name == feat_name);
                 if let Some(fi) = fi {
-                    if input.notification_type == "diff-review" && !self.use_custom_diff_review_viewer() {
+                    if input.notification_type == "diff-review"
+                        && !self.use_custom_diff_review_viewer()
+                    {
                         self.respond_to_notification(
                             input.request_id.as_deref(),
                             input.reply_socket.as_deref(),

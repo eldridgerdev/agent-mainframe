@@ -10,7 +10,7 @@ use crate::app::{DiffReviewState, DiffViewerLayout, HookPromptState, RunningHook
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
-use super::diff::{draw_patch_panel, PatchPanelOptions};
+use super::diff::{PatchPanelOptions, draw_patch_panel};
 
 fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
     state.diff_file.as_ref().is_some_and(|file| {
@@ -98,7 +98,7 @@ pub fn draw_diff_review_dialog(
                     format!("Patch: {}", state.relative_path)
                 },
                 border_color: theme.primary.to_color(),
-                scroll: 0,
+                scroll: state.patch_scroll,
                 include_prologue: new_file_presentation,
                 new_file_presentation,
             },
@@ -240,6 +240,8 @@ pub fn draw_diff_review_dialog(
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" approve  "),
+            Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
+            Span::raw(" scroll  "),
             Span::styled("e", Style::default().fg(theme.info.to_color())),
             Span::raw(" explain  "),
             Span::styled(
@@ -255,6 +257,8 @@ pub fn draw_diff_review_dialog(
         Paragraph::new(Line::from(vec![
             Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" approve  "),
+            Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
+            Span::raw(" scroll  "),
             Span::styled("e", Style::default().fg(theme.info.to_color())),
             Span::raw(" explain  "),
             Span::styled("v", Style::default().fg(theme.primary.to_color())),
@@ -285,10 +289,7 @@ pub fn draw_diff_review_dialog(
 
         let feedback_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Length(1),
-            ])
+            .constraints([Constraint::Length(2), Constraint::Length(1)])
             .split(feedback_inner);
 
         let feedback_line = Paragraph::new(Line::from(vec![

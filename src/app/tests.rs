@@ -1201,6 +1201,105 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
 }
 
 #[test]
+fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("diffy-opencode");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_opencode()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".to_string(),
+        branch: "diffy-opencode".to_string(),
+        workdir: workdir.clone(),
+        is_worktree: true,
+        mode: VibeMode::Vibeless,
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Opencode,
+        enable_chrome: false,
+        enable_notes: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    let plugin_dir = workdir.join(".opencode").join("plugins");
+    let change_tracker = plugin_dir.join("change-tracker.js");
+    assert!(
+        change_tracker.exists(),
+        "expected vibeless Opencode launch to install change-tracker.js in {}, available files: {:?}",
+        plugin_dir.display(),
+        std::fs::read_dir(&plugin_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    );
+    let installed = std::fs::read_to_string(change_tracker).unwrap();
+    assert!(
+        installed.contains("original_file")
+            && installed.contains("proposed_file")
+            && installed.contains("buildReviewFiles"),
+        "expected installed change-tracker.js to be the structured diff-review version, got: {installed}"
+    );
+}
+
+#[test]
+fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("diffy-opencode");
+    let plugin_dir = workdir.join(".opencode").join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("change-tracker.js"), "stale plugin").unwrap();
+
+    super::setup::ensure_notify_scripts();
+
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let feature = &mut store.projects[0].features[0];
+    feature.workdir = workdir.clone();
+    feature.is_worktree = true;
+    feature.agent = AgentKind::Opencode;
+    feature.mode = VibeMode::Vibeless;
+
+    let refreshed = super::setup::refresh_opencode_plugins_for_store(&store);
+    assert_eq!(refreshed, 1);
+
+    let installed = std::fs::read_to_string(plugin_dir.join("change-tracker.js")).unwrap();
+    assert!(
+        installed.contains("original_file")
+            && installed.contains("proposed_file")
+            && installed.contains("buildReviewFiles"),
+        "expected stale change-tracker.js to be replaced with the structured diff-review version, got: {installed}"
+    );
+}
+
+#[test]
 fn submit_steering_prompt_pastes_into_running_session() {
     let repo = TempDir::new().unwrap();
     let workdir = repo.path().join(".worktrees").join("coached");

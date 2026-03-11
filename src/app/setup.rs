@@ -15,6 +15,7 @@ const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
 const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
+const CHANGE_TRACKER_JS: &str = include_str!("../../.opencode/plugins/change-tracker.js");
 const CUSTOM_DIFF_REVIEW_SH: &str =
     include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
@@ -345,6 +346,8 @@ pub fn ensure_notify_scripts() {
     let _ = std::fs::create_dir_all(&plugins_dir);
     let input_request_path = plugins_dir.join("input-request.js");
     let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
+    let change_tracker_path = plugins_dir.join("change-tracker.js");
+    let _ = std::fs::write(&change_tracker_path, CHANGE_TRACKER_JS);
     let custom_diff_review_path = plugins_dir.join("custom-diff-review.sh");
     let _ = std::fs::write(&custom_diff_review_path, CUSTOM_DIFF_REVIEW_SH);
     #[cfg(unix)]
@@ -499,14 +502,10 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let _ = std::fs::create_dir_all(&plugins_dir);
     let _ = ThemeManager::inject_opencode_themes(workdir);
 
-    let global_input_request = crate::project::amf_config_dir()
-        .join("plugins")
-        .join("input-request.js");
+    let bundled_plugins_dir = crate::project::amf_config_dir().join("plugins");
+    let bundled_input_request = bundled_plugins_dir.join("input-request.js");
+    let bundled_change_tracker = bundled_plugins_dir.join("change-tracker.js");
     let dst_input_request = plugins_dir.join("input-request.js");
-
-    if global_input_request.exists() {
-        let _ = std::fs::copy(&global_input_request, &dst_input_request);
-    }
 
     let dst_diff_review_js = plugins_dir.join("diff-review.js");
     let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
@@ -519,13 +518,16 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let _ = std::fs::remove_file(&dst_feedback_prompt);
     let _ = std::fs::remove_file(&dst_explain);
 
-    if matches!(mode, VibeMode::Vibeless) {
-        let src_change_tracker = repo
-            .join(".opencode")
-            .join("plugins")
-            .join("change-tracker.js");
+    if bundled_input_request.exists() {
+        let _ = std::fs::copy(&bundled_input_request, &dst_input_request);
+    }
 
-        if src_change_tracker.exists() {
+    if matches!(mode, VibeMode::Vibeless) {
+        let src_change_tracker = repo.join(".opencode").join("plugins").join("change-tracker.js");
+
+        if bundled_change_tracker.exists() {
+            let _ = std::fs::copy(&bundled_change_tracker, &dst_change_tracker);
+        } else if src_change_tracker.exists() {
             let _ = std::fs::copy(&src_change_tracker, &dst_change_tracker);
         }
 

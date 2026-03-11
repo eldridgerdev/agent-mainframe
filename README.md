@@ -12,25 +12,7 @@ conflicts. You watch them all from one place, jump into whichever needs
 attention, and get notified the moment one is waiting for input.
 
 NOTE: I'll add real screenshots eventually
-```text
-┌─ Agent Mainframe ─────────────────── ~/code ───────── ? help ─┐
-└────────────────────────────────────────────────────────────────┘
-┌ Projects ──────────────────────────────────────────────────────┐
-│ v my-app  ~/code/my-app                                        │
-│   ├─ ●  v  main          [vibeless]  2h ago   [2]             │
-│   │       ├─ * claude                                          │
-│   │       └─ > terminal                                        │
-│   └─ ⠿  v  auth-rework   [vibe]      just now [1]             │
-│              └─ * claude                                       │
-│ v api-service  ~/code/api                                      │
-│   └─ ■     cache-layer   [supervibe] Jan 10   [0]             │
-└────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────┐
-│ auth-rework [auth-rework]  ~/code/my-app/.worktrees/auth-rew…  │
-│  n feature  Enter expand  c start  x stop  t +term  q quit     │
-│       [Claude] 5h ┃┃┃░░░░░░░░░░░░ 20%  7d ┃░░░░░░░░░ 8%      │
-└────────────────────────────────────────────────────────────────┘
-```
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 ## Features
 

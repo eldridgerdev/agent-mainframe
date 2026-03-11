@@ -304,6 +304,7 @@ pub enum AppMode {
     LatestPrompt(String, ViewState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
+    SyntaxLanguagePicker(SyntaxLanguagePickerState),
     DebugLog(DebugLogState),
     MarkdownViewer(MarkdownViewerState),
     MarkdownFilePicker(MarkdownFilePickerState),
@@ -337,6 +338,40 @@ impl SummaryState {
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,
+}
+
+pub struct SyntaxLanguageRow {
+    pub language: crate::highlight::HighlightLanguage,
+    pub status: crate::highlight::HighlightInstallState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxOperationAction {
+    Install,
+    Uninstall,
+}
+
+pub enum SyntaxOperationEvent {
+    Output(String),
+    Finished(Result<String, String>),
+}
+
+pub struct SyntaxOperationState {
+    pub language: crate::highlight::HighlightLanguage,
+    pub action: SyntaxOperationAction,
+    pub last_output: Option<String>,
+    pub started_at: std::time::Instant,
+    pub output_rx: std::sync::mpsc::Receiver<SyntaxOperationEvent>,
+}
+
+pub struct SyntaxLanguagePickerState {
+    pub languages: Vec<SyntaxLanguageRow>,
+    pub selected: usize,
+    pub notice: Option<String>,
+    pub operation: Option<SyntaxOperationState>,
+    pub return_to: Option<Box<AppMode>>,
+    pub auto_return_on_success: bool,
+    pub return_language: Option<crate::highlight::HighlightLanguage>,
 }
 
 pub struct DebugLogState {

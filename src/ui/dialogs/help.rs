@@ -42,6 +42,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("O", "Open AMF settings project"),
         ("d", "Delete project/feature/session"),
         ("D", "View debug log"),
+        ("P", "Open syntax parser picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),

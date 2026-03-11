@@ -21,6 +21,7 @@ pub mod setup;
 mod state;
 mod steering;
 mod switcher;
+mod syntax;
 mod sync;
 pub mod util;
 mod view;

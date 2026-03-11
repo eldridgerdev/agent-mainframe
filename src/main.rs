@@ -498,6 +498,12 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             app.show_error(e);
         }
 
+        if matches!(app.mode, app::AppMode::SyntaxLanguagePicker(_))
+            && let Err(e) = app.poll_syntax_language_picker()
+        {
+            app.show_error(e);
+        }
+
         if !app.background_deletions.is_empty()
             && let Err(e) = app.poll_background_deletions()
         {

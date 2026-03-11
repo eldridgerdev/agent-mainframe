@@ -64,6 +64,12 @@ fn cache() -> &'static Mutex<HashMap<CacheKey, HighlightedText>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub fn clear_cache() {
+    if let Ok(mut cache) = cache().lock() {
+        cache.clear();
+    }
+}
+
 fn hash_text(source: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     source.hash(&mut hasher);

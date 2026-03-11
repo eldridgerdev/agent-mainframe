@@ -171,6 +171,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::SyntaxLanguagePicker(state) = &app.mode {
+        super::picker::draw_syntax_language_picker(frame, state, &app.throbber_state, &app.theme);
+        return;
+    }
+
     if let AppMode::MarkdownFilePicker(state) = &app.mode
         && state.from_view.is_some()
     {

@@ -203,6 +203,8 @@ Create-project and batch-feature templates, examples, and the JSON response form
    creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
    available for agents with diff-review hook support.
 
+   > Screenshot placeholder: new feature dialog showing branch entry, agent selection, vibe modes, and review-hook toggle.
+
    ```text
             ┌─ New Feature ─────────────────────────────────┐
             │                                               │
@@ -333,6 +335,8 @@ feature.
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
 
+> Screenshot placeholder: embedded tmux view with a live agent conversation, header bar, and enough ANSI styling to show what the in-app pane renderer looks like.
+
 ```text
   my-app /auth-rework /claude  [vibe] | Ctrl+Space command palette
 
@@ -358,12 +362,16 @@ popup listing all sessions for the current feature. Use `j`/`k` to
 navigate, `Enter` to switch to a session, `r` to rename, `Esc` to
 dismiss.
 
+> Screenshot placeholder: session picker popup with a feature that has several sessions such as Claude, terminal, notes, and VSCode/custom entries.
+
 ### Git Worktrees, Forks, and Batch Creation
 
 The first feature in a project uses the repo directory directly.
 Additional features get worktrees under `.worktrees/<branch>` so
 multiple agents can work on the same repo simultaneously without
 conflicts.
+
+> Screenshot placeholder: batch creation or fork flow, ideally showing how multiple parallel branches/worktrees are created from one workspace.
 
 - `F` forks the selected feature into a new worktree, preserves
   uncommitted changes, and can export transcript context into
@@ -392,6 +400,8 @@ use `Vibe` or `SuperVibe` instead. By default this uses the AMF in-app
 diff viewer; set `"diff_review_viewer": "nvim"` in
 `~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
 
+> Screenshot placeholder: diff-review overlay with a real code diff and the accept/reject controls visible.
+
 ```text
   ╭─ Diff Review ──────────────────────────────────────────────╮
   │                                                            │
@@ -419,6 +429,8 @@ When an agent session needs user input, AMF prefers push-based IPC
 notifications and falls back to file polling if the socket is not
 available. Press `i` to open the picker and jump to the session that
 needs attention:
+
+> Screenshot placeholder: input requests picker with at least one normal agent prompt and one diff-review notification.
 
 ```text
        ┌─ Input Requests ──────────────────────────────┐
@@ -663,6 +675,8 @@ An empty array means "allow all agents".
 
 AMF has a full built-in theme system for the dashboard and embedded
 view. You can:
+
+> Screenshot placeholder: theme picker or side-by-side themed dashboard view that makes the visual differences between themes obvious.
 
 1. Press `T` in the dashboard to open the theme picker.
 2. Set a default in `~/.config/amf/config.json`:

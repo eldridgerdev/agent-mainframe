@@ -205,31 +205,19 @@ Create-project and batch-feature templates, examples, and the JSON response form
 
    > Screenshot placeholder: new feature dialog showing branch entry, agent selection, vibe modes, and review-hook toggle.
 
-   ```text
-            ┌─ New Feature ─────────────────────────────────┐
-            │                                               │
-            │  Branch: auth-rework_                         │
-            │                                               │
-            │  Agent:  [● Claude] [  Opencode]              │
-            │                                               │
-            │  Mode:                                        │
-            │  ● Vibeless  diff-review gate on all edits    │
-            │  ○ Vibe      auto-accept edits                │
-            │  ○ SuperVibe skip all permission checks       │
-            │                                               │
-            │  Review hook: [✓]                             │
-            │                                               │
-            │              Enter confirm   Esc cancel       │
-            └───────────────────────────────────────────────┘
-   ```
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
+
 
 5. Press `s` to add more sessions to a running feature. The picker can
    launch agent sessions, terminals, nvim, VSCode, and custom session
    types from your config.
 
-6. Press `Enter` on a session to view the embedded tmux output.
+  <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/2e493755-af11-4a14-ae8d-86353c1c0a41" />
 
-7. Use `Ctrl+Space` then a key for leader commands while in view mode.
+
+7. Press `Enter` on a session to view the embedded tmux output.
+
+8. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
 ## Keybindings
 
@@ -335,34 +323,18 @@ feature.
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
 
-> Screenshot placeholder: embedded tmux view with a live agent conversation, header bar, and enough ANSI styling to show what the in-app pane renderer looks like.
+This view includes a custom header and amf commands accesible with a leader key (ctrl+space default)
 
-```text
-  my-app /auth-rework /claude  [vibe] | Ctrl+Space command palette
+<img width="1263" height="376" alt="image" src="https://github.com/user-attachments/assets/2aa2998e-2bce-4e06-99d6-f5400c2d1bc1" />
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/83a84c62-cae1-4893-91d5-d26c8b6ab797" />
 
-  ╭──────────────────────────────────────────────────────────────╮
-  │ > Implement JWT auth with refresh token rotation             │
-  ╰──────────────────────────────────────────────────────────────╯
-
-  ● Reading src/auth/mod.rs...
-  ● Reading src/middleware/auth.rs...
-
-  Here's my plan:
-   1. Replace session tokens with signed JWTs
-   2. Add refresh token rotation on each use
-   3. Update the auth middleware to validate claims
-
-  Shall I proceed? [Y/n] _
-```
 
 #### Session Picker
 
-While viewing a feature, press `w` to open the session picker — a
-popup listing all sessions for the current feature. Use `j`/`k` to
-navigate, `Enter` to switch to a session, `r` to rename, `Esc` to
-dismiss.
+While viewing a feature, press `leader w` to open the session picker — a
+popup listing all sessions for the current feature.
 
-> Screenshot placeholder: session picker popup with a feature that has several sessions such as Claude, terminal, notes, and VSCode/custom entries.
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/19387489-18f4-45f0-8391-fb34ece257d8" />
 
 ### Git Worktrees, Forks, and Batch Creation
 

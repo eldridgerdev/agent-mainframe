@@ -11,26 +11,7 @@ own tmux session and git worktree so agents work simultaneously without
 conflicts. You watch them all from one place, jump into whichever needs
 attention, and get notified the moment one is waiting for input.
 
-NOTE: I'll add real screenshots eventually
-```text
-┌─ Agent Mainframe ─────────────────── ~/code ───────── ? help ─┐
-└────────────────────────────────────────────────────────────────┘
-┌ Projects ──────────────────────────────────────────────────────┐
-│ v my-app  ~/code/my-app                                        │
-│   ├─ ●  v  main          [vibeless]  2h ago   [2]             │
-│   │       ├─ * claude                                          │
-│   │       └─ > terminal                                        │
-│   └─ ⠿  v  auth-rework   [vibe]      just now [1]             │
-│              └─ * claude                                       │
-│ v api-service  ~/code/api                                      │
-│   └─ ■     cache-layer   [supervibe] Jan 10   [0]             │
-└────────────────────────────────────────────────────────────────┘
-┌────────────────────────────────────────────────────────────────┐
-│ auth-rework [auth-rework]  ~/code/my-app/.worktrees/auth-rew…  │
-│  n feature  Enter expand  c start  x stop  t +term  q quit     │
-│       [Claude] 5h ┃┃┃░░░░░░░░░░░░ 20%  7d ┃░░░░░░░░░ 8%      │
-└────────────────────────────────────────────────────────────────┘
-```
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 ## Features
 
@@ -221,31 +202,21 @@ Create-project and batch-feature templates, examples, and the JSON response form
    creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
    available for agents with diff-review hook support.
 
-   ```text
-            ┌─ New Feature ─────────────────────────────────┐
-            │                                               │
-            │  Branch: auth-rework_                         │
-            │                                               │
-            │  Agent:  [● Claude] [  Opencode]              │
-            │                                               │
-            │  Mode:                                        │
-            │  ● Vibeless  diff-review gate on all edits    │
-            │  ○ Vibe      auto-accept edits                │
-            │  ○ SuperVibe skip all permission checks       │
-            │                                               │
-            │  Review hook: [✓]                             │
-            │                                               │
-            │              Enter confirm   Esc cancel       │
-            └───────────────────────────────────────────────┘
-   ```
+   > Screenshot placeholder: new feature dialog showing branch entry, agent selection, vibe modes, and review-hook toggle.
+
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
+
 
 5. Press `s` to add more sessions to a running feature. The picker can
    launch agent sessions, terminals, nvim, VSCode, and custom session
    types from your config.
 
-6. Press `Enter` on a session to view the embedded tmux output.
+  <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/2e493755-af11-4a14-ae8d-86353c1c0a41" />
 
-7. Use `Ctrl+Space` then a key for leader commands while in view mode.
+
+7. Press `Enter` on a session to view the embedded tmux output.
+
+8. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
 ## Keybindings
 
@@ -351,30 +322,18 @@ feature.
 Press `Enter` to enter the embedded view, which streams the tmux pane
 output live through a vt100 parser and renders it with full ANSI color:
 
-```text
-  my-app /auth-rework /claude  [vibe] | Ctrl+Space command palette
+This view includes a custom header and amf commands accesible with a leader key (ctrl+space default)
 
-  ╭──────────────────────────────────────────────────────────────╮
-  │ > Implement JWT auth with refresh token rotation             │
-  ╰──────────────────────────────────────────────────────────────╯
+<img width="1263" height="376" alt="image" src="https://github.com/user-attachments/assets/2aa2998e-2bce-4e06-99d6-f5400c2d1bc1" />
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/83a84c62-cae1-4893-91d5-d26c8b6ab797" />
 
-  ● Reading src/auth/mod.rs...
-  ● Reading src/middleware/auth.rs...
-
-  Here's my plan:
-   1. Replace session tokens with signed JWTs
-   2. Add refresh token rotation on each use
-   3. Update the auth middleware to validate claims
-
-  Shall I proceed? [Y/n] _
-```
 
 #### Session Picker
 
-While viewing a feature, press `w` to open the session picker — a
-popup listing all sessions for the current feature. Use `j`/`k` to
-navigate, `Enter` to switch to a session, `r` to rename, `Esc` to
-dismiss.
+While viewing a feature, press `leader w` to open the session picker — a
+popup listing all sessions for the current feature.
+
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/19387489-18f4-45f0-8391-fb34ece257d8" />
 
 ### Git Worktrees, Forks, and Batch Creation
 
@@ -382,6 +341,8 @@ The first feature in a project uses the repo directory directly.
 Additional features get worktrees under `.worktrees/<branch>` so
 multiple agents can work on the same repo simultaneously without
 conflicts.
+
+> Screenshot placeholder: batch creation or fork flow, ideally showing how multiple parallel branches/worktrees are created from one workspace.
 
 - `F` forks the selected feature into a new worktree, preserves
   uncommitted changes, and can export transcript context into
@@ -410,23 +371,9 @@ use `Vibe` or `SuperVibe` instead. By default this uses the AMF in-app
 diff viewer; set `"diff_review_viewer": "nvim"` in
 `~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
 
-```text
-  ╭─ Diff Review ──────────────────────────────────────────────╮
-  │                                                            │
-  │  src/auth/mod.rs                                           │
-  │                                                            │
-  │  - fn verify_token(token: &str) -> bool {                  │
-  │  -     session_store.contains(token)                       │
-  │  + fn verify_token(token: &str) -> Result<Claims> {        │
-  │  +     jwt::decode(token, &KEYS.decoding)                  │
-  │  }                                                         │
-  │                                                            │
-  │  Enter accept   r reject   Esc skip                        │
-  ╰────────────────────────────────────────────────────────────╯
-```
+> Screenshot placeholder: diff-review overlay with a real code diff and the accept/reject controls visible.
 
-Press `Enter` to accept the change, `r` to reject it (the agent is
-told the edit was refused), or `Esc` to skip review and allow it.
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/f41435e0-b607-425f-aa5e-bfaa3f944c08" />
 
 The hook is written to the worktree's local `.claude/settings.local.json`
 only — your global Claude Code settings are never modified.
@@ -435,21 +382,12 @@ only — your global Claude Code settings are never modified.
 
 When an agent session needs user input, AMF prefers push-based IPC
 notifications and falls back to file polling if the socket is not
-available. Press `i` to open the picker and jump to the session that
+available. Press `<leader> i` to open the picker and jump to the session that
 needs attention:
 
-```text
-       ┌─ Input Requests ──────────────────────────────┐
-       │                                               │
-       │ ▶ my-app / auth-rework                        │
-       │     claude is waiting for input               │
-       │                                               │
-       │ ▶ my-app / main                               │
-       │     diff review pending                       │
-       │                                               │
-       │   j/k navigate   Enter jump   Esc close       │
-       └───────────────────────────────────────────────┘
-```
+<img width="888" height="23" alt="image" src="https://github.com/user-attachments/assets/5609d2d8-7eab-4423-8750-d8d542a095fa" />
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/ea52a5cd-a0cc-432f-bdb2-3c97be99d136" />
+
 
 Claude hooks are configured in the feature's local
 `.claude/settings.local.json`, Codex notifications are written into the
@@ -489,7 +427,7 @@ automatically with defaults on first run.
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
 
 ### `zai` — token usage limits (optional)
-
+(This is pretty busted as of now. Until ZAI gives more useful info in their API you can guess some hard coded limits until it somewhat matches the dashboard. or just keep it disabled)
 Controls whether ZAI usage is shown in the status bar. Set to `null`
 or omit the key entirely to disable it.
 
@@ -576,11 +514,8 @@ AMF polls the status file every 5 seconds and displays the
 first line in the dashboard. The text appears in a muted
 style below the session name:
 
-```text
-  │   ├─ $ Dev Servers
-  │   │   API :3000 | DB :5432
-  │   └─ > terminal
-```
+<img width="521" height="108" alt="image" src="https://github.com/user-attachments/assets/06a40ecc-a7f5-4eb4-a3ce-afeb520abeae" />
+
 
 To clear the status, delete the file or write an empty
 string. The `.amf/` directory is local to the worktree and
@@ -681,6 +616,8 @@ An empty array means "allow all agents".
 
 AMF has a full built-in theme system for the dashboard and embedded
 view. You can:
+
+> Screenshot placeholder: theme picker or side-by-side themed dashboard view that makes the visual differences between themes obvious.
 
 1. Press `T` in the dashboard to open the theme picker.
 2. Set a default in `~/.config/amf/config.json`:

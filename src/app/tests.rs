@@ -284,7 +284,7 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 // ── Phase 3: App integration tests using mock trait objects ──
 
-use crate::project::{AgentKind, Feature, Project};
+use crate::project::{AgentKind, Feature, FeatureSession, Project, SessionKind};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
 use chrono::{Duration, Utc};
 use tempfile::NamedTempFile;
@@ -376,6 +376,21 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         extra: HashMap::new(),
+    }
+}
+
+fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
+    FeatureSession {
+        id: format!("session-{label}"),
+        kind: SessionKind::Claude,
+        label: label.to_string(),
+        tmux_window: label.to_string(),
+        claude_session_id: None,
+        created_at: Utc::now(),
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: status_text.map(str::to_string),
     }
 }
 
@@ -512,6 +527,48 @@ fn visible_items_prioritizes_non_worktree_features() {
     assert!(matches!(visible[0], VisibleItem::Project(0)));
     assert!(matches!(visible[1], VisibleItem::Feature(0, 1)));
     assert!(matches!(visible[2], VisibleItem::Feature(0, 0)));
+}
+
+#[test]
+fn ensure_selection_visible_accounts_for_multi_line_sessions() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].sessions = vec![
+        make_session("claude-1", Some("running")),
+        make_session("claude-2", Some("running")),
+        make_session("claude-3", None),
+    ];
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Session(0, 0, 1);
+
+    app.ensure_selection_visible(4);
+
+    assert_eq!(app.scroll_offset, 2);
+}
+
+#[test]
+fn item_index_at_visible_row_maps_status_line_to_same_session() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].sessions = vec![
+        make_session("claude-1", Some("running")),
+        make_session("claude-2", None),
+    ];
+
+    let app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    assert!(matches!(app.item_index_at_visible_row(0, 4), Some(0)));
+    assert!(matches!(app.item_index_at_visible_row(1, 4), Some(1)));
+    assert!(matches!(app.item_index_at_visible_row(2, 4), Some(2)));
+    assert!(matches!(app.item_index_at_visible_row(3, 4), Some(2)));
+    assert_eq!(app.item_index_at_visible_row(4, 4), None);
 }
 
 #[test]
@@ -1851,8 +1908,6 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
 }
 
 // ── sync_session_status ──────────────────────────────────────
-
-use crate::project::{FeatureSession, SessionKind};
 
 fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> ProjectStore {
     let now = Utc::now();

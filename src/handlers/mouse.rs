@@ -199,14 +199,15 @@ fn handle_click(
     }
 
     let list_start_row = 4;
-    let list_end_row = list_start_row + visible_rows;
+    let list_visible_height = visible_rows.saturating_sub(5);
+    let list_end_row = list_start_row + list_visible_height;
 
     if row >= list_start_row && row < list_end_row {
         let clicked_in_list = row - list_start_row;
-        let item_index = app.scroll_offset + clicked_in_list as usize;
-
-        let visible = app.visible_items();
-        if item_index < visible.len() {
+        if let Some(item_index) =
+            app.item_index_at_visible_row(clicked_in_list as usize, list_visible_height as usize)
+        {
+            let visible = app.visible_items();
             let clicked_item = visible[item_index].clone();
 
             let is_double_click = unsafe {

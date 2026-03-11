@@ -137,6 +137,10 @@ impl App {
             ));
             return Ok(());
         }
+        if let Err(err) = self.ensure_agent_mode_supported(&state.agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
+            return Ok(());
+        }
 
         let stored_is_git = {
             let project = match self.store.find_project(&project_name) {
@@ -449,6 +453,16 @@ impl App {
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let (agent, mode) = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(feature) => (feature.agent.clone(), feature.mode.clone()),
+            None => return Ok(()),
+        };
+        self.ensure_agent_mode_supported(&agent, &mode)?;
         let feature = match self
             .store
             .projects
@@ -1155,6 +1169,10 @@ impl App {
                 "Error: Agent '{}' is not allowed for this workspace",
                 agent.display_name()
             ));
+            return Ok(());
+        }
+        if let Err(err) = self.ensure_agent_mode_supported(&agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
 

@@ -186,6 +186,11 @@ impl App {
             self.mode = AppMode::Normal;
             return Ok(());
         }
+        if let Err(err) = self.ensure_agent_mode_supported(&next_agent, &feature.mode) {
+            self.message = Some(format!("Error: {}", err));
+            self.mode = AppMode::Normal;
+            return Ok(());
+        }
 
         let project_name = project.name.clone();
         let feature_name = feature.name.clone();

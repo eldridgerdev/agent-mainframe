@@ -4,6 +4,7 @@ use std::path::Path;
 pub enum HighlightLanguage {
     Bash,
     Json,
+    Markdown,
     Rust,
     Toml,
     Yaml,
@@ -14,6 +15,7 @@ impl HighlightLanguage {
         match self {
             HighlightLanguage::Bash => "bash",
             HighlightLanguage::Json => "json",
+            HighlightLanguage::Markdown => "markdown",
             HighlightLanguage::Rust => "rust",
             HighlightLanguage::Toml => "toml",
             HighlightLanguage::Yaml => "yaml",
@@ -36,6 +38,7 @@ fn parse_language_name(name: &str) -> Option<HighlightLanguage> {
     match name.trim().to_ascii_lowercase().as_str() {
         "bash" | "shell" | "sh" | "zsh" => Some(HighlightLanguage::Bash),
         "json" | "jsonc" | "jsonl" => Some(HighlightLanguage::Json),
+        "markdown" | "md" => Some(HighlightLanguage::Markdown),
         "rust" | "rs" => Some(HighlightLanguage::Rust),
         "toml" => Some(HighlightLanguage::Toml),
         "yaml" | "yml" => Some(HighlightLanguage::Yaml),
@@ -55,6 +58,7 @@ fn language_from_path(path: &Path) -> Option<HighlightLanguage> {
     }
 
     match path.extension().and_then(|ext| ext.to_str()) {
+        Some("md") | Some("markdown") => Some(HighlightLanguage::Markdown),
         Some("rs") => Some(HighlightLanguage::Rust),
         Some("json") | Some("jsonl") => Some(HighlightLanguage::Json),
         Some("sh") | Some("bash") | Some("zsh") => Some(HighlightLanguage::Bash),
@@ -88,6 +92,10 @@ mod tests {
         assert_eq!(
             detect_language(Some(Path::new("config/settings.json")), None, ""),
             Some(HighlightLanguage::Json)
+        );
+        assert_eq!(
+            detect_language(Some(Path::new("README.md")), None, ""),
+            Some(HighlightLanguage::Markdown)
         );
     }
 

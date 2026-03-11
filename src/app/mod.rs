@@ -137,13 +137,23 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
+    pub diff_review_viewer: DiffReviewViewer,
+    pub diff_viewer_layout: DiffViewerLayout,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub projects: ProjectsConfig,
     pub extension: ExtensionConfig,
     pub theme: crate::theme::ThemeName,
     pub transparent_background: bool,
-    pub diff_viewer_layout: DiffViewerLayout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum DiffReviewViewer {
+    #[default]
+    #[serde(rename = "amf", alias = "custom")]
+    Amf,
+    #[serde(rename = "nvim", alias = "legacy")]
+    Nvim,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -158,13 +168,14 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             leader_timeout_seconds: 5,
+            diff_review_viewer: DiffReviewViewer::default(),
+            diff_viewer_layout: DiffViewerLayout::Unified,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             projects: ProjectsConfig::default(),
             extension: ExtensionConfig::default(),
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
-            diff_viewer_layout: DiffViewerLayout::Unified,
         }
     }
 }
@@ -421,6 +432,23 @@ impl App {
             .default_preferred_agent
             .clone()
             .unwrap_or_default()
+    }
+
+    pub(crate) fn use_custom_diff_review_viewer(&self) -> bool {
+        matches!(self.config.diff_review_viewer, DiffReviewViewer::Amf)
+    }
+
+    pub(crate) fn ensure_agent_mode_supported(
+        &self,
+        agent: &AgentKind,
+        mode: &VibeMode,
+    ) -> Result<()> {
+        if matches!(agent, AgentKind::Codex) && matches!(mode, VibeMode::Vibeless) {
+            anyhow::bail!(
+                "Codex does not support Vibeless diff review. Use Claude/Opencode, or switch to Vibe or SuperVibe."
+            );
+        }
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {

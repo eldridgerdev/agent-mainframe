@@ -218,7 +218,8 @@ Create-project and batch-feature templates, examples, and the JSON response form
 4. Press `n` to add a feature. Enter a branch name, choose your agent
    (Claude, Codex, or Opencode), and pick a vibe mode. A git worktree
    is created automatically when needed, and features auto-start on
-   creation.
+   creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
+   available for agents with diff-review hook support.
 
    ```text
             ┌─ New Feature ─────────────────────────────────┐
@@ -395,7 +396,7 @@ the agent handles permissions:
 
 | Mode | Behavior |
 | --- | --- |
-| **Vibeless** | Diff-review hook gates all Edit/Write operations. You review each change before it's applied. |
+| **Vibeless** | Diff-review hook gates all Edit/Write operations. You review each change before it's applied. Available for Claude Code and Opencode. Codex does not support Vibeless diff review. |
 | **Vibe** | Auto-accepts edits (`--permission-mode acceptEdits`). No diff-review hook. |
 | **SuperVibe** | Skips all permission checks (`--dangerously-skip-permissions`). Shows a confirmation warning before creation. |
 
@@ -403,7 +404,11 @@ the agent handles permissions:
 
 In Vibeless mode, `amf` installs a Claude Code hook in the feature's
 `.claude/settings.local.json`. The hook intercepts every `Edit`, `Write`,
-and `MultiEdit` tool call before it executes and shows you the diff:
+and `MultiEdit` tool call before it executes and shows you the diff.
+Codex worktrees do not support this hook path, so Codex features must
+use `Vibe` or `SuperVibe` instead. By default this uses the AMF in-app
+diff viewer; set `"diff_review_viewer": "nvim"` in
+`~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
 
 ```text
   ╭─ Diff Review ──────────────────────────────────────────────╮
@@ -449,7 +454,8 @@ needs attention:
 Claude hooks are configured in the feature's local
 `.claude/settings.local.json`, Codex notifications are written into the
 worktree's `.codex/config.toml`, and Opencode plugins are refreshed
-into `.opencode/plugins/` automatically.
+into `.opencode/plugins/` automatically. Diff review is only available
+through the hook-based Claude and Opencode paths.
 
 ### Agent Support
 
@@ -457,7 +463,9 @@ into `.opencode/plugins/` automatically.
   supports diff-review hooks, latest-prompt capture, and session
   resume.
 - [Codex](https://github.com/openai/codex) supports dedicated feature
-  sessions, notifications, and usage meters in the status bar.
+  sessions, notifications, and usage meters in the status bar. Codex
+  does not support Vibeless diff review, so Codex features must run in
+  `Vibe` or `SuperVibe`.
 - [Opencode](https://opencode.ai) is supported as a first-class
   alternative agent, including injected AMF-friendly themes and local
   plugins.
@@ -473,6 +481,7 @@ automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
+| `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI: `"amf"` uses the in-app reviewer and `"nvim"` uses the legacy tmux/neovim popup. Older `"custom"` and `"legacy"` values are still accepted. |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
@@ -788,7 +797,7 @@ src/
 │   ├── hooks.rs       # hook/delete-progress handlers
 │   ├── picker.rs      # notification/session/command pickers
 │   ├── search.rs      # search mode
-│   ├── change_reason.rs # diff review prompt
+│   ├── diff_review.rs  # diff review prompt
 │   ├── input.rs       # paste handling
 │   └── mouse.rs       # mouse events
 └── ui/

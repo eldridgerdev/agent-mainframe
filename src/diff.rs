@@ -136,6 +136,57 @@ pub fn load_snapshot(workdir: &Path) -> Result<DiffSnapshot> {
     })
 }
 
+pub fn load_review_file(original: &Path, proposed: &Path, display_path: &str) -> Result<DiffFile> {
+    let output = Command::new("git")
+        .args([
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=3",
+            "--",
+        ])
+        .arg(original)
+        .arg(proposed)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to diff review files {} and {}",
+                original.display(),
+                proposed.display()
+            )
+        })?;
+
+    let success = output.status.success() || output.status.code() == Some(1);
+    if !success {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "git diff --no-index failed for {} and {}: {}",
+            original.display(),
+            proposed.display(),
+            stderr
+        );
+    }
+
+    let patch = String::from_utf8_lossy(&output.stdout).into_owned();
+    let mut files = parse_unified_diff(&patch)?;
+    let mut file = files.pop().ok_or_else(|| anyhow!("review diff produced no file entries"))?;
+    if !display_path.is_empty() {
+        file.path = display_path.to_string();
+        file.old_path = Some(display_path.to_string());
+    }
+
+    file.old_content = Some(
+        std::fs::read_to_string(original)
+            .with_context(|| format!("failed to read {}", original.display()))?,
+    );
+    file.new_content = Some(
+        std::fs::read_to_string(proposed)
+            .with_context(|| format!("failed to read {}", proposed.display()))?,
+    );
+
+    Ok(file)
+}
 fn hydrate_file_contents(workdir: &Path, base_commit: &str, files: &mut [DiffFile]) -> Result<()> {
     for file in files {
         if file.is_binary {

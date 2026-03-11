@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::project::{AgentKind, ProjectStore, VibeMode};
 use crate::theme::ThemeManager;
 
-use super::AppConfig;
+use super::{AppConfig, DiffReviewViewer};
 
 const NOTIFY_SH: &str = include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str = include_str!("../../scripts/clear-notify.sh");
@@ -15,6 +15,8 @@ const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
 const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
+const CUSTOM_DIFF_REVIEW_SH: &str =
+    include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
@@ -343,6 +345,16 @@ pub fn ensure_notify_scripts() {
     let _ = std::fs::create_dir_all(&plugins_dir);
     let input_request_path = plugins_dir.join("input-request.js");
     let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
+    let custom_diff_review_path = plugins_dir.join("custom-diff-review.sh");
+    let _ = std::fs::write(&custom_diff_review_path, CUSTOM_DIFF_REVIEW_SH);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(
+            &custom_diff_review_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
 }
 
 /// Refresh opencode plugin files in all known opencode feature
@@ -356,6 +368,27 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
                 continue;
             }
             ensure_opencode_plugins(&feature.workdir, &project.repo, &feature.mode);
+            refreshed += 1;
+        }
+    }
+    refreshed
+}
+
+pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) -> usize {
+    let mut refreshed = 0usize;
+    for project in &store.projects {
+        for feature in &project.features {
+            if !matches!(feature.agent, AgentKind::Claude) {
+                continue;
+            }
+            ensure_notification_hooks_with_config(
+                &feature.workdir,
+                &project.repo,
+                &feature.mode,
+                &feature.agent,
+                feature.is_worktree,
+                config,
+            );
             refreshed += 1;
         }
     }
@@ -663,13 +696,65 @@ pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
     }
 }
 
+fn resolve_diff_review_command(
+    workdir: &Path,
+    repo: &Path,
+    viewer: &DiffReviewViewer,
+) -> Option<String> {
+    let script_name = match viewer {
+        DiffReviewViewer::Amf => "custom-diff-review.sh",
+        DiffReviewViewer::Nvim => "diff-review.sh",
+    };
+    let script_suffix = ["plugins", "diff-review", "scripts", script_name];
+    let amf_root = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent()?.parent().map(PathBuf::from));
+
+    [
+        Some(workdir.to_path_buf()),
+        Some(repo.to_path_buf()),
+        Some(crate::project::amf_config_dir().join("plugins")),
+        amf_root,
+    ]
+    .into_iter()
+    .flatten()
+    .map(|base| {
+        if base
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name == "plugins")
+        {
+            base.join(script_name)
+        } else {
+            script_suffix.iter().fold(base, |p, s| p.join(s))
+        }
+    })
+    .find(|p| p.exists())
+    .map(|p| p.to_string_lossy().into_owned())
+}
+
 pub fn ensure_notification_hooks(
     workdir: &Path,
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    _is_worktree: bool,
+    is_worktree: bool,
 ) {
+    let config = load_config();
+    ensure_notification_hooks_with_config(workdir, repo, mode, agent, is_worktree, &config);
+}
+
+pub fn ensure_notification_hooks_with_config(
+    workdir: &Path,
+    repo: &Path,
+    mode: &VibeMode,
+    agent: &AgentKind,
+    _is_worktree: bool,
+    config: &AppConfig,
+) {
+    // Feature creation / restart should not depend on startup having
+    // already staged the helper scripts into ~/.config/amf.
+    ensure_notify_scripts();
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Opencode) {
@@ -707,22 +792,12 @@ pub fn ensure_notification_hooks(
         .to_string_lossy()
         .into_owned();
 
-    let script_suffix = ["plugins", "diff-review", "scripts", "diff-review.sh"];
-    let amf_root = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent()?.parent()?.parent().map(PathBuf::from));
-    let diff_review_cmd = [
-        Some(workdir.to_path_buf()),
-        Some(repo.to_path_buf()),
-        amf_root,
-    ]
-    .into_iter()
-    .flatten()
-    .map(|base| script_suffix.iter().fold(base, |p, s| p.join(s)))
-    .find(|p| p.exists())
-    .map(|p| p.to_string_lossy().into_owned());
-
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
+    let diff_review_cmd = if wants_diff_review {
+        resolve_diff_review_command(workdir, repo, &config.diff_review_viewer)
+    } else {
+        None
+    };
 
     let mut settings = read_json_object(&settings_path);
     remove_amf_claude_hooks(&mut settings, &managed_commands);

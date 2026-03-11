@@ -3,6 +3,22 @@ use anyhow::Result;
 use super::*;
 
 impl App {
+    pub fn preferred_diff_viewer_layout(&self) -> DiffViewerLayout {
+        self.config.diff_viewer_layout.clone()
+    }
+
+    pub fn toggled_diff_viewer_layout(&self, layout: &DiffViewerLayout) -> DiffViewerLayout {
+        match layout {
+            DiffViewerLayout::Unified => DiffViewerLayout::SideBySide,
+            DiffViewerLayout::SideBySide => DiffViewerLayout::Unified,
+        }
+    }
+
+    pub fn persist_diff_viewer_layout(&mut self, layout: DiffViewerLayout) {
+        self.config.diff_viewer_layout = layout;
+        self.save_config();
+    }
+
     pub fn open_diff_viewer(&mut self) -> Result<()> {
         let Some((view, workdir)) = self.current_view_and_workdir() else {
             self.message = Some("No active feature diff available".to_string());
@@ -10,7 +26,7 @@ impl App {
         };
 
         let mut state = DiffViewerState::new(view, workdir);
-        state.layout = self.config.diff_viewer_layout.clone();
+        state.layout = self.preferred_diff_viewer_layout();
         self.populate_diff_viewer_state(&mut state);
         self.mode = AppMode::DiffViewer(state);
         Ok(())
@@ -123,15 +139,20 @@ impl App {
     }
 
     pub fn diff_viewer_toggle_layout(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode {
-            state.layout = match state.layout {
-                DiffViewerLayout::Unified => DiffViewerLayout::SideBySide,
-                DiffViewerLayout::SideBySide => DiffViewerLayout::Unified,
-            };
-            self.config.diff_viewer_layout = state.layout.clone();
-            state.patch_scroll = 0;
+        if self.diff_viewer_selected_file_is_new() {
+            return;
         }
-        self.save_config();
+        let next_layout = match &self.mode {
+            AppMode::DiffViewer(state) => Some(self.toggled_diff_viewer_layout(&state.layout)),
+            _ => None,
+        };
+        if let Some(layout) = next_layout {
+            self.persist_diff_viewer_layout(layout.clone());
+            if let AppMode::DiffViewer(state) = &mut self.mode {
+                state.layout = layout;
+                state.patch_scroll = 0;
+            }
+        }
     }
 
     pub fn diff_viewer_focus(&self) -> Option<DiffViewerFocus> {
@@ -141,11 +162,63 @@ impl App {
         }
     }
 
+    pub fn diff_viewer_selected_file_is_new(&self) -> bool {
+        match &self.mode {
+            AppMode::DiffViewer(state) => state
+                .files
+                .get(state.selected_file)
+                .map(is_new_diff_file)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     pub fn diff_viewer_layout(&self) -> Option<DiffViewerLayout> {
         match &self.mode {
-            AppMode::DiffViewer(state) => Some(state.layout.clone()),
+            AppMode::DiffViewer(state) => Some(if self.diff_viewer_selected_file_is_new() {
+                DiffViewerLayout::Unified
+            } else {
+                state.layout.clone()
+            }),
             _ => None,
         }
+    }
+
+    pub fn poll_diff_review_explanation(&mut self) -> Result<()> {
+        let finished = match &mut self.mode {
+            AppMode::DiffReviewPrompt(state) => match state.explanation_child.as_mut() {
+                Some(child) => child.try_wait()?,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+
+        let Some(status) = finished else {
+            return Ok(());
+        };
+
+        let child = match &mut self.mode {
+            AppMode::DiffReviewPrompt(state) => state.explanation_child.take(),
+            _ => None,
+        };
+
+        let Some(child) = child else {
+            return Ok(());
+        };
+
+        let output = child.wait_with_output()?;
+        let explanation = if status.success() {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            format!("Explanation unavailable: {stderr}")
+        };
+
+        if let AppMode::DiffReviewPrompt(state) = &mut self.mode {
+            state.explanation = Some(explanation);
+        }
+
+        Ok(())
     }
 
     fn current_view_and_workdir(&self) -> Option<(ViewState, std::path::PathBuf)> {
@@ -198,7 +271,10 @@ impl App {
             AppMode::DiffViewer(state) => state
                 .files
                 .get(state.selected_file)
-                .map(|file| match state.layout {
+                .map(|file| match self
+                    .diff_viewer_layout()
+                    .unwrap_or_else(|| state.layout.clone())
+                {
                     DiffViewerLayout::Unified => file.patch.lines().count(),
                     DiffViewerLayout::SideBySide => side_by_side_line_count(file),
                 })
@@ -206,6 +282,13 @@ impl App {
             _ => 0,
         }
     }
+}
+
+fn is_new_diff_file(file: &crate::diff::DiffFile) -> bool {
+    matches!(
+        file.status,
+        crate::diff::DiffFileStatus::Added | crate::diff::DiffFileStatus::Untracked
+    )
 }
 
 fn side_by_side_line_count(file: &crate::diff::DiffFile) -> usize {

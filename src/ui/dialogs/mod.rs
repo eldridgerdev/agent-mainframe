@@ -21,7 +21,7 @@ pub use feature::{
 };
 pub use help::draw_help;
 pub use hooks::{
-    draw_change_reason_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
+    draw_diff_review_dialog, draw_hook_prompt_dialog, draw_latest_prompt_dialog,
     draw_running_hook_dialog,
 };
 pub use markdown::draw_markdown_viewer;

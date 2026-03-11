@@ -281,6 +281,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('T') => {
             app.start_theme_picker();
         }
+        KeyCode::Char('P') => {
+            app.start_syntax_language_picker();
+        }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
             app.message = Some(format!("Filter: {}", app.session_filter.display_name()));
@@ -315,6 +318,7 @@ fn default_key_for_action(action: &str) -> Option<char> {
         "search" => Some('/'),
         "refresh" => Some('r'),
         "filter" => Some('f'),
+        "syntax_picker" => Some('P'),
         "session_config" => Some('u'),
         "fork_feature" => Some('F'),
         "mark_ready" => Some('y'),
@@ -386,6 +390,7 @@ mod tests {
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));
         assert_eq!(default_key_for_action("filter"), Some('f'));
+        assert_eq!(default_key_for_action("syntax_picker"), Some('P'));
         assert_eq!(default_key_for_action("session_config"), Some('u'));
         assert_eq!(default_key_for_action("mark_ready"), Some('y'));
     }

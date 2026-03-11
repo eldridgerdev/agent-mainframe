@@ -41,6 +41,7 @@ pub use picker::{
     handle_markdown_file_picker_key, handle_notification_picker_key,
     handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
     handle_session_picker_key, handle_session_switcher_key,
+    handle_syntax_language_picker_key,
 };
 pub use search::handle_search_key;
 pub use view::handle_view_key;
@@ -86,6 +87,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::LatestPrompt(_, _) => handle_latest_prompt_key(app, key.code),
         AppMode::ForkingFeature(_) => handle_fork_feature_key(app, key.code),
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
+        AppMode::SyntaxLanguagePicker(_) => handle_syntax_language_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),
         AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key.code),
     }

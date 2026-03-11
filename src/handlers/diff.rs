@@ -20,6 +20,9 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('r') => {
             app.refresh_diff_viewer();
         }
+        KeyCode::Char('i') => {
+            app.open_syntax_language_picker_for_selected_diff_file();
+        }
         KeyCode::Char('j') | KeyCode::Down => match app.diff_viewer_focus() {
             Some(DiffViewerFocus::FileList) => app.diff_viewer_select_next_file(),
             Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_down(PATCH_SCROLL_STEP),
@@ -74,4 +77,68 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, ViewState};
+    use crate::diff::{DiffFile, DiffFileStatus};
+    use crate::project::VibeMode;
+    use crate::project::ProjectStore;
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn i_opens_syntax_picker_for_selected_diff_file() {
+        let mut app = crate::app::App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut state = DiffViewerState::new(
+            ViewState::new(
+                "proj".into(),
+                "feat".into(),
+                "sess".into(),
+                "claude".into(),
+                "Claude".into(),
+                VibeMode::Vibe,
+                false,
+            ),
+            PathBuf::from("/tmp/project"),
+        );
+        state.layout = DiffViewerLayout::Unified;
+        state.files = vec![DiffFile {
+            old_path: None,
+            path: "src/main.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        }];
+        app.mode = AppMode::DiffViewer(state);
+
+        handle_diff_viewer_key(&mut app, KeyCode::Char('i')).unwrap();
+
+        match &app.mode {
+            AppMode::SyntaxLanguagePicker(state) => {
+                assert_eq!(
+                    state.languages[state.selected].language,
+                    crate::highlight::HighlightLanguage::Rust
+                );
+            }
+            other => panic!("expected syntax picker, got {:?}", std::mem::discriminant(other)),
+        }
+    }
 }

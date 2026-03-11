@@ -360,6 +360,10 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         DiffViewerLayout::Unified => "unified",
         DiffViewerLayout::SideBySide => "side-by-side",
     };
+    let syntax_status = state
+        .files
+        .get(state.selected_file)
+        .and_then(|file| highlight::language_install_state_for_path(Path::new(&file.path)));
     let mut spans = vec![
         Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(format!(" focus:{focus}  ")),
@@ -382,6 +386,28 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         Span::raw(" top/bottom  "),
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
         Span::raw(" refresh  "),
+    ]);
+    if let Some((language, status)) = syntax_status {
+        spans.push(Span::styled("i", Style::default().fg(theme.warning.to_color())));
+        let label = match status {
+            highlight::HighlightInstallState::Installed => {
+                format!(" syntax:{} installed  ", language.display_name())
+            }
+            highlight::HighlightInstallState::Available => {
+                format!(" install {} parser  ", language.display_name())
+            }
+            highlight::HighlightInstallState::Broken => {
+                format!(" repair {} parser  ", language.display_name())
+            }
+        };
+        let color = match status {
+            highlight::HighlightInstallState::Installed => theme.info.to_color(),
+            highlight::HighlightInstallState::Available => theme.warning.to_color(),
+            highlight::HighlightInstallState::Broken => theme.danger.to_color(),
+        };
+        spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+    spans.extend(vec![
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" close"),
     ]);

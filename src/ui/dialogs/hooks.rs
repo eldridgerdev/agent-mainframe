@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{DiffReviewState, DiffViewerLayout, HookPromptState, RunningHookState};
+use crate::highlight;
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -19,6 +20,12 @@ fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
             crate::diff::DiffFileStatus::Added | crate::diff::DiffFileStatus::Untracked
         )
     })
+}
+
+fn diff_review_language_status(
+    state: &DiffReviewState,
+) -> Option<(highlight::HighlightLanguage, highlight::HighlightInstallState)> {
+    highlight::language_install_state_for_path(std::path::Path::new(&state.relative_path))
 }
 
 pub fn draw_diff_review_dialog(
@@ -254,7 +261,7 @@ pub fn draw_diff_review_dialog(
             Span::raw(" cancel"),
         ]))
     } else {
-        Paragraph::new(Line::from(vec![
+        let mut spans = vec![
             Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" approve  "),
             Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
@@ -267,11 +274,34 @@ pub fn draw_diff_review_dialog(
             } else {
                 " side-by-side  "
             }),
+        ];
+        if let Some((language, status)) = diff_review_language_status(state) {
+            spans.push(Span::styled("i", Style::default().fg(theme.warning.to_color())));
+            let label = match status {
+                highlight::HighlightInstallState::Installed => {
+                    format!(" syntax:{} installed  ", language.display_name())
+                }
+                highlight::HighlightInstallState::Available => {
+                    format!(" install {} parser  ", language.display_name())
+                }
+                highlight::HighlightInstallState::Broken => {
+                    format!(" repair {} parser  ", language.display_name())
+                }
+            };
+            let color = match status {
+                highlight::HighlightInstallState::Installed => theme.info.to_color(),
+                highlight::HighlightInstallState::Available => theme.warning.to_color(),
+                highlight::HighlightInstallState::Broken => theme.danger.to_color(),
+            };
+            spans.push(Span::styled(label, Style::default().fg(color)));
+        }
+        spans.extend(vec![
             Span::styled("r", Style::default().fg(theme.danger.to_color())),
             Span::raw(" feedback  "),
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" cancel"),
-        ]))
+        ]);
+        Paragraph::new(Line::from(spans))
     };
     frame.render_widget(hints, chunks[4]);
 

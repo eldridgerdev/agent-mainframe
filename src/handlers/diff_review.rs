@@ -79,6 +79,9 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('e') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             generate_diff_review_explanation(app);
         }
+        KeyCode::Char('i') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_syntax_language_picker_for_selected_diff_file();
+        }
         KeyCode::Char('v') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             if diff_review_uses_new_file_presentation(app) {
                 return Ok(());
@@ -342,6 +345,28 @@ mod tests {
             new_content: Some("hello\nworld\n".to_string()),
             patch: String::new(),
             hunks: vec![],
+        }
+    }
+
+    #[test]
+    fn i_opens_syntax_picker_for_review_file() {
+        let dir = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(dir.path());
+
+        handle_diff_review_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::SyntaxLanguagePicker(state) => {
+                assert_eq!(
+                    state.languages[state.selected].language,
+                    crate::highlight::HighlightLanguage::Rust
+                );
+            }
+            other => panic!("expected syntax picker, got {:?}", std::mem::discriminant(other)),
         }
     }
 

@@ -377,6 +377,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::SyntaxLanguagePicker(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter/i", key_style()),
+            Span::raw(" install  "),
+            Span::styled("x", key_style()),
+            Span::raw(" remove  "),
+            Span::styled("r", key_style()),
+            Span::raw(" refresh  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::SessionConfig(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" navigate  "),

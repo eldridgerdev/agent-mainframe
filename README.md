@@ -40,6 +40,8 @@ attention, and get notified the moment one is waiting for input.
   key remaps.
 - **Theme system** — built-in AMF UI themes plus bundled Opencode
   themes that are injected into every worktree.
+- **On-demand syntax parsers** — tree-sitter grammars are installed
+  only when you choose them from the dashboard picker.
 - **Non-git projects** — projects do not require git; worktree-only
   features are simply disabled for those repos.
 
@@ -68,6 +70,8 @@ attention, and get notified the moment one is waiting for input.
 
 - **GPU-accelerated terminal** (Ghostty, Wezterm, Kitty, Alacritty) —
   highly recommended for smooth ANSI rendering in the embedded view
+- **`cc` and `git`** — required if you want to install on-demand
+  tree-sitter syntax parsers from the syntax picker
 - **Nerd Font** — a
   [Nerd Font](https://www.nerdfonts.com/) is recommended for icon
   rendering. The app defaults to `nerd_font: true`; if your terminal
@@ -244,6 +248,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `y` | Toggle ready state for the selected feature |
 | `Z` | Generate a one-line summary for the selected feature |
 | `T` | Open the theme picker |
+| `P` | Open the syntax parser picker |
 | `i` | Input requests picker |
 | `/` | Search and jump |
 | `D` | Open the debug log overlay |
@@ -635,6 +640,20 @@ Available UI themes:
 - `amf`
 - `dracula`
 - `nord`
+
+### Syntax Parsers
+
+AMF can install tree-sitter parsers on demand instead of shipping every
+language parser in the binary.
+
+The curated picker currently includes Bash, C, C++, CSS, Go, HTML, Java,
+JavaScript, JSON, Markdown, Python, Rust, TOML, TSX, TypeScript, and YAML.
+
+1. Press `P` in the dashboard to open the syntax parser picker.
+2. Use `Enter` or `i` to install or reinstall the selected parser.
+3. Use `x` to remove a parser you no longer need.
+
+Installed parsers are stored under `~/.config/amf/tree-sitter/`.
 - `catppuccin-latte`
 - `catppuccin-frappe`
 - `catppuccin-macchiato`

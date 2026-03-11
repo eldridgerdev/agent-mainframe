@@ -2655,6 +2655,191 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
 }
 
 #[test]
+fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut diff_viewer = DiffViewerState::new(
+        ViewState::new(
+            "proj".into(),
+            "feat".into(),
+            "sess".into(),
+            "claude".into(),
+            "Claude".into(),
+            VibeMode::Vibe,
+            false,
+        ),
+        workdir.path().to_path_buf(),
+    );
+    diff_viewer.files = vec![crate::diff::DiffFile {
+        old_path: Some("src/main.rs".into()),
+        path: "src/main.rs".into(),
+        status: crate::diff::DiffFileStatus::Modified,
+        additions: 1,
+        deletions: 1,
+        is_binary: false,
+        old_content: Some("fn old() {}\n".into()),
+        new_content: Some("fn new() {}\n".into()),
+        patch: String::new(),
+        hunks: vec![],
+    }];
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(SyntaxOperationEvent::Finished(Ok(
+        "Installed Rust parser".to_string(),
+    )))
+    .unwrap();
+    drop(tx);
+
+    app.mode = AppMode::SyntaxLanguagePicker(SyntaxLanguagePickerState {
+        languages: vec![],
+        selected: 0,
+        notice: None,
+        operation: Some(SyntaxOperationState {
+            language: crate::highlight::HighlightLanguage::Rust,
+            action: SyntaxOperationAction::Install,
+            last_output: None,
+            started_at: std::time::Instant::now(),
+            output_rx: rx,
+        }),
+        return_to: Some(Box::new(AppMode::DiffViewer(diff_viewer))),
+        auto_return_on_success: true,
+        return_language: Some(crate::highlight::HighlightLanguage::Rust),
+    });
+
+    app.poll_syntax_language_picker().unwrap();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.error.is_some());
+            assert!(state.files.is_empty());
+        }
+        _ => panic!("expected diff viewer after successful install"),
+    }
+}
+
+#[test]
+fn contextual_syntax_install_returns_to_diff_review_prompt() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(SyntaxOperationEvent::Finished(Ok(
+        "Installed Rust parser".to_string(),
+    )))
+    .unwrap();
+    drop(tx);
+
+    app.mode = AppMode::SyntaxLanguagePicker(SyntaxLanguagePickerState {
+        languages: vec![],
+        selected: 0,
+        notice: None,
+        operation: Some(SyntaxOperationState {
+            language: crate::highlight::HighlightLanguage::Rust,
+            action: SyntaxOperationAction::Install,
+            last_output: None,
+            started_at: std::time::Instant::now(),
+            output_rx: rx,
+        }),
+        return_to: Some(Box::new(AppMode::DiffReviewPrompt(DiffReviewState {
+            session_id: "sess-1".to_string(),
+            workdir: workdir.path().to_path_buf(),
+            file_path: workdir.path().join("src/main.rs").display().to_string(),
+            relative_path: "src/main.rs".to_string(),
+            change_id: "chg-1".to_string(),
+            tool: "edit".to_string(),
+            old_snippet: "old".to_string(),
+            new_snippet: "new".to_string(),
+            diff_file: None,
+            diff_error: None,
+            reason: String::new(),
+            editing_feedback: false,
+            layout: DiffViewerLayout::Unified,
+            explanation: None,
+            explanation_child: None,
+            response_file: workdir.path().join("response.json"),
+            proceed_signal: workdir.path().join("proceed"),
+            request_id: None,
+            reply_socket: None,
+            return_to_view: None,
+        }))),
+        auto_return_on_success: true,
+        return_language: Some(crate::highlight::HighlightLanguage::Rust),
+    });
+
+    app.poll_syntax_language_picker().unwrap();
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            assert_eq!(state.relative_path, "src/main.rs");
+        }
+        _ => panic!("expected diff review prompt after successful install"),
+    }
+}
+
+#[test]
+fn contextual_syntax_install_stays_open_for_non_matching_language() {
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(SyntaxOperationEvent::Finished(Ok(
+        "Installed JSON parser".to_string(),
+    )))
+    .unwrap();
+    drop(tx);
+
+    app.mode = AppMode::SyntaxLanguagePicker(SyntaxLanguagePickerState {
+        languages: vec![],
+        selected: 0,
+        notice: None,
+        operation: Some(SyntaxOperationState {
+            language: crate::highlight::HighlightLanguage::Json,
+            action: SyntaxOperationAction::Install,
+            last_output: None,
+            started_at: std::time::Instant::now(),
+            output_rx: rx,
+        }),
+        return_to: Some(Box::new(AppMode::Normal)),
+        auto_return_on_success: true,
+        return_language: Some(crate::highlight::HighlightLanguage::Rust),
+    });
+
+    app.poll_syntax_language_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SyntaxLanguagePicker(state) => {
+            assert!(state.operation.is_none());
+            assert_eq!(state.notice.as_deref(), Some("Installed JSON parser"));
+        }
+        _ => panic!("expected syntax picker to remain open"),
+    }
+}
+
+#[test]
 fn sync_session_status_none_when_file_missing() {
     let workdir = TempDir::new().unwrap();
     let session_id = "test-sess-456";

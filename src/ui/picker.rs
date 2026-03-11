@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{
     BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
     MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
-    SessionSwitcherState,
+    SessionSwitcherState, SyntaxLanguagePickerState, SyntaxOperationAction,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -206,6 +206,226 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));
     frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_syntax_language_picker(
+    frame: &mut Frame,
+    state: &SyntaxLanguagePickerState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let installed = state
+        .languages
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.status,
+                crate::highlight::HighlightInstallState::Installed
+            )
+        })
+        .count();
+    let area = centered_rect(68, 58, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Syntax Parsers ({}/{}) ",
+        installed,
+        state.languages.len()
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.info.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let status_line = if let Some(operation) = &state.operation {
+        let verb = match operation.action {
+            SyntaxOperationAction::Install => "Installing",
+            SyntaxOperationAction::Uninstall => "Removing",
+        };
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let spinner = throbber.to_symbol_span(throbber_state);
+        let detail = operation
+            .last_output
+            .clone()
+            .unwrap_or_else(|| "Working...".to_string());
+        let elapsed = operation.started_at.elapsed().as_secs();
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} {}  ", verb, operation.language.picker_title()),
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                spinner,
+                Span::styled(
+                    format!("  {}s elapsed", elapsed),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(detail, Style::default().fg(theme.text_muted.to_color())),
+            ]),
+        ])
+    } else if let Some(notice) = &state.notice {
+        let color = if notice.starts_with("Error:") {
+            theme.danger.to_color()
+        } else {
+            theme.success.to_color()
+        };
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", notice),
+            Style::default().fg(color),
+        )))
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            "  Install only the tree-sitter parsers this workspace actually needs.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+    };
+    frame.render_widget(status_line, chunks[0]);
+
+    let items: Vec<ListItem> = state
+        .languages
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let is_selected = i == state.selected;
+            let is_operating = state
+                .operation
+                .as_ref()
+                .is_some_and(|op| op.language == row.language);
+
+            let (badge_label, badge_style) = if is_operating {
+                (
+                    match state.operation.as_ref().map(|op| op.action) {
+                        Some(SyntaxOperationAction::Install) => " INSTALLING ",
+                        Some(SyntaxOperationAction::Uninstall) => " REMOVING ",
+                        None => " WORKING ",
+                    },
+                    Style::default()
+                        .fg(theme.effective_bg())
+                        .bg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                match row.status {
+                    crate::highlight::HighlightInstallState::Installed => (
+                        " INSTALLED ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.success.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    crate::highlight::HighlightInstallState::Available => (
+                        " AVAILABLE ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.text_muted.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    crate::highlight::HighlightInstallState::Broken => (
+                        " BROKEN ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.danger.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                }
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(badge_label, badge_style),
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    row.language.picker_title(),
+                    if is_selected {
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text.to_color())
+                    },
+                ),
+                Span::styled(
+                    format!("  {}  ", row.language.extension_summary()),
+                    Style::default().fg(theme.primary.to_color()),
+                ),
+                Span::styled(
+                    row.language.picker_description(),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), chunks[1]);
+
+    let hints = if state.operation.is_some() {
+        Paragraph::new(Line::from(vec![
+            Span::styled("  wait", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " for the current parser operation to finish",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  j/k or \u{2191}/\u{2193}",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                " navigate  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Enter/i", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " install or reinstall  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("x", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " uninstall  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("r", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " refresh  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+        ]))
+    };
+    frame.render_widget(hints, chunks[2]);
 }
 
 pub fn draw_markdown_file_picker(

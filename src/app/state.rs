@@ -388,6 +388,7 @@ pub struct DiffReviewState {
     pub new_snippet: String,
     pub diff_file: Option<crate::diff::DiffFile>,
     pub diff_error: Option<String>,
+    pub patch_scroll: usize,
     pub reason: String,
     pub editing_feedback: bool,
     pub layout: DiffViewerLayout,

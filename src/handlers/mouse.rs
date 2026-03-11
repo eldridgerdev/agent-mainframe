@@ -35,6 +35,10 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::DiffViewer(_)) {
         return;
     }
+    if matches!(app.mode, AppMode::DiffReviewPrompt(_)) {
+        app.diff_review_scroll_patch_up(VIEW_MOUSE_SCROLL_LINES);
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -44,6 +48,10 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
 
 fn handle_scroll_down(app: &mut App, visible_rows: u16) {
     if matches!(app.mode, AppMode::DiffViewer(_)) {
+        return;
+    }
+    if matches!(app.mode, AppMode::DiffReviewPrompt(_)) {
+        app.diff_review_scroll_patch_down(VIEW_MOUSE_SCROLL_LINES);
         return;
     }
     if matches!(app.mode, AppMode::Viewing(_)) {

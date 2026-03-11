@@ -374,23 +374,7 @@ diff viewer; set `"diff_review_viewer": "nvim"` in
 
 > Screenshot placeholder: diff-review overlay with a real code diff and the accept/reject controls visible.
 
-```text
-  ╭─ Diff Review ──────────────────────────────────────────────╮
-  │                                                            │
-  │  src/auth/mod.rs                                           │
-  │                                                            │
-  │  - fn verify_token(token: &str) -> bool {                  │
-  │  -     session_store.contains(token)                       │
-  │  + fn verify_token(token: &str) -> Result<Claims> {        │
-  │  +     jwt::decode(token, &KEYS.decoding)                  │
-  │  }                                                         │
-  │                                                            │
-  │  Enter accept   r reject   Esc skip                        │
-  ╰────────────────────────────────────────────────────────────╯
-```
-
-Press `Enter` to accept the change, `r` to reject it (the agent is
-told the edit was refused), or `Esc` to skip review and allow it.
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/f41435e0-b607-425f-aa5e-bfaa3f944c08" />
 
 The hook is written to the worktree's local `.claude/settings.local.json`
 only — your global Claude Code settings are never modified.
@@ -399,23 +383,12 @@ only — your global Claude Code settings are never modified.
 
 When an agent session needs user input, AMF prefers push-based IPC
 notifications and falls back to file polling if the socket is not
-available. Press `i` to open the picker and jump to the session that
+available. Press `<leader> i` to open the picker and jump to the session that
 needs attention:
 
-> Screenshot placeholder: input requests picker with at least one normal agent prompt and one diff-review notification.
+<img width="888" height="23" alt="image" src="https://github.com/user-attachments/assets/5609d2d8-7eab-4423-8750-d8d542a095fa" />
+<img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/ea52a5cd-a0cc-432f-bdb2-3c97be99d136" />
 
-```text
-       ┌─ Input Requests ──────────────────────────────┐
-       │                                               │
-       │ ▶ my-app / auth-rework                        │
-       │     claude is waiting for input               │
-       │                                               │
-       │ ▶ my-app / main                               │
-       │     diff review pending                       │
-       │                                               │
-       │   j/k navigate   Enter jump   Esc close       │
-       └───────────────────────────────────────────────┘
-```
 
 Claude hooks are configured in the feature's local
 `.claude/settings.local.json`, Codex notifications are written into the
@@ -455,7 +428,7 @@ automatically with defaults on first run.
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
 
 ### `zai` — token usage limits (optional)
-
+(This is pretty busted as of now. Until ZAI gives more useful info in their API you can guess some hard coded limits until it somewhat matches the dashboard. or just keep it disabled)
 Controls whether ZAI usage is shown in the status bar. Set to `null`
 or omit the key entirely to disable it.
 

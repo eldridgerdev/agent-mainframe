@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::*;
 use crate::tmux::TmuxManager;
+use crate::worktree::WorktreeManager;
 
 impl App {
     pub fn enter_view(&mut self) -> Result<()> {
@@ -71,6 +72,8 @@ impl App {
             }
         });
 
+        let pending_project_name = project_name.clone();
+        let pending_feature_name = feature_name.clone();
         let view = ViewState::new(
             project_name,
             feature_name,
@@ -85,6 +88,20 @@ impl App {
         self.pane_content.clear();
 
         self.mode = AppMode::Viewing(view);
+
+        if self.use_custom_diff_review_viewer()
+            && let Some(idx) = self.pending_inputs.iter().position(|input| {
+                let is_structured_diff_review = input.notification_type == "change-reason"
+                    || input.notification_type == "diff-review";
+                is_structured_diff_review
+                    && input.project_name.as_deref() == Some(&pending_project_name)
+                    && input.feature_name.as_deref() == Some(&pending_feature_name)
+            })
+        {
+            let input = self.pending_inputs.remove(idx);
+            self.open_diff_review_prompt(&input);
+            let _ = std::fs::remove_file(&input.file_path);
+        }
 
         Ok(())
     }
@@ -124,23 +141,30 @@ impl App {
             return Ok(());
         };
 
-        let files = crate::markdown::collect_markdown_view_paths(&workdir);
+        let repo_root = WorktreeManager::is_worktree(&workdir)
+            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
+            .flatten()
+            .filter(|root| root != &workdir);
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
         if files.is_empty() {
             self.mode = AppMode::Viewing(view);
             self.message = Some(
-                "Error: No markdown file found (.claude/*.md or top-level *.md)".into(),
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
             );
             return Ok(());
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(files[0].clone(), workdir, view);
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view);
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
             files,
             selected: 0,
             workdir,
+            repo_root,
             from_view: Some(view),
         });
         self.message = None;
@@ -151,6 +175,7 @@ impl App {
         &mut self,
         path: PathBuf,
         workdir: PathBuf,
+        repo_root: Option<PathBuf>,
         view: ViewState,
     ) -> Result<()> {
         let content = match std::fs::read_to_string(&path) {
@@ -162,11 +187,7 @@ impl App {
             }
         };
 
-        let title = path
-            .strip_prefix(&workdir)
-            .unwrap_or(path.as_path())
-            .display()
-            .to_string();
+        let title = crate::markdown::markdown_view_label(&path, &workdir, repo_root.as_deref());
 
         self.mode = AppMode::MarkdownViewer(crate::app::MarkdownViewerState {
             title,

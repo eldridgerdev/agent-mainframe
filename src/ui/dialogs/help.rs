@@ -42,6 +42,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("O", "Open AMF settings project"),
         ("d", "Delete project/feature/session"),
         ("D", "View debug log"),
+        ("P", "Open syntax parser picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
@@ -113,9 +114,19 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q t T w h / n p i l m r x f D ? H M 1-9)",
+            "Leader key (then: q t T w h / n p i l m r x f d D ? H M 1-9)",
             Style::default().fg(theme.text.to_color()),
         ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "d"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled("Diff viewer", Style::default().fg(theme.text.to_color())),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
@@ -125,10 +136,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(
-            "Markdown file picker/viewer",
-            Style::default().fg(theme.text.to_color()),
-        ),
+        Span::styled("Markdown file picker/viewer", Style::default().fg(theme.text.to_color())),
     ]));
     lines.push(Line::from(vec![
         Span::styled(

@@ -1,4 +1,5 @@
 use ratatui_explorer::FileExplorer;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Child;
 
@@ -116,6 +117,17 @@ pub struct PendingInput {
     pub message: String,
     pub notification_type: String,
     pub file_path: PathBuf,
+    pub target_file_path: Option<String>,
+    pub relative_path: Option<String>,
+    pub change_id: Option<String>,
+    pub tool: Option<String>,
+    pub old_snippet: Option<String>,
+    pub new_snippet: Option<String>,
+    pub original_file: Option<String>,
+    pub proposed_file: Option<String>,
+    pub is_new_file: Option<bool>,
+    pub reason: Option<String>,
+    pub response_file: Option<String>,
     pub project_name: Option<String>,
     pub feature_name: Option<String>,
     pub proceed_signal: Option<String>,
@@ -195,6 +207,52 @@ pub struct BookmarkPickerState {
     pub from_view: Option<ViewState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffViewerFocus {
+    FileList,
+    Patch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffViewerLayout {
+    Unified,
+    SideBySide,
+}
+
+#[derive(Clone)]
+pub struct DiffViewerState {
+    pub from_view: ViewState,
+    pub workdir: PathBuf,
+    pub branch: String,
+    pub base_ref: String,
+    pub base_commit: String,
+    pub files: Vec<crate::diff::DiffFile>,
+    pub selected_file: usize,
+    pub patch_scroll: usize,
+    pub focus: DiffViewerFocus,
+    pub layout: DiffViewerLayout,
+    pub error: Option<String>,
+}
+
+impl DiffViewerState {
+    pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
+        Self {
+            from_view,
+            workdir,
+            branch: String::new(),
+            base_ref: String::new(),
+            base_commit: String::new(),
+            files: Vec::new(),
+            selected_file: 0,
+            patch_scroll: 0,
+            focus: DiffViewerFocus::FileList,
+            layout: DiffViewerLayout::Unified,
+            error: None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SteeringPromptState {
     pub view: ViewState,
@@ -237,14 +295,16 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffViewer(DiffViewerState),
     SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
-    ChangeReasonPrompt(ChangeReasonState),
+    DiffReviewPrompt(DiffReviewState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
     LatestPrompt(String, ViewState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
+    SyntaxLanguagePicker(SyntaxLanguagePickerState),
     DebugLog(DebugLogState),
     MarkdownViewer(MarkdownViewerState),
     MarkdownFilePicker(MarkdownFilePickerState),
@@ -280,6 +340,40 @@ pub struct ThemePickerState {
     pub themes: Vec<crate::theme::ThemeName>,
 }
 
+pub struct SyntaxLanguageRow {
+    pub language: crate::highlight::HighlightLanguage,
+    pub status: crate::highlight::HighlightInstallState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxOperationAction {
+    Install,
+    Uninstall,
+}
+
+pub enum SyntaxOperationEvent {
+    Output(String),
+    Finished(Result<String, String>),
+}
+
+pub struct SyntaxOperationState {
+    pub language: crate::highlight::HighlightLanguage,
+    pub action: SyntaxOperationAction,
+    pub last_output: Option<String>,
+    pub started_at: std::time::Instant,
+    pub output_rx: std::sync::mpsc::Receiver<SyntaxOperationEvent>,
+}
+
+pub struct SyntaxLanguagePickerState {
+    pub languages: Vec<SyntaxLanguageRow>,
+    pub selected: usize,
+    pub notice: Option<String>,
+    pub operation: Option<SyntaxOperationState>,
+    pub return_to: Option<Box<AppMode>>,
+    pub auto_return_on_success: bool,
+    pub return_language: Option<crate::highlight::HighlightLanguage>,
+}
+
 pub struct DebugLogState {
     pub scroll_offset: usize,
     pub from_view: Option<ViewState>,
@@ -297,6 +391,7 @@ pub struct MarkdownFilePickerState {
     pub files: Vec<PathBuf>,
     pub selected: usize,
     pub workdir: PathBuf,
+    pub repo_root: Option<PathBuf>,
     pub from_view: Option<ViewState>,
 }
 
@@ -317,19 +412,28 @@ pub struct BuiltinSessionOption {
     pub disabled: Option<String>,
 }
 
-pub struct ChangeReasonState {
+pub struct DiffReviewState {
     pub session_id: String,
+    pub workdir: PathBuf,
     pub file_path: String,
     pub relative_path: String,
     pub change_id: String,
     pub tool: String,
     pub old_snippet: String,
     pub new_snippet: String,
+    pub diff_file: Option<crate::diff::DiffFile>,
+    pub diff_error: Option<String>,
+    pub patch_scroll: usize,
     pub reason: String,
+    pub editing_feedback: bool,
+    pub layout: DiffViewerLayout,
+    pub explanation: Option<String>,
+    pub explanation_child: Option<Child>,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
     pub request_id: Option<String>,
     pub reply_socket: Option<String>,
+    pub return_to_view: Option<ViewState>,
 }
 
 pub enum HookNext {

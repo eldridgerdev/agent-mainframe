@@ -260,10 +260,10 @@ debug log with level ERROR.
 - **Never modify `~/.claude/settings.json` (global) or
   `~/.config/opencode/` (global opencode config) to inject
   hooks or settings.** Instead, write to the worktree's
-  local `.claude/settings.json` (or `.opencode/` equivalent)
+  local `.claude/settings.local.json` (or `.opencode/` equivalent)
   via `ensure_notification_hooks()`. For non-worktree
   features (first feature that uses the repo dir directly),
-  write to `{repo}/.claude/settings.json`. On startup,
+  write to `{repo}/.claude/settings.local.json`. On startup,
   `cleanup_global_hooks()` actively removes any
   previously-injected global entries.
 

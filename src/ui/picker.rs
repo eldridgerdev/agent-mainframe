@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{
     BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
     MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
-    SessionSwitcherState,
+    SessionSwitcherState, SyntaxLanguagePickerState, SyntaxOperationAction,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -208,15 +208,30 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
     frame.render_widget(hints, chunks[1]);
 }
 
-pub fn draw_markdown_file_picker(
+pub fn draw_syntax_language_picker(
     frame: &mut Frame,
-    state: &MarkdownFilePickerState,
+    state: &SyntaxLanguagePickerState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
-    let area = centered_rect(62, 52, frame.area());
+    let installed = state
+        .languages
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.status,
+                crate::highlight::HighlightInstallState::Installed
+            )
+        })
+        .count();
+    let area = centered_rect(68, 58, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = format!(" Markdown Files ({}) ", state.files.len());
+    let title = format!(
+        " Syntax Parsers ({}/{}) ",
+        installed,
+        state.languages.len()
+    );
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -228,8 +243,270 @@ pub fn draw_markdown_file_picker(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
+
+    let status_line = if let Some(operation) = &state.operation {
+        let verb = match operation.action {
+            SyntaxOperationAction::Install => "Installing",
+            SyntaxOperationAction::Uninstall => "Removing",
+        };
+        let throbber = throbber_widgets_tui::Throbber::default()
+            .throbber_style(
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+            .use_type(throbber_widgets_tui::WhichUse::Spin);
+        let spinner = throbber.to_symbol_span(throbber_state);
+        let detail = operation
+            .last_output
+            .clone()
+            .unwrap_or_else(|| "Working...".to_string());
+        let elapsed = operation.started_at.elapsed().as_secs();
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} {}  ", verb, operation.language.picker_title()),
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                spinner,
+                Span::styled(
+                    format!("  {}s elapsed", elapsed),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(detail, Style::default().fg(theme.text_muted.to_color())),
+            ]),
+        ])
+    } else if let Some(notice) = &state.notice {
+        let color = if notice.starts_with("Error:") {
+            theme.danger.to_color()
+        } else {
+            theme.success.to_color()
+        };
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", notice),
+            Style::default().fg(color),
+        )))
+    } else {
+        Paragraph::new(Line::from(Span::styled(
+            "  Install only the tree-sitter parsers this workspace actually needs.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+    };
+    frame.render_widget(status_line, chunks[0]);
+
+    let items: Vec<ListItem> = state
+        .languages
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let is_selected = i == state.selected;
+            let is_operating = state
+                .operation
+                .as_ref()
+                .is_some_and(|op| op.language == row.language);
+
+            let (badge_label, badge_style) = if is_operating {
+                (
+                    match state.operation.as_ref().map(|op| op.action) {
+                        Some(SyntaxOperationAction::Install) => " INSTALLING ",
+                        Some(SyntaxOperationAction::Uninstall) => " REMOVING ",
+                        None => " WORKING ",
+                    },
+                    Style::default()
+                        .fg(theme.effective_bg())
+                        .bg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                match row.status {
+                    crate::highlight::HighlightInstallState::Installed => (
+                        " INSTALLED ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.success.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    crate::highlight::HighlightInstallState::Available => (
+                        " AVAILABLE ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.text_muted.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    crate::highlight::HighlightInstallState::Broken => (
+                        " BROKEN ",
+                        Style::default()
+                            .fg(theme.effective_bg())
+                            .bg(theme.danger.to_color())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                }
+            };
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "  > " } else { "    " },
+                    Style::default().fg(theme.warning.to_color()),
+                ),
+                Span::styled(badge_label, badge_style),
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    row.language.picker_title(),
+                    if is_selected {
+                        Style::default()
+                            .fg(theme.text.to_color())
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.text.to_color())
+                    },
+                ),
+                Span::styled(
+                    format!("  {}  ", row.language.extension_summary()),
+                    Style::default().fg(theme.primary.to_color()),
+                ),
+                Span::styled(
+                    row.language.picker_description(),
+                    Style::default().fg(theme.text_muted.to_color()),
+                ),
+            ]);
+
+            if is_selected {
+                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+            } else {
+                ListItem::new(line)
+            }
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), chunks[1]);
+
+    let hints = if state.operation.is_some() {
+        Paragraph::new(Line::from(vec![
+            Span::styled("  wait", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " for the current parser operation to finish",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  j/k or \u{2191}/\u{2193}",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                " navigate  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Enter/i", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " install or reinstall  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("x", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " uninstall  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("r", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " refresh  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+        ]))
+    };
+    frame.render_widget(hints, chunks[2]);
+}
+
+pub fn draw_markdown_file_picker(
+    frame: &mut Frame,
+    state: &MarkdownFilePickerState,
+    theme: &Theme,
+) {
+    let showing_repo_root = state.repo_root.is_some();
+    let area = if showing_repo_root {
+        centered_rect(70, 60, frame.area())
+    } else {
+        centered_rect(62, 52, frame.area())
+    };
+    frame.render_widget(Clear, area);
+
+    let title = if showing_repo_root {
+        format!(
+            " Markdown Files: Worktree + Repo Root ({}) ",
+            state.files.len()
+        )
+    } else {
+        format!(" Markdown Files ({}) ", state.files.len())
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.info.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(if showing_repo_root {
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            vec![Constraint::Min(1), Constraint::Length(2)]
+        })
+        .split(inner);
+
+    if showing_repo_root {
+        let legend = Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  WORKTREE",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = current feature dir    ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(
+                "REPO ROOT",
+                Style::default()
+                    .fg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " = main repo dir",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]));
+        frame.render_widget(legend, chunks[0]);
+    }
+
+    let list_chunk = if showing_repo_root {
+        chunks[1]
+    } else {
+        chunks[0]
+    };
+    let hint_chunk = if showing_repo_root {
+        chunks[2]
+    } else {
+        chunks[1]
+    };
 
     let items: Vec<ListItem> = state
         .files
@@ -237,16 +514,42 @@ pub fn draw_markdown_file_picker(
         .enumerate()
         .map(|(i, path)| {
             let is_selected = i == state.selected;
-            let label = path
-                .strip_prefix(&state.workdir)
-                .unwrap_or(path.as_path())
-                .display()
-                .to_string();
+            let scope = crate::markdown::markdown_view_scope(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
+            let scope_label = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => " WORKTREE ",
+                crate::markdown::MarkdownViewScope::RepoRoot => " REPO ROOT ",
+                crate::markdown::MarkdownViewScope::Other => " PATH ",
+            };
+            let scope_style = match scope {
+                crate::markdown::MarkdownViewScope::Worktree => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::RepoRoot => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.info.to_color())
+                    .add_modifier(Modifier::BOLD),
+                crate::markdown::MarkdownViewScope::Other => Style::default()
+                    .fg(theme.effective_bg())
+                    .bg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::BOLD),
+            };
+            let label = crate::markdown::markdown_view_relative_label(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+            );
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "  > " } else { "    " },
                     Style::default().fg(theme.warning.to_color()),
                 ),
+                Span::styled(scope_label, scope_style),
+                Span::styled(" ", Style::default().fg(theme.text_muted.to_color())),
                 Span::styled(
                     label,
                     if is_selected {
@@ -266,7 +569,10 @@ pub fn draw_markdown_file_picker(
         })
         .collect();
 
-    frame.render_widget(List::new(items), chunks[0]);
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected));
+    frame.render_stateful_widget(list, list_chunk, &mut list_state);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -282,7 +588,7 @@ pub fn draw_markdown_file_picker(
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));
-    frame.render_widget(hints, chunks[1]);
+    frame.render_widget(hints, hint_chunk);
 }
 
 pub fn draw_bookmark_picker(

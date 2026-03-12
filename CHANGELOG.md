@@ -12,6 +12,61 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.9.0] - 2026-03-12
+
+### Added
+
+- On-demand tree-sitter parser management — a language picker lets you
+  install and select syntax highlighting grammars at runtime without
+  restarting, accessible from the diff viewer and diff review prompt.
+- Scroll support in the diff review prompt pane (j/k, g/G, mouse wheel).
+- Opencode change-tracker plugin (`.opencode/plugins/change-tracker.js`)
+  that watches file writes, emits AMF notifications, and wires into the
+  diff review approval flow for Opencode sessions.
+
+### Fixed
+
+- Diff review flow for Opencode sessions now correctly triggers the
+  change-reason prompt and handles accept/reject signalling.
+- Diff review patch scroll state is now shared consistently between the
+  diff viewer and diff review prompt.
+
+### Migration
+
+- No store migration is required.
+- To use Opencode diff review, the
+  `.opencode/plugins/change-tracker.js` plugin must be present in your
+  repo (included automatically for new features).
+
+## [v0.8.0] - 2026-03-11
+
+### Added
+
+- Built-in in-app diff viewer for view mode with a file list, patch pane,
+  unified and side-by-side layouts, refresh support, and keyboard
+  navigation.
+- Tree-sitter syntax highlighting for the diff viewer, plus contextual
+  line highlighting and clearer diff gutters.
+- In-app markdown file picker and viewer for `.claude/*.md` files and
+  top-level `*.md` files while viewing a feature.
+- Repo-root markdown discovery for worktree features, so shared files
+  like `PLAN.md` can be opened without leaving the current session.
+- Vibeless-mode Codex diff review automation that watches file writes,
+  opens the change-reason prompt, and reverts rejected changes.
+
+### Changed
+
+- Diff review and markdown-reading workflows now stay inside AMF instead
+  of requiring an external tool or a separate terminal flow.
+- Markdown picker labels now distinguish worktree files from repo-root
+  files when both scopes are available.
+
+### Migration
+
+- No store migration is required.
+- If you use Codex vibeless-mode diff review, install `inotifywait`
+  (usually provided by `inotify-tools`) so the watcher can run.
+
 ## [v0.7.0] - 2026-03-09
 
 ### Added

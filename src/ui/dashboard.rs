@@ -111,6 +111,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::DiffViewer(state) = &app.mode {
+        super::pane::draw(
+            frame,
+            &state.from_view,
+            &app.pane_content,
+            false,
+            app.pending_inputs.len(),
+            app.tmux_cursor,
+            &app.theme,
+        );
+        super::dialogs::draw_diff_viewer(frame, state, &app.theme);
+        return;
+    }
+
     if let AppMode::MarkdownViewer(state) = &mut app.mode {
         if let Some(view) = &state.from_view {
             super::pane::draw(
@@ -126,7 +140,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
         return;
     }
-
     if let AppMode::SteeringPrompt(state) = &app.mode {
         super::pane::draw(
             frame,
@@ -155,6 +168,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.theme,
         );
         super::picker::draw_command_picker(frame, state, &app.theme);
+        return;
+    }
+
+    if let AppMode::SyntaxLanguagePicker(state) = &app.mode {
+        super::picker::draw_syntax_language_picker(frame, state, &app.throbber_state, &app.theme);
         return;
     }
 
@@ -350,8 +368,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
     }
 
-    if let AppMode::ChangeReasonPrompt(state) = &app.mode {
-        super::dialogs::draw_change_reason_dialog(frame, state, &app.theme);
+    if let AppMode::DiffReviewPrompt(state) = &app.mode {
+        super::dialogs::draw_diff_review_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 
     if let AppMode::RunningHook(state) = &app.mode {

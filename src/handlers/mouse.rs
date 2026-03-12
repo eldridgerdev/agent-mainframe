@@ -32,6 +32,13 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
 }
 
 fn handle_scroll_up(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        return;
+    }
+    if matches!(app.mode, AppMode::DiffReviewPrompt(_)) {
+        app.diff_review_scroll_patch_up(VIEW_MOUSE_SCROLL_LINES);
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -40,6 +47,13 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
 }
 
 fn handle_scroll_down(app: &mut App, visible_rows: u16) {
+    if matches!(app.mode, AppMode::DiffViewer(_)) {
+        return;
+    }
+    if matches!(app.mode, AppMode::DiffReviewPrompt(_)) {
+        app.diff_review_scroll_patch_down(VIEW_MOUSE_SCROLL_LINES);
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Down, visible_rows);
         return;
@@ -188,25 +202,27 @@ fn handle_click(
             | AppMode::ConfirmingCodexSession { .. }
             | AppMode::SessionPicker(_)
             | AppMode::BookmarkPicker(_)
+            | AppMode::DiffViewer(_)
             | AppMode::SessionSwitcher(_)
             | AppMode::RenamingSession(_)
             | AppMode::RenamingFeature(_)
             | AppMode::NotificationPicker(_, _)
-            | AppMode::ChangeReasonPrompt(_)
+            | AppMode::DiffReviewPrompt(_)
             | AppMode::RunningHook(_)
     ) {
         return Ok(());
     }
 
     let list_start_row = 4;
-    let list_end_row = list_start_row + visible_rows;
+    let list_visible_height = visible_rows.saturating_sub(5);
+    let list_end_row = list_start_row + list_visible_height;
 
     if row >= list_start_row && row < list_end_row {
         let clicked_in_list = row - list_start_row;
-        let item_index = app.scroll_offset + clicked_in_list as usize;
-
-        let visible = app.visible_items();
-        if item_index < visible.len() {
+        if let Some(item_index) =
+            app.item_index_at_visible_row(clicked_in_list as usize, list_visible_height as usize)
+        {
+            let visible = app.visible_items();
             let clicked_item = visible[item_index].clone();
 
             let is_double_click = unsafe {

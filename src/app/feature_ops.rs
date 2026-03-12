@@ -137,6 +137,10 @@ impl App {
             ));
             return Ok(());
         }
+        if let Err(err) = self.ensure_agent_mode_supported(&state.agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
+            return Ok(());
+        }
 
         let stored_is_git = {
             let project = match self.store.find_project(&project_name) {
@@ -449,6 +453,16 @@ impl App {
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let (agent, mode) = match self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+        {
+            Some(feature) => (feature.agent.clone(), feature.mode.clone()),
+            None => return Ok(()),
+        };
+        self.ensure_agent_mode_supported(&agent, &mode)?;
         let feature = match self
             .store
             .projects
@@ -519,8 +533,32 @@ impl App {
                         .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Codex => {
-                    self.tmux
-                        .launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
+                    // In vibeless mode, launch a diff-review watcher alongside
+                    // Codex so each file change can be approved/rejected via
+                    // the AMF popup.
+                    let watcher_path = crate::project::amf_config_dir()
+                        .join("codex-diff-review.sh");
+                    if matches!(feature.mode, crate::project::VibeMode::Vibeless)
+                        && watcher_path.exists()
+                    {
+                        let cmd = format!(
+                            "env AMF_SESSION={0} {1} {2} & env AMF_SESSION={0} codex",
+                            feature.tmux_session,
+                            watcher_path.display(),
+                            feature.workdir.display(),
+                        );
+                        self.tmux.send_keys(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &cmd,
+                        )?;
+                    } else {
+                        self.tmux.launch_codex(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            None,
+                        )?;
+                    }
                 }
                 SessionKind::Nvim => {
                     if feature.has_notes {
@@ -1131,6 +1169,10 @@ impl App {
                 "Error: Agent '{}' is not allowed for this workspace",
                 agent.display_name()
             ));
+            return Ok(());
+        }
+        if let Err(err) = self.ensure_agent_mode_supported(&agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
 

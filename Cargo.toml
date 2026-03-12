@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.7.0"
+version = "0.9.0"
 edition = "2024"
 
 [[bin]]
@@ -24,6 +24,9 @@ ureq = { version = "3", default-features = false, features = ["gzip", "rustls"] 
 unicode-width = "0.1"
 regex = "1"
 toml = "0.8"
+tree-sitter = "0.26"
+tree-sitter-language = "0.1"
+tree-sitter-highlight = "0.26"
 pulldown-cmark = "0.13"
 
 [dev-dependencies]

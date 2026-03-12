@@ -1,12 +1,14 @@
 #![allow(dead_code)]
 
-mod automation;
 mod app;
+mod automation;
 mod claude;
 mod codex;
 mod debug;
+mod diff;
 mod extension;
 mod handlers;
+mod highlight;
 mod http_client;
 mod ipc;
 mod markdown;
@@ -34,8 +36,8 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 use std::io;
-use std::path::PathBuf;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use app::App;
@@ -176,6 +178,11 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
+    let refreshed_claude = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
+    app.log_info(
+        "setup",
+        format!("Refreshed Claude hooks for {refreshed_claude} feature(s)"),
+    );
     let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
     app.log_info(
         "setup",
@@ -481,6 +488,18 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         if matches!(app.mode, app::AppMode::DeletingFeatureInProgress(_))
             && let Err(e) = app.poll_deleting_feature()
+        {
+            app.show_error(e);
+        }
+
+        if matches!(app.mode, app::AppMode::DiffReviewPrompt(_))
+            && let Err(e) = app.poll_diff_review_explanation()
+        {
+            app.show_error(e);
+        }
+
+        if matches!(app.mode, app::AppMode::SyntaxLanguagePicker(_))
+            && let Err(e) = app.poll_syntax_language_picker()
         {
             app.show_error(e);
         }

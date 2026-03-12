@@ -83,6 +83,61 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
+    let operation_running = matches!(
+        &app.mode,
+        AppMode::SyntaxLanguagePicker(state) if state.operation.is_some()
+    );
+
+    if operation_running {
+        if matches!(key, KeyCode::Esc | KeyCode::Char('q')) {
+            app.message = Some("Wait for the syntax operation to finish".into());
+        }
+        return Ok(());
+    }
+
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_syntax_language_picker();
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let AppMode::SyntaxLanguagePicker(state) = &mut app.mode {
+                let len = state.languages.len();
+                if len > 0 {
+                    state.selected = (state.selected + 1) % len;
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let AppMode::SyntaxLanguagePicker(state) = &mut app.mode {
+                let len = state.languages.len();
+                if len > 0 {
+                    state.selected = if state.selected == 0 {
+                        len - 1
+                    } else {
+                        state.selected - 1
+                    };
+                }
+            }
+        }
+        KeyCode::Enter | KeyCode::Char('i') => {
+            app.syntax_picker_install_selected();
+        }
+        KeyCode::Char('x') | KeyCode::Delete => {
+            app.syntax_picker_uninstall_selected();
+        }
+        KeyCode::Char('r') => {
+            app.refresh_syntax_language_picker();
+            if let AppMode::SyntaxLanguagePicker(state) = &mut app.mode {
+                state.notice = Some("Refreshed syntax parser status".into());
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -118,7 +173,12 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
             if let AppMode::MarkdownFilePicker(state) = old_mode {
                 let path = state.files.get(state.selected).cloned();
                 if let (Some(path), Some(view)) = (path, state.from_view) {
-                    return app.open_markdown_viewer_path(path, state.workdir, view);
+                    return app.open_markdown_viewer_path(
+                        path,
+                        state.workdir,
+                        state.repo_root,
+                        view,
+                    );
                 }
             }
         }

@@ -1,6 +1,85 @@
 use super::*;
 
 impl App {
+    fn visible_window_start(&self, items: &[VisibleItem]) -> usize {
+        if items.is_empty() {
+            0
+        } else {
+            self.scroll_offset.min(items.len() - 1)
+        }
+    }
+
+    pub(crate) fn visible_item_height(&self, item: &VisibleItem) -> usize {
+        match item {
+            VisibleItem::Session(pi, fi, si) => self
+                .store
+                .projects
+                .get(*pi)
+                .and_then(|project| project.features.get(*fi))
+                .and_then(|feature| feature.sessions.get(*si))
+                .and_then(|session| session.status_text.as_ref())
+                .map(|_| 2)
+                .unwrap_or(1),
+            _ => 1,
+        }
+    }
+
+    pub(crate) fn visible_window_end_for_items(
+        &self,
+        items: &[VisibleItem],
+        visible_height: usize,
+    ) -> usize {
+        if items.is_empty() || visible_height == 0 {
+            return 0;
+        }
+
+        let start = self.visible_window_start(items);
+        let mut used_rows = 0;
+        let mut end = start;
+
+        while end < items.len() {
+            let item_height = self.visible_item_height(&items[end]);
+            if used_rows + item_height > visible_height {
+                break;
+            }
+            used_rows += item_height;
+            end += 1;
+        }
+
+        if end == start {
+            (start + 1).min(items.len())
+        } else {
+            end
+        }
+    }
+
+    pub(crate) fn item_index_at_visible_row(
+        &self,
+        visible_row: usize,
+        visible_height: usize,
+    ) -> Option<usize> {
+        let items = self.visible_items();
+        if items.is_empty() || visible_height == 0 {
+            return None;
+        }
+
+        let start = self.visible_window_start(&items);
+        let mut used_rows = 0;
+
+        for (idx, item) in items.iter().enumerate().skip(start) {
+            let item_height = self.visible_item_height(item);
+            if used_rows + item_height > visible_height {
+                break;
+            }
+            if visible_row < used_rows + item_height {
+                return Some(idx);
+            }
+            used_rows += item_height;
+        }
+
+        None
+    }
+
     pub fn visible_items(&self) -> Vec<VisibleItem> {
         let mut items = Vec::new();
         for (pi, project) in self.store.projects.iter().enumerate() {
@@ -96,13 +175,20 @@ impl App {
     pub fn ensure_selection_visible(&mut self, visible_height: usize) {
         let items = self.visible_items();
         if items.is_empty() || visible_height == 0 {
+            self.scroll_offset = 0;
             return;
         }
+
+        self.scroll_offset = self.visible_window_start(&items);
+
         let current = self.selection_index().unwrap_or(0);
         if current < self.scroll_offset {
             self.scroll_offset = current;
-        } else if current >= self.scroll_offset + visible_height {
-            self.scroll_offset = current - visible_height + 1;
+            return;
+        }
+
+        while current >= self.visible_window_end_for_items(&items, visible_height) {
+            self.scroll_offset += 1;
         }
     }
 

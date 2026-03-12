@@ -4,12 +4,12 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::app::util::latest_prompt_path;
 use crate::automation::{
     CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
     CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
     automation_error_response,
 };
-use crate::app::util::latest_prompt_path;
 
 impl App {
     fn touch_feature_for_session(&mut self, session_id: &str) {
@@ -66,6 +66,98 @@ impl App {
         }
     }
 
+    fn project_feature_for_cwd(
+        &self,
+        cwd_path: &Path,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<(usize, usize)>,
+    ) {
+        let mut project_name = None;
+        let mut feature_name = None;
+        let mut agent_name = None;
+        let mut indices = None;
+        let mut best_len: usize = 0;
+
+        for (pi, project) in self.store.projects.iter().enumerate() {
+            for (fi, feature) in project.features.iter().enumerate() {
+                let wlen = feature.workdir.as_os_str().len();
+                if (cwd_path.starts_with(&feature.workdir) || feature.workdir.starts_with(cwd_path))
+                    && wlen > best_len
+                {
+                    project_name = Some(project.name.clone());
+                    feature_name = Some(feature.name.clone());
+                    agent_name = Some(feature.agent.display_name().to_string());
+                    indices = Some((pi, fi));
+                    best_len = wlen;
+                }
+            }
+        }
+
+        (project_name, feature_name, agent_name, indices)
+    }
+
+    pub(crate) fn open_diff_review_prompt(&mut self, input: &PendingInput) {
+        let response_file = input.response_file.clone().unwrap_or_default();
+        let proceed_signal = input.proceed_signal.clone().unwrap_or_default();
+        let return_to_view = match &self.mode {
+            AppMode::Viewing(view) => Some(view.clone()),
+            _ => None,
+        };
+        let diff_path = input
+            .relative_path
+            .clone()
+            .filter(|path| !path.is_empty())
+            .or_else(|| input.target_file_path.clone())
+            .unwrap_or_default();
+        let (mut diff_file, diff_error) = match (
+            input.original_file.as_deref(),
+            input.proposed_file.as_deref(),
+        ) {
+            (Some(original), Some(proposed)) => match crate::diff::load_review_file(
+                Path::new(original),
+                Path::new(proposed),
+                &diff_path,
+            ) {
+                Ok(file) => (Some(file), None),
+                Err(err) => (None, Some(err.to_string())),
+            },
+            _ => (None, None),
+        };
+        if input.is_new_file == Some(true)
+            && let Some(file) = &mut diff_file
+        {
+            file.status = crate::diff::DiffFileStatus::Added;
+            file.old_path = None;
+            file.deletions = 0;
+        }
+        self.mode = AppMode::DiffReviewPrompt(DiffReviewState {
+            session_id: input.session_id.clone(),
+            workdir: PathBuf::from(&input.cwd),
+            file_path: input.target_file_path.clone().unwrap_or_default(),
+            relative_path: input.relative_path.clone().unwrap_or_default(),
+            change_id: input.change_id.clone().unwrap_or_default(),
+            tool: input.tool.clone().unwrap_or_default(),
+            old_snippet: input.old_snippet.clone().unwrap_or_default(),
+            new_snippet: input.new_snippet.clone().unwrap_or_default(),
+            diff_file,
+            diff_error,
+            patch_scroll: 0,
+            reason: input.reason.clone().unwrap_or_default(),
+            editing_feedback: false,
+            layout: self.preferred_diff_viewer_layout(),
+            explanation: None,
+            explanation_child: None,
+            response_file: PathBuf::from(response_file),
+            proceed_signal: PathBuf::from(proceed_signal),
+            request_id: input.request_id.clone(),
+            reply_socket: input.reply_socket.clone(),
+            return_to_view,
+        });
+    }
+
     /// Drain all pending IPC socket messages, converting them into
     /// `pending_inputs` entries or removing them for "clear" messages.
     /// Call this every event loop iteration instead of polling files.
@@ -91,6 +183,9 @@ impl App {
             new_snippet: Option<String>,
             content_preview: Option<String>,
             response_file: Option<String>,
+            original_file: Option<String>,
+            proposed_file: Option<String>,
+            is_new_file: Option<bool>,
             reason: Option<String>,
             prompt: Option<String>,
         }
@@ -153,7 +248,10 @@ impl App {
                                 Err(err) => {
                                     self.log_error(
                                         "automation",
-                                        format!("Automation '{}' failed: {err}", CREATE_PROJECT_ACTION),
+                                        format!(
+                                            "Automation '{}' failed: {err}",
+                                            CREATE_PROJECT_ACTION
+                                        ),
                                     );
                                     automation_error_response(
                                         CREATE_PROJECT_ACTION,
@@ -188,7 +286,10 @@ impl App {
                                 Err(err) => {
                                     self.log_error(
                                         "automation",
-                                        format!("Automation '{}' failed: {err}", CREATE_FEATURE_ACTION),
+                                        format!(
+                                            "Automation '{}' failed: {err}",
+                                            CREATE_FEATURE_ACTION
+                                        ),
                                     );
                                     automation_error_response(
                                         CREATE_FEATURE_ACTION,
@@ -204,9 +305,10 @@ impl App {
                     }
                     CREATE_BATCH_FEATURES_ACTION => {
                         match serde_json::from_value::<CreateBatchFeaturesRequest>(raw.clone()) {
-                            Ok(request) => match self.create_batch_features_from_request(&request) {
-                                Ok(response) => {
-                                    self.log_info(
+                            Ok(request) => {
+                                match self.create_batch_features_from_request(&request) {
+                                    Ok(response) => {
+                                        self.log_info(
                                         "automation",
                                         format!(
                                             "Automation created batch project '{}' with {} features",
@@ -214,27 +316,28 @@ impl App {
                                             response.features.len()
                                         ),
                                     );
-                                    serde_json::to_value(response).unwrap_or_else(|err| {
+                                        serde_json::to_value(response).unwrap_or_else(|err| {
+                                            automation_error_response(
+                                                CREATE_BATCH_FEATURES_ACTION,
+                                                format!("Failed to serialize response: {err}"),
+                                            )
+                                        })
+                                    }
+                                    Err(err) => {
+                                        self.log_error(
+                                            "automation",
+                                            format!(
+                                                "Automation '{}' failed: {err}",
+                                                CREATE_BATCH_FEATURES_ACTION
+                                            ),
+                                        );
                                         automation_error_response(
                                             CREATE_BATCH_FEATURES_ACTION,
-                                            format!("Failed to serialize response: {err}"),
+                                            err.to_string(),
                                         )
-                                    })
+                                    }
                                 }
-                                Err(err) => {
-                                    self.log_error(
-                                        "automation",
-                                        format!(
-                                            "Automation '{}' failed: {err}",
-                                            CREATE_BATCH_FEATURES_ACTION
-                                        ),
-                                    );
-                                    automation_error_response(
-                                        CREATE_BATCH_FEATURES_ACTION,
-                                        err.to_string(),
-                                    )
-                                }
-                            },
+                            }
                             Err(err) => automation_error_response(
                                 CREATE_BATCH_FEATURES_ACTION,
                                 format!("Invalid automation payload: {err}"),
@@ -242,7 +345,11 @@ impl App {
                         }
                     }
                     _ => automation_error_response(
-                        if action.is_empty() { "unknown" } else { &action },
+                        if action.is_empty() {
+                            "unknown"
+                        } else {
+                            &action
+                        },
                         format!(
                             "Unknown automation action '{}'",
                             if action.is_empty() {
@@ -353,67 +460,52 @@ impl App {
 
             let cwd_path = PathBuf::from(&cwd);
 
-            // change-reason while viewing → enter that mode.
-            if notification_type == "change-reason"
-                && let AppMode::Viewing(ref view) = self.mode
+            let is_structured_diff_review = notification_type == "change-reason"
+                || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
+
+            // change-reason/diff-review while viewing -> enter diff review mode.
+            let (_, found_feature_name_for_open, _, _) = self.project_feature_for_cwd(&cwd_path);
+            if is_structured_diff_review
+                && let AppMode::Viewing(view) = &self.mode
+                && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
             {
-                let mut found_feature_name = None;
-                for project in &self.store.projects {
-                    for feature in &project.features {
-                        if cwd_path.starts_with(&feature.workdir)
-                            || feature.workdir.starts_with(&cwd_path)
-                        {
-                            found_feature_name = Some(feature.name.clone());
-                        }
-                    }
-                }
-
-                if found_feature_name.as_deref() == Some(&view.feature_name) {
-                    let response_file = msg.response_file.unwrap_or_default();
-                    let proceed_signal = msg.proceed_signal.unwrap_or_default();
-
-                    self.mode = AppMode::ChangeReasonPrompt(ChangeReasonState {
-                        session_id,
-                        file_path: msg.file_path.unwrap_or_default(),
-                        relative_path: msg.relative_path.unwrap_or_default(),
-                        change_id: msg.change_id.unwrap_or_default(),
-                        tool: msg.tool.unwrap_or_default(),
-                        old_snippet: msg.old_snippet.unwrap_or_default(),
-                        new_snippet: msg.new_snippet.unwrap_or_default(),
-                        reason: msg.reason.unwrap_or_default(),
-                        response_file: PathBuf::from(response_file),
-                        proceed_signal: PathBuf::from(proceed_signal),
-                        request_id: msg.request_id.clone(),
-                        reply_socket: msg.reply_socket.clone(),
-                    });
-                    return;
-                }
+                let input = PendingInput {
+                    session_id,
+                    cwd,
+                    message: msg.message.unwrap_or_default(),
+                    notification_type,
+                    file_path: PathBuf::new(),
+                    target_file_path: msg.file_path,
+                    relative_path: msg.relative_path,
+                    change_id: msg.change_id,
+                    tool: msg.tool.or(msg.tool_name),
+                    old_snippet: msg.old_snippet,
+                    new_snippet: msg.new_snippet,
+                    original_file: msg.original_file,
+                    proposed_file: msg.proposed_file,
+                    is_new_file: msg.is_new_file,
+                    reason: msg.reason,
+                    response_file: msg.response_file,
+                    project_name: None,
+                    feature_name: found_feature_name_for_open,
+                    proceed_signal: msg.proceed_signal,
+                    request_id: msg.request_id.clone(),
+                    reply_socket: msg.reply_socket.clone(),
+                };
+                self.open_diff_review_prompt(&input);
+                return;
             }
 
             // Resolve project/feature from cwd.
-            let mut project_name = None;
-            let mut feature_name = None;
-            let mut agent_name = None;
-            let mut best_len: usize = 0;
-            for project in &self.store.projects {
-                for feature in &project.features {
-                    let wlen = feature.workdir.as_os_str().len();
-                    if (cwd_path.starts_with(&feature.workdir)
-                        || feature.workdir.starts_with(&cwd_path))
-                        && wlen > best_len
-                    {
-                        project_name = Some(project.name.clone());
-                        feature_name = Some(feature.name.clone());
-                        agent_name = Some(feature.agent.display_name().to_string());
-                        best_len = wlen;
-                    }
-                }
-            }
+            let (project_name, feature_name, agent_name, _) =
+                self.project_feature_for_cwd(&cwd_path);
 
             // For diff-review while viewing the matching
-            // feature, write the proceed signal immediately.
+            // feature, write the proceed signal immediately when
+            // using the legacy popup flow.
             let mut auto_responded = false;
             if notification_type == "diff-review"
+                && !self.use_custom_diff_review_viewer()
                 && let AppMode::Viewing(ref view) = self.mode
             {
                 if feature_name.as_deref() == Some(&view.feature_name) {
@@ -459,6 +551,17 @@ impl App {
                 message: msg.message.unwrap_or_default(),
                 notification_type,
                 file_path: PathBuf::new(),
+                target_file_path: msg.file_path,
+                relative_path: msg.relative_path,
+                change_id: msg.change_id,
+                tool: msg.tool.or(msg.tool_name),
+                old_snippet: msg.old_snippet,
+                new_snippet: msg.new_snippet,
+                original_file: msg.original_file,
+                proposed_file: msg.proposed_file,
+                is_new_file: msg.is_new_file,
+                reason: msg.reason,
+                response_file: msg.response_file,
                 project_name,
                 feature_name,
                 proceed_signal: msg.proceed_signal,
@@ -487,6 +590,9 @@ impl App {
             new_snippet: Option<String>,
             content_preview: Option<String>,
             response_file: Option<String>,
+            original_file: Option<String>,
+            proposed_file: Option<String>,
+            is_new_file: Option<bool>,
             reason: Option<String>,
         }
 
@@ -517,12 +623,59 @@ impl App {
                         Err(_) => continue,
                     };
 
+                    let notification_type = notif.notification_type.clone().unwrap_or_default();
+                    let is_structured_diff_review = notification_type == "change-reason"
+                        || (notification_type == "diff-review"
+                            && self.use_custom_diff_review_viewer());
+                    if is_structured_diff_review
+                        && let AppMode::Viewing(view) = &self.mode
+                        && feature.name == view.feature_name
+                    {
+                        let input = PendingInput {
+                            session_id: notif.session_id.unwrap_or_default(),
+                            cwd: notif.cwd.unwrap_or_default(),
+                            message: notif.message.unwrap_or_default(),
+                            notification_type,
+                            file_path: path.clone(),
+                            target_file_path: notif.file_path,
+                            relative_path: notif.relative_path,
+                            change_id: notif.change_id,
+                            tool: notif.tool,
+                            old_snippet: notif.old_snippet,
+                            new_snippet: notif.new_snippet,
+                            original_file: notif.original_file,
+                            proposed_file: notif.proposed_file,
+                            is_new_file: notif.is_new_file,
+                            reason: notif.reason,
+                            response_file: notif.response_file,
+                            project_name: Some(project.name.clone()),
+                            feature_name: Some(feature.name.clone()),
+                            proceed_signal: notif.proceed_signal,
+                            request_id: notif.request_id.clone(),
+                            reply_socket: notif.reply_socket.clone(),
+                        };
+                        self.open_diff_review_prompt(&input);
+                        let _ = std::fs::remove_file(&path);
+                        return;
+                    }
+
                     inputs.push(PendingInput {
                         session_id: notif.session_id.unwrap_or_default(),
                         cwd: notif.cwd.unwrap_or_default(),
                         message: notif.message.unwrap_or_default(),
-                        notification_type: notif.notification_type.unwrap_or_default(),
+                        notification_type,
                         file_path: path,
+                        target_file_path: notif.file_path,
+                        relative_path: notif.relative_path,
+                        change_id: notif.change_id,
+                        tool: notif.tool,
+                        old_snippet: notif.old_snippet,
+                        new_snippet: notif.new_snippet,
+                        original_file: notif.original_file,
+                        proposed_file: notif.proposed_file,
+                        is_new_file: notif.is_new_file,
+                        reason: notif.reason,
+                        response_file: notif.response_file,
                         project_name: Some(project.name.clone()),
                         feature_name: Some(feature.name.clone()),
                         proceed_signal: notif.proceed_signal,
@@ -556,62 +709,45 @@ impl App {
                 let cwd = notif.cwd.unwrap_or_default();
                 let notification_type = notif.notification_type.unwrap_or_default();
                 let proceed_signal_val = notif.proceed_signal.clone();
+                let is_structured_diff_review = notification_type == "change-reason"
+                    || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
 
-                if notification_type == "change-reason"
-                    && let AppMode::Viewing(ref view) = self.mode
-                {
-                    let mut found_feature_name = None;
-                    let cwd_path = PathBuf::from(&cwd);
-                    for project in &self.store.projects {
-                        for feature in &project.features {
-                            if cwd_path.starts_with(&feature.workdir)
-                                || feature.workdir.starts_with(&cwd_path)
-                            {
-                                found_feature_name = Some(feature.name.clone());
-                            }
-                        }
-                    }
-
-                    if found_feature_name.as_deref() == Some(&view.feature_name) {
-                        let response_file = notif.response_file.unwrap_or_default();
-                        let proceed_signal_path = proceed_signal_val.unwrap_or_default();
-
-                        self.mode = AppMode::ChangeReasonPrompt(ChangeReasonState {
-                            session_id,
-                            file_path: notif.file_path.unwrap_or_default(),
-                            relative_path: notif.relative_path.unwrap_or_default(),
-                            change_id: notif.change_id.unwrap_or_default(),
-                            tool: notif.tool.unwrap_or_default(),
-                            old_snippet: notif.old_snippet.unwrap_or_default(),
-                            new_snippet: notif.new_snippet.unwrap_or_default(),
-                            reason: notif.reason.unwrap_or_default(),
-                            response_file: PathBuf::from(response_file),
-                            proceed_signal: PathBuf::from(proceed_signal_path),
-                            request_id: notif.request_id.clone(),
-                            reply_socket: notif.reply_socket.clone(),
-                        });
-                        let _ = std::fs::remove_file(&path);
-                        return;
-                    }
-                }
-
-                let mut project_name = None;
-                let mut feature_name = None;
-                let mut best_len: usize = 0;
                 let cwd_path = PathBuf::from(&cwd);
-                for project in &self.store.projects {
-                    for feature in &project.features {
-                        let wlen = feature.workdir.as_os_str().len();
-                        if (cwd_path.starts_with(&feature.workdir)
-                            || feature.workdir.starts_with(&cwd_path))
-                            && wlen > best_len
-                        {
-                            project_name = Some(project.name.clone());
-                            feature_name = Some(feature.name.clone());
-                            best_len = wlen;
-                        }
-                    }
+                let (_, found_feature_name_for_open, _, _) =
+                    self.project_feature_for_cwd(&cwd_path);
+                if is_structured_diff_review
+                    && let AppMode::Viewing(view) = &self.mode
+                    && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
+                {
+                    let input = PendingInput {
+                        session_id,
+                        cwd,
+                        message: notif.message.unwrap_or_default(),
+                        notification_type,
+                        file_path: path.clone(),
+                        target_file_path: notif.file_path,
+                        relative_path: notif.relative_path,
+                        change_id: notif.change_id,
+                        tool: notif.tool,
+                        old_snippet: notif.old_snippet,
+                        new_snippet: notif.new_snippet,
+                        original_file: notif.original_file,
+                        proposed_file: notif.proposed_file,
+                        is_new_file: notif.is_new_file,
+                        reason: notif.reason,
+                        response_file: notif.response_file,
+                        project_name: None,
+                        feature_name: found_feature_name_for_open,
+                        proceed_signal: proceed_signal_val,
+                        request_id: notif.request_id.clone(),
+                        reply_socket: notif.reply_socket.clone(),
+                    };
+                    self.open_diff_review_prompt(&input);
+                    let _ = std::fs::remove_file(&path);
+                    return;
                 }
+
+                let (project_name, feature_name, _, _) = self.project_feature_for_cwd(&cwd_path);
 
                 inputs.push(PendingInput {
                     session_id,
@@ -619,6 +755,17 @@ impl App {
                     message: notif.message.unwrap_or_default(),
                     notification_type,
                     file_path: path,
+                    target_file_path: notif.file_path,
+                    relative_path: notif.relative_path,
+                    change_id: notif.change_id,
+                    tool: notif.tool,
+                    old_snippet: notif.old_snippet,
+                    new_snippet: notif.new_snippet,
+                    original_file: notif.original_file,
+                    proposed_file: notif.proposed_file,
+                    is_new_file: notif.is_new_file,
+                    reason: notif.reason,
+                    response_file: notif.response_file,
                     project_name,
                     feature_name,
                     proceed_signal: notif.proceed_signal,
@@ -673,21 +820,23 @@ impl App {
                     )
                 })
                 .collect();
-            for (request_id, reply_socket, proceed_signal) in responses {
-                self.respond_to_notification(
-                    request_id.as_deref(),
-                    reply_socket.as_deref(),
-                    proceed_signal.as_deref(),
-                    serde_json::json!({
-                        "type": "review-response",
-                        "decision": "proceed"
-                    }),
-                );
+            if !self.use_custom_diff_review_viewer() {
+                for (request_id, reply_socket, proceed_signal) in responses {
+                    self.respond_to_notification(
+                        request_id.as_deref(),
+                        reply_socket.as_deref(),
+                        proceed_signal.as_deref(),
+                        serde_json::json!({
+                            "type": "review-response",
+                            "decision": "proceed"
+                        }),
+                    );
+                }
+                self.pending_inputs.retain(|input| {
+                    !(input.notification_type == "diff-review"
+                        && input.feature_name.as_deref() == Some(&feat_name))
+                });
             }
-            self.pending_inputs.retain(|input| {
-                !(input.notification_type == "diff-review"
-                    && input.feature_name.as_deref() == Some(&feat_name))
-            });
         }
     }
 
@@ -705,7 +854,13 @@ impl App {
             }
         };
 
-        if input.notification_type != "diff-review" && input.notification_type != "input-request" {
+        let is_structured_diff_review = input.notification_type == "change-reason"
+            || (input.notification_type == "diff-review" && self.use_custom_diff_review_viewer());
+
+        if input.notification_type != "diff-review"
+            && input.notification_type != "input-request"
+            && input.notification_type != "change-reason"
+        {
             let _ = std::fs::remove_file(&input.file_path);
         }
 
@@ -721,7 +876,9 @@ impl App {
                     .iter()
                     .position(|f| &f.name == feat_name);
                 if let Some(fi) = fi {
-                    if input.notification_type == "diff-review" {
+                    if input.notification_type == "diff-review"
+                        && !self.use_custom_diff_review_viewer()
+                    {
                         self.respond_to_notification(
                             input.request_id.as_deref(),
                             input.reply_socket.as_deref(),
@@ -734,7 +891,13 @@ impl App {
                     }
                     self.selection = Selection::Feature(pi, fi);
                     self.pending_inputs.remove(idx);
-                    return self.enter_view();
+                    self.enter_view()?;
+                    if is_structured_diff_review {
+                        self.open_diff_review_prompt(&input);
+                        let _ = std::fs::remove_file(&input.file_path);
+                        return Ok(());
+                    }
+                    return Ok(());
                 }
             }
         }

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use crate::tmux::TmuxManager;
 
@@ -39,6 +39,16 @@ impl ClaudeLauncher {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    pub fn spawn_headless(workdir: &Path, prompt: &str) -> Result<Child> {
+        Command::new("claude")
+            .args(["-p", prompt, "--output-format", "text"])
+            .current_dir(workdir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to spawn claude in headless mode")
     }
 
     /// Run a headless Claude command and return JSON output

@@ -314,7 +314,14 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{App, ViewState};
+    use crate::project::{AgentKind, Feature, Project, ProjectStatus, ProjectStore, VibeMode};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use chrono::Utc;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -389,5 +396,99 @@ mod tests {
         // Null is not handled in the match
         let k = key(KeyCode::Null);
         assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+
+    fn app_in_view_mode(workdir: PathBuf) -> App {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".to_string(),
+            name: "my-feat".to_string(),
+            branch: "my-feat".to_string(),
+            workdir,
+            is_worktree: false,
+            tmux_session: "amf-my-feat".to_string(),
+            sessions: vec![],
+            collapsed: false,
+            mode: VibeMode::default(),
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::default(),
+            enable_chrome: false,
+            has_notes: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Active,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: PathBuf::from("/tmp/test-repo"),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::default(),
+            is_git: false,
+        };
+        let store = ProjectStore {
+            version: 2,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::Viewing(ViewState::new(
+            "my-project".into(),
+            "my-feat".into(),
+            "amf-my-feat".into(),
+            "claude".into(),
+            "Claude".into(),
+            VibeMode::default(),
+            false,
+        ));
+        app.leader_active = true;
+        app
+    }
+
+    #[test]
+    fn leader_m_opens_markdown_viewer() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("PLAN.md"), "# Plan\n").unwrap();
+
+        let mut app = app_in_view_mode(dir.path().to_path_buf());
+        handle_view_key(&mut app, key(KeyCode::Char('m')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownViewer(state) => {
+                assert_eq!(state.title, "PLAN.md");
+                assert_eq!(state.content, "# Plan\n");
+                assert!(state.from_view.is_some());
+            }
+            _ => panic!("expected markdown viewer"),
+        }
+        assert!(!app.leader_active);
+    }
+
+    #[test]
+    fn leader_m_reports_when_no_markdown_files_exist() {
+        let dir = TempDir::new().unwrap();
+
+        let mut app = app_in_view_mode(dir.path().to_path_buf());
+        handle_view_key(&mut app, key(KeyCode::Char('m')), 20).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Error: No markdown file found (.claude/*.md or top-level *.md)")
+        );
+        assert!(!app.leader_active);
     }
 }

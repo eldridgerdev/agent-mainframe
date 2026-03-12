@@ -8,13 +8,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Detect base branch
 detect_base_branch() {
-    for branch in master main; do
+    for branch in main master; do
         if git rev-parse --verify "origin/$branch" &>/dev/null; then
             echo "$branch"
             return
         fi
     done
-    echo "master"
+    echo "main"
 }
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"

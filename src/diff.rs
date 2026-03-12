@@ -280,7 +280,7 @@ pub fn resolve_base_ref(workdir: &Path) -> Result<ResolvedBase> {
     }
 
     bail!(
-        "Could not determine a base branch for '{}'; tried origin/HEAD, origin/main, origin/master, main, and master",
+        "Could not determine a base branch for '{}'; tried origin/HEAD, origin/main, main, origin/master, and master",
         branch
     );
 }

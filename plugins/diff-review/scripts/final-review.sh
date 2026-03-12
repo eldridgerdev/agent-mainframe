@@ -4,8 +4,8 @@
 #
 # Usage: final-review.sh <workdir> [base-ref]
 #
-# Goes through every file changed since base-ref (default: master or
-# main), shows vimdiff + developer notes, and prompts for approval or
+# Goes through every file changed since base-ref (default: main or
+# master), shows vimdiff + developer notes, and prompts for approval or
 # rejection with feedback.
 #
 # Keys (after activation delay):
@@ -48,10 +48,10 @@ determine_base() {
         echo "$BASE_REF"
         return
     fi
-    if git rev-parse --verify master &>/dev/null 2>&1; then
-        echo "master"
-    elif git rev-parse --verify main &>/dev/null 2>&1; then
+    if git rev-parse --verify main &>/dev/null 2>&1; then
         echo "main"
+    elif git rev-parse --verify master &>/dev/null 2>&1; then
+        echo "master"
     else
         echo "HEAD~1"
     fi

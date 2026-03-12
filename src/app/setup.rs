@@ -504,7 +504,6 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
 
     let bundled_plugins_dir = crate::project::amf_config_dir().join("plugins");
     let bundled_input_request = bundled_plugins_dir.join("input-request.js");
-    let bundled_change_tracker = bundled_plugins_dir.join("change-tracker.js");
     let dst_input_request = plugins_dir.join("input-request.js");
 
     let dst_diff_review_js = plugins_dir.join("diff-review.js");

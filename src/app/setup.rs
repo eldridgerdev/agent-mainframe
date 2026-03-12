@@ -523,13 +523,7 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     }
 
     if matches!(mode, VibeMode::Vibeless) {
-        let src_change_tracker = repo.join(".opencode").join("plugins").join("change-tracker.js");
-
-        if bundled_change_tracker.exists() {
-            let _ = std::fs::copy(&bundled_change_tracker, &dst_change_tracker);
-        } else if src_change_tracker.exists() {
-            let _ = std::fs::copy(&src_change_tracker, &dst_change_tracker);
-        }
+        let _ = std::fs::write(&dst_change_tracker, CHANGE_TRACKER_JS);
 
         let src_diff_review_js = repo
             .join(".opencode")

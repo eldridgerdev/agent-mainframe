@@ -288,19 +288,15 @@ impl App {
             let status_dir = workdir.join(".amf").join("session-status");
             let _ = std::fs::create_dir_all(&status_dir);
 
-            let env_prefix = format!(
-                "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
-                session_id,
-                status_dir.display(),
-            );
+            let status_dir_str = status_dir.to_string_lossy().into_owned();
+            let env_prefix = TmuxManager::shell_env_prefix(&[
+                ("AMF_SESSION_ID", &session_id),
+                ("AMF_STATUS_DIR", &status_dir_str),
+            ]);
             let shell_cmd = if let Some(ref cmd) = command {
-                format!(
-                    "env {} bash -c '{}'",
-                    env_prefix,
-                    cmd.replace('\'', "'\\''"),
-                )
+                format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
             } else {
-                format!("env {}", env_prefix)
+                env_prefix
             };
             TmuxManager::send_literal(&tmux_session, &window, &shell_cmd)?;
             TmuxManager::send_key_name(&tmux_session, &window, "Enter")?;

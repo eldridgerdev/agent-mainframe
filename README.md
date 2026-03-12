@@ -49,8 +49,10 @@ attention, and get notified the moment one is waiting for input.
 
 ### Required
 
-- **tmux** — must be installed and in `PATH`
-  ([installation guide](https://github.com/tmux/tmux/wiki/Installing))
+- **tmux** — required at runtime, but it does not need to be started
+  manually. AMF will auto-detect a bundled `tmux` binary placed next
+  to `amf`, otherwise it falls back to `tmux` from `PATH`. When AMF is
+  launched outside tmux, it uses its own private tmux socket.
 
 ### Agent (choose one or more)
 
@@ -84,48 +86,52 @@ attention, and get notified the moment one is waiting for input.
 
 ### Pre-built binaries (recommended)
 
-Download the latest binary from the
+Download the latest release bundle from the
 [GitHub Releases page](https://github.com/eldridgerdev/agent-mainframe/releases).
 
 | Platform | File |
 | --- | --- |
-| Linux x86_64 (musl) | `amf-x86_64-unknown-linux-musl` |
-| Linux x86_64 (gnu) | `amf-x86_64-unknown-linux-gnu` |
-| Linux aarch64 | `amf-aarch64-unknown-linux-gnu` |
-| macOS (Apple Silicon) | `amf-aarch64-apple-darwin` |
+| Linux x86_64 (musl) | `amf-x86_64-unknown-linux-musl.tar.gz` |
+| Linux x86_64 (gnu) | `amf-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 | `amf-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS (Apple Silicon) | `amf-aarch64-apple-darwin.tar.gz` |
 
 Quick install:
 
 Linux x86_64 (most portable):
 
 ```bash
-curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl -o amf
-chmod +x amf
-sudo mv amf /usr/local/bin/
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo mv amf-x86_64-unknown-linux-musl /opt/amf
+sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
 macOS (Apple Silicon):
 
 ```bash
-curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin -o amf
-chmod +x amf
-sudo mv amf /usr/local/bin/
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo mv amf-aarch64-apple-darwin /opt/amf
+sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
 Linux x86_64 (gnu):
 
 ```bash
-curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-gnu -o amf
-chmod +x amf
-sudo mv amf /usr/local/bin/
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-gnu.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo mv amf-x86_64-unknown-linux-gnu /opt/amf
+sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
 Linux aarch64:
 
 ```bash
-curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-unknown-linux-gnu -o amf
-chmod +x amf
-sudo mv amf /usr/local/bin/
+curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-unknown-linux-gnu.tar.gz -o amf.tar.gz
+tar -xzf amf.tar.gz
+sudo mv amf-aarch64-unknown-linux-gnu /opt/amf
+sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
 ### Build from source
@@ -190,23 +196,19 @@ Create-project and batch-feature templates, examples, and the JSON response form
 
 ## Quick Start
 
-1. Create or attach to a tmux session:
-
-   ```bash
-   tmux new -s main    # new session
-   tmux attach         # or attach to existing
-   ```
-
-2. Launch the dashboard:
+1. Launch the dashboard:
 
    ```bash
    amf
    ```
 
-3. Press `N` to create a new project. Enter a name and the path to a
+   AMF can be started directly from a normal shell. Running inside an
+   existing tmux client is still supported, but no longer required.
+
+2. Press `N` to create a new project. Enter a name and the path to a
    git repository (or press `Ctrl+B` to browse for a directory).
 
-4. Press `n` to add a feature. Enter a branch name, choose your agent
+3. Press `n` to add a feature. Enter a branch name, choose your agent
    (Claude, Codex, or Opencode), and pick a vibe mode. A git worktree
    is created automatically when needed, and features auto-start on
    creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
@@ -217,16 +219,16 @@ Create-project and batch-feature templates, examples, and the JSON response form
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
 
 
-5. Press `s` to add more sessions to a running feature. The picker can
+4. Press `s` to add more sessions to a running feature. The picker can
    launch agent sessions, terminals, nvim, VSCode, and custom session
    types from your config.
 
   <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/2e493755-af11-4a14-ae8d-86353c1c0a41" />
 
 
-7. Press `Enter` on a session to view the embedded tmux output.
+5. Press `Enter` on a session to view the embedded tmux output.
 
-8. Use `Ctrl+Space` then a key for leader commands while in view mode.
+6. Use `Ctrl+Space` then a key for leader commands while in view mode.
 
 ## Keybindings
 

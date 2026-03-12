@@ -94,10 +94,14 @@ impl App {
         let switch_back = if amf_session.is_empty() {
             String::new()
         } else {
-            format!("; tmux switch-client -t '{}'", amf_session)
+            format!(
+                "; {}",
+                TmuxManager::shell_tmux_command(&["switch-client", "-t", &amf_session])
+            )
         };
         let cmd = format!(
-            "bash '{}' '{}'{}",
+            "{} bash '{}' '{}'{}",
+            TmuxManager::shell_env_prefix(&[]),
             script.to_string_lossy(),
             workdir.to_string_lossy(),
             switch_back,

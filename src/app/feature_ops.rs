@@ -1,11 +1,11 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::automation::CreateBatchFeaturesRequest;
 use super::setup::{
     ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
 };
 use super::*;
+use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -163,7 +163,8 @@ impl App {
                 && selected_worktree.is_none()
                 && project.features.iter().any(|f| !f.is_worktree)
             {
-                self.message = Some("Error: Only one non-worktree feature allowed per project".into());
+                self.message =
+                    Some("Error: Only one non-worktree feature allowed per project".into());
                 return Ok(());
             }
 
@@ -382,7 +383,10 @@ impl App {
         if let Err(err) = std::fs::write(&path, prompt) {
             self.log_warn(
                 "steering",
-                format!("Failed to persist startup prompt at {}: {err}", path.display()),
+                format!(
+                    "Failed to persist startup prompt at {}: {err}",
+                    path.display()
+                ),
             );
         }
     }
@@ -406,7 +410,8 @@ impl App {
             prompt: String::new(),
             prompt_analysis: analyze_prompt(""),
         });
-        self.message = Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
+        self.message =
+            Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
 
         Ok(())
     }
@@ -453,12 +458,7 @@ impl App {
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
-        let (agent, mode) = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
             None => return Ok(()),
         };
@@ -536,22 +536,26 @@ impl App {
                     // In vibeless mode, launch a diff-review watcher alongside
                     // Codex so each file change can be approved/rejected via
                     // the AMF popup.
-                    let watcher_path = crate::project::amf_config_dir()
-                        .join("codex-diff-review.sh");
+                    let watcher_path =
+                        crate::project::amf_config_dir().join("codex-diff-review.sh");
                     if matches!(feature.mode, crate::project::VibeMode::Vibeless)
                         && watcher_path.exists()
                     {
                         let cmd = format!(
-                            "env AMF_SESSION={0} {1} {2} & env AMF_SESSION={0} codex",
-                            feature.tmux_session,
+                            "{} {} {} & {} codex",
+                            TmuxManager::shell_env_prefix(&[(
+                                "AMF_SESSION",
+                                &feature.tmux_session
+                            )]),
                             watcher_path.display(),
                             feature.workdir.display(),
+                            TmuxManager::shell_env_prefix(&[(
+                                "AMF_SESSION",
+                                &feature.tmux_session
+                            )]),
                         );
-                        self.tmux.send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            &cmd,
-                        )?;
+                        self.tmux
+                            .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
                     } else {
                         self.tmux.launch_codex(
                             &feature.tmux_session,
@@ -601,19 +605,16 @@ impl App {
                     }
                     let status_dir = feature.workdir.join(".amf").join("session-status");
                     let _ = std::fs::create_dir_all(&status_dir);
-                    let env_prefix = format!(
-                        "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
-                        session.id,
-                        status_dir.display(),
-                    );
+                    let session_id = session.id.clone();
+                    let status_dir_str = status_dir.to_string_lossy().into_owned();
+                    let env_prefix = TmuxManager::shell_env_prefix(&[
+                        ("AMF_SESSION_ID", &session_id),
+                        ("AMF_STATUS_DIR", &status_dir_str),
+                    ]);
                     let shell_cmd = if let Some(ref cmd) = session.command {
-                        format!(
-                            "env {} bash -c '{}'",
-                            env_prefix,
-                            cmd.replace('\'', "'\\''"),
-                        )
+                        format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
                     } else {
-                        format!("env {}", env_prefix)
+                        env_prefix
                     };
                     self.tmux.send_literal(
                         &feature.tmux_session,

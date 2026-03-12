@@ -97,18 +97,23 @@ jobs:
         if: "!matrix.use_cross"
         run: cargo build --release --locked --target ${{ matrix.target }}
 
-      - name: Strip and rename binary
+      - name: Install tmux for macOS bundle
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: brew install tmux
+
+      - name: Package release bundle
         run: |
           src="target/${{ matrix.target }}/release/amf"
-          dst="amf-${{ matrix.target }}"
+          dst="dist/amf-${{ matrix.target }}.tar.gz"
+          mkdir -p dist
           strip "$src" 2>/dev/null || true
-          cp "$src" "$dst"
+          bash scripts/package-release-bundle.sh "${{ matrix.target }}" "$src" "$dst"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: amf-${{ matrix.target }}
-          path: amf-${{ matrix.target }}
+          path: dist/amf-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   release:

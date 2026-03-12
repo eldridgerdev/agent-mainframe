@@ -23,6 +23,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKDIR="${1:?Usage: final-review.sh <workdir> [base-ref]}"
 BASE_REF="${2:-}"
 
+tmux() {
+    local tmux_bin="${AMF_TMUX_BIN:-tmux}"
+    if [[ -n "${AMF_TMUX_SOCKET:-}" ]]; then
+        "$tmux_bin" -S "$AMF_TMUX_SOCKET" "$@"
+    else
+        "$tmux_bin" "$@"
+    fi
+}
+
 ACTIVATION_DELAY=800
 INVOCATION_ID=$$
 TEMP_DIR="/tmp/claude-review/final/$INVOCATION_ID"

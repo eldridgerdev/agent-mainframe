@@ -1,8 +1,12 @@
 use anyhow::{Context, Result, bail};
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::{
+    OnceLock,
+    mpsc::{self, Receiver},
+};
 
 use crate::traits::TmuxOps;
 
@@ -13,9 +17,163 @@ pub struct SpawnedTmuxCommand {
     pub output_rx: Receiver<String>,
 }
 
+#[derive(Debug, Clone)]
+struct TmuxRuntime {
+    binary: OsString,
+    socket: Option<PathBuf>,
+    path_override: Option<OsString>,
+}
+
+impl TmuxRuntime {
+    fn detect() -> Self {
+        let tmux_env = std::env::var("TMUX").ok();
+        let using_existing_tmux = tmux_env.is_some();
+
+        let binary = std::env::var_os("AMF_TMUX_BIN")
+            .or_else(|| {
+                if using_existing_tmux {
+                    None
+                } else {
+                    Self::bundled_binary()
+                }
+            })
+            .unwrap_or_else(|| OsString::from("tmux"));
+
+        let socket = std::env::var_os("AMF_TMUX_SOCKET")
+            .map(PathBuf::from)
+            .or_else(|| tmux_env.as_deref().and_then(Self::socket_from_tmux_env))
+            .or_else(|| {
+                if using_existing_tmux {
+                    None
+                } else {
+                    Some(Self::private_socket_path())
+                }
+            });
+
+        let path_override = Self::prepend_binary_dir_to_path(&binary);
+
+        Self {
+            binary,
+            socket,
+            path_override,
+        }
+    }
+
+    fn bundled_binary() -> Option<OsString> {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?;
+        let bundled = dir.join("tmux");
+        if bundled.exists() {
+            Some(bundled.into_os_string())
+        } else {
+            None
+        }
+    }
+
+    fn socket_from_tmux_env(value: &str) -> Option<PathBuf> {
+        let socket = value.split(',').next()?.trim();
+        if socket.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(socket))
+        }
+    }
+
+    fn private_socket_path() -> PathBuf {
+        dirs::state_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("amf")
+            .join("tmux.sock")
+    }
+
+    fn prepend_binary_dir_to_path(binary: &OsString) -> Option<OsString> {
+        let binary_path = PathBuf::from(binary);
+        let dir = binary_path.parent()?;
+        let current_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![dir.to_path_buf()];
+        paths.extend(std::env::split_paths(&current_path));
+        std::env::join_paths(paths).ok()
+    }
+}
+
 impl TmuxManager {
+    fn runtime() -> &'static TmuxRuntime {
+        static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
+        RUNTIME.get_or_init(TmuxRuntime::detect)
+    }
+
+    fn command() -> Command {
+        let runtime = Self::runtime();
+        let mut command = Command::new(&runtime.binary);
+        if let Some(socket) = &runtime.socket {
+            if let Some(parent) = socket.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            command.arg("-S").arg(socket);
+        }
+        command.env("AMF_TMUX_BIN", &runtime.binary);
+        if let Some(socket) = &runtime.socket {
+            command.env("AMF_TMUX_SOCKET", socket);
+        }
+        if let Some(path) = &runtime.path_override {
+            command.env("PATH", path);
+        }
+        command
+    }
+
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+
+    fn shell_env_parts() -> Vec<String> {
+        let runtime = Self::runtime();
+        let mut parts = vec![format!(
+            "AMF_TMUX_BIN={}",
+            Self::shell_quote(&runtime.binary.to_string_lossy())
+        )];
+
+        if let Some(socket) = &runtime.socket {
+            parts.push(format!(
+                "AMF_TMUX_SOCKET={}",
+                Self::shell_quote(&socket.to_string_lossy())
+            ));
+        }
+
+        if let Some(path) = &runtime.path_override {
+            parts.push(format!(
+                "PATH={}",
+                Self::shell_quote(&path.to_string_lossy())
+            ));
+        }
+
+        parts
+    }
+
+    fn shell_env_with(extra: &[(&str, &str)]) -> String {
+        let mut parts = Self::shell_env_parts();
+        for (key, value) in extra {
+            parts.push(format!("{key}={}", Self::shell_quote(value)));
+        }
+        format!("env {}", parts.join(" "))
+    }
+
+    pub fn shell_env_prefix(extra: &[(&str, &str)]) -> String {
+        Self::shell_env_with(extra)
+    }
+
+    pub fn shell_tmux_command(args: &[&str]) -> String {
+        let runtime = Self::runtime();
+        let mut parts = vec![Self::shell_quote(&runtime.binary.to_string_lossy())];
+        if let Some(socket) = &runtime.socket {
+            parts.push("-S".to_string());
+            parts.push(Self::shell_quote(&socket.to_string_lossy()));
+        }
+        parts.extend(args.iter().map(|arg| Self::shell_quote(arg)));
+        parts.join(" ")
+    }
+
     fn output(args: &[&str], context: &str) -> Result<Output> {
-        Command::new("tmux")
+        Self::command()
             .args(args)
             .output()
             .with_context(|| context.to_string())
@@ -58,7 +216,7 @@ impl TmuxManager {
     }
 
     fn spawn(args: &[&str], context: &str) -> Result<SpawnedTmuxCommand> {
-        let mut child = Command::new("tmux")
+        let mut child = Self::command()
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -77,10 +235,12 @@ impl TmuxManager {
 
     /// Check if tmux is available
     pub fn check_available() -> Result<()> {
-        let output = Command::new("tmux").arg("-V").output().context(
-            "tmux is not installed. Please install tmux \
-                 and ensure it is in your PATH.",
-        )?;
+        let output = Self::command().arg("-V").output().with_context(|| {
+            format!(
+                "tmux is not installed or bundled. Looked for '{}'.",
+                Self::runtime().binary.to_string_lossy()
+            )
+        })?;
         if !output.status.success() {
             bail!(
                 "{}",
@@ -92,7 +252,7 @@ impl TmuxManager {
 
     /// Check if a tmux session exists
     pub fn session_exists(session: &str) -> bool {
-        Command::new("tmux")
+        Self::command()
             .args(["has-session", "-t", session])
             .output()
             .map(|o| o.status.success())
@@ -251,7 +411,7 @@ impl TmuxManager {
 
     /// List window names for a tmux session.
     pub fn list_windows(session: &str) -> Result<Vec<String>> {
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args(["list-windows", "-t", session, "-F", "#{window_name}"])
             .output()
             .context("Failed to list tmux windows")?;
@@ -278,7 +438,10 @@ impl TmuxManager {
         // Use `env` to set AMF_SESSION so PreToolUse/Stop hooks
         // can identify the session. `env VAR=val cmd` works in
         // all shells including fish (unlike `VAR=val cmd`).
-        let mut cmd_str = format!("env AMF_SESSION={} claude", session);
+        let mut cmd_str = format!(
+            "{} claude",
+            Self::shell_env_with(&[("AMF_SESSION", session)])
+        );
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", sid));
         }
@@ -307,8 +470,8 @@ impl TmuxManager {
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
-            Some(id) => format!("opencode -s {}", id),
-            None => "opencode".into(),
+            Some(id) => format!("{} opencode -s {}", Self::shell_env_with(&[]), id),
+            None => format!("{} opencode", Self::shell_env_with(&[])),
         };
 
         Self::run(
@@ -326,8 +489,15 @@ impl TmuxManager {
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
-            Some(id) => format!("env AMF_SESSION={} codex resume {}", session, id),
-            None => format!("env AMF_SESSION={} codex", session),
+            Some(id) => format!(
+                "{} codex resume {}",
+                Self::shell_env_with(&[("AMF_SESSION", session)]),
+                id
+            ),
+            None => format!(
+                "{} codex",
+                Self::shell_env_with(&[("AMF_SESSION", session)])
+            ),
         };
 
         Self::run(
@@ -344,7 +514,7 @@ impl TmuxManager {
 
     /// Get the name of the current tmux session (only works inside tmux)
     pub fn current_session() -> Option<String> {
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args(["display-message", "-p", "#{session_name}"])
             .output()
             .ok()?;
@@ -423,7 +593,7 @@ impl TmuxManager {
 
     /// List all amf-* tmux sessions
     pub fn list_sessions() -> Result<Vec<String>> {
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args(["list-sessions", "-F", "#{session_name}"])
             .output();
 
@@ -443,7 +613,7 @@ impl TmuxManager {
     /// Capture the current pane content of a session's window
     pub fn capture_pane(session: &str, window: &str) -> Result<String> {
         let target = format!("{}:{}", session, window);
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args(["capture-pane", "-t", &target, "-p"])
             .output()
             .context("Failed to capture pane")?;
@@ -469,12 +639,12 @@ impl TmuxManager {
         let total_skip = top_skip as i32 + extra_lines as i32;
         let output = if total_skip > 0 {
             let start = format!("-{}", total_skip);
-            Command::new("tmux")
+            Self::command()
                 .args(["capture-pane", "-t", &target, "-e", "-p", "-S", &start])
                 .output()
                 .context("Failed to capture pane with ANSI")?
         } else {
-            Command::new("tmux")
+            Self::command()
                 .args(["capture-pane", "-t", &target, "-e", "-p"])
                 .output()
                 .context("Failed to capture pane with ANSI")?
@@ -492,7 +662,7 @@ impl TmuxManager {
     ) -> Result<(String, usize)> {
         let target = format!("{}:{}", session, window);
         let start = format!("-{}", history_lines);
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args(["capture-pane", "-t", &target, "-e", "-p", "-S", &start])
             .output()
             .context("Failed to capture pane with history")?;
@@ -505,7 +675,7 @@ impl TmuxManager {
     /// Check if the pane is using alternate screen mode (like vim/opencode)
     pub fn is_alternate_screen(session: &str, window: &str) -> bool {
         let target = format!("{}:{}", session, window);
-        Command::new("tmux")
+        Self::command()
             .args(["display-message", "-t", &target, "-p", "#{alternate_on}"])
             .output()
             .map(|o| {
@@ -518,7 +688,7 @@ impl TmuxManager {
     /// Get the cursor position in a tmux pane (x, y)
     pub fn cursor_position(session: &str, window: &str) -> Result<(u16, u16)> {
         let target = format!("{}:{}", session, window);
-        let output = Command::new("tmux")
+        let output = Self::command()
             .args([
                 "display-message",
                 "-t",

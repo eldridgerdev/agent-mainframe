@@ -13,6 +13,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+tmux() {
+    local tmux_bin="${AMF_TMUX_BIN:-tmux}"
+    if [[ -n "${AMF_TMUX_SOCKET:-}" ]]; then
+        "$tmux_bin" -S "$AMF_TMUX_SOCKET" "$@"
+    else
+        "$tmux_bin" "$@"
+    fi
+}
+
 # ── Parse hook input ────────────────────────────────────────────
 
 HOOK_INPUT=$(cat)

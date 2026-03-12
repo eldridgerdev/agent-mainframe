@@ -12,6 +12,29 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.10.0] - 2026-03-12
+
+### Added
+
+- AMF release bundles now include a statically-linked `tmux` binary.
+  When launched outside an existing tmux session, AMF uses the bundled
+  binary on a private socket so that tmux does not need to be installed
+  separately.
+- `AMF_TMUX_BIN` and `AMF_TMUX_SOCKET` environment variables let you
+  override the tmux binary and socket path at runtime.
+
+### Changed
+
+- Default branch name changed from `master` to `main` throughout —
+  diff review scripts, PR helpers, and worktree operations now default
+  to `main` as the base branch.
+
+### Migration
+
+- No store migration is required.
+- If you have existing scripts that relied on `master` as the default
+  base branch, update them to use `main` (or set the branch explicitly).
+
 ## [v0.9.0] - 2026-03-12
 
 ### Added

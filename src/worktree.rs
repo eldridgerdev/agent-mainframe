@@ -446,7 +446,7 @@ mod tests {
         let stdout = "\
 worktree /repo/main
 HEAD abcdef
-branch refs/heads/master
+branch refs/heads/main
 
 worktree /repo/.worktrees/feature
 HEAD 123456

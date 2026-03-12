@@ -169,6 +169,12 @@ amf -V
 User-facing release notes and migration guidance live in
 [`CHANGELOG.md`](CHANGELOG.md).
 
+## Docker Screenshot Demo
+
+For a clean, isolated AMF setup that boots straight into a seeded demo
+dashboard for screenshots, see
+[`docs/docker-screenshots.md`](docs/docker-screenshots.md).
+
 ## Automation
 
 AMF exposes machine-friendly automation commands for external agents:

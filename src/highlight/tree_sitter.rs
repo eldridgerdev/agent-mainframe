@@ -41,6 +41,10 @@ const HIGHLIGHT_NAMES: [&str; 27] = [
     "none",
 ];
 
+const TREE_SITTER_JAVASCRIPT_REPO_URL: &str =
+    "https://github.com/tree-sitter/tree-sitter-javascript";
+const TREE_SITTER_JAVASCRIPT_REVISION: &str = "HEAD";
+
 static REGISTRY: OnceLock<Mutex<Option<Registry>>> = OnceLock::new();
 
 struct Registry {
@@ -62,18 +66,21 @@ struct ConfigKey {
 
 pub fn highlight_source(language: HighlightLanguage, source: &str) -> Result<HighlightedText> {
     with_registry(|registry| {
-        let config = registry
-            .config(language)
-            .with_context(|| format!("tree-sitter parser for {} is not installed", language.display_name()))?;
+        let config = registry.config(language).with_context(|| {
+            format!(
+                "tree-sitter parser for {} is not installed",
+                language.display_name()
+            )
+        })?;
         let mut highlighter = Highlighter::new();
         let mut lines = vec![HighlightedLine::default()];
         let mut classes = vec![SyntaxClass::Plain];
 
         let highlights = highlighter
-            .highlight(config, source.as_bytes(), None, |name| registry.injection_config(name))
-            .with_context(|| {
-                format!("failed to start tree-sitter highlighter for {language:?}")
-            })?;
+            .highlight(config, source.as_bytes(), None, |name| {
+                registry.injection_config(name)
+            })
+            .with_context(|| format!("failed to start tree-sitter highlighter for {language:?}"))?;
 
         for event in highlights {
             match event
@@ -127,12 +134,18 @@ where
     }
 
     if source_dir.exists() {
-        progress(format!("Removing previous source checkout at {}", source_dir.display()));
+        progress(format!(
+            "Removing previous source checkout at {}",
+            source_dir.display()
+        ));
         std::fs::remove_dir_all(&source_dir)
             .with_context(|| format!("failed to remove {}", source_dir.display()))?;
     }
     if library_path.exists() {
-        progress(format!("Removing previous parser library at {}", library_path.display()));
+        progress(format!(
+            "Removing previous parser library at {}",
+            library_path.display()
+        ));
         std::fs::remove_file(&library_path)
             .with_context(|| format!("failed to remove {}", library_path.display()))?;
     }
@@ -158,6 +171,7 @@ where
         ],
         Some(&source_dir),
     )?;
+    install_language_dependencies(language, &source_dir, &mut progress)?;
 
     build_shared_library(language, &source_dir, &library_path, &mut progress)?;
     Ok(format!(
@@ -201,7 +215,9 @@ pub fn reset_registry() {
 
 fn with_registry<T>(f: impl FnOnce(&Registry) -> Result<T>) -> Result<T> {
     let registry = REGISTRY.get_or_init(|| Mutex::new(None));
-    let mut guard = registry.lock().expect("tree-sitter registry mutex poisoned");
+    let mut guard = registry
+        .lock()
+        .expect("tree-sitter registry mutex poisoned");
     if guard.is_none() {
         *guard = Some(Registry::build());
     }
@@ -412,9 +428,9 @@ fn load_config(
     let symbol = unsafe { library.symbol(grammar.symbol_name)? };
     let language_fn = unsafe { LanguageFn::from_raw(symbol) };
     let tree_sitter_language = tree_sitter::Language::new(language_fn);
-    let highlights_query = read_query_file(source_dir, grammar.highlights_query)?;
-    let injections_query = read_optional_query_file(source_dir, grammar.injections_query)?;
-    let locals_query = read_optional_query_file(source_dir, grammar.locals_query)?;
+    let highlights_query = load_highlights_query(source_dir, language, grammar)?;
+    let injections_query = load_injections_query(source_dir, language, grammar)?;
+    let locals_query = load_locals_query(source_dir, language, grammar)?;
     build_config_named(
         language,
         grammar.config_name,
@@ -435,6 +451,165 @@ fn read_optional_query_file(root: &Path, relative: &str) -> Result<String> {
         return Ok(String::new());
     }
     read_query_file(root, relative)
+}
+
+fn read_existing_query_file(root: &Path, relative: &str) -> Result<Option<String>> {
+    if relative.is_empty() {
+        return Ok(None);
+    }
+    let path = root.join(relative);
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(&path)
+        .map(Some)
+        .with_context(|| format!("failed to read {}", path.display()))
+}
+
+fn combine_queries(parts: Vec<String>) -> String {
+    let non_empty: Vec<String> = parts
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect();
+    non_empty.join("\n")
+}
+
+fn load_highlights_query(
+    source_dir: &Path,
+    language: HighlightLanguage,
+    grammar: &HighlightGrammarSpec,
+) -> Result<String> {
+    let mut parts = vec![read_query_file(source_dir, grammar.highlights_query)?];
+
+    if matches!(language, HighlightLanguage::Tsx) {
+        if let Some(query) = read_existing_query_file(
+            source_dir,
+            "node_modules/tree-sitter-javascript/queries/highlights-jsx.scm",
+        )? {
+            parts.push(query);
+        }
+    }
+
+    if matches!(
+        language,
+        HighlightLanguage::Tsx | HighlightLanguage::TypeScript
+    ) {
+        if let Some(query) = read_existing_query_file(
+            source_dir,
+            "node_modules/tree-sitter-javascript/queries/highlights.scm",
+        )? {
+            parts.push(query);
+        }
+    }
+
+    Ok(combine_queries(parts))
+}
+
+fn load_injections_query(
+    source_dir: &Path,
+    language: HighlightLanguage,
+    grammar: &HighlightGrammarSpec,
+) -> Result<String> {
+    let mut parts = Vec::new();
+    let base = read_optional_query_file(source_dir, grammar.injections_query)?;
+    if !base.is_empty() {
+        parts.push(base);
+    }
+
+    if matches!(
+        language,
+        HighlightLanguage::Tsx | HighlightLanguage::TypeScript
+    ) {
+        if let Some(query) = read_existing_query_file(
+            source_dir,
+            "node_modules/tree-sitter-javascript/queries/injections.scm",
+        )? {
+            parts.push(query);
+        }
+    }
+
+    Ok(combine_queries(parts))
+}
+
+fn load_locals_query(
+    source_dir: &Path,
+    language: HighlightLanguage,
+    grammar: &HighlightGrammarSpec,
+) -> Result<String> {
+    let mut parts = Vec::new();
+    let base = read_optional_query_file(source_dir, grammar.locals_query)?;
+    if !base.is_empty() {
+        parts.push(base);
+    }
+
+    if matches!(
+        language,
+        HighlightLanguage::Tsx | HighlightLanguage::TypeScript
+    ) {
+        if let Some(query) = read_existing_query_file(
+            source_dir,
+            "node_modules/tree-sitter-javascript/queries/locals.scm",
+        )? {
+            parts.push(query);
+        }
+    }
+
+    Ok(combine_queries(parts))
+}
+
+fn install_language_dependencies<F>(
+    language: HighlightLanguage,
+    source_dir: &Path,
+    progress: &mut F,
+) -> Result<()>
+where
+    F: FnMut(String),
+{
+    if !matches!(
+        language,
+        HighlightLanguage::Tsx | HighlightLanguage::TypeScript
+    ) {
+        return Ok(());
+    }
+
+    let dependency_dir = source_dir
+        .join("node_modules")
+        .join("tree-sitter-javascript");
+    if let Some(parent) = dependency_dir.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    if dependency_dir.exists() {
+        progress(format!(
+            "Removing previous JavaScript query dependency at {}",
+            dependency_dir.display()
+        ));
+        std::fs::remove_dir_all(&dependency_dir)
+            .with_context(|| format!("failed to remove {}", dependency_dir.display()))?;
+    }
+
+    run_command(
+        progress,
+        "git",
+        &[
+            "clone".to_string(),
+            TREE_SITTER_JAVASCRIPT_REPO_URL.to_string(),
+            dependency_dir.to_string_lossy().into_owned(),
+        ],
+        None,
+    )?;
+    run_command(
+        progress,
+        "git",
+        &[
+            "checkout".to_string(),
+            "--detach".to_string(),
+            TREE_SITTER_JAVASCRIPT_REVISION.to_string(),
+        ],
+        Some(&dependency_dir),
+    )?;
+
+    Ok(())
 }
 
 fn build_config_named(
@@ -630,7 +805,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let src = dir.path().join("src");
         std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("parser.c"), "int tree_sitter_c(void) { return 0; }").unwrap();
+        std::fs::write(
+            src.join("parser.c"),
+            "int tree_sitter_c(void) { return 0; }",
+        )
+        .unwrap();
 
         let mut messages = Vec::new();
         let result = build_shared_library(
@@ -645,6 +824,76 @@ mod tests {
             messages
                 .iter()
                 .any(|line| line.contains("Skipping missing source file"))
+        );
+    }
+
+    #[test]
+    fn installed_tsx_parser_produces_non_plain_highlighting() {
+        if HighlightLanguage::Tsx.install_state() != HighlightInstallState::Installed {
+            return;
+        }
+
+        reset_registry();
+        crate::highlight::reload_runtime_state();
+
+        let highlighted = crate::highlight::service::highlight_source(
+            crate::highlight::model::HighlightRequest {
+                path: Some(Path::new("demo.tsx")),
+                language_hint: None,
+                source: "export const Demo = () => <main data-id=\"x\">hello</main>;\n",
+            },
+        );
+
+        assert!(
+            highlighted
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.class != SyntaxClass::Plain),
+            "expected installed TSX parser to classify at least one span"
+        );
+    }
+
+    #[test]
+    fn installed_tsx_dependency_queries_highlight_imports_and_jsx() {
+        if HighlightLanguage::Tsx.install_state() != HighlightInstallState::Installed {
+            return;
+        }
+        if !HighlightLanguage::Tsx
+            .source_dir()
+            .join("node_modules/tree-sitter-javascript/queries/highlights.scm")
+            .exists()
+        {
+            return;
+        }
+
+        reset_registry();
+        crate::highlight::reload_runtime_state();
+
+        let highlighted = crate::highlight::service::highlight_source(
+            crate::highlight::model::HighlightRequest {
+                path: Some(Path::new("demo.tsx")),
+                language_hint: None,
+                source: include_str!("../../docs/tsx-syntax-test.tsx"),
+            },
+        );
+
+        assert!(
+            highlighted.lines[0]
+                .spans
+                .iter()
+                .any(|span| span.class != SyntaxClass::Plain),
+            "expected import line to include non-plain syntax classes"
+        );
+        assert!(
+            highlighted
+                .lines
+                .iter()
+                .skip(35)
+                .take(8)
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.class != SyntaxClass::Plain),
+            "expected JSX block to include non-plain syntax classes"
         );
     }
 }

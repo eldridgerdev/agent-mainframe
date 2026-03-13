@@ -364,31 +364,36 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
         .files
         .get(state.selected_file)
         .and_then(|file| highlight::language_install_state_for_path(Path::new(&file.path)));
-    let mut spans = vec![
+    let footer = Paragraph::new(diff_footer_lines(
+        focus,
+        layout,
+        new_file_selected,
+        syntax_status,
+        theme,
+    ))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(footer, area);
+}
+
+fn diff_footer_lines(
+    focus: &str,
+    layout: &str,
+    new_file_selected: bool,
+    syntax_status: Option<(
+        highlight::HighlightLanguage,
+        highlight::HighlightInstallState,
+    )>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let mut primary = vec![
         Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(format!(" focus:{focus}  ")),
     ];
-    if new_file_selected {
-        spans.push(Span::styled(
-            format!(" layout:{layout} (new file)  "),
-            Style::default().fg(theme.info.to_color()),
-        ));
-    } else {
-        spans.push(Span::styled("v", Style::default().fg(theme.warning.to_color())));
-        spans.push(Span::raw(format!(" layout:{layout}  ")));
-    }
-    spans.extend(vec![
-        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" move  "),
-        Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" patch  "),
-        Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" top/bottom  "),
-        Span::styled("r", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" refresh  "),
-    ]);
     if let Some((language, status)) = syntax_status {
-        spans.push(Span::styled("i", Style::default().fg(theme.warning.to_color())));
+        primary.push(Span::styled(
+            "i",
+            Style::default().fg(theme.warning.to_color()),
+        ));
         let label = match status {
             highlight::HighlightInstallState::Installed => {
                 format!(" syntax:{} installed  ", language.display_name())
@@ -405,14 +410,38 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
             highlight::HighlightInstallState::Available => theme.warning.to_color(),
             highlight::HighlightInstallState::Broken => theme.danger.to_color(),
         };
-        spans.push(Span::styled(label, Style::default().fg(color)));
+        primary.push(Span::styled(label, Style::default().fg(color)));
     }
-    spans.extend(vec![
+    primary.extend(vec![
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" close"),
     ]);
-    let footer = Paragraph::new(Line::from(spans));
-    frame.render_widget(footer, area);
+
+    let mut secondary = Vec::new();
+    if new_file_selected {
+        secondary.push(Span::styled(
+            format!(" layout:{layout} (new file)  "),
+            Style::default().fg(theme.info.to_color()),
+        ));
+    } else {
+        secondary.push(Span::styled(
+            "v",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        secondary.push(Span::raw(format!(" layout:{layout}  ")));
+    }
+    secondary.extend(vec![
+        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" move  "),
+        Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" patch  "),
+        Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" top/bottom  "),
+        Span::styled("r", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" refresh"),
+    ]);
+
+    vec![Line::from(primary), Line::from(secondary)]
 }
 
 fn patch_lines(
@@ -716,7 +745,10 @@ fn effective_layout(state: &DiffViewerState) -> DiffViewerLayout {
 }
 
 fn is_new_diff_file(file: &DiffFile) -> bool {
-    matches!(file.status, DiffFileStatus::Added | DiffFileStatus::Untracked)
+    matches!(
+        file.status,
+        DiffFileStatus::Added | DiffFileStatus::Untracked
+    )
 }
 
 fn status_label(status: &DiffFileStatus) -> &'static str {
@@ -850,7 +882,11 @@ fn side_by_side_rows(
             pad_chunks_to_width(
                 left_wrapped.get(row).cloned().unwrap_or_default(),
                 text_width,
-                if paired_change_row { Style::default().bg(base_bg) } else { left_style },
+                if paired_change_row {
+                    Style::default().bg(base_bg)
+                } else {
+                    left_style
+                },
             )
         };
         let right_cell = if right_missing {
@@ -863,7 +899,11 @@ fn side_by_side_rows(
             pad_chunks_to_width(
                 right_wrapped.get(row).cloned().unwrap_or_default(),
                 text_width,
-                if paired_change_row { Style::default().bg(base_bg) } else { right_style },
+                if paired_change_row {
+                    Style::default().bg(base_bg)
+                } else {
+                    right_style
+                },
             )
         };
         let mut line = vec![Span::styled(left_prefix, left_cell_style)];
@@ -876,13 +916,13 @@ fn side_by_side_rows(
         line.extend(chunks_to_spans(left_cell));
         line.push(Span::styled(
             separator.to_string(),
-            Style::default()
-                .fg(theme.text_muted.to_color())
-                .bg(if paired_change_row && (!left_has_content || !right_has_content) {
+            Style::default().fg(theme.text_muted.to_color()).bg(
+                if paired_change_row && (!left_has_content || !right_has_content) {
                     base_bg
                 } else {
                     blend_color(left_bg, right_bg, 0.5)
-                }),
+                },
+            ),
         ));
         line.push(Span::styled(right_prefix, right_cell_style));
         line.push(Span::styled(
@@ -1437,4 +1477,36 @@ fn wrap_text_to_width(text: &str, width: usize) -> Vec<String> {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn diff_footer_prioritizes_syntax_install_hint() {
+        let theme = Theme::default();
+        let lines = diff_footer_lines(
+            "files",
+            "unified",
+            true,
+            Some((
+                highlight::HighlightLanguage::Tsx,
+                highlight::HighlightInstallState::Available,
+            )),
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("install tsx parser"));
+        assert!(line_text(&lines[0]).contains("Esc close"));
+        assert!(line_text(&lines[1]).contains("layout:unified (new file)"));
+    }
 }

@@ -251,9 +251,9 @@ const TSX_GRAMMARS: &[HighlightGrammarSpec] = &[HighlightGrammarSpec {
     symbol_name: "tree_sitter_tsx",
     include_dir: "tsx/src",
     source_files: &["tsx/src/parser.c", "tsx/src/scanner.c"],
-    highlights_query: "tsx/queries/highlights.scm",
-    injections_query: "tsx/queries/injections.scm",
-    locals_query: "tsx/queries/locals.scm",
+    highlights_query: "queries/highlights.scm",
+    injections_query: "",
+    locals_query: "queries/locals.scm",
     injection_aliases: TSX_HINTS,
 }];
 
@@ -262,9 +262,9 @@ const TYPESCRIPT_GRAMMARS: &[HighlightGrammarSpec] = &[HighlightGrammarSpec {
     symbol_name: "tree_sitter_typescript",
     include_dir: "typescript/src",
     source_files: &["typescript/src/parser.c", "typescript/src/scanner.c"],
-    highlights_query: "typescript/queries/highlights.scm",
-    injections_query: "typescript/queries/injections.scm",
-    locals_query: "typescript/queries/locals.scm",
+    highlights_query: "queries/highlights.scm",
+    injections_query: "",
+    locals_query: "queries/locals.scm",
     injection_aliases: TYPESCRIPT_HINTS,
 }];
 
@@ -526,9 +526,11 @@ impl HighlightLanguage {
     }
 
     pub fn library_path(self) -> PathBuf {
-        syntax_root_dir()
-            .join("parsers")
-            .join(format!("{}{}", self.package_key(), shared_library_extension()))
+        syntax_root_dir().join("parsers").join(format!(
+            "{}{}",
+            self.package_key(),
+            shared_library_extension()
+        ))
     }
 
     pub fn install_state(self) -> HighlightInstallState {

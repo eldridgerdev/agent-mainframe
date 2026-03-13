@@ -38,7 +38,8 @@ ORIGINAL_FILE="$TEMP_DIR/original.$FILE_EXT"
 PROPOSED_FILE="$TEMP_DIR/proposed.$FILE_EXT"
 RESPONSE_FILE="$TEMP_DIR/response.json"
 PROCEED_SIGNAL="$TEMP_DIR/proceed"
-NOTIFY_DIR="${CWD}/.claude/notifications"
+GIT_ROOT=$(git -C "${CWD}" rev-parse --show-toplevel 2>/dev/null || echo "${CWD}")
+NOTIFY_DIR="${GIT_ROOT}/.claude/notifications"
 NOTIFICATION_FILE="$NOTIFY_DIR/${SESSION_ID}-diff-${INVOCATION_ID}.json"
 IS_NEW_FILE=false
 if [[ ! -f "$FILE_PATH" ]]; then

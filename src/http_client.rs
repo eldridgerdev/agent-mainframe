@@ -9,7 +9,7 @@ fn https_config() -> Config {
     Config::builder()
         .tls_config(
             TlsConfig::builder()
-                .provider(TlsProvider::NativeTls)
+                .provider(TlsProvider::Rustls)
                 .root_certs(RootCerts::PlatformVerifier)
                 .build(),
         )
@@ -21,11 +21,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn https_agent_uses_native_tls_with_platform_roots() {
+    fn https_agent_uses_rustls_with_platform_roots() {
         let config = https_config();
         let tls = config.tls_config();
 
-        assert_eq!(tls.provider(), TlsProvider::NativeTls);
+        assert_eq!(tls.provider(), TlsProvider::Rustls);
         assert!(matches!(tls.root_certs(), RootCerts::PlatformVerifier));
     }
 }

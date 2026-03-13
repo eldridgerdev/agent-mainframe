@@ -47,12 +47,14 @@ attention, and get notified the moment one is waiting for input.
 
 ## Prerequisites
 
-### Required
+### Required (build from source only)
 
-- **tmux** — required at runtime, but it does not need to be started
-  manually. AMF will auto-detect a bundled `tmux` binary placed next
-  to `amf`, otherwise it falls back to `tmux` from `PATH`. When AMF is
-  launched outside tmux, it uses its own private tmux socket.
+- **tmux** — pre-built release bundles include a statically-linked
+  `tmux` binary, so no system install is needed when using a release.
+  When building from source, `tmux` must be available in `PATH`. AMF
+  auto-detects a bundled `tmux` binary placed next to `amf` and uses a
+  private socket when launched outside an existing tmux session;
+  `AMF_TMUX_BIN` and `AMF_TMUX_SOCKET` can override these at runtime.
 
 ### Agent (choose one or more)
 
@@ -165,6 +167,9 @@ Upgrade an existing install:
 ```bash
 amf upgrade
 ```
+
+> The upgrade command fetches the latest release over HTTPS. If you
+> previously saw TLS errors on upgrade, this is fixed in v0.10.1.
 
 Check the installed version:
 
@@ -839,4 +844,4 @@ The project uses Rust 2024 edition (rustc 1.85+).
 
 ---
 
-*Last updated: 2026-03-07*
+*Last updated: 2026-03-13*

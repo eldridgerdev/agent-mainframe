@@ -87,7 +87,11 @@ bundle_linux_tmux() {
 
   sudo apt-get update
 
-  mapfile -t packages < <(
+  packages=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    packages+=("$pkg")
+  done < <(
     python3 - "$arch" <<'PY'
 import subprocess
 import sys
@@ -172,7 +176,11 @@ bundle_macos_tmux() {
     [[ -n "$item" ]] || continue
     [[ -f "$item" ]] || continue
 
-    mapfile -t deps < <(otool -L "$item" | awk 'NR > 1 {print $1}')
+    deps=()
+    while IFS= read -r dep; do
+      [[ -n "$dep" ]] || continue
+      deps+=("$dep")
+    done < <(otool -L "$item" | awk 'NR > 1 {print $1}')
     for dep in "${deps[@]}"; do
       case "$dep" in
         "$brew_prefix"/*)

@@ -12,6 +12,15 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.10.1] - 2026-03-13
+
+### Fixed
+
+- `custom-diff-review.sh` now resolves `NOTIFY_DIR` from the git
+  repository root rather than the current working directory. This
+  fixes missed notifications when Claude operates in a subdirectory
+  of the repo.
+
 ## [v0.10.0] - 2026-03-12
 
 ### Added

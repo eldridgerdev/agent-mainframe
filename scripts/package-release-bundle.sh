@@ -78,10 +78,16 @@ bundle_linux_tmux() {
   local arch="$1"
   local extract_dir="$WORK_DIR/tmux-root"
   local deb_dir="$WORK_DIR/debs"
+  local host_arch
+  local package_suffix=":$arch"
 
   mkdir -p "$extract_dir" "$deb_dir"
 
-  if [[ "$arch" == "arm64" ]]; then
+  host_arch="$(dpkg --print-architecture)"
+
+  if [[ "$host_arch" == "$arch" ]]; then
+    package_suffix=""
+  elif [[ "$arch" == "arm64" ]]; then
     sudo dpkg --add-architecture arm64
   fi
 
@@ -92,11 +98,12 @@ bundle_linux_tmux() {
     [[ -n "$pkg" ]] || continue
     packages+=("$pkg")
   done < <(
-    python3 - "$arch" <<'PY'
+    python3 - "$arch" "$package_suffix" <<'PY'
 import subprocess
 import sys
 
 arch = sys.argv[1]
+package_suffix = sys.argv[2]
 cmd = [
     "apt-cache",
     "depends",
@@ -107,7 +114,7 @@ cmd = [
     "--no-breaks",
     "--no-replaces",
     "--no-enhances",
-    f"tmux:{arch}",
+    f"tmux{package_suffix}",
 ]
 out = subprocess.check_output(cmd, text=True)
 seen = set()
@@ -139,7 +146,7 @@ PY
 
   pushd "$deb_dir" >/dev/null
   for pkg in "${packages[@]}"; do
-    apt-get download "${pkg}:${arch}"
+    apt-get download "${pkg}${package_suffix}"
   done
   for deb in ./*.deb; do
     dpkg-deb -x "$deb" "$extract_dir"

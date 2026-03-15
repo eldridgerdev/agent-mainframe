@@ -6,6 +6,7 @@ mod claude;
 mod codex;
 mod debug;
 mod diff;
+mod editor;
 mod extension;
 mod handlers;
 mod highlight;

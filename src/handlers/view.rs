@@ -218,6 +218,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 app.mode = AppMode::NotificationPicker(0, Some(view));
             }
         }
+        KeyCode::Char('s') => {
+            app.open_steering_prompt_from_view()?;
+        }
         KeyCode::Char('w') => {
             app.open_session_switcher();
         }
@@ -324,7 +327,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
-    use crate::app::ViewState;
+    use crate::app::{ViewState, analyze_prompt};
     use crate::project::{
         AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
     };
@@ -493,6 +496,38 @@ mod tests {
             AppMode::DiffViewer(state)
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
+    }
+
+    #[test]
+    fn leader_s_opens_steering_prompt_from_view() {
+        let repo = TempDir::new().unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        std::fs::write(
+            repo.path().join(".claude").join("latest-prompt.txt"),
+            "Scope the change.\nDone when cargo check passes.",
+        )
+        .unwrap();
+
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('s')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => {
+                assert_eq!(state.view.session, "amf-feature");
+                assert_eq!(state.workdir, repo.path());
+                assert_eq!(
+                    state.editor.text(),
+                    "Scope the change.\nDone when cargo check passes."
+                );
+                assert_eq!(
+                    state.prompt_analysis.score,
+                    analyze_prompt("Scope the change.\nDone when cargo check passes.").score
+                );
+            }
+            _ => panic!("expected SteeringPrompt mode"),
+        }
     }
 
     fn init_repo_with_branch_change() -> TempDir {

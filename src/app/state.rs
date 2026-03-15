@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Child;
 
 use super::PromptAnalysis;
+use crate::editor::TextEditor;
 use crate::extension::CustomSessionConfig;
 use crate::project::{AgentKind, VibeMode};
 use crate::worktree::WorktreeInfo;
@@ -257,8 +258,25 @@ impl DiffViewerState {
 pub struct SteeringPromptState {
     pub view: ViewState,
     pub workdir: PathBuf,
-    pub prompt: String,
+    pub editor: TextEditor,
     pub prompt_analysis: PromptAnalysis,
+}
+
+impl SteeringPromptState {
+    pub fn new(view: ViewState, workdir: PathBuf, prompt: String) -> Self {
+        let editor = TextEditor::with_vim(prompt);
+        let prompt_analysis = crate::app::analyze_prompt(editor.text());
+        Self {
+            view,
+            workdir,
+            editor,
+            prompt_analysis,
+        }
+    }
+
+    pub fn refresh_prompt_analysis(&mut self) {
+        self.prompt_analysis = crate::app::analyze_prompt(self.editor.text());
+    }
 }
 
 pub enum AppMode {

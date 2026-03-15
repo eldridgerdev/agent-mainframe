@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, Selection, SessionFilter};
+use crate::editor::VimMode;
 use crate::project::SessionKind;
 use crate::theme::Theme;
 use crate::usage::Model;
@@ -179,9 +180,33 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(spans)
             }
         }
+        AppMode::SteeringPrompt(state) => Line::from(vec![
+            Span::styled("Tab", key_style()),
+            Span::raw(" inject  "),
+            Span::styled(
+                if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                    "i / a / o"
+                } else {
+                    "Esc"
+                },
+                key_style(),
+            ),
+            Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                " edit  "
+            } else {
+                " normal  "
+            }),
+            Span::styled("Ctrl+V", key_style()),
+            Span::raw(if state.editor.vim_mode().is_some() {
+                " vim off  "
+            } else {
+                " vim on  "
+            }),
+            Span::styled("Ctrl+Q", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::CreatingProject(_)
         | AppMode::CreatingFeature(_)
-        | AppMode::SteeringPrompt(_)
         | AppMode::CreatingBatchFeatures(_)
         | AppMode::RenamingSession(_)
         | AppMode::RenamingFeature(_)

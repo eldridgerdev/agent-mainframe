@@ -215,33 +215,39 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_steering_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
-    match key {
-        KeyCode::Esc => {
-            app.cancel_steering_prompt();
+pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        app.cancel_steering_prompt();
+        return Ok(());
+    }
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
+        if let AppMode::SteeringPrompt(state) = &mut app.mode {
+            state.editor.toggle_vim();
+            app.message = Some(if state.editor.vim_mode().is_some() {
+                "Vim mode enabled".into()
+            } else {
+                "Vim mode disabled".into()
+            });
         }
+        return Ok(());
+    }
+
+    match key.code {
         KeyCode::Tab => {
             app.submit_steering_prompt()?;
         }
-        KeyCode::Enter => {
+        KeyCode::Esc if matches!(&app.mode, AppMode::SteeringPrompt(state) if state.editor.vim_mode().is_none()) => {
+            app.cancel_steering_prompt();
+        }
+        _ => {
             if let AppMode::SteeringPrompt(state) = &mut app.mode {
-                state.prompt.push('\n');
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
+                let outcome = state.editor.handle_key(key);
+                if outcome.text_changed {
+                    state.refresh_prompt_analysis();
+                }
             }
         }
-        KeyCode::Backspace => {
-            if let AppMode::SteeringPrompt(state) = &mut app.mode {
-                state.prompt.pop();
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
-            }
-        }
-        KeyCode::Char(c) => {
-            if let AppMode::SteeringPrompt(state) = &mut app.mode {
-                state.prompt.push(c);
-                state.prompt_analysis = crate::app::analyze_prompt(&state.prompt);
-            }
-        }
-        _ => {}
     }
     Ok(())
 }
@@ -419,4 +425,108 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+    use crate::app::{SteeringPromptState, ViewState};
+    use crate::project::{ProjectStore, VibeMode};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use tempfile::TempDir;
+
+    fn steering_app(workdir: &std::path::Path, prompt: &str) -> App {
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.mode = AppMode::SteeringPrompt(SteeringPromptState::new(
+            ViewState::new(
+                "demo".to_string(),
+                "feature".to_string(),
+                "amf-feature".to_string(),
+                "claude".to_string(),
+                "Claude 1".to_string(),
+                VibeMode::Vibeless,
+                false,
+            ),
+            workdir.to_path_buf(),
+            prompt.to_string(),
+        ));
+        app
+    }
+
+    #[test]
+    fn steering_prompt_escape_enters_vim_normal_mode() {
+        let repo = TempDir::new().unwrap();
+        let mut app = steering_app(repo.path(), "draft");
+
+        handle_steering_prompt_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => {
+                assert_eq!(state.editor.vim_mode(), Some(crate::editor::VimMode::Normal));
+                assert_eq!(state.editor.text(), "draft");
+            }
+            _ => panic!("expected steering prompt to stay open"),
+        }
+    }
+
+    #[test]
+    fn steering_prompt_ctrl_q_closes_dialog() {
+        let repo = TempDir::new().unwrap();
+        let mut app = steering_app(repo.path(), "draft");
+
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn steering_prompt_ctrl_v_toggles_vim_mode() {
+        let repo = TempDir::new().unwrap();
+        let mut app = steering_app(repo.path(), "draft");
+
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => {
+                assert_eq!(state.editor.vim_mode(), None);
+                assert_eq!(state.editor.text(), "draft");
+            }
+            _ => panic!("expected steering prompt to stay open"),
+        }
+
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => {
+                assert_eq!(state.editor.vim_mode(), Some(crate::editor::VimMode::Insert));
+                assert_eq!(state.editor.text(), "draft");
+            }
+            _ => panic!("expected steering prompt to stay open"),
+        }
+    }
 }

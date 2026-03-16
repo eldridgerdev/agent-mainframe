@@ -17,6 +17,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("n / p", "Next / prev feature"),
     ("/", "Command picker"),
     ("i", "Pending inputs"),
+    ("s", "Steering coach"),
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),

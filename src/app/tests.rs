@@ -1328,8 +1328,8 @@ fn submit_steering_prompt_pastes_into_running_session() {
         Box::new(MockWorktreeOps::new()),
     );
     app.store_path = tmp.path().to_path_buf();
-    app.mode = AppMode::SteeringPrompt(SteeringPromptState {
-        view: ViewState::new(
+    app.mode = AppMode::SteeringPrompt(SteeringPromptState::new(
+        ViewState::new(
             "my-project".to_string(),
             "coached".to_string(),
             "amf-coached".to_string(),
@@ -1338,10 +1338,9 @@ fn submit_steering_prompt_pastes_into_running_session() {
             VibeMode::Vibeless,
             false,
         ),
-        workdir: workdir.clone(),
-        prompt: "Implement steering coach automatically.".to_string(),
-        prompt_analysis: analyze_prompt("Implement steering coach automatically."),
-    });
+        workdir.clone(),
+        "Implement steering coach automatically.".to_string(),
+    ));
 
     app.submit_steering_prompt().unwrap();
 

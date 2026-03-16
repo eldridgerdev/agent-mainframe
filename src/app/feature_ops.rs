@@ -6,6 +6,7 @@ use super::setup::{
 };
 use super::*;
 use crate::automation::CreateBatchFeaturesRequest;
+use crate::app::util::read_latest_prompt;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -404,14 +405,54 @@ impl App {
         };
 
         let workdir = self.store.projects[pi].features[fi].workdir.clone();
-        self.mode = AppMode::SteeringPrompt(SteeringPromptState {
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(
             view,
             workdir,
-            prompt: String::new(),
-            prompt_analysis: analyze_prompt(""),
-        });
+            String::new(),
+        ));
         self.message =
             Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
+
+        Ok(())
+    }
+
+    pub fn open_steering_prompt_from_view(&mut self) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let prompt = read_latest_prompt(&workdir).unwrap_or_default();
+        let has_existing_prompt = !prompt.is_empty();
+
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(view, workdir, prompt));
+        self.message = Some(if has_existing_prompt {
+            "Edit the steering prompt, then press Tab to inject.".into()
+        } else {
+            "Write the steering prompt, then press Tab to inject.".into()
+        });
 
         Ok(())
     }
@@ -438,7 +479,7 @@ impl App {
             }
         };
 
-        let prompt = state.prompt.trim().to_string();
+        let prompt = state.editor.text().trim().to_string();
         if prompt.is_empty() {
             self.mode = AppMode::SteeringPrompt(state);
             self.message = Some("Task prompt cannot be empty".into());

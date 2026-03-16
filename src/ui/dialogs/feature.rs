@@ -10,6 +10,7 @@ use crate::app::{
     CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
     ForkFeatureStep, PromptAnalysis, SteeringPromptState,
 };
+use crate::editor::{TextEditor, VimMode};
 use crate::extension::FeaturePreset;
 use crate::project::{AgentKind, VibeMode};
 use crate::theme::Theme;
@@ -666,7 +667,7 @@ fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureStat
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Length(8),
             Constraint::Length(1),
             Constraint::Length(8),
@@ -912,7 +913,7 @@ pub fn draw_steering_prompt_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Length(8),
             Constraint::Length(1),
             Constraint::Length(8),
@@ -923,6 +924,7 @@ pub fn draw_steering_prompt_dialog(
         .split(inner);
 
     let summary = Paragraph::new(vec![
+        Line::from(""),
         Line::from(vec![
             Span::styled(" Session: ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled(
@@ -940,33 +942,17 @@ pub fn draw_steering_prompt_dialog(
     .wrap(Wrap { trim: false });
     frame.render_widget(summary, chunks[0]);
 
-    let prompt_text = if state.prompt.is_empty() {
-        vec![Line::from(Span::styled(
-            "Describe the task, then add boundaries, validation, and watch-outs.",
-            Style::default().fg(theme.text_muted.to_color()),
-        ))]
-    } else {
-        let mut lines = state
-            .prompt
-            .lines()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.text.to_color()))))
-            .collect::<Vec<_>>();
-        if state.prompt.ends_with('\n') || lines.is_empty() {
-            lines.push(Line::from(""));
-        }
-        if let Some(last) = lines.last_mut() {
-            last.spans.push(Span::styled(
-                "\u{2588}",
-                Style::default().fg(theme.primary.to_color()),
-            ));
-        }
-        lines
+    let prompt_text = steering_editor_lines(&state.editor, theme);
+    let prompt_title = match state.editor.vim_mode() {
+        Some(VimMode::Insert) => " Prompt To Inject [Vim Insert] ",
+        Some(VimMode::Normal) => " Prompt To Inject [Vim Normal] ",
+        None => " Prompt To Inject ",
     };
 
     let prompt = Paragraph::new(prompt_text)
         .block(
             Block::default()
-                .title(" Prompt To Inject ")
+                .title(prompt_title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.primary.to_color())),
         )
@@ -1008,16 +994,96 @@ pub fn draw_steering_prompt_dialog(
     frame.render_widget(tips, chunks[5]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("Type / Paste", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" edit  "),
+        Span::styled(
+            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                "i / a / o"
+            } else {
+                "Type / Paste"
+            },
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+            " edit  "
+        } else {
+            " edit  "
+        }),
+        Span::styled(
+            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                "h/j/k/l"
+            } else {
+                "Esc"
+            },
+            Style::default().fg(theme.warning.to_color()),
+        ),
+        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+            " move  "
+        } else {
+            " normal  "
+        }),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" newline  "),
+        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+            " ignored  "
+        } else {
+            " newline  "
+        }),
+        Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
+        Span::raw(if state.editor.vim_mode().is_some() {
+            " vim off  "
+        } else {
+            " vim on  "
+        }),
         Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(" inject  "),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled("Ctrl+Q", Style::default().fg(theme.warning.to_color())),
         Span::raw(" close"),
     ]));
     frame.render_widget(hints, chunks[6]);
+}
+
+fn steering_editor_lines(editor: &TextEditor, theme: &Theme) -> Vec<Line<'static>> {
+    if editor.text().is_empty() {
+        return vec![
+            Line::from(Span::styled(
+                "\u{2588}",
+                Style::default().fg(theme.primary.to_color()),
+            )),
+            Line::from(Span::styled(
+                "Describe the task, then add boundaries, validation, and watch-outs.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ];
+    }
+
+    let mut lines = editor
+        .text()
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let (cursor_row, cursor_col) = editor.cursor_row_col();
+    while lines.len() <= cursor_row {
+        lines.push(String::new());
+    }
+    if let Some(line) = lines.get_mut(cursor_row) {
+        let insert_at = char_col_to_byte_idx(line, cursor_col);
+        line.insert(insert_at, '\u{2588}');
+    }
+
+    lines
+        .into_iter()
+        .map(|line| {
+            Line::from(Span::styled(
+                line,
+                Style::default().fg(theme.text.to_color()),
+            ))
+        })
+        .collect()
+}
+
+fn char_col_to_byte_idx(text: &str, char_col: usize) -> usize {
+    text.char_indices()
+        .nth(char_col)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len())
 }
 
 pub fn draw_delete_feature_confirm(

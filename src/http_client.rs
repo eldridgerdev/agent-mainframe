@@ -1,3 +1,4 @@
+use std::time::Duration;
 use ureq::config::Config;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
@@ -13,6 +14,8 @@ fn https_config() -> Config {
                 .root_certs(RootCerts::PlatformVerifier)
                 .build(),
         )
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(15)))
         .build()
 }
 

@@ -677,10 +677,13 @@ struct CodexSessionRecord {
 }
 
 fn parse_codex_session_meta(path: &Path) -> Option<CodexSessionMeta> {
+    // Use file mtime for `updated` — avoids reading the whole file just for
+    // timestamps and is accurate enough for "newest session" comparisons.
+    let updated = file_modified_millis(path).map(|ms| ms / 1000).unwrap_or(0);
+
     let contents = std::fs::read_to_string(path).ok()?;
     let mut id: Option<String> = None;
     let mut cwd: Option<PathBuf> = None;
-    let mut updated = 0i64;
 
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -688,10 +691,9 @@ fn parse_codex_session_meta(path: &Path) -> Option<CodexSessionMeta> {
             continue;
         }
 
-        let event: CodexSessionEvent = serde_json::from_str(trimmed).ok()?;
-        if let Some(ts) = event.timestamp.as_deref().and_then(parse_rfc3339_seconds) {
-            updated = updated.max(ts);
-        }
+        let Ok(event) = serde_json::from_str::<CodexSessionEvent>(trimmed) else {
+            continue;
+        };
         if event.event_type != "session_meta" {
             continue;
         }
@@ -699,6 +701,11 @@ fn parse_codex_session_meta(path: &Path) -> Option<CodexSessionMeta> {
         let payload = event.payload?;
         id = payload.id.clone().or(id);
         cwd = payload.cwd.clone().or(cwd);
+
+        // session_meta is typically near the top; stop once we have both fields.
+        if id.is_some() && cwd.is_some() {
+            break;
+        }
     }
 
     Some(CodexSessionMeta {

@@ -426,16 +426,9 @@ impl UsageManager {
     }
 
     fn refresh_codex_stats(&self) {
-        let mut data = self.data.lock().unwrap();
+        // Compute outside the lock — file I/O can be slow and must not hold
+        // the mutex (doing so freezes the draw path on every 30-second refresh).
         let stats = calculate_codex_usage();
-        data.codex.today_tokens = stats.today_tokens;
-        data.codex.today_calls = stats.today_calls;
-        data.codex.five_hour_tokens = stats.five_hour_tokens;
-        data.codex.five_hour_usage_pct = stats.five_hour_usage_pct;
-        data.codex.weekly_usage_pct = stats.weekly_usage_pct;
-        data.codex.five_hour_resets = stats.five_hour_resets.clone();
-        data.codex.weekly_resets = stats.weekly_resets.clone();
-        data.codex.plan_type = stats.plan_type.clone();
 
         let sessions_path = codex_sessions_root()
             .map(|p| p.display().to_string())
@@ -461,6 +454,16 @@ impl UsageManager {
                 "codex refresh: no rate-limit percentages found, using token fallback display",
             );
         }
+
+        let mut data = self.data.lock().unwrap();
+        data.codex.today_tokens = stats.today_tokens;
+        data.codex.today_calls = stats.today_calls;
+        data.codex.five_hour_tokens = stats.five_hour_tokens;
+        data.codex.five_hour_usage_pct = stats.five_hour_usage_pct;
+        data.codex.weekly_usage_pct = stats.weekly_usage_pct;
+        data.codex.five_hour_resets = stats.five_hour_resets.clone();
+        data.codex.weekly_resets = stats.weekly_resets.clone();
+        data.codex.plan_type = stats.plan_type.clone();
     }
 
     fn model_enabled(&self, model: Model) -> bool {

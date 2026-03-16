@@ -278,6 +278,12 @@ impl SteeringPromptState {
     }
 }
 
+#[derive(Clone)]
+pub struct LatestPromptState {
+    pub view: ViewState,
+    pub prompt: Option<String>,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -318,7 +324,7 @@ pub enum AppMode {
     DiffReviewPrompt(DiffReviewState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
-    LatestPrompt(String, ViewState),
+    LatestPrompt(LatestPromptState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),

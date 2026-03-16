@@ -537,7 +537,7 @@ pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState, theme
     frame.render_widget(hints, chunks[1]);
 }
 
-pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: &str, theme: &Theme) {
+pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: Option<&str>, theme: &Theme) {
     let area = centered_rect(80, 70, frame.area());
     frame.render_widget(Clear, area);
 
@@ -555,15 +555,28 @@ pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: &str, theme: &Theme)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let paragraph = Paragraph::new(prompt)
+    let prompt_text = prompt.unwrap_or("(No prompt saved yet)");
+    let paragraph = Paragraph::new(prompt_text)
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(theme.text.to_color()));
     frame.render_widget(paragraph, chunks[0]);
 
-    let hint = Paragraph::new(Line::from(vec![
+    let mut hint_spans = Vec::new();
+    if prompt.is_some() {
+        hint_spans.extend(vec![
+            Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
+            Span::styled("/Enter", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " inject  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]);
+    }
+    hint_spans.extend(vec![
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled("/q", Style::default().fg(theme.warning.to_color())),
         Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
-    ]));
+    ]);
+    let hint = Paragraph::new(Line::from(hint_spans));
     frame.render_widget(hint, chunks[1]);
 }

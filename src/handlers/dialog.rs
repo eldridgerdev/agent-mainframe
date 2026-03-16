@@ -153,13 +153,16 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
             let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                AppMode::LatestPrompt(_, v) => v,
+                AppMode::LatestPrompt(state) => state.view,
                 other => {
                     app.mode = other;
                     return Ok(());
                 }
             };
             app.mode = AppMode::Viewing(view);
+        }
+        KeyCode::Tab | KeyCode::Enter => {
+            app.inject_latest_prompt()?;
         }
         _ => {}
     }

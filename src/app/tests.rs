@@ -1350,6 +1350,54 @@ fn submit_steering_prompt_pastes_into_running_session() {
 }
 
 #[test]
+fn inject_latest_prompt_pastes_into_running_session() {
+    let repo = TempDir::new().unwrap();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_paste_text()
+        .withf(|session, window, text| {
+            session == "amf-coached"
+                && window == "claude"
+                && text == "Resume from the latest saved prompt."
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-coached" && window == "claude" && key == "Enter"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::LatestPrompt(LatestPromptState {
+        view: ViewState::new(
+            "my-project".to_string(),
+            "coached".to_string(),
+            "amf-coached".to_string(),
+            "claude".to_string(),
+            "Claude 1".to_string(),
+            VibeMode::Vibeless,
+            false,
+        ),
+        prompt: Some("Resume from the latest saved prompt.".to_string()),
+    });
+
+    app.inject_latest_prompt().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session, "amf-coached");
+            assert_eq!(view.window, "claude");
+        }
+        _ => panic!("expected Viewing mode"),
+    }
+}
+
+#[test]
 fn create_project_persists_selected_preferred_agent() {
     let repo = TempDir::new().unwrap();
     let tmp = NamedTempFile::new().unwrap();

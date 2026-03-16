@@ -341,11 +341,23 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
-        AppMode::LatestPrompt(_, _) => Line::from(vec![
-            Span::styled(" Esc", key_style()),
-            Span::styled("/q", key_style()),
-            Span::raw(" close"),
-        ]),
+        AppMode::LatestPrompt(state) => {
+            let mut spans = Vec::new();
+            if state.prompt.is_some() {
+                spans.extend(vec![
+                    Span::styled(" Tab", key_style()),
+                    Span::raw("/"),
+                    Span::styled("Enter", key_style()),
+                    Span::raw(" inject  "),
+                ]);
+            }
+            spans.extend(vec![
+                Span::styled(" Esc", key_style()),
+                Span::styled("/q", key_style()),
+                Span::raw(" close"),
+            ]);
+            Line::from(spans)
+        }
         AppMode::DiffViewer(_) => {
             let mut spans = vec![
                 Span::styled(" Tab", key_style()),

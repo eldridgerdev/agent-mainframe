@@ -44,6 +44,7 @@ use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
 };
 use crate::tmux::TmuxManager;
+use crate::token_tracking::{SessionTokenTracker, TokenPricingConfig};
 use crate::traits::{TmuxOps, WorktreeOps};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
@@ -146,6 +147,8 @@ pub struct AppConfig {
     pub extension: ExtensionConfig,
     pub theme: crate::theme::ThemeName,
     pub transparent_background: bool,
+    #[serde(default)]
+    pub token_pricing: TokenPricingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -177,6 +180,7 @@ impl Default for AppConfig {
             extension: ExtensionConfig::default(),
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
+            token_pricing: TokenPricingConfig::default(),
         }
     }
 }
@@ -200,6 +204,7 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub usage: UsageManager,
+    pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -255,6 +260,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
+            token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -315,6 +321,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             usage: UsageManager::new(false, None, None, None),
+            token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

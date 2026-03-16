@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+use crate::token_tracking::TokenUsageSource;
+
 const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +82,8 @@ pub struct FeatureSession {
     pub label: String,
     pub tmux_window: String,
     pub claude_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage_source: Option<TokenUsageSource>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -403,6 +407,7 @@ impl Feature {
             label,
             tmux_window: window,
             claude_session_id: None,
+            token_usage_source: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,
@@ -436,6 +441,7 @@ impl Feature {
             label: name,
             tmux_window: window,
             claude_session_id: None,
+            token_usage_source: None,
             created_at: Utc::now(),
             command,
             on_stop,
@@ -731,6 +737,7 @@ impl ProjectStore {
                                 label: "Claude 1".into(),
                                 tmux_window: "claude".into(),
                                 claude_session_id: f.claude_session_id,
+                                token_usage_source: None,
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
@@ -743,6 +750,7 @@ impl ProjectStore {
                                 label: "Terminal 1".into(),
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
+                                token_usage_source: None,
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
@@ -886,6 +894,7 @@ mod tests {
             label: "test".to_string(),
             tmux_window: window.to_string(),
             claude_session_id: None,
+            token_usage_source: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,

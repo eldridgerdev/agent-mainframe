@@ -1,5 +1,6 @@
 use super::*;
 use crate::tmux::TmuxManager;
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 impl App {
     pub fn pick_claude_session(&mut self) {
@@ -248,9 +249,14 @@ impl App {
             )?;
         }
 
-        for session in &feature.sessions {
+        for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
+                    session.claude_session_id = Some(claude_session_id.to_string());
+                    session.token_usage_source = Some(TokenUsageSource {
+                        provider: TokenUsageProvider::Claude,
+                        id: claude_session_id.to_string(),
+                    });
                     let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
                     let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
                     TmuxManager::launch_claude(

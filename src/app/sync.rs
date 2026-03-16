@@ -2,6 +2,10 @@ use super::*;
 use crate::project::{AgentKind, SessionKind};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
+use crate::token_tracking::{
+    SessionTokenTracker, TokenUsageProvider, TokenUsageSource, format_token_usage,
+    provider_for_session_kind,
+};
 
 use chrono::Utc;
 
@@ -29,26 +33,83 @@ impl App {
     }
 
     pub fn sync_session_status(&mut self) {
+        let mut tracker = std::mem::take(&mut self.token_tracker);
+        self.sync_session_status_with_tracker(&mut tracker);
+        self.token_tracker = tracker;
+    }
+
+    pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
+        let pricing = self.config.token_pricing.clone();
+        let mut discovered_sources = false;
+
         for project in &mut self.store.projects {
             for feature in &mut project.features {
                 for session in &mut feature.sessions {
-                    if session.kind != crate::project::SessionKind::Custom {
+                    if session.kind == crate::project::SessionKind::Custom {
+                        let status_path = feature
+                            .workdir
+                            .join(".amf")
+                            .join("session-status")
+                            .join(format!("{}.txt", session.id));
+                        session.status_text =
+                            std::fs::read_to_string(&status_path)
+                                .ok()
+                                .and_then(|content| {
+                                    let line = content.lines().next()?.trim().to_string();
+                                    if line.is_empty() { None } else { Some(line) }
+                                });
                         continue;
                     }
-                    let status_path = feature
-                        .workdir
-                        .join(".amf")
-                        .join("session-status")
-                        .join(format!("{}.txt", session.id));
-                    session.status_text =
-                        std::fs::read_to_string(&status_path)
-                            .ok()
-                            .and_then(|content| {
-                                let line = content.lines().next()?.trim().to_string();
-                                if line.is_empty() { None } else { Some(line) }
-                            });
+
+                    let Some(expected_provider) = provider_for_session_kind(&session.kind) else {
+                        session.status_text = None;
+                        continue;
+                    };
+
+                    if session.token_usage_source.is_none()
+                        && matches!(session.kind, SessionKind::Claude)
+                        && session.claude_session_id.is_some()
+                    {
+                        session.token_usage_source = session.claude_session_id.as_ref().map(|id| {
+                            TokenUsageSource {
+                                provider: TokenUsageProvider::Claude,
+                                id: id.clone(),
+                            }
+                        });
+                        discovered_sources |= session.token_usage_source.is_some();
+                    }
+
+                    if session
+                        .token_usage_source
+                        .as_ref()
+                        .is_some_and(|source| source.provider != expected_provider)
+                    {
+                        session.token_usage_source = None;
+                        discovered_sources = true;
+                    }
+
+                    if session.token_usage_source.is_none() {
+                        session.token_usage_source =
+                            tracker.discover_source(&session.kind, &feature.workdir, session.created_at);
+                        discovered_sources |= session.token_usage_source.is_some();
+                    }
+
+                    session.status_text = session
+                        .token_usage_source
+                        .as_ref()
+                        .and_then(|source| tracker.read_usage(source, &feature.workdir))
+                        .map(|usage| format_token_usage(&usage, &pricing));
                 }
             }
+        }
+
+        if discovered_sources
+            && let Err(err) = self.save()
+        {
+            self.log_warn(
+                "usage",
+                format!("Failed to persist discovered token tracking sources: {err}"),
+            );
         }
     }
 

@@ -3,6 +3,7 @@ use anyhow::Result;
 use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::*;
 use crate::tmux::TmuxManager;
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 impl App {
     pub fn pick_opencode_session(&mut self) {
@@ -251,9 +252,13 @@ impl App {
             )?;
         }
 
-        for session in &feature.sessions {
+        for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Opencode => {
+                    session.token_usage_source = Some(TokenUsageSource {
+                        provider: TokenUsageProvider::Opencode,
+                        id: opencode_session_id.to_string(),
+                    });
                     TmuxManager::launch_opencode_with_session(
                         &feature.tmux_session,
                         &session.tmux_window,

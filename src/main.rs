@@ -16,6 +16,7 @@ mod markdown;
 mod project;
 mod summary;
 mod theme;
+mod token_tracking;
 mod tmux;
 mod traits;
 mod transcript;

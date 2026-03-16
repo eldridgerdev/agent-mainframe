@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::*;
 use crate::tmux::TmuxManager;
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 impl App {
     pub fn pick_codex_session(&mut self) {
@@ -250,9 +251,13 @@ impl App {
             )?;
         }
 
-        for session in &feature.sessions {
+        for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Codex => {
+                    session.token_usage_source = Some(TokenUsageSource {
+                        provider: TokenUsageProvider::Codex,
+                        id: codex_session_id.to_string(),
+                    });
                     TmuxManager::launch_codex(
                         &feature.tmux_session,
                         &session.tmux_window,

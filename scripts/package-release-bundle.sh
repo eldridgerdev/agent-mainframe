@@ -36,6 +36,10 @@ write_linux_wrapper() {
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+if [[ -d "$HERE/tmux-root/usr/share/terminfo" ]]; then
+  export TERMINFO_DIRS="$HERE/tmux-root/usr/share/terminfo${TERMINFO_DIRS:+:$TERMINFO_DIRS}"
+fi
+
 lib_dirs=()
 for base in "$HERE/tmux-root/lib" "$HERE/tmux-root/usr/lib"; do
   if [[ -d "$base" ]]; then
@@ -45,13 +49,29 @@ for base in "$HERE/tmux-root/lib" "$HERE/tmux-root/usr/lib"; do
   fi
 done
 
+# Use the bundled dynamic linker if present so bundled libc and ld-linux are
+# always a matched pair (fixes glibc version mismatches on the host).
+LD_LINUX=""
+for candidate in \
+    "$HERE/tmux-root/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+    "$HERE/tmux-root/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2" \
+    "$HERE/tmux-root/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1" \
+    "$HERE/tmux-root/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"; do
+  if [[ -f "$candidate" ]]; then
+    LD_LINUX="$candidate"
+    break
+  fi
+done
+
+if [[ -n "$LD_LINUX" && ${#lib_dirs[@]} -gt 0 ]]; then
+  ld_path="$(IFS=:; echo "${lib_dirs[*]}")"
+  exec "$LD_LINUX" --library-path "$ld_path" "$HERE/tmux-real" "$@"
+fi
+
+# Fallback: no bundled linker, try with LD_LIBRARY_PATH
 if [[ ${#lib_dirs[@]} -gt 0 ]]; then
   ld_path="$(IFS=:; echo "${lib_dirs[*]}")"
   export LD_LIBRARY_PATH="${ld_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
-
-if [[ -d "$HERE/tmux-root/usr/share/terminfo" ]]; then
-  export TERMINFO_DIRS="$HERE/tmux-root/usr/share/terminfo${TERMINFO_DIRS:+:$TERMINFO_DIRS}"
 fi
 
 exec "$HERE/tmux-real" "$@"

@@ -4,7 +4,9 @@
 
 INPUT=$(cat)
 
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)
+# AMF_SESSION is the tmux session name set by AMF when launching Claude.
+# This matches the key used by the dashboard; Claude's hook session_id is a UUID.
+SESSION_ID="${AMF_SESSION:-$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)}"
 CWD=$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null)
 
 if [ -z "$SESSION_ID" ]; then

@@ -469,7 +469,18 @@ impl App {
             .iter()
             .position(|t| *t == self.config.theme)
             .unwrap_or(0);
-        self.mode = AppMode::ThemePicker(ThemePickerState { selected, themes });
+        let original_theme = self.config.theme;
+        self.mode = AppMode::ThemePicker(ThemePickerState {
+            selected,
+            themes,
+            original_theme,
+        });
+    }
+
+    pub fn preview_theme(&mut self, theme_name: crate::theme::ThemeName) {
+        let mut theme = crate::theme::Theme::load(&theme_name);
+        theme.set_transparent(self.config.transparent_background);
+        self.theme = theme;
     }
 
     pub fn apply_theme(&mut self, theme_name: crate::theme::ThemeName) {
@@ -478,6 +489,12 @@ impl App {
         theme.set_transparent(self.config.transparent_background);
         self.theme = theme;
         self.mode = AppMode::Normal;
+        self.save_config();
+    }
+
+    pub fn toggle_transparent_background(&mut self) {
+        self.config.transparent_background = !self.config.transparent_background;
+        self.theme.set_transparent(self.config.transparent_background);
         self.save_config();
     }
 

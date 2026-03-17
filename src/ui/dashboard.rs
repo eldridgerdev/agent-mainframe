@@ -395,7 +395,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {
-        super::dialogs::draw_theme_picker(frame, state, &app.config.theme, &app.theme);
+        super::dialogs::draw_theme_picker(frame, state, &app.config.theme, &app.theme, app.config.transparent_background);
     }
 
     if let AppMode::DebugLog(state) = &app.mode {

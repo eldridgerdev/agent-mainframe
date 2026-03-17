@@ -281,17 +281,29 @@ pub fn handle_delete_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
 pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::ThemePicker(state) = &mut app.mode
+            let preview = if let AppMode::ThemePicker(state) = &mut app.mode
                 && state.selected + 1 < state.themes.len()
             {
                 state.selected += 1;
+                state.themes.get(state.selected).copied()
+            } else {
+                None
+            };
+            if let Some(name) = preview {
+                app.preview_theme(name);
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::ThemePicker(state) = &mut app.mode
+            let preview = if let AppMode::ThemePicker(state) = &mut app.mode
                 && state.selected > 0
             {
                 state.selected -= 1;
+                state.themes.get(state.selected).copied()
+            } else {
+                None
+            };
+            if let Some(name) = preview {
+                app.preview_theme(name);
             }
         }
         KeyCode::Enter => {
@@ -303,7 +315,17 @@ pub fn handle_theme_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                 app.apply_theme(name);
             }
         }
+        KeyCode::Char('t') => {
+            app.toggle_transparent_background();
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
+            let original = match &app.mode {
+                AppMode::ThemePicker(state) => Some(state.original_theme),
+                _ => None,
+            };
+            if let Some(name) = original {
+                app.preview_theme(name);
+            }
             app.mode = AppMode::Normal;
         }
         _ => {}

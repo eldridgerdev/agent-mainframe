@@ -1,5 +1,6 @@
 use ratatui::{
     Frame,
+    layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
@@ -15,6 +16,7 @@ pub fn draw_theme_picker(
     state: &ThemePickerState,
     current_theme: &ThemeName,
     theme: &Theme,
+    transparent: bool,
 ) {
     let area = centered_rect(40, 40, frame.area());
     frame.render_widget(Clear, area);
@@ -24,6 +26,14 @@ pub fn draw_theme_picker(
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()))
         .title(" Theme ");
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
 
     let lines: Vec<Line> = state
         .themes
@@ -47,6 +57,19 @@ pub fn draw_theme_picker(
         })
         .collect();
 
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, area);
+    let list = Paragraph::new(lines);
+    frame.render_widget(list, chunks[0]);
+
+    let transparent_label = if transparent { "on" } else { "off" };
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" select  "),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" apply  "),
+        Span::styled("t", Style::default().fg(theme.warning.to_color())),
+        Span::raw(format!(" transparent: {}  ", transparent_label)),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" close"),
+    ]));
+    frame.render_widget(hints, chunks[1]);
 }

@@ -356,6 +356,7 @@ impl SummaryState {
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,
+    pub original_theme: crate::theme::ThemeName,
 }
 
 pub struct SyntaxLanguageRow {

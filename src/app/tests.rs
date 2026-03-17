@@ -654,7 +654,6 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
         AgentKind::Claude,
         false,
         false,
-        false,
         None,
     );
 
@@ -709,7 +708,6 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         false,
         false,
         AgentKind::Claude,
-        false,
         false,
     );
     feature.pending_worktree_script = true;
@@ -3058,7 +3056,6 @@ fn on_stop_persists_on_feature_session() {
         false,
         AgentKind::default(),
         false,
-        false,
     );
     let s = feat.add_custom_session_named(
         "Dev Servers".to_string(),
@@ -3082,7 +3079,6 @@ fn on_stop_none_when_not_provided() {
         false,
         false,
         AgentKind::default(),
-        false,
         false,
     );
     let s =

@@ -555,7 +555,6 @@ mod tests {
             false,
             AgentKind::Claude,
             false,
-            false,
         );
         feature.status = ProjectStatus::Active;
         let session = feature.add_session(SessionKind::Claude).clone();

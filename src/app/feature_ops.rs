@@ -124,7 +124,6 @@ impl App {
         let plan_mode = state.plan_mode;
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
-        let enable_notes = state.enable_notes;
         let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
@@ -208,7 +207,6 @@ impl App {
                             plan_mode,
                             agent: state.agent.clone(),
                             enable_chrome,
-                            enable_notes,
                             steering_enabled,
                         },
                     );
@@ -223,7 +221,6 @@ impl App {
                         plan_mode,
                         state.agent.clone(),
                         enable_chrome,
-                        enable_notes,
                         steering_enabled,
                         None,
                     );
@@ -246,7 +243,6 @@ impl App {
             plan_mode,
             agent: state.agent.clone(),
             enable_chrome,
-            enable_notes,
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
@@ -256,20 +252,6 @@ impl App {
     }
 
     pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
-        if prepared.enable_notes {
-            let claude_dir = prepared.workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
-        }
-
         let existing_pending = self
             .store
             .projects
@@ -297,7 +279,6 @@ impl App {
                 feature.plan_mode = prepared.plan_mode;
                 feature.agent = prepared.agent.clone();
                 feature.enable_chrome = prepared.enable_chrome;
-                feature.has_notes = prepared.enable_notes;
                 feature.pending_worktree_script = false;
             }
         } else {
@@ -311,7 +292,6 @@ impl App {
                 prepared.plan_mode,
                 prepared.agent,
                 prepared.enable_chrome,
-                prepared.enable_notes,
             );
 
             self.store.add_feature(&prepared.project_name, feature);
@@ -532,10 +512,6 @@ impl App {
             };
             feature.add_session(session_kind);
             feature.add_session(SessionKind::Terminal);
-            if feature.has_notes {
-                let s = feature.add_session(SessionKind::Nvim);
-                s.label = "Memo".into();
-            }
         }
 
         if self.tmux.session_exists(&feature.tmux_session) {
@@ -606,16 +582,8 @@ impl App {
                     }
                 }
                 SessionKind::Nvim => {
-                    if feature.has_notes {
-                        self.tmux.send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim .claude/notes.md",
-                        )?;
-                    } else {
-                        self.tmux
-                            .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;
-                    }
+                    self.tmux
+                        .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;
                 }
                 SessionKind::Terminal => {}
                 SessionKind::Vscode => {
@@ -1170,7 +1138,6 @@ impl App {
             mode: feature.mode.clone(),
             review: feature.review,
             enable_chrome: feature.enable_chrome,
-            enable_notes: feature.has_notes,
             include_context: true,
         };
 
@@ -1192,7 +1159,6 @@ impl App {
         let review = state.review;
         let agent = state.agent.clone();
         let enable_chrome = state.enable_chrome;
-        let enable_notes = state.enable_notes;
         let include_context = state.include_context;
         let source_workdir = self
             .store
@@ -1269,7 +1235,6 @@ impl App {
                         plan_mode: false,
                         agent,
                         enable_chrome,
-                        enable_notes,
                         steering_enabled: false,
                     },
                 );
@@ -1286,25 +1251,10 @@ impl App {
                 false,
                 agent.clone(),
                 enable_chrome,
-                enable_notes,
                 false,
                 None,
             );
             return Ok(());
-        }
-
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
         }
 
         let feature = Feature::new(
@@ -1317,7 +1267,6 @@ impl App {
             false,
             agent,
             enable_chrome,
-            enable_notes,
         );
 
         self.store.add_feature(&project_name, feature);
@@ -1422,7 +1371,6 @@ impl App {
             mode: state.mode.clone(),
             review: state.review,
             enable_chrome: state.enable_chrome,
-            enable_notes: state.enable_notes,
             dry_run: false,
         };
 

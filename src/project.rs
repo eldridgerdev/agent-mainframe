@@ -206,8 +206,6 @@ pub struct Feature {
     pub agent: AgentKind,
     #[serde(default)]
     pub enable_chrome: bool,
-    #[serde(default)]
-    pub has_notes: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub pending_worktree_script: bool,
     #[serde(default)]
@@ -246,8 +244,6 @@ struct FeatureDe {
     #[serde(default)]
     enable_chrome: bool,
     #[serde(default)]
-    has_notes: bool,
-    #[serde(default)]
     ready: bool,
     status: ProjectStatus,
     created_at: DateTime<Utc>,
@@ -281,7 +277,6 @@ impl<'de> Deserialize<'de> for Feature {
             plan_mode: feature.plan_mode,
             agent: feature.agent,
             enable_chrome: feature.enable_chrome,
-            has_notes: feature.has_notes,
             pending_worktree_script: false,
             ready: feature.ready,
             status: feature.status,
@@ -306,7 +301,6 @@ impl Feature {
         plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        has_notes: bool,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
         let now = Utc::now();
@@ -324,7 +318,6 @@ impl Feature {
             plan_mode,
             agent,
             enable_chrome,
-            has_notes,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
@@ -772,7 +765,6 @@ impl ProjectStore {
                             plan_mode: false,
                             agent: AgentKind::default(),
                             enable_chrome: false,
-                            has_notes: false,
                             pending_worktree_script: false,
                             ready: false,
                             status: f.status,
@@ -918,7 +910,6 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::default(),
             enable_chrome: false,
-            has_notes: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Stopped,
@@ -1189,7 +1180,6 @@ mod tests {
                             "review": false,
                             "agent": "claude",
                             "enable_chrome": false,
-                            "has_notes": false,
                             "ready": false,
                             "status": "idle",
                             "created_at": "2024-06-01T12:00:00Z",

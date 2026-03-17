@@ -356,7 +356,6 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status,
@@ -400,7 +399,6 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status,
@@ -521,7 +519,6 @@ fn visible_items_prioritizes_non_worktree_features() {
                 plan_mode: false,
                 agent: AgentKind::default(),
                 enable_chrome: false,
-                has_notes: false,
                 pending_worktree_script: false,
                 ready: false,
                 status: ProjectStatus::Stopped,
@@ -545,7 +542,6 @@ fn visible_items_prioritizes_non_worktree_features() {
                 plan_mode: false,
                 agent: AgentKind::default(),
                 enable_chrome: false,
-                has_notes: false,
                 pending_worktree_script: false,
                 ready: false,
                 status: ProjectStatus::Stopped,
@@ -787,7 +783,6 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         plan_mode: false,
         agent: AgentKind::Claude,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: false,
         child: None,
         output: String::new(),
@@ -841,7 +836,6 @@ fn app_in_creating_feature_mode(
         worktree_index: 0,
         use_worktree,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: true,
         preset_index: 0,
         task_prompt: String::new(),
@@ -1094,7 +1088,6 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         worktree_index: 0,
         use_worktree: true,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: true,
         preset_index: 0,
         task_prompt: String::new(),
@@ -1112,7 +1105,6 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         plan_mode: false,
         agent,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: true,
         hook_succeeded: None,
         startup_prompt: None,
@@ -1183,7 +1175,6 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         plan_mode: false,
         agent: AgentKind::Claude,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
@@ -1241,7 +1232,6 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         plan_mode: false,
         agent: AgentKind::Opencode,
         enable_chrome: false,
-        enable_notes: false,
         steering_enabled: false,
         hook_succeeded: None,
         startup_prompt: None,
@@ -1460,7 +1450,6 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         plan_mode: false,
         agent: AgentKind::Claude,
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Stopped,
@@ -1538,7 +1527,6 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Stopped,
@@ -2106,7 +2094,6 @@ fn store_with_worktree_agent(
         plan_mode: false,
         agent,
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status,
@@ -2308,7 +2295,6 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
@@ -2365,7 +2351,6 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         plan_mode: false,
         agent: AgentKind::Codex,
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
@@ -2473,7 +2458,6 @@ fn sync_session_status_shows_agent_token_usage() {
         plan_mode: false,
         agent: AgentKind::Claude,
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Stopped,
@@ -3017,7 +3001,6 @@ fn sync_session_status_skips_non_custom_sessions() {
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
@@ -3193,7 +3176,6 @@ fn store_with_single_claude_session() -> ProjectStore {
         plan_mode: false,
         agent: AgentKind::default(),
         enable_chrome: false,
-        has_notes: false,
         pending_worktree_script: false,
         ready: false,
         status: ProjectStatus::Idle,
@@ -3384,7 +3366,6 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
         plan_mode: false,
         use_worktree: Some(true),
         enable_chrome: false,
-        enable_notes: true,
         hook_choice: None,
         dry_run: true,
     };
@@ -3435,7 +3416,6 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
         plan_mode: false,
         use_worktree: Some(true),
         enable_chrome: false,
-        enable_notes: false,
         hook_choice: None,
         dry_run: true,
     };
@@ -3468,7 +3448,6 @@ fn create_feature_automation_rejects_codex_vibeless_mode() {
         plan_mode: false,
         use_worktree: Some(true),
         enable_chrome: false,
-        enable_notes: false,
         hook_choice: None,
         dry_run: true,
     };
@@ -3536,7 +3515,6 @@ fn create_feature_automation_creates_and_starts_feature() {
         plan_mode: false,
         use_worktree: Some(true),
         enable_chrome: false,
-        enable_notes: true,
         hook_choice: None,
         dry_run: false,
     };
@@ -3550,8 +3528,7 @@ fn create_feature_automation_creates_and_starts_feature() {
     assert_eq!(app.store.projects[0].features[0].branch, "feature-1");
     assert!(app.store.projects[0].features[0].is_worktree);
     assert!(app.store.projects[0].features[0].review);
-    assert!(app.store.projects[0].features[0].has_notes);
-    assert_eq!(app.store.projects[0].features[0].sessions.len(), 3);
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
 }
 
 #[test]
@@ -3587,7 +3564,6 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
         mode: VibeMode::Vibe,
         review: false,
         enable_chrome: false,
-        enable_notes: true,
         dry_run: true,
     };
 
@@ -3637,7 +3613,6 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
         mode: VibeMode::Vibeless,
         review: true,
         enable_chrome: false,
-        enable_notes: false,
         dry_run: true,
     };
 
@@ -3723,7 +3698,6 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         mode: VibeMode::Vibe,
         review: false,
         enable_chrome: false,
-        enable_notes: false,
         dry_run: false,
     };
 

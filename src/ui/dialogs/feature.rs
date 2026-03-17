@@ -329,8 +329,6 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(1), // spacer
             Constraint::Length(2), // chrome checkbox
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // notes checkbox
-            Constraint::Length(1), // spacer
             Constraint::Length(1), // steering coach checkbox
             Constraint::Length(1), // extra space
             Constraint::Min(0),
@@ -548,37 +546,10 @@ fn draw_create_feature_branch_mode(
         frame.render_widget(chrome_widget, chunks[12]);
     }
 
-    // Notes checkbox (chunks[14])
-    let memo_focus = if state.agent == AgentKind::Claude {
-        5
-    } else {
-        4
-    };
-    let notes_active = state.step == CreateFeatureStep::Mode && state.mode_focus == memo_focus;
-    let notes_check = if state.enable_notes { "[x]" } else { "[ ]" };
-    let notes_style = if notes_active {
-        Style::default().fg(theme.text.to_color())
-    } else {
-        Style::default().fg(theme.text_muted.to_color())
-    };
-    let notes_lines = vec![Line::from(vec![
-        Span::styled(
-            " Memo: ",
-            if notes_active {
-                Style::default().fg(theme.primary.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
-        Span::styled(format!("{} Create memo", notes_check), notes_style),
-    ])];
-    let notes_widget = Paragraph::new(notes_lines);
-    frame.render_widget(notes_widget, chunks[14]);
-
     let steering_focus = if state.agent == AgentKind::Claude {
-        6
+        4
     } else {
-        5
+        3
     };
     let steering_active =
         state.step == CreateFeatureStep::Mode && state.mode_focus == steering_focus;
@@ -602,7 +573,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[16]);
+    frame.render_widget(steering_widget, chunks[14]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![

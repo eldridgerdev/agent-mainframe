@@ -102,7 +102,6 @@ pub struct FeaturePreset {
     pub review: bool,
     pub plan_mode: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -115,7 +114,6 @@ struct FeaturePresetDe {
     review: bool,
     plan_mode: bool,
     enable_chrome: bool,
-    enable_notes: bool,
 }
 
 impl<'de> Deserialize<'de> for FeaturePreset {
@@ -133,7 +131,6 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             review: preset.review || legacy_review,
             plan_mode: preset.plan_mode,
             enable_chrome: preset.enable_chrome,
-            enable_notes: preset.enable_notes,
         })
     }
 }
@@ -477,8 +474,7 @@ mod tests {
                     "mode": "review",
                     "agent": "claude",
                     "review": false,
-                    "enable_chrome": false,
-                    "enable_notes": false
+                    "enable_chrome": false
                 }
             ]
         }"#;

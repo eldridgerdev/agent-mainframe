@@ -489,64 +489,6 @@ impl App {
         Ok(())
     }
 
-    pub fn create_memo(&mut self) -> Result<()> {
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-
-        if self.block_if_feature_pending_worktree_script(pi, fi) {
-            return Ok(());
-        }
-
-        let feature = match self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
-
-        if feature.has_notes {
-            self.message = Some("Memo already exists".into());
-            return Ok(());
-        }
-
-        let claude_dir = feature.workdir.join(".claude");
-        if !claude_dir.exists() {
-            let _ = std::fs::create_dir_all(&claude_dir);
-        }
-        let notes_path = claude_dir.join("notes.md");
-        if !notes_path.exists() {
-            let _ = std::fs::write(
-                &notes_path,
-                "# Notes\n\nWrite instructions for Claude here.\n",
-            );
-        }
-
-        feature.has_notes = true;
-
-        if TmuxManager::session_exists(&feature.tmux_session) {
-            let workdir = feature.workdir.clone();
-            let tmux_session = feature.tmux_session.clone();
-            let session = feature.add_session(SessionKind::Nvim);
-            session.label = "Memo".into();
-            let window = session.tmux_window.clone();
-
-            TmuxManager::create_window(&tmux_session, &window, &workdir)?;
-            TmuxManager::send_keys(&tmux_session, &window, "nvim .claude/notes.md")?;
-
-            feature.collapsed = false;
-        }
-
-        self.save()?;
-        self.message = Some("Created memo".into());
-
-        Ok(())
-    }
-
     pub fn add_claude_session(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),

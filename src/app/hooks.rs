@@ -49,7 +49,6 @@ impl App {
         plan_mode: bool,
         agent: &AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
     ) -> Option<(usize, usize)> {
         let pi = self
             .store
@@ -76,7 +75,6 @@ impl App {
                 plan_mode,
                 agent.clone(),
                 enable_chrome,
-                enable_notes,
             );
             feature.pending_worktree_script = true;
             project.features.push(feature);
@@ -91,7 +89,6 @@ impl App {
             feature.plan_mode = plan_mode;
             feature.agent = agent.clone();
             feature.enable_chrome = enable_chrome;
-            feature.has_notes = enable_notes;
             feature.pending_worktree_script = true;
             feature.status = ProjectStatus::Stopped;
         }
@@ -109,7 +106,6 @@ impl App {
         plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
         steering_enabled: bool,
         focus_feature: bool,
     ) -> Result<()> {
@@ -122,7 +118,6 @@ impl App {
             plan_mode,
             &agent,
             enable_chrome,
-            enable_notes,
         ) else {
             return Ok(());
         };
@@ -148,7 +143,6 @@ impl App {
             plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
@@ -295,7 +289,6 @@ impl App {
                 plan_mode,
                 agent,
                 enable_chrome,
-                enable_notes,
                 steering_enabled,
             } => {
                 self.start_worktree_hook(
@@ -308,7 +301,6 @@ impl App {
                     plan_mode,
                     agent,
                     enable_chrome,
-                    enable_notes,
                     steering_enabled,
                     Some(choice),
                 );
@@ -336,7 +328,6 @@ impl App {
         plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
         steering_enabled: bool,
         choice: Option<String>,
     ) {
@@ -367,7 +358,6 @@ impl App {
             plan_mode,
             &agent,
             enable_chrome,
-            enable_notes,
         ) {
             self.selection = Selection::Feature(pi, fi);
         }
@@ -409,7 +399,6 @@ impl App {
             plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
             steering_enabled,
             child,
             output: String::new(),
@@ -465,7 +454,6 @@ impl App {
             plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
             steering_enabled,
             success,
         ) = {
@@ -479,27 +467,12 @@ impl App {
                     s.plan_mode,
                     s.agent.clone(),
                     s.enable_chrome,
-                    s.enable_notes,
                     s.steering_enabled,
                     s.success,
                 ),
                 _ => return Ok(()),
             }
         };
-
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
-        }
 
         self.mode = AppMode::Normal;
         self.finalize_worktree_hook_feature(
@@ -511,7 +484,6 @@ impl App {
             plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
             steering_enabled,
             true,
         )?;
@@ -589,7 +561,6 @@ impl App {
                     hook.plan_mode,
                     hook.agent.clone(),
                     hook.enable_chrome,
-                    hook.enable_notes,
                     hook.steering_enabled,
                     false,
                 ) {

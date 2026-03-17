@@ -28,7 +28,6 @@ pub struct ForkFeatureState {
     pub mode: VibeMode,
     pub review: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub include_context: bool,
 }
 
@@ -463,7 +462,6 @@ pub enum HookNext {
         plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
         steering_enabled: bool,
     },
     StartFeature {
@@ -495,7 +493,6 @@ pub struct RunningHookState {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
@@ -575,7 +572,6 @@ pub struct BackgroundHook {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
@@ -599,7 +595,6 @@ impl BackgroundHook {
             plan_mode: state.plan_mode,
             agent: state.agent,
             enable_chrome: state.enable_chrome,
-            enable_notes: state.enable_notes,
             steering_enabled: state.steering_enabled,
             child: state.child,
             output: state.output,
@@ -694,7 +689,6 @@ pub struct CreateFeatureState {
     pub worktree_index: usize,
     pub use_worktree: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub steering_enabled: bool,
     pub preset_index: usize,
     pub task_prompt: String,
@@ -737,7 +731,6 @@ impl CreateFeatureState {
             worktree_index: 0,
             use_worktree: !is_first_feature,
             enable_chrome: false,
-            enable_notes: false,
             steering_enabled: true,
             preset_index: 0,
             task_prompt: String::new(),
@@ -762,7 +755,6 @@ pub struct PreparedFeatureLaunch {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
     pub startup_prompt: Option<String>,
@@ -781,7 +773,6 @@ pub struct CreateBatchFeaturesState {
     pub mode_focus: usize,
     pub review: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub step: CreateBatchFeaturesStep,
 }
 
@@ -818,7 +809,6 @@ impl CreateBatchFeaturesState {
             mode_focus: 0,
             review: false,
             enable_chrome: false,
-            enable_notes: false,
             step: CreateBatchFeaturesStep::WorkspacePath,
         }
     }
@@ -834,11 +824,10 @@ pub enum SessionFilter {
     Terminal,
     Nvim,
     Vscode,
-    Memo,
 }
 
 impl SessionFilter {
-    pub const ALL: [SessionFilter; 8] = [
+    pub const ALL: [SessionFilter; 7] = [
         SessionFilter::All,
         SessionFilter::Claude,
         SessionFilter::Opencode,
@@ -846,7 +835,6 @@ impl SessionFilter {
         SessionFilter::Terminal,
         SessionFilter::Nvim,
         SessionFilter::Vscode,
-        SessionFilter::Memo,
     ];
 
     pub fn display_name(&self) -> &str {
@@ -858,7 +846,6 @@ impl SessionFilter {
             SessionFilter::Terminal => "terminal",
             SessionFilter::Nvim => "nvim",
             SessionFilter::Vscode => "vscode",
-            SessionFilter::Memo => "memo",
         }
     }
 
@@ -917,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn session_filter_all_has_eight_variants() {
-        assert_eq!(SessionFilter::ALL.len(), 8);
+    fn session_filter_all_has_seven_variants() {
+        assert_eq!(SessionFilter::ALL.len(), 7);
     }
 }

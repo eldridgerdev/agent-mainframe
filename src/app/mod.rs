@@ -221,6 +221,7 @@ pub struct App {
     pub ipc: Option<crate::ipc::IpcGuard>,
     pub ipc_fallback_logged: bool,
     pub last_file_notification_count: usize,
+    pub vscode_available: bool,
 }
 
 impl App {
@@ -277,6 +278,12 @@ impl App {
             ipc: None,
             ipc_fallback_logged: false,
             last_file_notification_count: 0,
+            vscode_available: std::process::Command::new("code")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok(),
         })
     }
 
@@ -338,6 +345,7 @@ impl App {
             ipc: None,
             ipc_fallback_logged: false,
             last_file_notification_count: 0,
+            vscode_available: false,
         }
     }
 

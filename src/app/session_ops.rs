@@ -79,14 +79,9 @@ impl App {
 
         let project = self.store.projects[pi].clone();
 
-        let vscode_available = std::process::Command::new("code")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok();
+        let vscode_available = self.vscode_available;
 
-        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
+        let allowed_agents = self.active_extension.allowed_agents();
         let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
             .iter()
             .map(|agent| BuiltinSessionOption {
@@ -181,14 +176,9 @@ impl App {
 
         let project = self.store.projects[pi].clone();
 
-        let vscode_available = std::process::Command::new("code")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok();
+        let vscode_available = self.vscode_available;
 
-        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
+        let allowed_agents = self.active_extension.allowed_agents();
         let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
             .iter()
             .map(|agent| BuiltinSessionOption {

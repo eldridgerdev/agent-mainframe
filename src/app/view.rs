@@ -113,6 +113,71 @@ impl App {
         self.message = Some("Returned to dashboard".into());
     }
 
+    pub fn open_latest_prompt_from_view(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return;
+        };
+
+        self.mode = AppMode::LatestPrompt(LatestPromptState {
+            prompt: crate::app::util::read_latest_prompt(&workdir),
+            view,
+        });
+        self.message = None;
+    }
+
+    pub fn inject_latest_prompt(&mut self) -> Result<()> {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::LatestPrompt(state) => state,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let Some(prompt) = state
+            .prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        else {
+            self.mode = AppMode::LatestPrompt(state);
+            self.message = Some("No saved prompt to inject".into());
+            return Ok(());
+        };
+
+        self.tmux
+            .paste_text(&state.view.session, &state.view.window, prompt)?;
+        self.tmux
+            .send_key_name(&state.view.session, &state.view.window, "Enter")?;
+
+        self.mode = AppMode::Viewing(state.view);
+        self.message = Some("Injected latest prompt".into());
+        Ok(())
+    }
+
     pub fn open_markdown_viewer_from_view(&mut self) -> Result<()> {
         let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::Viewing(view) => view,

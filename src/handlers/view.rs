@@ -3,7 +3,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 use crate::app::AppMode;
-use crate::app::util::read_latest_prompt;
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -287,26 +286,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             });
         }
         KeyCode::Char('l') => {
-            let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                AppMode::Viewing(v) => v,
-                other => {
-                    app.mode = other;
-                    return Ok(());
-                }
-            };
-            let workdir = app
-                .store
-                .projects
-                .iter()
-                .find(|p| p.name == view.project_name)
-                .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
-                .map(|f| f.workdir.clone());
-            let prompt = if let Some(wd) = workdir {
-                read_latest_prompt(&wd).unwrap_or_else(|| "(No prompt saved yet)".to_string())
-            } else {
-                "(No prompt saved yet)".to_string()
-            };
-            app.mode = AppMode::LatestPrompt(prompt, view);
+            app.open_latest_prompt_from_view();
         }
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
@@ -527,6 +507,33 @@ mod tests {
                 );
             }
             _ => panic!("expected SteeringPrompt mode"),
+        }
+    }
+
+    #[test]
+    fn leader_l_opens_latest_prompt_dialog_with_saved_prompt() {
+        let repo = init_repo_with_branch_change();
+        let claude_dir = repo.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("latest-prompt.txt"),
+            "Resume the current task from the saved prompt.",
+        )
+        .unwrap();
+
+        let mut app = app_for_viewing_repo(repo.path());
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('l')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::LatestPrompt(state) => {
+                assert_eq!(
+                    state.prompt.as_deref(),
+                    Some("Resume the current task from the saved prompt.")
+                );
+                assert_eq!(state.view.session, "amf-feature");
+            }
+            _ => panic!("expected LatestPrompt mode"),
         }
     }
 

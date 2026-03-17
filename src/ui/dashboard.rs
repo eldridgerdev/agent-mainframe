@@ -97,17 +97,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    if let AppMode::LatestPrompt(prompt, view) = &app.mode {
+    if let AppMode::LatestPrompt(state) = &app.mode {
         super::pane::draw(
             frame,
-            view,
+            &state.view,
             &app.pane_content,
             false,
             app.pending_inputs.len(),
             app.tmux_cursor,
             &app.theme,
         );
-        super::dialogs::draw_latest_prompt_dialog(frame, prompt, &app.theme);
+        super::dialogs::draw_latest_prompt_dialog(frame, state.prompt.as_deref(), &app.theme);
         return;
     }
 

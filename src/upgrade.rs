@@ -4,6 +4,7 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 
 pub fn upgrade() -> Result<()> {
     let platform = detect_platform()?;
@@ -21,19 +22,45 @@ pub fn upgrade() -> Result<()> {
     let latest_version = fetch_latest_version()?;
     println!("Latest version: {}", latest_version);
 
+    let archive_name = format!("{}.tar.gz", platform.bundle_name);
     let download_url = format!(
         "https://github.com/eldridgerdev/agent-mainframe/releases/download/{}/{}",
-        latest_version, platform.binary_name
+        latest_version, archive_name
     );
 
     println!("Downloading from: {}", download_url);
 
-    let temp_path = exe_dir.join(format!("amf-{}", latest_version));
-    download_binary(&download_url, &temp_path)?;
+    let temp_dir = tempfile::Builder::new()
+        .prefix("amf-upgrade-")
+        .tempdir()
+        .context("Failed to create temp directory")?;
 
-    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o755))?;
+    let archive_path = temp_dir.path().join(&archive_name);
+    download_binary(&download_url, &archive_path)?;
 
-    fs::rename(&temp_path, &current_exe).context("Failed to replace binary")?;
+    let status = Command::new("tar")
+        .args(["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.path().to_str().unwrap()])
+        .status()
+        .context("Failed to run tar")?;
+    anyhow::ensure!(status.success(), "tar extraction failed");
+
+    let extracted_dir = temp_dir.path().join(&platform.bundle_name);
+    anyhow::ensure!(
+        extracted_dir.exists(),
+        "Expected extracted directory not found: {}",
+        extracted_dir.display()
+    );
+
+    // Replace all files in the bundle directory
+    for entry in fs::read_dir(&extracted_dir).context("Failed to read extracted bundle")? {
+        let entry = entry?;
+        let dest = exe_dir.join(entry.file_name());
+        fs::copy(entry.path(), &dest)
+            .with_context(|| format!("Failed to copy {} to {}", entry.path().display(), dest.display()))?;
+        let mut perms = fs::metadata(&dest)?.permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        fs::set_permissions(&dest, perms)?;
+    }
 
     println!("Successfully upgraded to {}!", latest_version);
     Ok(())
@@ -45,19 +72,19 @@ fn detect_platform() -> Result<Platform> {
 
     let platform = match (arch, os) {
         ("x86_64", "linux") => Platform {
-            binary_name: "amf-x86_64-unknown-linux-musl".to_string(),
+            bundle_name: "amf-x86_64-unknown-linux-musl".to_string(),
             pretty_name: "Linux x86_64 (musl)".to_string(),
         },
         ("x86_64", "macos") => Platform {
-            binary_name: "amf-aarch64-apple-darwin".to_string(),
+            bundle_name: "amf-aarch64-apple-darwin".to_string(),
             pretty_name: "macOS x86_64 (via Rosetta)".to_string(),
         },
         ("aarch64", "macos") => Platform {
-            binary_name: "amf-aarch64-apple-darwin".to_string(),
+            bundle_name: "amf-aarch64-apple-darwin".to_string(),
             pretty_name: "macOS Apple Silicon".to_string(),
         },
         ("aarch64", "linux") => Platform {
-            binary_name: "amf-aarch64-unknown-linux-gnu".to_string(),
+            bundle_name: "amf-aarch64-unknown-linux-gnu".to_string(),
             pretty_name: "Linux aarch64".to_string(),
         },
         _ => anyhow::bail!(
@@ -69,7 +96,7 @@ fn detect_platform() -> Result<Platform> {
 }
 
 struct Platform {
-    binary_name: String,
+    bundle_name: String,
     pretty_name: String,
 }
 

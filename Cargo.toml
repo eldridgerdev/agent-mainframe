@@ -28,8 +28,8 @@ tree-sitter = "0.26"
 tree-sitter-language = "0.1"
 tree-sitter-highlight = "0.26"
 pulldown-cmark = "0.13"
+tempfile = "3"
 
 [dev-dependencies]
 mockall = "0.13"
-tempfile = "3"
 pretty_assertions = "1"

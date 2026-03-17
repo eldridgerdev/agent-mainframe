@@ -16,6 +16,8 @@ pub enum ThemeName {
     CatppuccinFrappe,
     CatppuccinMacchiato,
     CatppuccinMocha,
+    GruvboxDark,
+    GruvboxLight,
 }
 
 impl ThemeName {
@@ -29,6 +31,8 @@ impl ThemeName {
             ThemeName::CatppuccinFrappe => "Catppuccin Frappe",
             ThemeName::CatppuccinMacchiato => "Catppuccin Macchiato",
             ThemeName::CatppuccinMocha => "Catppuccin Mocha",
+            ThemeName::GruvboxDark => "Gruvbox Dark",
+            ThemeName::GruvboxLight => "Gruvbox Light",
         }
     }
 }
@@ -44,6 +48,8 @@ impl std::fmt::Display for ThemeName {
             ThemeName::CatppuccinFrappe => write!(f, "catppuccin-frappe"),
             ThemeName::CatppuccinMacchiato => write!(f, "catppuccin-macchiato"),
             ThemeName::CatppuccinMocha => write!(f, "catppuccin-mocha"),
+            ThemeName::GruvboxDark => write!(f, "gruvbox-dark"),
+            ThemeName::GruvboxLight => write!(f, "gruvbox-light"),
         }
     }
 }
@@ -61,6 +67,8 @@ impl std::str::FromStr for ThemeName {
             "catppuccin-frappe" | "catppuccin_frappe" => Ok(ThemeName::CatppuccinFrappe),
             "catppuccin-macchiato" | "catppuccin_macchiato" => Ok(ThemeName::CatppuccinMacchiato),
             "catppuccin-mocha" | "catppuccin_mocha" => Ok(ThemeName::CatppuccinMocha),
+            "gruvbox-dark" | "gruvbox_dark" => Ok(ThemeName::GruvboxDark),
+            "gruvbox-light" | "gruvbox_light" => Ok(ThemeName::GruvboxLight),
             _ => Err(format!("Unknown theme: {}", s)),
         }
     }
@@ -169,6 +177,8 @@ impl Theme {
             ThemeName::CatppuccinFrappe => Self::catppuccin_frappe(),
             ThemeName::CatppuccinMacchiato => Self::catppuccin_macchiato(),
             ThemeName::CatppuccinMocha => Self::catppuccin_mocha(),
+            ThemeName::GruvboxDark => Self::gruvbox_dark(),
+            ThemeName::GruvboxLight => Self::gruvbox_light(),
         }
     }
 
@@ -548,6 +558,173 @@ impl Theme {
         }
     }
 
+    fn gruvbox_dark() -> Self {
+        // Gruvbox dark (medium contrast) – morhetz/gruvbox
+        Self {
+            name: "gruvbox-dark".to_string(),
+            // bg: #282828
+            background: ColorDef::rgb(40, 40, 40),
+            // fg1: #ebdbb2
+            text: ColorDef::rgb(235, 219, 178),
+            // fg4: #a89984
+            text_muted: ColorDef::rgb(168, 153, 132),
+            // bright_blue: #83a598
+            primary: ColorDef::rgb(131, 165, 152),
+            // bright_purple: #d3869b
+            secondary: ColorDef::rgb(211, 134, 155),
+            // bright_green: #b8bb26
+            success: ColorDef::rgb(184, 187, 38),
+            // bright_yellow: #fabd2f
+            warning: ColorDef::rgb(250, 189, 47),
+            // bright_red: #fb4934
+            danger: ColorDef::rgb(251, 73, 52),
+            // bright_aqua: #8ec07c
+            info: ColorDef::rgb(142, 192, 124),
+            // bg3: #665c54
+            border: ColorDef::rgb(102, 92, 84),
+            // bright_blue: #83a598
+            border_focus: ColorDef::rgb(131, 165, 152),
+            // bg2: #504945
+            selection: ColorDef::rgb(80, 73, 69),
+            // bg1: #3c3836
+            header_background: ColorDef::rgb(60, 56, 54),
+            // bright_yellow: #fabd2f
+            shortcut_background: ColorDef::rgb(250, 189, 47),
+            // bg: #282828
+            shortcut_text: ColorDef::rgb(40, 40, 40),
+            // bg2: #504945
+            scrollbar: ColorDef::rgb(80, 73, 69),
+            // bright_blue: #83a598
+            project_title: ColorDef::rgb(131, 165, 152),
+            // fg1: #ebdbb2
+            feature_title: ColorDef::rgb(235, 219, 178),
+            // bright_purple: #d3869b
+            session_icon_claude: ColorDef::rgb(211, 134, 155),
+            // bright_aqua: #8ec07c
+            session_icon_opencode: ColorDef::rgb(142, 192, 124),
+            // bright_green: #b8bb26
+            session_icon_codex: ColorDef::rgb(184, 187, 38),
+            // bright_green: #b8bb26
+            session_icon_terminal: ColorDef::rgb(184, 187, 38),
+            // bright_blue: #83a598
+            session_icon_nvim: ColorDef::rgb(131, 165, 152),
+            // blue: #458588
+            session_icon_vscode: ColorDef::rgb(69, 133, 136),
+            // bright_orange: #fe8019
+            session_icon_custom: ColorDef::rgb(254, 128, 25),
+            // bright_green: #b8bb26
+            status_active: ColorDef::rgb(184, 187, 38),
+            // bright_yellow: #fabd2f
+            status_idle: ColorDef::rgb(250, 189, 47),
+            // bright_red: #fb4934
+            status_stopped: ColorDef::rgb(251, 73, 52),
+            // bright_orange: #fe8019
+            status_waiting: ColorDef::rgb(254, 128, 25),
+            // bright_blue: #83a598
+            status_detail: ColorDef::rgb(131, 165, 152),
+            // bright_green: #b8bb26
+            mode_vibeless: ColorDef::rgb(184, 187, 38),
+            // bright_yellow: #fabd2f
+            mode_vibe: ColorDef::rgb(250, 189, 47),
+            // bright_orange: #fe8019
+            mode_supervibe: ColorDef::rgb(254, 128, 25),
+            // bright_purple: #d3869b
+            mode_review: ColorDef::rgb(211, 134, 155),
+            // bright_green: #b8bb26
+            usage_low: ColorDef::rgb(184, 187, 38),
+            // bright_yellow: #fabd2f
+            usage_medium: ColorDef::rgb(250, 189, 47),
+            // bright_red: #fb4934
+            usage_high: ColorDef::rgb(251, 73, 52),
+            transparent: false,
+        }
+    }
+
+    fn gruvbox_light() -> Self {
+        // Gruvbox light (medium contrast) – morhetz/gruvbox
+        // In light mode the bg/fg roles flip: light* colors become backgrounds,
+        // dark* colors become foreground. Accent colors use the normal (non-bright)
+        // variants for proper contrast on a pale background.
+        Self {
+            name: "gruvbox-light".to_string(),
+            // light0: #fbf1c7
+            background: ColorDef::rgb(251, 241, 199),
+            // dark0: #282828
+            text: ColorDef::rgb(40, 40, 40),
+            // dark3: #665c54
+            text_muted: ColorDef::rgb(102, 92, 84),
+            // blue: #458588
+            primary: ColorDef::rgb(69, 133, 136),
+            // purple: #b16286
+            secondary: ColorDef::rgb(177, 98, 134),
+            // green: #98971a
+            success: ColorDef::rgb(152, 151, 26),
+            // yellow: #d79921
+            warning: ColorDef::rgb(215, 153, 33),
+            // red: #cc241d
+            danger: ColorDef::rgb(204, 36, 29),
+            // aqua: #689d6a
+            info: ColorDef::rgb(104, 157, 106),
+            // light3: #bdae93
+            border: ColorDef::rgb(189, 174, 147),
+            // blue: #458588
+            border_focus: ColorDef::rgb(69, 133, 136),
+            // light2: #d5c4a1
+            selection: ColorDef::rgb(213, 196, 161),
+            // light1: #ebdbb2
+            header_background: ColorDef::rgb(235, 219, 178),
+            // yellow: #d79921
+            shortcut_background: ColorDef::rgb(215, 153, 33),
+            // light0: #fbf1c7
+            shortcut_text: ColorDef::rgb(251, 241, 199),
+            // light2: #d5c4a1
+            scrollbar: ColorDef::rgb(213, 196, 161),
+            // blue: #458588
+            project_title: ColorDef::rgb(69, 133, 136),
+            // dark0: #282828
+            feature_title: ColorDef::rgb(40, 40, 40),
+            // purple: #b16286
+            session_icon_claude: ColorDef::rgb(177, 98, 134),
+            // aqua: #689d6a
+            session_icon_opencode: ColorDef::rgb(104, 157, 106),
+            // green: #98971a
+            session_icon_codex: ColorDef::rgb(152, 151, 26),
+            // green: #98971a
+            session_icon_terminal: ColorDef::rgb(152, 151, 26),
+            // blue: #458588
+            session_icon_nvim: ColorDef::rgb(69, 133, 136),
+            // faded_blue: #076678
+            session_icon_vscode: ColorDef::rgb(7, 102, 120),
+            // orange: #d65d0e
+            session_icon_custom: ColorDef::rgb(214, 93, 14),
+            // green: #98971a
+            status_active: ColorDef::rgb(152, 151, 26),
+            // yellow: #d79921
+            status_idle: ColorDef::rgb(215, 153, 33),
+            // red: #cc241d
+            status_stopped: ColorDef::rgb(204, 36, 29),
+            // orange: #d65d0e
+            status_waiting: ColorDef::rgb(214, 93, 14),
+            // blue: #458588
+            status_detail: ColorDef::rgb(69, 133, 136),
+            // green: #98971a
+            mode_vibeless: ColorDef::rgb(152, 151, 26),
+            // yellow: #d79921
+            mode_vibe: ColorDef::rgb(215, 153, 33),
+            // orange: #d65d0e
+            mode_supervibe: ColorDef::rgb(214, 93, 14),
+            // purple: #b16286
+            mode_review: ColorDef::rgb(177, 98, 134),
+            // green: #98971a
+            usage_low: ColorDef::rgb(152, 151, 26),
+            // yellow: #d79921
+            usage_medium: ColorDef::rgb(215, 153, 33),
+            // red: #cc241d
+            usage_high: ColorDef::rgb(204, 36, 29),
+            transparent: false,
+        }
+    }
+
     pub fn list() -> Vec<ThemeName> {
         vec![
             ThemeName::Default,
@@ -558,6 +735,8 @@ impl Theme {
             ThemeName::CatppuccinFrappe,
             ThemeName::CatppuccinMacchiato,
             ThemeName::CatppuccinMocha,
+            ThemeName::GruvboxDark,
+            ThemeName::GruvboxLight,
         ]
     }
 }
@@ -579,6 +758,10 @@ impl ThemeManager {
             (
                 "amf-catppuccin.json",
                 include_str!("../themes/opencode/amf-catppuccin.json"),
+            ),
+            (
+                "amf-gruvbox.json",
+                include_str!("../themes/opencode/amf-gruvbox.json"),
             ),
         ];
 

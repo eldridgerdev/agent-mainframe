@@ -3484,12 +3484,11 @@ fn create_feature_automation_creates_and_starts_feature() {
         .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(2)
+        .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
         .returning(|_, _, _| Ok(()));
-    tmux.expect_send_keys().times(1).returning(|_, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));

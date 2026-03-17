@@ -12,6 +12,60 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.11.0] - 2026-03-17
+
+### Added
+
+- Per-session token usage tracking — Claude, Codex, and Opencode agent
+  sessions now show a live cost line in the dashboard:
+  `2.3M in · 4.8k out · 304.8k eff · $0.91`. Pricing defaults to
+  Claude Sonnet 4.x rates and is configurable via `token_pricing` in
+  `config.json`. Set `show_cost: false` to hide the dollar column.
+- Steering prompt editor — edit the feature's steering prompt directly
+  from the dashboard without leaving the TUI. Accessible via the
+  feature creation flow and a new view-mode shortcut.
+- Gruvbox Dark and Gruvbox Light UI themes, plus a matching
+  `amf-gruvbox.json` Opencode theme with full syntax, markdown, and
+  diff highlighting.
+- Live theme preview in the theme picker — scrolling through themes
+  applies them immediately; `Esc` reverts to the original and `Enter`
+  confirms. Press `t` inside the picker to toggle transparent
+  background on the fly.
+- Latest prompt injection — press `Tab` or `Enter` in the latest
+  prompt dialog (leader `l`) to send the saved prompt directly into
+  the active session without leaving view mode.
+
+### Changed
+
+- Memo sessions removed — the `m` keybind, `has_notes` field, and
+  all related UI and automation API surface have been dropped. Existing
+  features with notes are unaffected at the data level, but the session
+  type will no longer appear in pickers.
+- Session picker no longer spawns a `code --version` subprocess on
+  every open; VSCode availability is cached at startup. Config is also
+  read from the already-loaded extension instead of hitting disk again.
+
+### Fixed
+
+- Thinking/tool hook scripts (`thinking-start.sh`, `tool-start.sh`,
+  etc.) now use `$AMF_SESSION` (the tmux session name) as the IPC
+  key instead of the Claude hook UUID. This fixes the thinking
+  throbber never appearing in IPC mode.
+- Bundled `ld-linux` is used when invoking the bundled tmux on
+  systems where the host glibc version is too old, preventing
+  "version not found" errors on older Linux distros.
+- UI hangups caused by blocking file I/O in the usage refresh path
+  are eliminated.
+
+### Migration
+
+- No store migration is required.
+- If you relied on Memo sessions, those session entries will no longer
+  start or appear in pickers. Remove them from saved features if
+  desired.
+- If you have custom `token_pricing` needs, add a `token_pricing`
+  block to `~/.config/amf/config.json` (see configuration docs).
+
 ## [v0.10.1] - 2026-03-13
 
 ### Fixed

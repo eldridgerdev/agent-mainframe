@@ -135,7 +135,6 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.review = preset.review;
                     state.plan_mode = preset.plan_mode;
                     state.enable_chrome = preset.enable_chrome;
-                    state.enable_notes = preset.enable_notes;
                     if let Some(ref prefix) = preset.branch_prefix
                         && !prefix.is_empty()
                     {
@@ -214,9 +213,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        5
-                    } else {
                         4
+                    } else {
+                        3
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -233,9 +232,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        5
-                    } else {
                         4
+                    } else {
+                        3
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -271,17 +270,10 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
-                                state.enable_notes = !state.enable_notes;
-                            }
-                        }
-                        5 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_notes = !state.enable_notes;
-                            } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        6 => {
+                        5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
@@ -318,17 +310,10 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
-                                state.enable_notes = !state.enable_notes;
-                            }
-                        }
-                        5 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_notes = !state.enable_notes;
-                            } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        6 => {
+                        5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}

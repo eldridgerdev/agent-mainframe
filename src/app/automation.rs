@@ -11,20 +11,6 @@ use crate::automation::{
 use crate::extension::merge_project_extension_config;
 
 impl App {
-    fn ensure_notes_file(workdir: &Path) {
-        let claude_dir = workdir.join(".claude");
-        if !claude_dir.exists() {
-            let _ = std::fs::create_dir_all(&claude_dir);
-        }
-        let notes_path = claude_dir.join("notes.md");
-        if !notes_path.exists() {
-            let _ = std::fs::write(
-                &notes_path,
-                "# Notes\n\nWrite instructions for Claude here.\n",
-            );
-        }
-    }
-
     fn planned_batch_feature_results(
         request: &CreateBatchFeaturesRequest,
         project_repo: &Path,
@@ -313,10 +299,6 @@ impl App {
             project_repo.clone()
         };
 
-        if request.enable_notes {
-            Self::ensure_notes_file(&final_workdir);
-        }
-
         let feature = Feature::new(
             request.branch.clone(),
             request.branch.clone(),
@@ -327,7 +309,6 @@ impl App {
             request.plan_mode,
             request.agent.clone(),
             request.enable_chrome,
-            request.enable_notes,
         );
 
         self.store.add_feature(&request.project_name, feature);
@@ -443,10 +424,6 @@ impl App {
                 .worktree
                 .create(&project_repo, &planned.branch, &planned.branch)?;
 
-            if request.enable_notes {
-                Self::ensure_notes_file(&workdir);
-            }
-
             let feature = Feature::new(
                 planned.name.clone(),
                 planned.branch.clone(),
@@ -457,7 +434,6 @@ impl App {
                 false,
                 request.agent.clone(),
                 request.enable_chrome,
-                request.enable_notes,
             );
 
             self.store.add_feature(&request.project_name, feature);

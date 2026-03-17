@@ -227,10 +227,6 @@ impl App {
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Opencode);
             feature.add_session(SessionKind::Terminal);
-            if feature.has_notes {
-                let s = feature.add_session(SessionKind::Nvim);
-                s.label = "Memo".into();
-            }
         }
 
         if TmuxManager::session_exists(&feature.tmux_session) {
@@ -279,19 +275,11 @@ impl App {
                     TmuxManager::launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
                 }
                 SessionKind::Nvim => {
-                    if feature.has_notes {
-                        TmuxManager::send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim .claude/notes.md",
-                        )?;
-                    } else {
-                        TmuxManager::send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim",
-                        )?;
-                    }
+                    TmuxManager::send_keys(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        "nvim",
+                    )?;
                 }
                 SessionKind::Terminal => {}
                 SessionKind::Vscode => {

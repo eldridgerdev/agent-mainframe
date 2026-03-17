@@ -120,8 +120,7 @@ impl App {
             SessionFilter::Opencode => session.kind == SessionKind::Opencode,
             SessionFilter::Codex => session.kind == SessionKind::Codex,
             SessionFilter::Terminal => session.kind == SessionKind::Terminal,
-            SessionFilter::Nvim => session.kind == SessionKind::Nvim && session.label != "Memo",
-            SessionFilter::Memo => session.kind == SessionKind::Nvim && session.label == "Memo",
+            SessionFilter::Nvim => session.kind == SessionKind::Nvim,
             SessionFilter::Vscode => session.kind == SessionKind::Vscode,
         }
     }

@@ -135,9 +135,9 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
-                    } else {
                         3
+                    } else {
+                        2
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -154,9 +154,9 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
             KeyCode::Enter => {
                 if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
-                    } else {
                         3
+                    } else {
+                        2
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -181,14 +181,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                             state.review = !state.review;
                         }
                         3 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_chrome = !state.enable_chrome;
-                            } else {
-                                state.enable_notes = !state.enable_notes;
-                            }
-                        }
-                        4 => {
-                            state.enable_notes = !state.enable_notes;
+                            state.enable_chrome = !state.enable_chrome;
                         }
                         _ => {}
                     }
@@ -218,14 +211,7 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                             state.review = !state.review;
                         }
                         3 => {
-                            if state.agent == AgentKind::Claude {
-                                state.enable_chrome = !state.enable_chrome;
-                            } else {
-                                state.enable_notes = !state.enable_notes;
-                            }
-                        }
-                        4 => {
-                            state.enable_notes = !state.enable_notes;
+                            state.enable_chrome = !state.enable_chrome;
                         }
                         _ => {}
                     }

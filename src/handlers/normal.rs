@@ -159,12 +159,6 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.message = Some("S only works for opencode, claude, or codex sessions".into());
             }
         }
-        KeyCode::Char('m') => match &app.selection {
-            Selection::Feature(_, _) | Selection::Session(_, _, _) => {
-                app.create_memo()?;
-            }
-            _ => {}
-        },
         KeyCode::Char('u') => match &app.selection {
             Selection::Project(_) => {
                 app.start_project_agent_config()?;

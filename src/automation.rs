@@ -54,7 +54,6 @@ pub struct CreateFeatureRequest {
     pub plan_mode: bool,
     pub use_worktree: Option<bool>,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub hook_choice: Option<String>,
     pub dry_run: bool,
 }
@@ -72,7 +71,6 @@ impl CreateFeatureRequest {
             "plan_mode": self.plan_mode,
             "use_worktree": self.use_worktree,
             "enable_chrome": self.enable_chrome,
-            "enable_notes": self.enable_notes,
             "hook_choice": self.hook_choice,
             "dry_run": self.dry_run,
         })
@@ -90,7 +88,6 @@ pub struct CreateBatchFeaturesRequest {
     pub mode: VibeMode,
     pub review: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub dry_run: bool,
 }
 
@@ -105,7 +102,6 @@ impl Default for CreateBatchFeaturesRequest {
             mode: VibeMode::default(),
             review: false,
             enable_chrome: false,
-            enable_notes: false,
             dry_run: false,
         }
     }
@@ -124,7 +120,6 @@ impl CreateBatchFeaturesRequest {
             "mode": self.mode,
             "review": self.review,
             "enable_chrome": self.enable_chrome,
-            "enable_notes": self.enable_notes,
             "dry_run": self.dry_run,
         })
     }

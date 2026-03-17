@@ -105,7 +105,7 @@ Linux x86_64 (most portable):
 ```bash
 curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-musl.tar.gz -o amf.tar.gz
 tar -xzf amf.tar.gz
-sudo mv amf-x86_64-unknown-linux-musl /opt/amf
+sudo rm -rf /opt/amf && sudo mv amf-x86_64-unknown-linux-musl /opt/amf
 sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
@@ -114,7 +114,7 @@ macOS (Apple Silicon):
 ```bash
 curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-apple-darwin.tar.gz -o amf.tar.gz
 tar -xzf amf.tar.gz
-sudo mv amf-aarch64-apple-darwin /opt/amf
+sudo rm -rf /opt/amf && sudo mv amf-aarch64-apple-darwin /opt/amf
 sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
@@ -123,7 +123,7 @@ Linux x86_64 (gnu):
 ```bash
 curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-x86_64-unknown-linux-gnu.tar.gz -o amf.tar.gz
 tar -xzf amf.tar.gz
-sudo mv amf-x86_64-unknown-linux-gnu /opt/amf
+sudo rm -rf /opt/amf && sudo mv amf-x86_64-unknown-linux-gnu /opt/amf
 sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 
@@ -132,7 +132,7 @@ Linux aarch64:
 ```bash
 curl -L https://github.com/eldridgerdev/agent-mainframe/releases/latest/download/amf-aarch64-unknown-linux-gnu.tar.gz -o amf.tar.gz
 tar -xzf amf.tar.gz
-sudo mv amf-aarch64-unknown-linux-gnu /opt/amf
+sudo rm -rf /opt/amf && sudo mv amf-aarch64-unknown-linux-gnu /opt/amf
 sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 ```
 

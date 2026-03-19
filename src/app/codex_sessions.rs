@@ -236,13 +236,12 @@ fn extract_prompt_from_response_item(value: &Value) -> Option<String> {
 }
 
 fn title_from_text(text: &str) -> Option<String> {
-    let title = text.lines().find(|line| !line.trim().is_empty())?.trim();
-    let title = if title.len() > 60 {
-        format!("{}...", &title[..57])
-    } else {
-        title.to_string()
-    };
-    Some(title)
+    Some(
+        text.lines()
+            .find(|line| !line.trim().is_empty())?
+            .trim()
+            .to_string(),
+    )
 }
 
 fn parse_timestamp(timestamp: &str) -> Option<i64> {

@@ -21,8 +21,8 @@ pub mod setup;
 mod state;
 mod steering;
 mod switcher;
-mod syntax;
 mod sync;
+mod syntax;
 pub mod util;
 mod view;
 
@@ -199,6 +199,8 @@ pub struct App {
     pub pane_content: String,
     pub pane_content_cols: u16,
     pub pane_content_rows: u16,
+    pub viewport_cols: u16,
+    pub viewport_rows: u16,
     pub tmux_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
@@ -256,6 +258,8 @@ impl App {
             pane_content: String::new(),
             pane_content_cols: 0,
             pane_content_rows: 0,
+            viewport_cols: 0,
+            viewport_rows: 0,
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
@@ -323,6 +327,8 @@ impl App {
             pane_content: String::new(),
             pane_content_cols: 0,
             pane_content_rows: 0,
+            viewport_cols: 0,
+            viewport_rows: 0,
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
@@ -347,6 +353,30 @@ impl App {
             last_file_notification_count: 0,
             vscode_available: false,
         }
+    }
+
+    pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {
+        match (self.viewport_cols, self.viewport_rows) {
+            (0, _) | (_, 0) => None,
+            dims => Some(dims),
+        }
+    }
+
+    pub(crate) fn resize_session_windows_for_viewport(
+        tmux: &dyn TmuxOps,
+        viewport: Option<(u16, u16)>,
+        tmux_session: &str,
+        windows: &[String],
+    ) -> Result<()> {
+        let Some((cols, rows)) = viewport else {
+            return Ok(());
+        };
+
+        for window in windows {
+            tmux.resize_pane(tmux_session, window, cols, rows)?;
+        }
+
+        Ok(())
     }
 
     /// Re-merge extension config for the currently selected
@@ -502,7 +532,8 @@ impl App {
 
     pub fn toggle_transparent_background(&mut self) {
         self.config.transparent_background = !self.config.transparent_background;
-        self.theme.set_transparent(self.config.transparent_background);
+        self.theme
+            .set_transparent(self.config.transparent_background);
         self.save_config();
     }
 

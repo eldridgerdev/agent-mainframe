@@ -5,8 +5,8 @@ use super::setup::{
     ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
 };
 use super::*;
-use crate::automation::CreateBatchFeaturesRequest;
 use crate::app::util::read_latest_prompt;
+use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
@@ -385,11 +385,7 @@ impl App {
         };
 
         let workdir = self.store.projects[pi].features[fi].workdir.clone();
-        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(
-            view,
-            workdir,
-            String::new(),
-        ));
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(view, workdir, String::new()));
         self.message =
             Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
 
@@ -479,6 +475,7 @@ impl App {
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let viewport = self.viewport_size();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
             None => return Ok(()),
@@ -533,6 +530,19 @@ impl App {
                 &feature.workdir,
             )?;
         }
+
+        let tmux_session = feature.tmux_session.clone();
+        let windows: Vec<String> = feature
+            .sessions
+            .iter()
+            .map(|session| session.tmux_window.clone())
+            .collect();
+        App::resize_session_windows_for_viewport(
+            self.tmux.as_ref(),
+            viewport,
+            &tmux_session,
+            &windows,
+        )?;
 
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         for session in &feature.sessions {

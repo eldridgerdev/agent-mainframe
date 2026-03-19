@@ -24,7 +24,10 @@ fn diff_review_uses_new_file_presentation(state: &DiffReviewState) -> bool {
 
 fn diff_review_language_status(
     state: &DiffReviewState,
-) -> Option<(highlight::HighlightLanguage, highlight::HighlightInstallState)> {
+) -> Option<(
+    highlight::HighlightLanguage,
+    highlight::HighlightInstallState,
+)> {
     highlight::language_install_state_for_path(std::path::Path::new(&state.relative_path))
 }
 
@@ -59,7 +62,7 @@ pub fn draw_diff_review_dialog(
             } else {
                 Constraint::Length(2)
             },
-            Constraint::Length(1), // hints
+            Constraint::Length(2), // hints
         ])
         .split(inner);
 
@@ -238,71 +241,14 @@ pub fn draw_diff_review_dialog(
         frame.render_widget(explanation_hint, chunks[3]);
     }
 
-    let hints = if explanation_loading {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" e", Style::default().fg(theme.info.to_color())),
-            Span::raw(" generating explanation..."),
-        ]))
-    } else if new_file_presentation {
-        Paragraph::new(Line::from(vec![
-            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" approve  "),
-            Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
-            Span::raw(" scroll  "),
-            Span::styled("e", Style::default().fg(theme.info.to_color())),
-            Span::raw(" explain  "),
-            Span::styled(
-                "new file uses unified view  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("r", Style::default().fg(theme.danger.to_color())),
-            Span::raw(" feedback  "),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" cancel"),
-        ]))
-    } else {
-        let mut spans = vec![
-            Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" approve  "),
-            Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
-            Span::raw(" scroll  "),
-            Span::styled("e", Style::default().fg(theme.info.to_color())),
-            Span::raw(" explain  "),
-            Span::styled("v", Style::default().fg(theme.primary.to_color())),
-            Span::raw(if state.layout == DiffViewerLayout::SideBySide {
-                " stacked  "
-            } else {
-                " side-by-side  "
-            }),
-        ];
-        if let Some((language, status)) = diff_review_language_status(state) {
-            spans.push(Span::styled("i", Style::default().fg(theme.warning.to_color())));
-            let label = match status {
-                highlight::HighlightInstallState::Installed => {
-                    format!(" syntax:{} installed  ", language.display_name())
-                }
-                highlight::HighlightInstallState::Available => {
-                    format!(" install {} parser  ", language.display_name())
-                }
-                highlight::HighlightInstallState::Broken => {
-                    format!(" repair {} parser  ", language.display_name())
-                }
-            };
-            let color = match status {
-                highlight::HighlightInstallState::Installed => theme.info.to_color(),
-                highlight::HighlightInstallState::Available => theme.warning.to_color(),
-                highlight::HighlightInstallState::Broken => theme.danger.to_color(),
-            };
-            spans.push(Span::styled(label, Style::default().fg(color)));
-        }
-        spans.extend(vec![
-            Span::styled("r", Style::default().fg(theme.danger.to_color())),
-            Span::raw(" feedback  "),
-            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-            Span::raw(" cancel"),
-        ]);
-        Paragraph::new(Line::from(spans))
-    };
+    let hints = Paragraph::new(diff_review_hint_lines(
+        explanation_loading,
+        new_file_presentation,
+        state.layout.clone(),
+        diff_review_language_status(state),
+        theme,
+    ))
+    .wrap(Wrap { trim: false });
     frame.render_widget(hints, chunks[4]);
 
     if state.editing_feedback {
@@ -338,6 +284,85 @@ pub fn draw_diff_review_dialog(
         ]));
         frame.render_widget(feedback_hints, feedback_chunks[1]);
     }
+}
+
+fn diff_review_hint_lines(
+    explanation_loading: bool,
+    new_file_presentation: bool,
+    layout: DiffViewerLayout,
+    syntax_status: Option<(
+        highlight::HighlightLanguage,
+        highlight::HighlightInstallState,
+    )>,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    if explanation_loading {
+        return vec![Line::from(vec![
+            Span::styled(" e", Style::default().fg(theme.info.to_color())),
+            Span::raw(" generating explanation..."),
+        ])];
+    }
+
+    let mut primary = vec![
+        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" approve  "),
+    ];
+    if let Some((language, status)) = syntax_status {
+        primary.push(Span::styled(
+            "i",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+        let label = match status {
+            highlight::HighlightInstallState::Installed => {
+                format!(" syntax:{} installed  ", language.display_name())
+            }
+            highlight::HighlightInstallState::Available => {
+                format!(" install {} parser  ", language.display_name())
+            }
+            highlight::HighlightInstallState::Broken => {
+                format!(" repair {} parser  ", language.display_name())
+            }
+        };
+        let color = match status {
+            highlight::HighlightInstallState::Installed => theme.info.to_color(),
+            highlight::HighlightInstallState::Available => theme.warning.to_color(),
+            highlight::HighlightInstallState::Broken => theme.danger.to_color(),
+        };
+        primary.push(Span::styled(label, Style::default().fg(color)));
+    }
+    primary.extend(vec![
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" cancel"),
+    ]);
+
+    let mut secondary = vec![
+        Span::styled("j/k", Style::default().fg(theme.primary.to_color())),
+        Span::raw(" scroll  "),
+        Span::styled("e", Style::default().fg(theme.info.to_color())),
+        Span::raw(" explain  "),
+    ];
+    if new_file_presentation {
+        secondary.push(Span::styled(
+            "new file uses unified view  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    } else {
+        secondary.push(Span::styled(
+            "v",
+            Style::default().fg(theme.primary.to_color()),
+        ));
+        secondary.push(Span::raw(if layout == DiffViewerLayout::SideBySide {
+            " stacked  "
+        } else {
+            " side-by-side  "
+        }));
+    }
+    secondary.extend(vec![
+        Span::styled("r", Style::default().fg(theme.danger.to_color())),
+        Span::raw(" feedback"),
+    ]);
+
+    vec![Line::from(primary), Line::from(secondary)]
 }
 
 pub fn draw_running_hook_dialog(
@@ -579,4 +604,36 @@ pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: Option<&str>, theme:
     ]);
     let hint = Paragraph::new(Line::from(hint_spans));
     frame.render_widget(hint, chunks[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn diff_review_hints_include_syntax_install_for_new_files() {
+        let theme = Theme::default();
+        let lines = diff_review_hint_lines(
+            false,
+            true,
+            DiffViewerLayout::Unified,
+            Some((
+                highlight::HighlightLanguage::Tsx,
+                highlight::HighlightInstallState::Available,
+            )),
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert!(line_text(&lines[0]).contains("install tsx parser"));
+        assert!(line_text(&lines[0]).contains("Esc cancel"));
+        assert!(line_text(&lines[1]).contains("new file uses unified view"));
+    }
 }

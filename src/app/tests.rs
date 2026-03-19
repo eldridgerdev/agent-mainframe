@@ -8,6 +8,10 @@ use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
 use std::collections::HashMap;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -1134,6 +1138,116 @@ fn finish_feature_launch_opens_startup_prompt_for_codex() {
 }
 
 #[test]
+fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().join(".worktrees").join("restore-me");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "restore-me".to_string(),
+        branch: "restore-me".to_string(),
+        workdir: workdir.clone(),
+        is_worktree: true,
+        tmux_session: "amf-restore-me".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Stopped,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let store = ProjectStore {
+        version: 4,
+        projects: vec![Project {
+            id: "proj-1".to_string(),
+            name: "my-project".to_string(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+
+    let resized = Arc::new(AtomicBool::new(false));
+    let resized_for_launch = resized.clone();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-restore-me")
+        .times(2)
+        .return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_resize_pane()
+        .times(2)
+        .withf(|session, window, cols, rows| {
+            session == "amf-restore-me"
+                && (window == "claude" || window == "terminal")
+                && *cols == 120
+                && *rows == 40
+        })
+        .returning(move |_, window, _, _| {
+            if window == "claude" {
+                resized.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+    tmux.expect_launch_claude()
+        .times(1)
+        .withf(move |session, window, resume_id, extra_args| {
+            resized_for_launch.load(Ordering::SeqCst)
+                && session == "amf-restore-me"
+                && window == "claude"
+                && resume_id.as_deref() == Some("claude-session-123")
+                && extra_args.is_empty()
+        })
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .withf(|session, window| session == "amf-restore-me" && window == "claude")
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+    app.viewport_cols = 120;
+    app.viewport_rows = 40;
+    app.mode = AppMode::ConfirmingClaudeSession {
+        session_id: "claude-session-123".to_string(),
+        workdir,
+    };
+
+    app.confirm_and_start_claude().unwrap();
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    assert_eq!(app.message.as_deref(), Some("Restored claude session"));
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+}
+
+#[test]
 fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_creation() {
     let repo = TempDir::new().unwrap();
     let workdir = repo.path().join(".worktrees").join("diffy");
@@ -1819,7 +1933,9 @@ fn claude_hooks_preserve_existing_user_hooks() {
     let s = read_settings(&workdir);
     let stop_entries = s["hooks"]["Stop"].as_array().cloned().unwrap_or_default();
     assert!(
-        stop_entries.iter().any(|entry| entry["matcher"].as_str() == Some("custom")),
+        stop_entries
+            .iter()
+            .any(|entry| entry["matcher"].as_str() == Some("custom")),
         "custom Stop hook should be preserved"
     );
     let cmds = hook_commands_for(&s, "Stop");
@@ -1870,7 +1986,13 @@ fn vibeless_pre_tool_use_can_use_legacy_diff_review_when_configured() {
         diff_review_viewer: DiffReviewViewer::Nvim,
         ..AppConfig::default()
     };
-    call_ensure_hooks_for_with_config(&workdir, VibeMode::Vibeless, AgentKind::Claude, true, &config);
+    call_ensure_hooks_for_with_config(
+        &workdir,
+        VibeMode::Vibeless,
+        AgentKind::Claude,
+        true,
+        &config,
+    );
 
     let s = read_settings(&workdir);
     let cmds = hook_commands_for(&s, "PreToolUse");
@@ -2461,11 +2583,7 @@ fn sync_session_status_shows_agent_token_usage() {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
-    let claude_dir = home
-        .path()
-        .join(".claude")
-        .join("projects")
-        .join(encoded);
+    let claude_dir = home.path().join(".claude").join("projects").join(encoded);
     std::fs::create_dir_all(&claude_dir).unwrap();
     std::fs::write(
         claude_dir.join("claude-123.jsonl"),
@@ -2530,8 +2648,10 @@ fn sync_session_status_shows_agent_token_usage() {
         extra: HashMap::new(),
     };
 
-    let mut tracker =
-        SessionTokenTracker::new(Some(home.path().to_path_buf()), Some(data.path().to_path_buf()));
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
@@ -2736,11 +2856,7 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(1).return_const(true);
-    let mut app = App::new_for_test(
-        store,
-        Box::new(tmux),
-        Box::new(MockWorktreeOps::new()),
-    );
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
@@ -2826,7 +2942,7 @@ fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(SyntaxOperationEvent::Finished(Ok(
-        "Installed Rust parser".to_string(),
+        "Installed Rust parser".to_string()
     )))
     .unwrap();
     drop(tx);
@@ -2873,7 +2989,7 @@ fn contextual_syntax_install_returns_to_diff_review_prompt() {
     );
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(SyntaxOperationEvent::Finished(Ok(
-        "Installed Rust parser".to_string(),
+        "Installed Rust parser".to_string()
     )))
     .unwrap();
     drop(tx);
@@ -2940,7 +3056,7 @@ fn contextual_syntax_install_stays_open_for_non_matching_language() {
     );
     let (tx, rx) = std::sync::mpsc::channel();
     tx.send(SyntaxOperationEvent::Finished(Ok(
-        "Installed JSON parser".to_string(),
+        "Installed JSON parser".to_string()
     )))
     .unwrap();
     drop(tx);
@@ -3659,7 +3775,9 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
         dry_run: true,
     };
 
-    let err = app.create_batch_features_from_request(&request).unwrap_err();
+    let err = app
+        .create_batch_features_from_request(&request)
+        .unwrap_err();
     assert!(
         err.to_string()
             .contains("Codex does not support Vibeless diff review"),

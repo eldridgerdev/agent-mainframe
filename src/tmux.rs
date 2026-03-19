@@ -843,6 +843,15 @@ impl TmuxOps for TmuxManager {
         TmuxManager::launch_opencode(session, window)
     }
 
+    fn launch_opencode_with_session(
+        &self,
+        session: &str,
+        window: &str,
+        resume_id: Option<String>,
+    ) -> Result<()> {
+        TmuxManager::launch_opencode_with_session(session, window, resume_id.as_deref())
+    }
+
     fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()> {
         TmuxManager::launch_codex(session, window, resume_id.as_deref())
     }
@@ -861,6 +870,10 @@ impl TmuxOps for TmuxManager {
 
     fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()> {
         TmuxManager::send_key_name(session, window, key_name)
+    }
+
+    fn resize_pane(&self, session: &str, window: &str, cols: u16, rows: u16) -> Result<()> {
+        TmuxManager::resize_pane(session, window, cols, rows)
     }
 
     fn select_window(&self, session: &str, window: &str) -> Result<()> {

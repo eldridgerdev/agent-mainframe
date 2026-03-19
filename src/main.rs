@@ -16,8 +16,8 @@ mod markdown;
 mod project;
 mod summary;
 mod theme;
-mod token_tracking;
 mod tmux;
+mod token_tracking;
 mod traits;
 mod transcript;
 mod ui;
@@ -443,6 +443,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         let size = terminal.size()?;
         let visible_rows = size.height.saturating_sub(3);
+        app.viewport_cols = size.width;
+        app.viewport_rows = visible_rows;
 
         if is_viewing {
             let content_rows = visible_rows;

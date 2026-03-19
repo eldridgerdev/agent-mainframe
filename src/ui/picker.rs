@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::{
@@ -227,11 +227,7 @@ pub fn draw_syntax_language_picker(
     let area = centered_rect(68, 58, frame.area());
     frame.render_widget(Clear, area);
 
-    let title = format!(
-        " Syntax Parsers ({}/{}) ",
-        installed,
-        state.languages.len()
-    );
+    let title = format!(" Syntax Parsers ({}/{}) ", installed, state.languages.len());
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -243,7 +239,11 @@ pub fn draw_syntax_language_picker(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(inner);
 
     let status_line = if let Some(operation) = &state.operation {
@@ -862,6 +862,7 @@ pub fn draw_opencode_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
+    let title_width = inner.width.saturating_sub(4) as usize;
 
     let items: Vec<ListItem> = state
         .sessions
@@ -869,33 +870,35 @@ pub fn draw_opencode_session_picker(
         .enumerate()
         .map(|(i, session)| {
             let is_selected = i == state.selected;
-            let title_preview = if session.title.len() > 60 {
-                format!("{}...", &session.title[..57])
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD)
             } else {
-                session.title.clone()
+                Style::default().fg(theme.text.to_color())
             };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(theme.primary.to_color()),
-                ),
-                Span::styled(
-                    title_preview,
-                    if is_selected {
-                        Style::default()
-                            .fg(theme.text.to_color())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text.to_color())
-                    },
-                ),
-            ]);
+            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
+                .into_iter()
+                .enumerate()
+                .map(|(line_idx, chunk)| {
+                    Line::from(vec![
+                        Span::styled(
+                            if line_idx == 0 {
+                                if is_selected { "  > " } else { "    " }
+                            } else {
+                                "    "
+                            },
+                            Style::default().fg(theme.primary.to_color()),
+                        ),
+                        Span::styled(chunk, title_style),
+                    ])
+                })
+                .collect();
 
             if is_selected {
-                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
             } else {
-                ListItem::new(line)
+                ListItem::new(lines)
             }
         })
         .collect();
@@ -954,6 +957,7 @@ pub fn draw_claude_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
+    let title_width = inner.width.saturating_sub(4) as usize;
 
     let items: Vec<ListItem> = state
         .sessions
@@ -961,33 +965,35 @@ pub fn draw_claude_session_picker(
         .enumerate()
         .map(|(i, session)| {
             let is_selected = i == state.selected;
-            let title_preview = if session.title.len() > 60 {
-                format!("{}...", &session.title[..57])
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD)
             } else {
-                session.title.clone()
+                Style::default().fg(theme.text.to_color())
             };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(theme.success.to_color()),
-                ),
-                Span::styled(
-                    title_preview,
-                    if is_selected {
-                        Style::default()
-                            .fg(theme.text.to_color())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text.to_color())
-                    },
-                ),
-            ]);
+            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
+                .into_iter()
+                .enumerate()
+                .map(|(line_idx, chunk)| {
+                    Line::from(vec![
+                        Span::styled(
+                            if line_idx == 0 {
+                                if is_selected { "  > " } else { "    " }
+                            } else {
+                                "    "
+                            },
+                            Style::default().fg(theme.success.to_color()),
+                        ),
+                        Span::styled(chunk, title_style),
+                    ])
+                })
+                .collect();
 
             if is_selected {
-                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
             } else {
-                ListItem::new(line)
+                ListItem::new(lines)
             }
         })
         .collect();
@@ -1046,6 +1052,7 @@ pub fn draw_codex_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
+    let title_width = inner.width.saturating_sub(4) as usize;
 
     let items: Vec<ListItem> = state
         .sessions
@@ -1053,33 +1060,35 @@ pub fn draw_codex_session_picker(
         .enumerate()
         .map(|(i, session)| {
             let is_selected = i == state.selected;
-            let title_preview = if session.title.len() > 60 {
-                format!("{}...", &session.title[..57])
+            let title_style = if is_selected {
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD)
             } else {
-                session.title.clone()
+                Style::default().fg(theme.text.to_color())
             };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "  > " } else { "    " },
-                    Style::default().fg(theme.session_icon_codex.to_color()),
-                ),
-                Span::styled(
-                    title_preview,
-                    if is_selected {
-                        Style::default()
-                            .fg(theme.text.to_color())
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text.to_color())
-                    },
-                ),
-            ]);
+            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
+                .into_iter()
+                .enumerate()
+                .map(|(line_idx, chunk)| {
+                    Line::from(vec![
+                        Span::styled(
+                            if line_idx == 0 {
+                                if is_selected { "  > " } else { "    " }
+                            } else {
+                                "    "
+                            },
+                            Style::default().fg(theme.session_icon_codex.to_color()),
+                        ),
+                        Span::styled(chunk, title_style),
+                    ])
+                })
+                .collect();
 
             if is_selected {
-                ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
+                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
             } else {
-                ListItem::new(line)
+                ListItem::new(lines)
             }
         })
         .collect();
@@ -1107,8 +1116,8 @@ pub fn draw_codex_session_picker(
     frame.render_widget(hints, chunks[1]);
 }
 
-pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
-    let area = centered_rect(50, 35, frame.area());
+fn draw_session_restore_confirm(frame: &mut Frame, theme: &Theme, agent_name: &str) {
+    let area = centered_rect(62, 35, frame.area());
     frame.render_widget(Clear, area);
 
     let text = Paragraph::new(vec![
@@ -1119,15 +1128,15 @@ pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Restart with selected claude session?",
+            format!("  Restart with selected {agent_name} session?"),
             Style::default().fg(theme.text.to_color()),
         )),
         Line::from(Span::styled(
-            "  This will kill the current tmux session",
+            "  This will kill the current tmux session and start",
             Style::default().fg(theme.text_muted.to_color()),
         )),
         Line::from(Span::styled(
-            "  and start a new one with the session restored.",
+            "  a new one with the session restored.",
             Style::default().fg(theme.text_muted.to_color()),
         )),
         Line::from(""),
@@ -1147,99 +1156,82 @@ pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
             .borders(Borders::ALL)
             .style(Style::default().bg(theme.effective_bg()))
             .border_style(Style::default().fg(theme.warning.to_color())),
-    );
+    )
+    .wrap(Wrap { trim: false });
 
     frame.render_widget(text, area);
+}
+
+fn wrap_text_to_width(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let word_len = word.chars().count();
+
+        if current.is_empty() {
+            if word_len <= max_chars {
+                current.push_str(word);
+            } else {
+                let mut chunk = String::new();
+                for ch in word.chars() {
+                    chunk.push(ch);
+                    if chunk.chars().count() == max_chars {
+                        lines.push(std::mem::take(&mut chunk));
+                    }
+                }
+                current = chunk;
+            }
+            continue;
+        }
+
+        let projected_len = current.chars().count() + 1 + word_len;
+        if projected_len <= max_chars {
+            current.push(' ');
+            current.push_str(word);
+            continue;
+        }
+
+        lines.push(std::mem::take(&mut current));
+        if word_len <= max_chars {
+            current.push_str(word);
+        } else {
+            let mut chunk = String::new();
+            for ch in word.chars() {
+                chunk.push(ch);
+                if chunk.chars().count() == max_chars {
+                    lines.push(std::mem::take(&mut chunk));
+                }
+            }
+            current = chunk;
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
+    }
+}
+
+pub fn draw_claude_session_confirm(frame: &mut Frame, theme: &Theme) {
+    draw_session_restore_confirm(frame, theme, "claude");
 }
 
 pub fn draw_codex_session_confirm(frame: &mut Frame, theme: &Theme) {
-    let area = centered_rect(50, 35, frame.area());
-    frame.render_widget(Clear, area);
-
-    let text = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Feature is already running.",
-            Style::default().fg(theme.warning.to_color()),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Restart with selected codex session?",
-            Style::default().fg(theme.text.to_color()),
-        )),
-        Line::from(Span::styled(
-            "  This will kill the current tmux session",
-            Style::default().fg(theme.text_muted.to_color()),
-        )),
-        Line::from(Span::styled(
-            "  and start a new one with the session restored.",
-            Style::default().fg(theme.text_muted.to_color()),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  y", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " restart  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("n/Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]),
-    ])
-    .block(
-        Block::default()
-            .title(" Confirm Restart ")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(theme.effective_bg()))
-            .border_style(Style::default().fg(theme.warning.to_color())),
-    );
-
-    frame.render_widget(text, area);
+    draw_session_restore_confirm(frame, theme, "codex");
 }
 
 pub fn draw_opencode_session_confirm(frame: &mut Frame, theme: &Theme) {
-    let area = centered_rect(50, 35, frame.area());
-    frame.render_widget(Clear, area);
-
-    let text = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Feature is already running.",
-            Style::default().fg(theme.warning.to_color()),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Restart with selected opencode session?",
-            Style::default().fg(theme.text.to_color()),
-        )),
-        Line::from(Span::styled(
-            "  This will kill the current tmux session",
-            Style::default().fg(theme.text_muted.to_color()),
-        )),
-        Line::from(Span::styled(
-            "  and start a new one with the session restored.",
-            Style::default().fg(theme.text_muted.to_color()),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  y", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " restart  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-            Span::styled("n/Esc", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-        ]),
-    ])
-    .block(
-        Block::default()
-            .title(" Confirm Restart ")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(theme.effective_bg()))
-            .border_style(Style::default().fg(theme.warning.to_color())),
-    );
-
-    frame.render_widget(text, area);
+    draw_session_restore_confirm(frame, theme, "opencode");
 }
 
 pub fn draw_session_picker(

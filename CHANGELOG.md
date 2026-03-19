@@ -12,6 +12,24 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.11.1] - 2026-03-19
+
+### Changed
+
+- Improved TSX syntax highlighting in the diff viewer.
+
+### Fixed
+
+- Restored sessions now resize correctly to the current pane dimensions
+  on attach, and the session picker no longer wraps unexpectedly on
+  narrow terminals.
+- `amf upgrade` now downloads the full `.tar.gz` bundle and extracts
+  all bundled files (`amf`, `tmux`, `tmux-real`, libs) into the install
+  directory, so the bundled tmux binary is also updated on upgrade.
+- Install and upgrade scripts remove the existing `/opt/amf` directory
+  before moving the new bundle into place, preventing the old binary
+  from being left behind when `/opt/amf` already exists.
+
 ## [v0.11.0] - 2026-03-17
 
 ### Added

@@ -562,12 +562,22 @@ pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState, theme
     frame.render_widget(hints, chunks[1]);
 }
 
-pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: Option<&str>, theme: &Theme) {
+pub fn draw_latest_prompt_dialog(
+    frame: &mut Frame,
+    state: &crate::app::LatestPromptState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    use chrono::{DateTime, Local, Utc};
+
     let area = centered_rect(80, 70, frame.area());
     frame.render_widget(Clear, area);
 
+    let count = state.prompts.len();
+    let title = format!(" Session Prompts ({count}) ");
+
     let block = Block::default()
-        .title(" Latest Prompt ")
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -575,35 +585,170 @@ pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: Option<&str>, theme:
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    if state.prompts.is_empty() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(inner);
+        let paragraph = Paragraph::new("(No prompts saved yet)")
+            .style(Style::default().fg(theme.text_muted.to_color()));
+        frame.render_widget(paragraph, chunks[0]);
+        let hint = if let Some(msg) = message {
+            Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::default().fg(theme.success.to_color()),
+            )))
+        } else {
+            Paragraph::new(Line::from(vec![
+                Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+                Span::styled("/q", Style::default().fg(theme.warning.to_color())),
+                Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
+            ]))
+        };
+        frame.render_widget(hint, chunks[1]);
+        return;
+    }
+
+    let msg_height = if message.is_some() { 1 } else { 0 };
+    let list_height = ((inner.height as usize).saturating_sub(3 + msg_height) / 3)
+        .max(3)
+        .min(10) as u16;
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(list_height),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(msg_height as u16),
+        ])
         .split(inner);
 
-    let prompt_text = prompt.unwrap_or("(No prompt saved yet)");
-    let paragraph = Paragraph::new(prompt_text)
+    // Compute scroll offset so selected item is always visible
+    let visible_count = chunks[0].height as usize;
+    let scroll_offset = if state.selected >= visible_count {
+        state.selected - visible_count + 1
+    } else {
+        0
+    };
+
+    let list_width = chunks[0].width as usize;
+    let items: Vec<ListItem> = state
+        .prompts
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_count)
+        .map(|(i, entry)| {
+            let ts_str = entry
+                .timestamp
+                .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+                .map(|dt: DateTime<Utc>| {
+                    let local: DateTime<Local> = dt.into();
+                    local.format("%b %d %H:%M").to_string()
+                })
+                .unwrap_or_else(|| "???".to_string());
+
+            let is_selected = i == state.selected;
+            let prefix = if is_selected { "> " } else { "  " };
+            let ts_bracket = format!("[{ts_str}] ");
+            let fixed_width = prefix.len() + ts_bracket.len();
+            let avail = list_width.saturating_sub(fixed_width);
+
+            let first_line = entry
+                .text
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim();
+
+            let truncated = truncate_str(first_line, avail);
+
+            let prefix_style = if is_selected {
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_muted.to_color())
+            };
+            let ts_style = Style::default().fg(theme.info.to_color());
+            let text_style = if is_selected {
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text.to_color())
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, prefix_style),
+                Span::styled(ts_bracket, ts_style),
+                Span::styled(truncated, text_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, chunks[0]);
+
+    // Divider
+    let divider_line = "─".repeat(chunks[1].width as usize);
+    let divider =
+        Paragraph::new(Line::from(Span::styled(divider_line, Style::default().fg(theme.border.to_color()))));
+    frame.render_widget(divider, chunks[1]);
+
+    // Detail view for selected prompt
+    let detail_text = state
+        .prompts
+        .get(state.selected)
+        .map(|e| e.text.as_str())
+        .unwrap_or("");
+    let detail = Paragraph::new(detail_text)
         .wrap(Wrap { trim: false })
         .style(Style::default().fg(theme.text.to_color()));
-    frame.render_widget(paragraph, chunks[0]);
+    frame.render_widget(detail, chunks[2]);
 
-    let mut hint_spans = Vec::new();
-    if prompt.is_some() {
-        hint_spans.extend(vec![
-            Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
-            Span::styled("/Enter", Style::default().fg(theme.warning.to_color())),
-            Span::styled(
-                " inject  ",
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-        ]);
-    }
-    hint_spans.extend(vec![
+    // Hint bar
+    let hint_spans = vec![
+        Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
+        Span::styled("/Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" inject  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("y", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" copy  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" nav  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled("/q", Style::default().fg(theme.warning.to_color())),
         Span::styled(" close", Style::default().fg(theme.text_muted.to_color())),
-    ]);
-    let hint = Paragraph::new(Line::from(hint_spans));
-    frame.render_widget(hint, chunks[1]);
+    ];
+    frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[3]);
+
+    // Message line (only rendered when message is set)
+    if let Some(msg) = message {
+        let color = if msg.starts_with("Clipboard error") {
+            theme.danger.to_color()
+        } else {
+            theme.success.to_color()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(msg, Style::default().fg(color)))),
+            chunks[4],
+        );
+    }
+}
+
+fn truncate_str(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{truncated}…")
+    }
 }
 
 #[cfg(test)]

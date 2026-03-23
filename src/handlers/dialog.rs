@@ -164,6 +164,15 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Tab | KeyCode::Enter => {
             app.inject_latest_prompt()?;
         }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.latest_prompt_select_next();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.latest_prompt_select_prev();
+        }
+        KeyCode::Char('y') => {
+            app.copy_selected_prompt_to_clipboard()?;
+        }
         _ => {}
     }
     Ok(())

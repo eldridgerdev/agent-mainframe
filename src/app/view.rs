@@ -141,8 +141,10 @@ impl App {
             return;
         };
 
+        let prompts = crate::app::util::read_all_prompts(&workdir);
         self.mode = AppMode::LatestPrompt(LatestPromptState {
-            prompt: crate::app::util::read_latest_prompt(&workdir),
+            prompts,
+            selected: 0,
             view,
         });
         self.message = None;
@@ -157,25 +159,64 @@ impl App {
             }
         };
 
-        let Some(prompt) = state
-            .prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-        else {
+        let prompt = state
+            .prompts
+            .get(state.selected)
+            .map(|e| e.text.trim().to_string())
+            .filter(|p| !p.is_empty());
+
+        let Some(prompt) = prompt else {
             self.mode = AppMode::LatestPrompt(state);
             self.message = Some("No saved prompt to inject".into());
             return Ok(());
         };
 
         self.tmux
-            .paste_text(&state.view.session, &state.view.window, prompt)?;
+            .paste_text(&state.view.session, &state.view.window, &prompt)?;
         self.tmux
             .send_key_name(&state.view.session, &state.view.window, "Enter")?;
 
         self.mode = AppMode::Viewing(state.view);
-        self.message = Some("Injected latest prompt".into());
+        self.message = Some("Injected prompt".into());
         Ok(())
+    }
+
+    pub fn copy_selected_prompt_to_clipboard(&mut self) -> Result<()> {
+        let text = match &self.mode {
+            AppMode::LatestPrompt(state) => state
+                .prompts
+                .get(state.selected)
+                .map(|e| e.text.clone())
+                .filter(|t| !t.trim().is_empty()),
+            _ => return Ok(()),
+        };
+
+        let Some(text) = text else {
+            self.message = Some("No prompt to copy".into());
+            return Ok(());
+        };
+
+        match crate::app::util::copy_to_clipboard(&text) {
+            Ok(()) => self.message = Some("Copied to clipboard".into()),
+            Err(e) => self.message = Some(format!("Clipboard error: {e}")),
+        }
+        Ok(())
+    }
+
+    pub fn latest_prompt_select_next(&mut self) {
+        if let AppMode::LatestPrompt(state) = &mut self.mode {
+            if !state.prompts.is_empty() && state.selected + 1 < state.prompts.len() {
+                state.selected += 1;
+            }
+        }
+    }
+
+    pub fn latest_prompt_select_prev(&mut self) {
+        if let AppMode::LatestPrompt(state) = &mut self.mode {
+            if state.selected > 0 {
+                state.selected -= 1;
+            }
+        }
     }
 
     pub fn open_markdown_viewer_from_view(&mut self) -> Result<()> {

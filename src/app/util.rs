@@ -82,7 +82,10 @@ pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64);
-                entries.push(PromptEntry { text, timestamp: ts });
+                entries.push(PromptEntry {
+                    text,
+                    timestamp: ts,
+                });
             }
         }
     }
@@ -162,7 +165,10 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
                 .and_then(parse_prompt_timestamp)
                 .or(file_ts);
 
-            entries.push(PromptEntry { text, timestamp: ts });
+            entries.push(PromptEntry {
+                text,
+                timestamp: ts,
+            });
         }
     }
 

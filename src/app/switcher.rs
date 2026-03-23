@@ -86,7 +86,7 @@ impl App {
     }
 
     pub fn switch_from_switcher(&mut self) {
-        let (project_name, feature_name, tmux_session, window, label, vibe_mode, review) =
+        let (project_name, feature_name, tmux_session, window, label, kind, vibe_mode, review) =
             match &self.mode {
                 AppMode::SessionSwitcher(state) => {
                     let entry = match state.sessions.get(state.selected) {
@@ -99,6 +99,7 @@ impl App {
                         state.tmux_session.clone(),
                         entry.tmux_window.clone(),
                         entry.label.clone(),
+                        entry.kind.clone(),
                         state.vibe_mode.clone(),
                         state.review,
                     )
@@ -113,23 +114,33 @@ impl App {
             tmux_session,
             window,
             label,
+            kind,
             vibe_mode,
             review,
         ));
     }
 
     pub fn cancel_session_switcher(&mut self) {
-        let (project_name, feature_name, tmux_session, window, label, vibe_mode, review) =
+        let (project_name, feature_name, tmux_session, window, label, kind, vibe_mode, review) =
             match &self.mode {
-                AppMode::SessionSwitcher(state) => (
-                    state.project_name.clone(),
-                    state.feature_name.clone(),
-                    state.tmux_session.clone(),
-                    state.return_window.clone(),
-                    state.return_label.clone(),
-                    state.vibe_mode.clone(),
-                    state.review,
-                ),
+                AppMode::SessionSwitcher(state) => {
+                    let kind = state
+                        .sessions
+                        .iter()
+                        .find(|entry| entry.tmux_window == state.return_window)
+                        .map(|entry| entry.kind.clone())
+                        .unwrap_or(SessionKind::Terminal);
+                    (
+                        state.project_name.clone(),
+                        state.feature_name.clone(),
+                        state.tmux_session.clone(),
+                        state.return_window.clone(),
+                        state.return_label.clone(),
+                        kind,
+                        state.vibe_mode.clone(),
+                        state.review,
+                    )
+                }
                 _ => return,
             };
 
@@ -140,6 +151,7 @@ impl App {
             tmux_session,
             window,
             label,
+            kind,
             vibe_mode,
             review,
         ));

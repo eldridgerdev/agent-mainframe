@@ -70,12 +70,14 @@ impl App {
                         && matches!(session.kind, SessionKind::Claude)
                         && session.claude_session_id.is_some()
                     {
-                        session.token_usage_source = session.claude_session_id.as_ref().map(|id| {
-                            TokenUsageSource {
-                                provider: TokenUsageProvider::Claude,
-                                id: id.clone(),
-                            }
-                        });
+                        session.token_usage_source =
+                            session
+                                .claude_session_id
+                                .as_ref()
+                                .map(|id| TokenUsageSource {
+                                    provider: TokenUsageProvider::Claude,
+                                    id: id.clone(),
+                                });
                         discovered_sources |= session.token_usage_source.is_some();
                     }
 
@@ -89,8 +91,11 @@ impl App {
                     }
 
                     if session.token_usage_source.is_none() {
-                        session.token_usage_source =
-                            tracker.discover_source(&session.kind, &feature.workdir, session.created_at);
+                        session.token_usage_source = tracker.discover_source(
+                            &session.kind,
+                            &feature.workdir,
+                            session.created_at,
+                        );
                         discovered_sources |= session.token_usage_source.is_some();
                     }
 
@@ -103,9 +108,7 @@ impl App {
             }
         }
 
-        if discovered_sources
-            && let Err(err) = self.save()
-        {
+        if discovered_sources && let Err(err) = self.save() {
             self.log_warn(
                 "usage",
                 format!("Failed to persist discovered token tracking sources: {err}"),

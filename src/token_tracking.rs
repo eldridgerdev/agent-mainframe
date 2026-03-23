@@ -120,11 +120,7 @@ impl SessionTokenTracker {
             if newest_any.as_ref().is_none_or(|(_, ts)| modified > *ts) {
                 newest_any = Some((id.clone(), modified));
             }
-            if modified >= threshold
-                && newest_match
-                    .as_ref()
-                    .is_none_or(|(_, ts)| modified > *ts)
-            {
+            if modified >= threshold && newest_match.as_ref().is_none_or(|(_, ts)| modified > *ts) {
                 newest_match = Some((id, modified));
             }
         }
@@ -164,7 +160,9 @@ impl SessionTokenTracker {
                 let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
                     continue;
                 };
-                let usage = value.get("message").and_then(|message| message.get("usage"));
+                let usage = value
+                    .get("message")
+                    .and_then(|message| message.get("usage"));
                 let Some(usage) = usage else {
                     continue;
                 };
@@ -194,8 +192,7 @@ impl SessionTokenTracker {
                     continue;
                 }
 
-                input_tokens =
-                    input_tokens.saturating_add(json_u64(usage, "input_tokens"));
+                input_tokens = input_tokens.saturating_add(json_u64(usage, "input_tokens"));
                 output_tokens = output_tokens.saturating_add(json_u64(usage, "output_tokens"));
                 cache_read_tokens =
                     cache_read_tokens.saturating_add(json_u64(usage, "cache_read_input_tokens"));
@@ -421,9 +418,11 @@ impl SessionTokenTracker {
     }
 
     fn claude_projects_dir(&self, workdir: &Path) -> Option<PathBuf> {
-        self.home_dir
-            .as_ref()
-            .map(|home| home.join(".claude").join("projects").join(encode_path(workdir)))
+        self.home_dir.as_ref().map(|home| {
+            home.join(".claude")
+                .join("projects")
+                .join(encode_path(workdir))
+        })
     }
 
     fn codex_sessions_root(&self) -> Option<PathBuf> {
@@ -761,7 +760,9 @@ impl CodexUsageSnapshot {
     fn saturating_add_assign(&mut self, other: &Self) {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
-        self.cache_read_tokens = self.cache_read_tokens.saturating_add(other.cache_read_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
         self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
     }
@@ -787,7 +788,8 @@ struct OpencodeSessionMeta {
 }
 
 fn parse_opencode_session_meta(path: &Path) -> Option<OpencodeSessionMeta> {
-    let session: OpencodeSessionFile = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let session: OpencodeSessionFile =
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
     Some(OpencodeSessionMeta {
         id: session.id,
         directory: PathBuf::from(session.directory),
@@ -873,11 +875,7 @@ mod tests {
         let data = TempDir::new().unwrap();
         let workdir = PathBuf::from("/tmp/worktree");
         let encoded = encode_path(&workdir);
-        let project_dir = home
-            .path()
-            .join(".claude")
-            .join("projects")
-            .join(encoded);
+        let project_dir = home.path().join(".claude").join("projects").join(encoded);
         std::fs::create_dir_all(project_dir.join("sess-1/subagents")).unwrap();
         std::fs::write(
             project_dir.join("sess-1.jsonl"),
@@ -908,7 +906,13 @@ mod tests {
         let home = TempDir::new().unwrap();
         let data = TempDir::new().unwrap();
         let workdir = PathBuf::from("/tmp/codex-worktree");
-        let session_dir = home.path().join(".codex").join("sessions").join("2026").join("03").join("13");
+        let session_dir = home
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("13");
         std::fs::create_dir_all(&session_dir).unwrap();
         std::fs::write(
             session_dir.join("rollout.jsonl"),

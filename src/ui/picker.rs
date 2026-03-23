@@ -616,7 +616,11 @@ pub fn draw_markdown_file_picker(
         Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("p", Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            if state.plan_only { " all-files  " } else { " plan-only  " },
+            if state.plan_only {
+                " all-files  "
+            } else {
+                " plan-only  "
+            },
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),

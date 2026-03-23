@@ -4,13 +4,16 @@ mod service;
 mod theme;
 mod tree_sitter;
 
-pub use theme::style_for_class;
 pub(crate) use detect::{HighlightInstallState, HighlightLanguage};
+pub use theme::style_for_class;
 
 pub(crate) use model::{HighlightRequest, HighlightedLine, HighlightedText};
 pub(crate) use service::highlight_source;
 
-pub(crate) fn install_language<F>(language: HighlightLanguage, progress: F) -> anyhow::Result<String>
+pub(crate) fn install_language<F>(
+    language: HighlightLanguage,
+    progress: F,
+) -> anyhow::Result<String>
 where
     F: FnMut(String),
 {
@@ -35,5 +38,6 @@ pub(crate) fn reload_runtime_state() {
 pub(crate) fn language_install_state_for_path(
     path: &std::path::Path,
 ) -> Option<(HighlightLanguage, HighlightInstallState)> {
-    detect::detect_language(Some(path), None, "").map(|language| (language, language.install_state()))
+    detect::detect_language(Some(path), None, "")
+        .map(|language| (language, language.install_state()))
 }

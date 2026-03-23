@@ -190,12 +190,14 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         if let AppMode::MarkdownViewer(state) = &mut app.mode {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
-                    state.scroll_offset =
-                        state.scroll_offset.saturating_add(MARKDOWN_FAST_SCROLL_STEP);
+                    state.scroll_offset = state
+                        .scroll_offset
+                        .saturating_add(MARKDOWN_FAST_SCROLL_STEP);
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    state.scroll_offset =
-                        state.scroll_offset.saturating_sub(MARKDOWN_FAST_SCROLL_STEP);
+                    state.scroll_offset = state
+                        .scroll_offset
+                        .saturating_sub(MARKDOWN_FAST_SCROLL_STEP);
                 }
                 _ => {}
             }
@@ -290,7 +292,8 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Tab => {
             app.submit_steering_prompt()?;
         }
-        KeyCode::Esc if matches!(&app.mode, AppMode::SteeringPrompt(state) if state.editor.vim_mode().is_none()) => {
+        KeyCode::Esc if matches!(&app.mode, AppMode::SteeringPrompt(state) if state.editor.vim_mode().is_none()) =>
+        {
             app.cancel_steering_prompt();
         }
         _ => {
@@ -504,8 +507,8 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     use super::*;
     use crate::app::{
@@ -534,6 +537,7 @@ mod tests {
                 "amf-feature".to_string(),
                 "claude".to_string(),
                 "Claude 1".to_string(),
+                crate::project::SessionKind::Claude,
                 VibeMode::Vibeless,
                 false,
             ),
@@ -550,6 +554,7 @@ mod tests {
             "amf-feature".to_string(),
             "claude".to_string(),
             "Claude 1".to_string(),
+            crate::project::SessionKind::Claude,
             VibeMode::Vibeless,
             false,
         )
@@ -584,7 +589,10 @@ mod tests {
 
         match &app.mode {
             AppMode::SteeringPrompt(state) => {
-                assert_eq!(state.editor.vim_mode(), Some(crate::editor::VimMode::Normal));
+                assert_eq!(
+                    state.editor.vim_mode(),
+                    Some(crate::editor::VimMode::Normal)
+                );
                 assert_eq!(state.editor.text(), "draft");
             }
             _ => panic!("expected steering prompt to stay open"),
@@ -632,7 +640,10 @@ mod tests {
 
         match &app.mode {
             AppMode::SteeringPrompt(state) => {
-                assert_eq!(state.editor.vim_mode(), Some(crate::editor::VimMode::Insert));
+                assert_eq!(
+                    state.editor.vim_mode(),
+                    Some(crate::editor::VimMode::Insert)
+                );
                 assert_eq!(state.editor.text(), "draft");
             }
             _ => panic!("expected steering prompt to stay open"),
@@ -662,8 +673,11 @@ mod tests {
             from_view: Some(view),
         });
 
-        handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
-            .unwrap();
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+        )
+        .unwrap();
 
         match &app.mode {
             AppMode::MarkdownFilePicker(state) => {
@@ -689,8 +703,11 @@ mod tests {
             from_view: Some(view),
         });
 
-        handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
-            .unwrap();
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+        )
+        .unwrap();
 
         assert!(matches!(app.mode, AppMode::MarkdownViewer(_)));
     }
@@ -739,11 +756,8 @@ mod tests {
             from_view: Some(view),
         });
 
-        handle_markdown_viewer_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
-        )
-        .unwrap();
+        handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL))
+            .unwrap();
 
         match &app.mode {
             AppMode::MarkdownViewer(state) => {

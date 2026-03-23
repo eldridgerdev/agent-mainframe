@@ -1,8 +1,8 @@
 mod batch_creation;
 mod browse;
+mod dialog;
 mod diff;
 mod diff_review;
-mod dialog;
 mod feature_creation;
 mod fork;
 mod hooks;
@@ -20,14 +20,14 @@ use crate::app::App;
 
 pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
-pub use diff::handle_diff_viewer_key;
-pub use diff_review::handle_diff_review_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
     handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
     handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
+pub use diff::handle_diff_viewer_key;
+pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
@@ -37,10 +37,9 @@ pub use normal::handle_normal_key;
 pub use picker::{
     handle_bookmark_picker_key, handle_claude_session_confirm_key,
     handle_claude_session_picker_key, handle_codex_session_confirm_key,
-    handle_codex_session_picker_key, handle_command_picker_key,
-    handle_markdown_file_picker_key, handle_notification_picker_key,
-    handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
-    handle_session_picker_key, handle_session_switcher_key,
+    handle_codex_session_picker_key, handle_command_picker_key, handle_markdown_file_picker_key,
+    handle_notification_picker_key, handle_opencode_session_confirm_key,
+    handle_opencode_session_picker_key, handle_session_picker_key, handle_session_switcher_key,
     handle_syntax_language_picker_key,
 };
 pub use search::handle_search_key;

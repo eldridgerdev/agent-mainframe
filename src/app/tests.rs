@@ -1439,6 +1439,7 @@ fn submit_steering_prompt_pastes_into_running_session() {
             "amf-coached".to_string(),
             "claude".to_string(),
             "Claude 1".to_string(),
+            SessionKind::Claude,
             VibeMode::Vibeless,
             false,
         ),
@@ -1494,10 +1495,15 @@ fn inject_latest_prompt_pastes_into_running_session() {
             "amf-coached".to_string(),
             "claude".to_string(),
             "Claude 1".to_string(),
+            SessionKind::Claude,
             VibeMode::Vibeless,
             false,
         ),
-        prompt: Some("Resume from the latest saved prompt.".to_string()),
+        prompts: vec![crate::app::util::PromptEntry {
+            text: "Resume from the latest saved prompt.".to_string(),
+            timestamp: None,
+        }],
+        selected: 0,
     });
 
     app.inject_latest_prompt().unwrap();
@@ -2744,6 +2750,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
         "amf-my-feat".to_string(),
         "claude".to_string(),
         "Claude".to_string(),
+        SessionKind::Claude,
         VibeMode::Vibe,
         false,
     ));
@@ -2801,6 +2808,7 @@ fn custom_diff_review_notification_marks_new_files_as_added() {
         "amf-my-feat".to_string(),
         "claude".to_string(),
         "Claude".to_string(),
+        SessionKind::Claude,
         VibeMode::Vibeless,
         false,
     ));
@@ -2922,6 +2930,7 @@ fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
             "sess".into(),
             "claude".into(),
             "Claude".into(),
+            SessionKind::Claude,
             VibeMode::Vibe,
             false,
         ),

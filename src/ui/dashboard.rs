@@ -6,6 +6,106 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::project::FeatureSession;
+
+fn build_claude_sidebar_data(
+    app: &App,
+    view: &crate::app::ViewState,
+) -> Option<super::pane::ClaudeSidebarData> {
+    if !view.has_claude_sidebar() {
+        return None;
+    }
+
+    let (project, feature) = app.store.projects.iter().find_map(|project| {
+        project
+            .features
+            .iter()
+            .find(|feature| feature.tmux_session == view.session)
+            .map(|feature| (project, feature))
+    })?;
+
+    let session = feature
+        .sessions
+        .iter()
+        .find(|session| session.tmux_window == view.window)
+        .or_else(|| {
+            feature
+                .sessions
+                .iter()
+                .find(|session| matches!(session.kind, crate::project::SessionKind::Claude))
+        });
+
+    let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
+    let mode_label = if view.review {
+        "Review".to_string()
+    } else {
+        view.vibe_mode.display_name().to_string()
+    };
+    let waiting_count = app
+        .pending_inputs
+        .iter()
+        .filter(|input| {
+            input.session_id == view.session
+                || (input.project_name.as_deref() == Some(project.name.as_str())
+                    && input.feature_name.as_deref() == Some(feature.name.as_str()))
+        })
+        .count();
+    let status_line = match waiting_count {
+        0 => "Ready".to_string(),
+        1 => "Waiting for 1 input".to_string(),
+        n => format!("Waiting for {n} inputs"),
+    };
+    let usage_line = session
+        .and_then(|session| session.status_text.as_deref())
+        .map(|status| format!("Usage: {status}"))
+        .unwrap_or_else(|| "Usage: unavailable".to_string());
+    let session_line = session_sidebar_line(session);
+    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
+        "Generating summary...".to_string()
+    } else {
+        feature
+            .summary
+            .clone()
+            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
+    };
+
+    Some(super::pane::ClaudeSidebarData {
+        session_text: format!(
+            "Project: {}\nFeature: {}\nSession: {}\nMode: {}",
+            project.name, feature_label, session_line, mode_label
+        ),
+        status_text: format!(
+            "State: {}\nFeature: {}\n{}",
+            feature.status, status_line, usage_line
+        ),
+        summary_text,
+        notes_text: format!(
+            "Branch: {}\nDir: {}",
+            feature.branch,
+            crate::app::util::shorten_path(&feature.workdir)
+        ),
+    })
+}
+
+fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
+    session
+        .map(|session| session.label.clone())
+        .unwrap_or_else(|| "Claude".to_string())
+}
+
+fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
+    let sidebar_data = build_claude_sidebar_data(app, view);
+    super::pane::draw(
+        frame,
+        view,
+        &app.pane_content,
+        sidebar_data.as_ref(),
+        leader_active,
+        app.pending_inputs.len(),
+        app.tmux_cursor,
+        &app.theme,
+    );
+}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(
@@ -15,15 +115,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            app.leader_active,
-            app.pending_inputs.len(),
-            app.tmux_cursor,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, app.leader_active);
         // Show transient message (e.g. "Copied N chars") on the bottom line
         if let Some(ref msg) = app.message {
             let msg_area = Rect::new(
@@ -47,114 +139,65 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::SessionSwitcher(state) = &app.mode {
+        let return_kind = state
+            .sessions
+            .iter()
+            .find(|entry| entry.tmux_window == state.return_window)
+            .map(|entry| entry.kind.clone())
+            .unwrap_or(crate::project::SessionKind::Terminal);
         let temp_view = crate::app::ViewState::new(
             state.project_name.clone(),
             state.feature_name.clone(),
             state.tmux_session.clone(),
             state.return_window.clone(),
             state.return_label.clone(),
+            return_kind,
             state.vibe_mode.clone(),
             state.review,
         );
-        super::pane::draw(
-            frame,
-            &temp_view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, &temp_view, false);
         super::picker::draw_session_switcher(frame, state, app.config.nerd_font, &app.theme);
         return;
     }
 
     if let AppMode::Help(Some(view)) = &app.mode {
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, false);
         super::dialogs::draw_help(frame, &app.theme);
         return;
     }
 
     if let AppMode::NotificationPicker(selected, Some(view)) = &app.mode {
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, false);
         super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
         return;
     }
 
     if let AppMode::LatestPrompt(state) = &app.mode {
-        super::pane::draw(
-            frame,
-            &state.view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
-        super::dialogs::draw_latest_prompt_dialog(
-            frame,
-            state,
-            app.message.as_deref(),
-            &app.theme,
-        );
+        draw_view_pane(frame, app, &state.view, false);
+        super::dialogs::draw_latest_prompt_dialog(frame, state, app.message.as_deref(), &app.theme);
         return;
     }
 
     if let AppMode::DiffViewer(state) = &app.mode {
-        super::pane::draw(
-            frame,
-            &state.from_view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, &state.from_view, false);
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
         return;
     }
 
+    let markdown_from_view = if let AppMode::MarkdownViewer(state) = &app.mode {
+        state.from_view.clone()
+    } else {
+        None
+    };
+    if let Some(view) = markdown_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false);
+    }
     if let AppMode::MarkdownViewer(state) = &mut app.mode {
-        if let Some(view) = &state.from_view {
-            super::pane::draw(
-                frame,
-                view,
-                &app.pane_content,
-                false,
-                app.pending_inputs.len(),
-                None,
-                &app.theme,
-            );
-        }
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
         return;
     }
     if let AppMode::SteeringPrompt(state) = &app.mode {
-        super::pane::draw(
-            frame,
-            &state.view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, &state.view, false);
         super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
         return;
     }
@@ -163,15 +206,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, false);
         super::picker::draw_command_picker(frame, state, &app.theme);
         return;
     }
@@ -185,15 +220,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, false);
         super::picker::draw_markdown_file_picker(frame, state, &app.theme);
         return;
     }
@@ -202,15 +229,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        super::pane::draw(
-            frame,
-            view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, view, false);
         let rows = app.bookmark_picker_rows();
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
         return;
@@ -219,24 +238,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::RenamingSession(state) = &app.mode
         && let RenameReturnTo::SessionSwitcher(ref sw) = state.return_to
     {
+        let return_kind = sw
+            .sessions
+            .iter()
+            .find(|entry| entry.tmux_window == sw.return_window)
+            .map(|entry| entry.kind.clone())
+            .unwrap_or(crate::project::SessionKind::Terminal);
         let temp_view = crate::app::ViewState::new(
             sw.project_name.clone(),
             sw.feature_name.clone(),
             sw.tmux_session.clone(),
             sw.return_window.clone(),
             sw.return_label.clone(),
+            return_kind,
             sw.vibe_mode.clone(),
             sw.review,
         );
-        super::pane::draw(
-            frame,
-            &temp_view,
-            &app.pane_content,
-            false,
-            app.pending_inputs.len(),
-            None,
-            &app.theme,
-        );
+        draw_view_pane(frame, app, &temp_view, false);
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
         return;
     }
@@ -400,7 +418,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::ThemePicker(state) = &app.mode {
-        super::dialogs::draw_theme_picker(frame, state, &app.config.theme, &app.theme, app.config.transparent_background);
+        super::dialogs::draw_theme_picker(
+            frame,
+            state,
+            &app.config.theme,
+            &app.theme,
+            app.config.transparent_background,
+        );
     }
 
     if let AppMode::DebugLog(state) = &app.mode {

@@ -678,7 +678,12 @@ fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureStat
         let mut lines = state
             .task_prompt
             .lines()
-            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.text.to_color()))))
+            .map(|line| {
+                Line::from(Span::styled(
+                    line,
+                    Style::default().fg(theme.text.to_color()),
+                ))
+            })
             .collect::<Vec<_>>();
         if state.task_prompt.ends_with('\n') || lines.is_empty() {
             lines.push(Line::from(""));
@@ -737,7 +742,10 @@ fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureStat
     frame.render_widget(tips, chunks[5]);
 
     let hints = Paragraph::new(Line::from(vec![
-        Span::styled("Type / Paste", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            "Type / Paste",
+            Style::default().fg(theme.warning.to_color()),
+        ),
         Span::raw(" edit  "),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::raw(" newline  "),
@@ -752,11 +760,7 @@ fn prompt_checklist_lines(analysis: &PromptAnalysis, theme: &Theme) -> Vec<Line<
 
     for check in &analysis.checks {
         let (marker, color, detail) = if check.present {
-            (
-                "[x]",
-                theme.success.to_color(),
-                "covered",
-            )
+            ("[x]", theme.success.to_color(), "covered")
         } else {
             (
                 "[ ]",
@@ -852,11 +856,7 @@ pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
     frame.render_widget(hints, chunks[5]);
 }
 
-pub fn draw_steering_prompt_dialog(
-    frame: &mut Frame,
-    state: &SteeringPromptState,
-    theme: &Theme,
-) {
+pub fn draw_steering_prompt_dialog(frame: &mut Frame, state: &SteeringPromptState, theme: &Theme) {
     let area = centered_rect(84, 82, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -897,7 +897,10 @@ pub fn draw_steering_prompt_dialog(
     let summary = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(" Session: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " Session: ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled(
                 state.view.session_label.as_str(),
                 Style::default()
@@ -973,11 +976,13 @@ pub fn draw_steering_prompt_dialog(
             },
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
-            " edit  "
-        } else {
-            " edit  "
-        }),
+        Span::raw(
+            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                " edit  "
+            } else {
+                " edit  "
+            },
+        ),
         Span::styled(
             if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
                 "h/j/k/l"
@@ -986,17 +991,21 @@ pub fn draw_steering_prompt_dialog(
             },
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
-            " move  "
-        } else {
-            " normal  "
-        }),
+        Span::raw(
+            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                " move  "
+            } else {
+                " normal  "
+            },
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
-            " ignored  "
-        } else {
-            " newline  "
-        }),
+        Span::raw(
+            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                " ignored  "
+            } else {
+                " newline  "
+            },
+        ),
         Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
         Span::raw(if state.editor.vim_mode().is_some() {
             " vim off  "

@@ -448,8 +448,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         if is_viewing {
             let content_rows = visible_rows;
-            let content_cols = size.width;
             if let app::AppMode::Viewing(ref view) = app.mode {
+                let content_cols = ui::viewing_main_width(view, size.width);
                 let current_resize = (
                     content_cols,
                     content_rows,
@@ -471,12 +471,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             if let app::AppMode::Viewing(ref view) = app.mode {
                 let session = view.session.clone();
                 let window = view.window.clone();
+                let content_cols = ui::viewing_main_width(view, size.width);
                 app.pane_content =
                     TmuxManager::capture_pane_ansi(&session, &window).unwrap_or_default();
                 // Store the rendering dimensions (content area in pane.rs),
                 // not the tmux capture dimensions, so mouse selection
                 // coordinates align correctly.
-                app.pane_content_cols = size.width;
+                app.pane_content_cols = content_cols;
                 app.pane_content_rows = size.height.saturating_sub(1);
                 app.tmux_cursor = TmuxManager::cursor_position(&session, &window).ok();
             }

@@ -20,7 +20,11 @@ impl App {
             AppMode::DiffReviewPrompt(state) => {
                 let path = Some(std::path::PathBuf::from(&state.relative_path));
                 let notice = path.as_ref().and_then(|path| syntax_notice_for_path(path));
-                (path, Some(Box::new(AppMode::DiffReviewPrompt(state))), notice)
+                (
+                    path,
+                    Some(Box::new(AppMode::DiffReviewPrompt(state))),
+                    notice,
+                )
             }
             other => {
                 self.mode = other;

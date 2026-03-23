@@ -184,6 +184,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            SessionKind::Codex,
             vibe_mode,
             review,
         );

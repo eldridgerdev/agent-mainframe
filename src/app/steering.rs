@@ -28,11 +28,21 @@ impl PromptConstraint {
 
     pub fn missing_explanation(self) -> &'static str {
         match self {
-            PromptConstraint::FileScope => "The prompt does not clearly name what files or directories are in scope.",
-            PromptConstraint::AcceptanceCriteria => "The prompt does not say what \"done\" looks like.",
-            PromptConstraint::Invariants => "The prompt does not pin down behavior that must stay unchanged.",
-            PromptConstraint::ValidationCommands => "The prompt does not tell the agent how to verify the change.",
-            PromptConstraint::Risks => "The prompt does not call out sharp edges or likely regressions.",
+            PromptConstraint::FileScope => {
+                "The prompt does not clearly name what files or directories are in scope."
+            }
+            PromptConstraint::AcceptanceCriteria => {
+                "The prompt does not say what \"done\" looks like."
+            }
+            PromptConstraint::Invariants => {
+                "The prompt does not pin down behavior that must stay unchanged."
+            }
+            PromptConstraint::ValidationCommands => {
+                "The prompt does not tell the agent how to verify the change."
+            }
+            PromptConstraint::Risks => {
+                "The prompt does not call out sharp edges or likely regressions."
+            }
         }
     }
 
@@ -220,18 +230,12 @@ fn has_validation_commands(prompt: &str, lowercase: &str) -> bool {
             "verify with",
         ],
     ) || prompt.contains('`')
-            && contains_any(
-                lowercase,
-                &[
-                    "cargo",
-                    "npm",
-                    "pnpm",
-                    "pytest",
-                    "go test",
-                    "just",
-                    "uv run",
-                ],
-            )
+        && contains_any(
+            lowercase,
+            &[
+                "cargo", "npm", "pnpm", "pytest", "go test", "just", "uv run",
+            ],
+        )
 }
 
 fn has_risks(lowercase: &str) -> bool {

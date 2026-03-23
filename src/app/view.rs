@@ -24,6 +24,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         ) = {
@@ -50,6 +51,7 @@ impl App {
                 feature.tmux_session.clone(),
                 session.tmux_window.clone(),
                 session.label.clone(),
+                session.kind.clone(),
                 feature.mode.clone(),
                 feature.review,
             )
@@ -80,6 +82,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         );
@@ -263,7 +266,13 @@ impl App {
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view, None);
+            return self.open_markdown_viewer_path(
+                files[0].clone(),
+                workdir,
+                repo_root,
+                view,
+                None,
+            );
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
@@ -498,11 +507,16 @@ impl App {
                 )
             })
             .unwrap_or(0);
-        let (session_window, session_label) = if let Some(s) = feature.sessions.get(si) {
-            (s.tmux_window.clone(), s.label.clone())
-        } else {
-            ("terminal".into(), "Terminal 1".into())
-        };
+        let (session_window, session_label, session_kind) =
+            if let Some(s) = feature.sessions.get(si) {
+                (s.tmux_window.clone(), s.label.clone(), s.kind.clone())
+            } else {
+                (
+                    "terminal".into(),
+                    "Terminal 1".into(),
+                    SessionKind::Terminal,
+                )
+            };
 
         let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
@@ -516,6 +530,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         ));
@@ -565,6 +580,7 @@ impl App {
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.window = next.tmux_window.clone();
             view.session_label = next.label.clone();
+            view.session_kind = next.kind.clone();
         }
         self.pane_content.clear();
     }
@@ -614,6 +630,7 @@ impl App {
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.window = prev.tmux_window.clone();
             view.session_label = prev.label.clone();
+            view.session_kind = prev.kind.clone();
         }
         self.pane_content.clear();
     }

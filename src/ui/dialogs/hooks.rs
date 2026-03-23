@@ -694,8 +694,10 @@ pub fn draw_latest_prompt_dialog(
 
     // Divider
     let divider_line = "─".repeat(chunks[1].width as usize);
-    let divider =
-        Paragraph::new(Line::from(Span::styled(divider_line, Style::default().fg(theme.border.to_color()))));
+    let divider = Paragraph::new(Line::from(Span::styled(
+        divider_line,
+        Style::default().fg(theme.border.to_color()),
+    )));
     frame.render_widget(divider, chunks[1]);
 
     // Detail view for selected prompt
@@ -713,7 +715,10 @@ pub fn draw_latest_prompt_dialog(
     let hint_spans = vec![
         Span::styled("Tab", Style::default().fg(theme.warning.to_color())),
         Span::styled("/Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" inject  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " inject  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("y", Style::default().fg(theme.warning.to_color())),
         Span::styled(" copy  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("j/k", Style::default().fg(theme.warning.to_color())),

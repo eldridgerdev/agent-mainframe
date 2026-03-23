@@ -169,11 +169,7 @@ impl VibeMode {
         flags
     }
 
-    pub const ALL: [VibeMode; 3] = [
-        VibeMode::Vibeless,
-        VibeMode::Vibe,
-        VibeMode::SuperVibe,
-    ];
+    pub const ALL: [VibeMode; 3] = [VibeMode::Vibeless, VibeMode::Vibe, VibeMode::SuperVibe];
 }
 
 fn default_true() -> bool {

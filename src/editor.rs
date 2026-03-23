@@ -126,7 +126,10 @@ impl TextEditor {
     }
 
     pub fn cursor_row_col(&self) -> (usize, usize) {
-        let row = self.text[..self.cursor].chars().filter(|&ch| ch == '\n').count();
+        let row = self.text[..self.cursor]
+            .chars()
+            .filter(|&ch| ch == '\n')
+            .count();
         let line_start = self.line_start(self.cursor);
         let col = self.text[line_start..self.cursor].chars().count();
         (row, col)
@@ -151,7 +154,9 @@ impl TextEditor {
             KeyCode::Home => self.move_home(),
             KeyCode::End => self.move_end(),
             KeyCode::Char(c)
-                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 let mut text = String::new();
                 text.push(c);

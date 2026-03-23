@@ -263,12 +263,13 @@ impl App {
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view);
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view, None);
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
             files,
             selected: 0,
+            plan_only: true,
             workdir,
             repo_root,
             from_view: Some(view),
@@ -283,6 +284,7 @@ impl App {
         workdir: PathBuf,
         repo_root: Option<PathBuf>,
         view: ViewState,
+        return_to_picker: Option<crate::app::MarkdownFilePickerState>,
     ) -> Result<()> {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
@@ -300,6 +302,9 @@ impl App {
             source_path: path,
             content,
             scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker,
             from_view: Some(view),
         });
         self.message = None;

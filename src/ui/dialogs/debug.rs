@@ -3,7 +3,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
     },
 };
 use unicode_width::UnicodeWidthStr;
@@ -19,7 +19,7 @@ pub fn draw_debug_log(
     theme: &Theme,
 ) {
     let area = centered_rect(80, 80, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Debug Log - {} ", debug_log.log_file().display());
     let inner = {

@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
 use crate::app::SearchState;
@@ -13,7 +13,7 @@ use super::super::dashboard::centered_rect;
 
 pub fn draw_search_dialog(frame: &mut Frame, state: &SearchState, theme: &Theme) {
     let area = centered_rect(70, 60, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Search ")

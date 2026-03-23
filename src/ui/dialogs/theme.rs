@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use crate::app::ThemePickerState;
@@ -19,7 +19,7 @@ pub fn draw_theme_picker(
     transparent: bool,
 ) {
     let area = centered_rect(40, 40, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .borders(Borders::ALL)

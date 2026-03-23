@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use super::super::dashboard::centered_rect;
@@ -28,7 +28,7 @@ pub fn draw_help_bottom_right(frame: &mut Frame, theme: &Theme) {
 }
 
 fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let keybinds: Vec<(&str, &str)> = vec![
         ("j/k / \u{2191}/\u{2193}", "Navigate up/down"),

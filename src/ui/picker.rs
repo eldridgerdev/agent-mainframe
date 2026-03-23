@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::{
@@ -23,7 +23,7 @@ pub fn draw_notification_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Input Requests ({}) ", pending.len());
     let block = Block::default()
@@ -121,7 +121,7 @@ pub fn draw_notification_picker(
 
 pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme: &Theme) {
     let area = centered_rect(50, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Custom Commands ({}) ", state.commands.len());
     let block = Block::default()
@@ -225,7 +225,7 @@ pub fn draw_syntax_language_picker(
         })
         .count();
     let area = centered_rect(68, 58, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Syntax Parsers ({}/{}) ", installed, state.languages.len());
     let block = Block::default()
@@ -433,21 +433,43 @@ pub fn draw_markdown_file_picker(
     state: &MarkdownFilePickerState,
     theme: &Theme,
 ) {
+    let visible_indices: Vec<usize> = state
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| {
+            !state.plan_only
+                || crate::markdown::markdown_view_relative_label(
+                    path,
+                    &state.workdir,
+                    state.repo_root.as_deref(),
+                )
+                .to_ascii_lowercase()
+                .contains("plan")
+        })
+        .map(|(idx, _)| idx)
+        .collect();
+    let visible_count = visible_indices.len();
+    let selected_visible = visible_indices
+        .iter()
+        .position(|&idx| idx == state.selected)
+        .or_else(|| (!visible_indices.is_empty()).then_some(0));
     let showing_repo_root = state.repo_root.is_some();
     let area = if showing_repo_root {
         centered_rect(70, 60, frame.area())
     } else {
         centered_rect(62, 52, frame.area())
     };
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = if showing_repo_root {
         format!(
-            " Markdown Files: Worktree + Repo Root ({}) ",
+            " Markdown Files: Worktree + Repo Root ({}/{}) ",
+            visible_count,
             state.files.len()
         )
     } else {
-        format!(" Markdown Files ({}) ", state.files.len())
+        format!(" Markdown Files ({}/{}) ", visible_count, state.files.len())
     };
     let block = Block::default()
         .title(title)
@@ -508,12 +530,11 @@ pub fn draw_markdown_file_picker(
         chunks[1]
     };
 
-    let items: Vec<ListItem> = state
-        .files
+    let items: Vec<ListItem> = visible_indices
         .iter()
-        .enumerate()
-        .map(|(i, path)| {
-            let is_selected = i == state.selected;
+        .map(|&idx| {
+            let path = &state.files[idx];
+            let is_selected = idx == state.selected;
             let scope = crate::markdown::markdown_view_scope(
                 path,
                 &state.workdir,
@@ -569,10 +590,18 @@ pub fn draw_markdown_file_picker(
         })
         .collect();
 
-    let list = List::new(items);
-    let mut list_state = ListState::default();
-    list_state.select(Some(state.selected));
-    frame.render_stateful_widget(list, list_chunk, &mut list_state);
+    if items.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "  No markdown files match the current filter.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+        frame.render_widget(empty, list_chunk);
+    } else {
+        let list = List::new(items);
+        let mut list_state = ListState::default();
+        list_state.select(selected_visible);
+        frame.render_stateful_widget(list, list_chunk, &mut list_state);
+    }
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -585,6 +614,11 @@ pub fn draw_markdown_file_picker(
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("p", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            if state.plan_only { " all-files  " } else { " plan-only  " },
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));
@@ -598,7 +632,7 @@ pub fn draw_bookmark_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(56, 42, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Harpoon Bookmarks ")
@@ -693,7 +727,7 @@ pub fn draw_session_switcher(
     theme: &Theme,
 ) {
     let area = centered_rect(40, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" {} / {} ", state.project_name, state.feature_name);
     let block = Block::default()
@@ -837,7 +871,7 @@ pub fn draw_opencode_session_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Opencode Sessions ({}) ", state.sessions.len());
     let block = Block::default()
@@ -932,7 +966,7 @@ pub fn draw_claude_session_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Claude Sessions ({}) ", state.sessions.len());
     let block = Block::default()
@@ -1027,7 +1061,7 @@ pub fn draw_codex_session_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Codex Sessions ({}) ", state.sessions.len());
     let block = Block::default()
@@ -1118,7 +1152,7 @@ pub fn draw_codex_session_picker(
 
 fn draw_session_restore_confirm(frame: &mut Frame, theme: &Theme, agent_name: &str) {
     let area = centered_rect(62, 35, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let text = Paragraph::new(vec![
         Line::from(""),
@@ -1241,7 +1275,7 @@ pub fn draw_session_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(55, 60, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let total = state.builtin_sessions.len() + state.custom_sessions.len();
     let title = format!(" Start Session ({}) ", total);

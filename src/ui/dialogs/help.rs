@@ -145,7 +145,10 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled("Markdown file picker/viewer", Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            "Markdown file picker/viewer",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled(

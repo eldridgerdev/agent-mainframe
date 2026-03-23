@@ -4,6 +4,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::MarkdownViewerState;
 use crate::theme::Theme;
@@ -99,4 +100,22 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
     ])
     .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(hints, chunks[1]);
+}
+
+fn count_wrapped_lines(lines: &[Line<'static>], width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            UnicodeWidthStr::width(text.as_str()).max(1).div_ceil(width)
+        })
+        .sum()
 }

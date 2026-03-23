@@ -170,7 +170,9 @@ pub fn load_review_file(original: &Path, proposed: &Path, display_path: &str) ->
 
     let patch = String::from_utf8_lossy(&output.stdout).into_owned();
     let mut files = parse_unified_diff(&patch)?;
-    let mut file = files.pop().ok_or_else(|| anyhow!("review diff produced no file entries"))?;
+    let mut file = files
+        .pop()
+        .ok_or_else(|| anyhow!("review diff produced no file entries"))?;
     if !display_path.is_empty() {
         file.path = display_path.to_string();
         file.old_path = Some(display_path.to_string());

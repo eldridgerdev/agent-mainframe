@@ -191,11 +191,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 },
                 key_style(),
             ),
-            Span::raw(if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
-                " edit  "
-            } else {
-                " normal  "
-            }),
+            Span::raw(
+                if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                    " edit  "
+                } else {
+                    " normal  "
+                },
+            ),
             Span::styled("Ctrl+V", key_style()),
             Span::raw(if state.editor.vim_mode().is_some() {
                 " vim off  "
@@ -279,7 +281,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" cancel"),
                 ])
             }
-        },
+        }
         AppMode::Viewing(_) => {
             let mut spans = vec![
                 Span::styled("Ctrl+Space", key_style()),
@@ -302,7 +304,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
             Line::from(spans)
-        },
+        }
         AppMode::RunningHook(state) => {
             if state.child.is_some() {
                 Line::from(Span::styled(
@@ -363,10 +365,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(spans)
         }
         AppMode::DiffViewer(_) => {
-            let mut spans = vec![
-                Span::styled(" Tab", key_style()),
-                Span::raw(" focus  "),
-            ];
+            let mut spans = vec![Span::styled(" Tab", key_style()), Span::raw(" focus  ")];
             if app.diff_viewer_selected_file_is_new() {
                 spans.push(Span::styled(
                     " new file uses unified view  ",

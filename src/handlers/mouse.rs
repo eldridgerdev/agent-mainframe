@@ -149,12 +149,16 @@ fn handle_click(
         }
 
         if button == MouseButton::Left && row > 0 {
+            if app.pane_content_cols == 0 || col >= app.pane_content_cols {
+                return Ok(());
+            }
             app.message = None;
             let content_row = row - 1;
+            let content_col = col.min(app.pane_content_cols.saturating_sub(1));
             view.selection.start_row = content_row;
-            view.selection.start_col = col;
+            view.selection.start_col = content_col;
             view.selection.end_row = content_row;
-            view.selection.end_col = col;
+            view.selection.end_col = content_col;
             view.selection.is_selecting = true;
             view.selection.has_selection = false;
         }
@@ -286,10 +290,12 @@ fn handle_drag(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result
         && button == MouseButton::Left
         && view.selection.is_selecting
         && row > 0
+        && app.pane_content_cols > 0
     {
         let content_row = row - 1;
+        let content_col = col.min(app.pane_content_cols.saturating_sub(1));
         view.selection.end_row = content_row;
-        view.selection.end_col = col;
+        view.selection.end_col = content_col;
         view.selection.has_selection = true;
     }
     Ok(())
@@ -303,10 +309,11 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
         view.selection.is_selecting = false;
 
         if view.selection.has_selection {
-            if row > 0 {
+            if row > 0 && app.pane_content_cols > 0 {
                 let content_row = row - 1;
+                let content_col = col.min(app.pane_content_cols.saturating_sub(1));
                 view.selection.end_row = content_row;
-                view.selection.end_col = col;
+                view.selection.end_col = content_col;
             }
 
             let text = extract_selected_text(

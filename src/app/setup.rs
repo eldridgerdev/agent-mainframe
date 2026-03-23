@@ -129,17 +129,26 @@ fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[Strin
     })
 }
 
-fn remove_amf_claude_hooks(
-    settings: &mut serde_json::Value,
-    managed_commands: &[String],
-) -> bool {
-    let Some(hooks_obj) = settings.get_mut("hooks").and_then(|value| value.as_object_mut()) else {
+fn remove_amf_claude_hooks(settings: &mut serde_json::Value, managed_commands: &[String]) -> bool {
+    let Some(hooks_obj) = settings
+        .get_mut("hooks")
+        .and_then(|value| value.as_object_mut())
+    else {
         return false;
     };
 
     let mut changed = false;
-    for event in ["Stop", "Notification", "PreToolUse", "PostToolUse", "UserPromptSubmit"] {
-        let Some(entries) = hooks_obj.get_mut(event).and_then(|value| value.as_array_mut()) else {
+    for event in [
+        "Stop",
+        "Notification",
+        "PreToolUse",
+        "PostToolUse",
+        "UserPromptSubmit",
+    ] {
+        let Some(entries) = hooks_obj
+            .get_mut(event)
+            .and_then(|value| value.as_array_mut())
+        else {
             continue;
         };
         let before = entries.len();
@@ -197,7 +206,11 @@ fn update_claude_permissions(
             for permission in ["Edit", "Write"] {
                 if !allow.iter().any(|value| value.as_str() == Some(permission)) {
                     allow.push(serde_json::json!(permission));
-                    if !state.permissions_added.iter().any(|value| value == permission) {
+                    if !state
+                        .permissions_added
+                        .iter()
+                        .any(|value| value == permission)
+                    {
                         state.permissions_added.push(permission.to_string());
                     }
                 }
@@ -208,9 +221,12 @@ fn update_claude_permissions(
         .and_then(|value| value.as_array_mut())
     {
         allow.retain(|value| {
-            value
-                .as_str()
-                .is_none_or(|permission| !state.permissions_added.iter().any(|added| added == permission))
+            value.as_str().is_none_or(|permission| {
+                !state
+                    .permissions_added
+                    .iter()
+                    .any(|added| added == permission)
+            })
         });
         state.permissions_added.clear();
     }
@@ -768,8 +784,14 @@ pub fn ensure_notification_hooks_with_config(
     let config_dir = crate::project::amf_config_dir();
     let managed_commands = claude_managed_commands();
     let notify_cmd = config_dir.join("notify.sh").to_string_lossy().into_owned();
-    let clear_cmd = config_dir.join("clear-notify.sh").to_string_lossy().into_owned();
-    let save_prompt_cmd = config_dir.join("save-prompt.sh").to_string_lossy().into_owned();
+    let clear_cmd = config_dir
+        .join("clear-notify.sh")
+        .to_string_lossy()
+        .into_owned();
+    let save_prompt_cmd = config_dir
+        .join("save-prompt.sh")
+        .to_string_lossy()
+        .into_owned();
     let thinking_start_cmd = config_dir
         .join("thinking-start.sh")
         .to_string_lossy()

@@ -220,6 +220,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('s') => {
             app.open_steering_prompt_from_view()?;
         }
+        KeyCode::Char('g') => {
+            app.trigger_summary_for_selected()?;
+        }
         KeyCode::Char('w') => {
             app.open_session_switcher();
         }
@@ -528,7 +531,7 @@ mod tests {
         match &app.mode {
             AppMode::LatestPrompt(state) => {
                 assert_eq!(
-                    state.prompt.as_deref(),
+                    state.prompts.first().map(|entry| entry.text.as_str()),
                     Some("Resume the current task from the saved prompt.")
                 );
                 assert_eq!(state.view.session, "amf-feature");
@@ -592,6 +595,7 @@ mod tests {
             "amf-feature".to_string(),
             session.tmux_window.clone(),
             session.label.clone(),
+            SessionKind::Claude,
             VibeMode::Vibeless,
             false,
         ));

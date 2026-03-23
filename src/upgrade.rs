@@ -39,7 +39,12 @@ pub fn upgrade() -> Result<()> {
     download_binary(&download_url, &archive_path)?;
 
     let status = Command::new("tar")
-        .args(["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.path().to_str().unwrap()])
+        .args([
+            "-xzf",
+            archive_path.to_str().unwrap(),
+            "-C",
+            temp_dir.path().to_str().unwrap(),
+        ])
         .status()
         .context("Failed to run tar")?;
     anyhow::ensure!(status.success(), "tar extraction failed");
@@ -55,8 +60,13 @@ pub fn upgrade() -> Result<()> {
     for entry in fs::read_dir(&extracted_dir).context("Failed to read extracted bundle")? {
         let entry = entry?;
         let dest = exe_dir.join(entry.file_name());
-        fs::copy(entry.path(), &dest)
-            .with_context(|| format!("Failed to copy {} to {}", entry.path().display(), dest.display()))?;
+        fs::copy(entry.path(), &dest).with_context(|| {
+            format!(
+                "Failed to copy {} to {}",
+                entry.path().display(),
+                dest.display()
+            )
+        })?;
         let mut perms = fs::metadata(&dest)?.permissions();
         perms.set_mode(perms.mode() | 0o111);
         fs::set_permissions(&dest, perms)?;

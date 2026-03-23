@@ -366,7 +366,10 @@ mod tests {
                     crate::highlight::HighlightLanguage::Rust
                 );
             }
-            other => panic!("expected syntax picker, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "expected syntax picker, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 
@@ -551,6 +554,7 @@ mod tests {
                 "amf-my-feature".to_string(),
                 "claude".to_string(),
                 "Claude".to_string(),
+                crate::project::SessionKind::Claude,
                 crate::project::VibeMode::Vibeless,
                 false,
             ));

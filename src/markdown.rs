@@ -1,6 +1,4 @@
-use pulldown_cmark::{
-    Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
-};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -75,12 +73,8 @@ struct TextBlock {
 }
 
 enum TextBlockKind {
-    Paragraph {
-        list_item: bool,
-    },
-    Heading {
-        level: u8,
-    },
+    Paragraph { list_item: bool },
+    Heading { level: u8 },
 }
 
 struct CodeBlockState {
@@ -434,7 +428,10 @@ impl<'a> MarkdownRenderer<'a> {
             }
             Tag::Table(alignments) => {
                 self.finish_text_block();
-                self.current_table = Some(TableState::new(alignments.to_vec(), self.continuation_prefix()));
+                self.current_table = Some(TableState::new(
+                    alignments.to_vec(),
+                    self.continuation_prefix(),
+                ));
             }
             Tag::TableHead => {
                 self.in_table_head = true;
@@ -580,7 +577,11 @@ impl<'a> MarkdownRenderer<'a> {
             return;
         }
         if let Some(block) = &mut self.current_text {
-            block.nodes.push(InlineNode::Text { text, style, atomic });
+            block.nodes.push(InlineNode::Text {
+                text,
+                style,
+                atomic,
+            });
         }
     }
 
@@ -610,8 +611,12 @@ impl<'a> MarkdownRenderer<'a> {
                 } else {
                     EmittedBlockKind::Paragraph
                 });
-                let rendered =
-                    wrap_inline_nodes(&block.nodes, self.width, &block.first_prefix, &block.rest_prefix);
+                let rendered = wrap_inline_nodes(
+                    &block.nodes,
+                    self.width,
+                    &block.first_prefix,
+                    &block.rest_prefix,
+                );
                 self.lines.extend(rendered);
             }
             TextBlockKind::Heading { level } => {
@@ -621,7 +626,11 @@ impl<'a> MarkdownRenderer<'a> {
                     .nodes
                     .into_iter()
                     .map(|node| match node {
-                        InlineNode::Text { text, style: base, atomic } => InlineNode::Text {
+                        InlineNode::Text {
+                            text,
+                            style: base,
+                            atomic,
+                        } => InlineNode::Text {
                             text,
                             style: base.patch(style),
                             atomic,
@@ -682,14 +691,10 @@ impl<'a> MarkdownRenderer<'a> {
             source: &code.code,
         });
 
-        let first_line_prefix = combine_prefixes(
-            &code.prefix,
-            &styled_prefix("│ ".to_string(), frame_style),
-        );
-        let rest_line_prefix = combine_prefixes(
-            &code.prefix,
-            &styled_prefix("│ ".to_string(), frame_style),
-        );
+        let first_line_prefix =
+            combine_prefixes(&code.prefix, &styled_prefix("│ ".to_string(), frame_style));
+        let rest_line_prefix =
+            combine_prefixes(&code.prefix, &styled_prefix("│ ".to_string(), frame_style));
 
         for highlighted_line in highlighted.lines {
             let mut nodes = Vec::new();
@@ -773,8 +778,10 @@ impl<'a> MarkdownRenderer<'a> {
         let bottom = table_border('└', '┴', '┘', &widths);
         let border_style = Style::default().fg(self.theme.border.to_color());
 
-        self.lines
-            .push(prefix_line(&table.prefix, vec![Span::styled(top, border_style)]));
+        self.lines.push(prefix_line(
+            &table.prefix,
+            vec![Span::styled(top, border_style)],
+        ));
 
         for (row_idx, row) in rows.iter().enumerate() {
             let mut line_spans = table.prefix.spans.clone();
@@ -783,7 +790,11 @@ impl<'a> MarkdownRenderer<'a> {
                 let padded = pad_aligned(
                     &truncate_to_width(cell, widths[col_idx]),
                     widths[col_idx],
-                    table.alignments.get(col_idx).copied().unwrap_or(Alignment::None),
+                    table
+                        .alignments
+                        .get(col_idx)
+                        .copied()
+                        .unwrap_or(Alignment::None),
                 );
                 let cell_style = if row_idx < table.header_rows {
                     Style::default()
@@ -800,13 +811,17 @@ impl<'a> MarkdownRenderer<'a> {
             self.lines.push(Line::from(line_spans));
 
             if row_idx + 1 == table.header_rows && row_idx + 1 < rows.len() {
-                self.lines
-                    .push(prefix_line(&table.prefix, vec![Span::styled(mid.clone(), border_style)]));
+                self.lines.push(prefix_line(
+                    &table.prefix,
+                    vec![Span::styled(mid.clone(), border_style)],
+                ));
             }
         }
 
-        self.lines
-            .push(prefix_line(&table.prefix, vec![Span::styled(bottom, border_style)]));
+        self.lines.push(prefix_line(
+            &table.prefix,
+            vec![Span::styled(bottom, border_style)],
+        ));
     }
 
     fn render_rule(&mut self) {
@@ -995,7 +1010,11 @@ fn push_wrapped_token(
     let mut remaining = token.to_string();
     while !remaining.is_empty() {
         let available_width = width.saturating_sub(*current_width).max(1);
-        let leading_space = if *pending_space && *line_has_content { 1 } else { 0 };
+        let leading_space = if *pending_space && *line_has_content {
+            1
+        } else {
+            0
+        };
         let token_width = display_width(&remaining);
 
         if *line_has_content && leading_space + token_width > available_width {
@@ -1169,7 +1188,11 @@ fn split_at_width(text: &str, max_width: usize) -> usize {
     for (idx, ch) in text.char_indices() {
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if width + ch_width > max_width {
-            return if split == 0 { idx + ch.len_utf8() } else { split };
+            return if split == 0 {
+                idx + ch.len_utf8()
+            } else {
+                split
+            };
         }
         width += ch_width;
         split = idx + ch.len_utf8();
@@ -1182,7 +1205,8 @@ fn display_width(text: &str) -> usize {
 }
 
 fn plain_inline_width(nodes: &[InlineNode]) -> usize {
-    nodes.iter()
+    nodes
+        .iter()
         .map(|node| match node {
             InlineNode::Text { text, .. } => display_width(text),
             InlineNode::Break => 1,
@@ -1270,7 +1294,11 @@ mod tests {
         std::fs::write(worktree_claude.join("plan.md"), "# Worktree Plan").unwrap();
         std::fs::write(repo.path().join("RETRO.md"), "# Repo Retro").unwrap();
         std::fs::create_dir_all(worktree.join("docs")).unwrap();
-        std::fs::write(worktree.join("docs").join("worktree-guide.md"), "# Worktree Guide").unwrap();
+        std::fs::write(
+            worktree.join("docs").join("worktree-guide.md"),
+            "# Worktree Guide",
+        )
+        .unwrap();
 
         let found = collect_markdown_view_paths(&worktree, Some(repo.path()));
         assert!(found.contains(&worktree_claude.join("plan.md")));
@@ -1285,14 +1313,24 @@ mod tests {
         std::fs::write(dir.path().join(".opencode").join("hidden.md"), "# Hidden").unwrap();
         std::fs::create_dir_all(dir.path().join(".worktrees").join("other")).unwrap();
         std::fs::write(
-            dir.path().join(".worktrees").join("other").join("nested.md"),
+            dir.path()
+                .join(".worktrees")
+                .join("other")
+                .join("nested.md"),
             "# Nested",
         )
         .unwrap();
 
         let found = collect_markdown_view_paths(dir.path(), None);
         assert!(!found.contains(&dir.path().join(".opencode").join("hidden.md")));
-        assert!(!found.contains(&dir.path().join(".worktrees").join("other").join("nested.md")));
+        assert!(
+            !found.contains(
+                &dir.path()
+                    .join(".worktrees")
+                    .join("other")
+                    .join("nested.md")
+            )
+        );
     }
 
     #[test]

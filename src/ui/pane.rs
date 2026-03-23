@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
-    layout::{Position, Rect},
-    style::{Modifier, Style},
+    layout::{Constraint, Direction, Layout, Position, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{TextSelection, ViewState};
@@ -18,6 +18,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("/", "Command picker"),
     ("i", "Pending inputs"),
     ("s", "Steering coach"),
+    ("g", "Generate summary"),
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
@@ -28,6 +29,73 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("D", "Debug log"),
     ("?", "Help"),
 ];
+
+const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
+const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClaudeSidebarData {
+    pub session_text: String,
+    pub status_text: String,
+    pub summary_text: String,
+    pub notes_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContentLayout {
+    main: Rect,
+    sidebar: Option<Rect>,
+}
+
+pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
+    sidebar_width(view, total_width)
+        .map(|sidebar_width| total_width.saturating_sub(sidebar_width))
+        .unwrap_or(total_width)
+}
+
+fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
+    if !view.has_claude_sidebar() {
+        return None;
+    }
+
+    if total_width < CLAUDE_SIDEBAR_MIN_MAIN_WIDTH + CLAUDE_SIDEBAR_WIDTH {
+        return None;
+    }
+
+    Some(CLAUDE_SIDEBAR_WIDTH)
+}
+
+fn split_content_area(content_area: Rect, view: &ViewState) -> ContentLayout {
+    let Some(sidebar_width) = sidebar_width(view, content_area.width) else {
+        return ContentLayout {
+            main: content_area,
+            sidebar: None,
+        };
+    };
+
+    let main_width = content_area.width.saturating_sub(sidebar_width);
+    if main_width == 0 {
+        return ContentLayout {
+            main: content_area,
+            sidebar: None,
+        };
+    }
+
+    ContentLayout {
+        main: Rect::new(
+            content_area.x,
+            content_area.y,
+            main_width,
+            content_area.height,
+        ),
+        sidebar: Some(Rect::new(
+            content_area.x + main_width,
+            content_area.y,
+            sidebar_width,
+            content_area.height,
+        )),
+    }
+}
 
 fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
     let colors = [
@@ -54,6 +122,7 @@ pub fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,
+    sidebar_data: Option<&ClaudeSidebarData>,
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
@@ -67,6 +136,8 @@ pub fn draw(
         area.width,
         area.height.saturating_sub(1),
     );
+    let layout = split_content_area(content_area, view);
+    let main_content_area = layout.main;
 
     // Single line header - minimal info
     let mut header_spans = vec![Span::raw("  ")];
@@ -183,23 +254,27 @@ pub fn draw(
         .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(header, header_area);
 
+    if let Some(sidebar_area) = layout.sidebar {
+        draw_claude_sidebar(frame, sidebar_area, sidebar_data, theme);
+    }
+
     if view.scroll_mode && !view.scroll_passthrough {
         let text = scroll_content_to_lines(
             &view.scroll_content,
             view.scroll_offset,
-            content_area.height,
+            main_content_area.height,
         );
         let paragraph = Paragraph::new(text).style(
             Style::default()
                 .fg(theme.text.to_color())
                 .bg(theme.effective_bg()),
         );
-        frame.render_widget(paragraph, content_area);
+        frame.render_widget(paragraph, main_content_area);
     } else {
         let text = ansi_to_ratatui_text_with_selection(
             pane_content,
-            content_area.width,
-            content_area.height,
+            main_content_area.width,
+            main_content_area.height,
             &view.selection,
             theme,
         );
@@ -208,15 +283,15 @@ pub fn draw(
                 .fg(theme.text.to_color())
                 .bg(theme.effective_bg()),
         );
-        frame.render_widget(paragraph, content_area);
+        frame.render_widget(paragraph, main_content_area);
 
         if !view.scroll_mode
             && let Some((cursor_x, cursor_y)) = tmux_cursor
         {
-            let max_x = content_area.width.saturating_sub(1);
-            let max_y = content_area.height.saturating_sub(1);
-            let abs_x = content_area.x + cursor_x.min(max_x);
-            let abs_y = content_area.y + cursor_y.min(max_y);
+            let max_x = main_content_area.width.saturating_sub(1);
+            let max_y = main_content_area.height.saturating_sub(1);
+            let abs_x = main_content_area.x + cursor_x.min(max_x);
+            let abs_y = main_content_area.y + cursor_y.min(max_y);
             let frame_max_x = frame.area().width.saturating_sub(1);
             let frame_max_y = frame.area().height.saturating_sub(1);
             frame.set_cursor_position(Position::new(
@@ -227,8 +302,150 @@ pub fn draw(
     }
 
     if leader_active {
-        draw_leader_menu(frame, content_area, theme);
+        draw_leader_menu(frame, main_content_area, theme);
     }
+}
+
+fn draw_claude_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    data: Option<&ClaudeSidebarData>,
+    theme: &Theme,
+) {
+    if area.width < 16 || area.height < 8 {
+        return;
+    }
+
+    let block = Block::default()
+        .title(Span::styled(
+            " Claude Sidebar ",
+            Style::default()
+                .fg(theme.session_icon_claude.to_color())
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.border.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(7),
+            Constraint::Min(4),
+        ])
+        .split(inner);
+
+    let fallback = ClaudeSidebarData {
+        session_text: "Claude sidebar loading".to_string(),
+        status_text: "No sidebar data available.".to_string(),
+        summary_text: "No summary available yet.".to_string(),
+        notes_text: "Checkpoint with AMF state only.".to_string(),
+    };
+    let data = data.unwrap_or(&fallback);
+    let sections_with_content = [
+        ("Session", data.session_text.as_str()),
+        ("Status", data.status_text.as_str()),
+        ("Summary", data.summary_text.as_str()),
+        ("Notes", data.notes_text.as_str()),
+    ];
+    for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
+        let accent = sidebar_section_color(title, theme);
+        let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme.effective_bg()))
+            .block(
+                Block::default()
+                    .title(Span::styled(
+                        format!(" {} ", title),
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(accent)),
+            );
+        frame.render_widget(paragraph, *section);
+    }
+}
+
+fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
+    match title {
+        "Session" => theme.primary.to_color(),
+        "Status" => theme.warning.to_color(),
+        "Summary" => theme.info.to_color(),
+        "Notes" => theme.secondary.to_color(),
+        _ => theme.border.to_color(),
+    }
+}
+
+fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
+    body.lines()
+        .map(|line| {
+            if let Some((label, value)) = line.split_once(": ") {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{label}: "),
+                        Style::default()
+                            .fg(sidebar_section_color(title, theme))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        value.to_string(),
+                        sidebar_value_style(title, label, value, theme),
+                    ),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    line.to_string(),
+                    sidebar_value_style(title, "", line, theme),
+                ))
+            }
+        })
+        .collect()
+}
+
+fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
+    let lower = value.to_lowercase();
+    let color = if label == "State" {
+        match lower.as_str() {
+            "active" => theme.status_active.to_color(),
+            "idle" => theme.status_idle.to_color(),
+            "stopped" => theme.status_stopped.to_color(),
+            _ => theme.text.to_color(),
+        }
+    } else if lower.contains("waiting") {
+        theme.status_waiting.to_color()
+    } else if lower.contains("ready") {
+        theme.success.to_color()
+    } else if lower.contains("generating") {
+        theme.info.to_color()
+    } else if lower.contains("unavailable") || lower.contains("no summary yet") {
+        theme.text_muted.to_color()
+    } else if title == "Notes" {
+        theme.secondary.to_color()
+    } else if title == "Summary" {
+        theme.text.to_color()
+    } else if label == "Usage" {
+        theme.status_detail.to_color()
+    } else {
+        theme.text.to_color()
+    };
+
+    let mut style = Style::default().fg(color);
+    if label == "State"
+        || lower.contains("waiting")
+        || lower.contains("ready")
+        || lower.contains("generating")
+    {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
 }
 
 fn draw_leader_menu(frame: &mut Frame, content_area: Rect, theme: &Theme) {
@@ -421,5 +638,72 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Option<ratatui::style::Color> 
         vt100::Color::Default => None,
         vt100::Color::Idx(i) => Some(ratatui::style::Color::Indexed(i)),
         vt100::Color::Rgb(r, g, b) => Some(ratatui::style::Color::Rgb(r, g, b)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn sample_view(session_kind: crate::project::SessionKind) -> ViewState {
+        ViewState::new(
+            "proj".into(),
+            "feat".into(),
+            "amf-feat".into(),
+            "claude".into(),
+            "Claude".into(),
+            session_kind,
+            VibeMode::Vibeless,
+            false,
+        )
+    }
+
+    #[test]
+    fn claude_sidebar_width_is_reserved_when_view_is_wide_enough() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
+        assert_eq!(width, 88);
+    }
+
+    #[test]
+    fn non_claude_sessions_keep_full_width() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
+        assert_eq!(width, 120);
+    }
+
+    #[test]
+    fn claude_sidebar_shell_renders_in_view() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+        let sidebar = ClaudeSidebarData {
+            session_text: "Project: proj\nFeature: feat".into(),
+            status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            summary_text: "Sidebar ready.".into(),
+            notes_text: "Branch: feat\nDir: ~/repo/.worktrees/feat".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Claude Sidebar"));
+        assert!(rendered.contains("Sidebar ready."));
+        assert!(rendered.contains("Waiting for input"));
     }
 }

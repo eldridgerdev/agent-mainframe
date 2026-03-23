@@ -84,8 +84,8 @@ mod tests {
     use super::*;
     use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, ViewState};
     use crate::diff::{DiffFile, DiffFileStatus};
-    use crate::project::VibeMode;
     use crate::project::ProjectStore;
+    use crate::project::VibeMode;
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -109,6 +109,7 @@ mod tests {
                 "sess".into(),
                 "claude".into(),
                 "Claude".into(),
+                crate::project::SessionKind::Claude,
                 VibeMode::Vibe,
                 false,
             ),
@@ -138,7 +139,10 @@ mod tests {
                     crate::highlight::HighlightLanguage::Rust
                 );
             }
-            other => panic!("expected syntax picker, got {:?}", std::mem::discriminant(other)),
+            other => panic!(
+                "expected syntax picker, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 }

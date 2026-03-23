@@ -6,7 +6,7 @@ use std::process::Child;
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
 use crate::extension::CustomSessionConfig;
-use crate::project::{AgentKind, VibeMode};
+use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +72,7 @@ pub struct ViewState {
     pub session: String,
     pub window: String,
     pub session_label: String,
+    pub session_kind: SessionKind,
     pub vibe_mode: VibeMode,
     pub review: bool,
     pub scroll_offset: usize,
@@ -89,6 +90,7 @@ impl ViewState {
         session: String,
         window: String,
         session_label: String,
+        session_kind: SessionKind,
         vibe_mode: VibeMode,
         review: bool,
     ) -> Self {
@@ -98,6 +100,7 @@ impl ViewState {
             session,
             window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
             scroll_offset: 0,
@@ -107,6 +110,10 @@ impl ViewState {
             scroll_passthrough: false,
             selection: TextSelection::default(),
         }
+    }
+
+    pub fn has_claude_sidebar(&self) -> bool {
+        self.session_kind == SessionKind::Claude
     }
 }
 

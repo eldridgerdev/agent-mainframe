@@ -182,6 +182,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            SessionKind::Claude,
             vibe_mode,
             review,
         );

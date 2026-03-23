@@ -5,7 +5,10 @@ use crate::app::{App, AppMode, Selection};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
-fn markdown_file_matches_plan_filter(state: &crate::app::MarkdownFilePickerState, index: usize) -> bool {
+fn markdown_file_matches_plan_filter(
+    state: &crate::app::MarkdownFilePickerState,
+    index: usize,
+) -> bool {
     state
         .files
         .get(index)
@@ -184,7 +187,10 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
                 clamp_markdown_picker_selection(state);
                 let visible = visible_markdown_file_indices(state);
                 if !visible.is_empty() {
-                    let pos = visible.iter().position(|&idx| idx == state.selected).unwrap_or(0);
+                    let pos = visible
+                        .iter()
+                        .position(|&idx| idx == state.selected)
+                        .unwrap_or(0);
                     state.selected = visible[(pos + 1) % visible.len()];
                 }
             }
@@ -194,7 +200,10 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
                 clamp_markdown_picker_selection(state);
                 let visible = visible_markdown_file_indices(state);
                 if !visible.is_empty() {
-                    let pos = visible.iter().position(|&idx| idx == state.selected).unwrap_or(0);
+                    let pos = visible
+                        .iter()
+                        .position(|&idx| idx == state.selected)
+                        .unwrap_or(0);
                     state.selected = if pos == 0 {
                         *visible.last().unwrap()
                     } else {
@@ -274,6 +283,7 @@ mod tests {
             "amf-feature".into(),
             "claude".into(),
             "Claude 1".into(),
+            crate::project::SessionKind::Claude,
             VibeMode::Vibeless,
             false,
         )

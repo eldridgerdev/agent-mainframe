@@ -219,7 +219,10 @@ impl App {
         let workdir = if use_worktree {
             let planned_workdir = project_repo.join(".worktrees").join(&request.branch);
             if planned_workdir.exists() {
-                bail!("Worktree path already exists: {}", planned_workdir.display());
+                bail!(
+                    "Worktree path already exists: {}",
+                    planned_workdir.display()
+                );
             }
             planned_workdir
         } else {
@@ -319,15 +322,26 @@ impl App {
             .projects
             .iter()
             .position(|p| p.name == request.project_name)
-            .ok_or_else(|| anyhow::anyhow!("Project '{}' missing after feature add", request.project_name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Project '{}' missing after feature add",
+                    request.project_name
+                )
+            })?;
         let fi = self.store.projects[pi].features.len().saturating_sub(1);
         self.store.projects[pi].collapsed = project_collapsed;
         self.ensure_feature_running(pi, fi)?;
         self.save()?;
 
         let message = match hook_succeeded {
-            Some(true) => format!("Created and started feature '{}' (hook succeeded)", request.branch),
-            Some(false) => format!("Created and started feature '{}' (hook failed)", request.branch),
+            Some(true) => format!(
+                "Created and started feature '{}' (hook succeeded)",
+                request.branch
+            ),
+            Some(false) => format!(
+                "Created and started feature '{}' (hook failed)",
+                request.branch
+            ),
             None => format!("Created and started feature '{}'", request.branch),
         };
 
@@ -388,15 +402,17 @@ impl App {
         let planned_features = Self::planned_batch_feature_results(request, &project_repo);
         for feature in &planned_features {
             if feature.workdir.exists() {
-                bail!("Worktree path already exists: {}", feature.workdir.display());
+                bail!(
+                    "Worktree path already exists: {}",
+                    feature.workdir.display()
+                );
             }
         }
 
         if request.dry_run {
             let message = format!(
                 "Dry run: would create project '{}' with {} features",
-                request.project_name,
-                request.feature_count
+                request.project_name, request.feature_count
             );
             return Ok(CreateBatchFeaturesResponse::success(
                 request,

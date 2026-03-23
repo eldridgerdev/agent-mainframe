@@ -439,7 +439,8 @@ impl App {
             if msg_type == "prompt-submit" {
                 let cwd = msg.cwd.unwrap_or_default();
                 let prompt = msg.prompt.unwrap_or_default();
-                if let Some(ref sid) = msg.session_id {
+                let session_id = msg.session_id.clone();
+                if let Some(ref sid) = session_id {
                     self.touch_feature_for_session(sid);
                 }
                 if !cwd.is_empty() && !prompt.is_empty() {
@@ -447,8 +448,23 @@ impl App {
                     if let Some(parent) = p.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
-                    let _ = std::fs::write(&p, prompt);
+                    let _ = std::fs::write(&p, &prompt);
                     self.log_debug("ipc", format!("prompt-submit persisted at {}", p.display()));
+                }
+                let normalized_prompt = prompt.trim();
+                if !normalized_prompt.is_empty() {
+                    if let Some(sid) = session_id {
+                        self.latest_prompt_cache
+                            .insert(sid, normalized_prompt.to_string());
+                    } else if !cwd.is_empty() {
+                        let cwd_path = PathBuf::from(&cwd);
+                        if let Some((pi, fi)) = self.project_feature_for_cwd(&cwd_path).3 {
+                            let tmux_session =
+                                self.store.projects[pi].features[fi].tmux_session.clone();
+                            self.latest_prompt_cache
+                                .insert(tmux_session, normalized_prompt.to_string());
+                        }
+                    }
                 }
                 continue;
             }

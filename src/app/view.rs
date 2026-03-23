@@ -60,6 +60,7 @@ impl App {
         let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
+        self.refresh_latest_prompt_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {

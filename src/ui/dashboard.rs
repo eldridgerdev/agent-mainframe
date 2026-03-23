@@ -55,11 +55,22 @@ fn build_claude_sidebar_data(
         1 => "Waiting for 1 input".to_string(),
         n => format!("Waiting for {n} inputs"),
     };
+    let activity_line = if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+        "Running tool".to_string()
+    } else if app.is_feature_thinking(&feature.tmux_session) {
+        "Thinking".to_string()
+    } else {
+        status_line
+    };
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
-        .map(|status| format!("Usage: {status}"))
+        .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session);
+    let prompt_text = app
+        .latest_prompt_for_session(&feature.tmux_session)
+        .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
+        .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
         "Generating summary...".to_string()
     } else {
@@ -71,19 +82,12 @@ fn build_claude_sidebar_data(
 
     Some(super::pane::ClaudeSidebarData {
         session_text: format!(
-            "Project: {}\nFeature: {}\nSession: {}\nMode: {}",
-            project.name, feature_label, session_line, mode_label
+            "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
+            project.name, feature_label, session_line, mode_label, feature.branch
         ),
-        status_text: format!(
-            "State: {}\nFeature: {}\n{}",
-            feature.status, status_line, usage_line
-        ),
+        status_text: format!("Activity: {}\n{}", activity_line, usage_line),
+        prompt_text,
         summary_text,
-        notes_text: format!(
-            "Branch: {}\nDir: {}",
-            feature.branch,
-            crate::app::util::shorten_path(&feature.workdir)
-        ),
     })
 }
 
@@ -91,6 +95,59 @@ fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
     session
         .map(|session| session.label.clone())
         .unwrap_or_else(|| "Claude".to_string())
+}
+
+fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+
+    let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{truncated}…")
+}
+
+fn format_sidebar_usage(status: &str) -> String {
+    let mut input = None;
+    let mut output = None;
+    let mut effective = None;
+    let mut cost = None;
+
+    for part in status
+        .split(" · ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        if let Some(value) = part.strip_suffix(" in") {
+            input = Some(value.to_string());
+        } else if let Some(value) = part.strip_suffix(" out") {
+            output = Some(value.to_string());
+        } else if let Some(value) = part.strip_suffix(" eff") {
+            effective = Some(value.to_string());
+        } else if part.starts_with('$') || part.starts_with("<$") {
+            cost = Some(part.to_string());
+        }
+    }
+
+    let mut lines = Vec::new();
+    if let Some(value) = input {
+        lines.push(format!("Input: {value} tokens"));
+    }
+    if let Some(value) = output {
+        lines.push(format!("Output: {value} tokens"));
+    }
+    if let Some(value) = effective {
+        lines.push(format!("Effective: {value} tokens"));
+    }
+    if let Some(cost_value) = cost {
+        lines.push(format!("Cost: {cost_value}"));
+    }
+
+    if lines.is_empty() {
+        format!("Usage: {status}")
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
@@ -498,5 +555,21 @@ mod tests {
         let result = centered_rect(100, 100, area);
         assert_eq!(result.width, area.width);
         assert_eq!(result.height, area.height);
+    }
+
+    #[test]
+    fn sidebar_usage_is_split_into_labeled_lines() {
+        assert_eq!(
+            format_sidebar_usage("16.0k in · 2.0k out · 21.8k eff · $0.07"),
+            "Input: 16.0k tokens\nOutput: 2.0k tokens\nEffective: 21.8k tokens\nCost: $0.07"
+        );
+    }
+
+    #[test]
+    fn sidebar_usage_falls_back_when_format_is_unknown() {
+        assert_eq!(
+            format_sidebar_usage("tokens unavailable"),
+            "Usage: tokens unavailable"
+        );
     }
 }

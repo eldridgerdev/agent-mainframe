@@ -93,6 +93,19 @@ Before building that richer layer, add an explicit investigation step:
 - compare those options against other existing AMF mechanisms so we reuse
   stable plumbing instead of inventing a parallel system unnecessarily
 
+Investigation result so far:
+
+- existing Claude hooks already emit enough data for a richer first pass:
+  - `UserPromptSubmit` persists `.claude/latest-prompt.txt`
+  - `thinking-start` / `thinking-stop` track active thinking
+  - `tool-start` / `tool-stop` track active tool execution
+  - notification files / IPC already carry input requests and diff-review events
+- that means the next sidebar improvements should prefer existing AMF state and
+  cached prompt metadata before adding any new Claude-specific sidecar format
+- only higher-order concepts such as opencode-style todo lists, structured
+  context blocks, or explicit current-task models appear to require new Claude
+  instrumentation
+
 ## Testing Plan
 
 There are already resize-oriented tests in `src/app/tests.rs`, but there are no

@@ -37,8 +37,8 @@ const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 pub(crate) struct ClaudeSidebarData {
     pub session_text: String,
     pub status_text: String,
+    pub prompt_text: String,
     pub summary_text: String,
-    pub notes_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,28 +333,27 @@ fn draw_claude_sidebar(
         return;
     }
 
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6),
-            Constraint::Length(6),
-            Constraint::Length(7),
-            Constraint::Min(4),
-        ])
-        .split(inner);
-
     let fallback = ClaudeSidebarData {
         session_text: "Claude sidebar loading".to_string(),
         status_text: "No sidebar data available.".to_string(),
+        prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
         summary_text: "No summary available yet.".to_string(),
-        notes_text: "Checkpoint with AMF state only.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
+            Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
+            Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
+            Constraint::Min(4),
+        ])
+        .split(inner);
     let sections_with_content = [
         ("Session", data.session_text.as_str()),
         ("Status", data.status_text.as_str()),
+        ("Prompt", data.prompt_text.as_str()),
         ("Summary", data.summary_text.as_str()),
-        ("Notes", data.notes_text.as_str()),
     ];
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
@@ -378,10 +377,15 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
         "Session" => theme.primary.to_color(),
         "Status" => theme.warning.to_color(),
+        "Prompt" => theme.secondary.to_color(),
         "Summary" => theme.info.to_color(),
-        "Notes" => theme.secondary.to_color(),
         _ => theme.border.to_color(),
     }
+}
+
+fn sidebar_section_height(body: &str, min_inner_lines: u16, max_inner_lines: u16) -> u16 {
+    let inner_lines = body.lines().count() as u16;
+    inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
@@ -421,13 +425,15 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         }
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
+    } else if lower.contains("thinking") || lower.contains("running tool") {
+        theme.info.to_color()
     } else if lower.contains("ready") {
         theme.success.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
-    } else if title == "Notes" {
+    } else if title == "Prompt" {
         theme.secondary.to_color()
     } else if title == "Summary" {
         theme.text.to_color()
@@ -440,6 +446,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     let mut style = Style::default().fg(color);
     if label == "State"
         || lower.contains("waiting")
+        || lower.contains("thinking")
+        || lower.contains("running tool")
         || lower.contains("ready")
         || lower.contains("generating")
     {
@@ -680,8 +688,8 @@ mod tests {
         let sidebar = ClaudeSidebarData {
             session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Resume the task.".into(),
             summary_text: "Sidebar ready.".into(),
-            notes_text: "Branch: feat\nDir: ~/repo/.worktrees/feat".into(),
         };
 
         terminal
@@ -705,5 +713,6 @@ mod tests {
         assert!(rendered.contains("Claude Sidebar"));
         assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
+        assert!(rendered.contains("Resume the task."));
     }
 }

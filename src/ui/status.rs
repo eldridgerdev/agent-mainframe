@@ -343,12 +343,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         AppMode::LatestPrompt(state) => {
             let mut spans = Vec::new();
-            if state.prompt.is_some() {
+            if !state.prompts.is_empty() {
                 spans.extend(vec![
                     Span::styled(" Tab", key_style()),
                     Span::raw("/"),
                     Span::styled("Enter", key_style()),
                     Span::raw(" inject  "),
+                    Span::styled("y", key_style()),
+                    Span::raw(" copy  "),
+                    Span::styled("j/k", key_style()),
+                    Span::raw(" nav  "),
                 ]);
             }
             spans.extend(vec![

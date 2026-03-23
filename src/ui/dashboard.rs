@@ -107,7 +107,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             None,
             &app.theme,
         );
-        super::dialogs::draw_latest_prompt_dialog(frame, state.prompt.as_deref(), &app.theme);
+        super::dialogs::draw_latest_prompt_dialog(
+            frame,
+            state,
+            app.message.as_deref(),
+            &app.theme,
+        );
         return;
     }
 

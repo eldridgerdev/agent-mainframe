@@ -281,7 +281,8 @@ impl SteeringPromptState {
 #[derive(Clone)]
 pub struct LatestPromptState {
     pub view: ViewState,
-    pub prompt: Option<String>,
+    pub prompts: Vec<crate::app::util::PromptEntry>,
+    pub selected: usize,
 }
 
 pub enum AppMode {

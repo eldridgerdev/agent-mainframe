@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::app::{
@@ -50,7 +50,7 @@ fn draw_create_feature_source(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 30, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
@@ -122,7 +122,7 @@ fn draw_create_feature_preset_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Select Preset ({}) ", state.project_name);
     let block = Block::default()
@@ -206,7 +206,7 @@ fn draw_create_feature_worktree_picker(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" Select Worktree ({}) ", state.project_name);
     let block = Block::default()
@@ -300,7 +300,7 @@ fn draw_create_feature_branch_mode(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 90, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
@@ -612,7 +612,7 @@ fn draw_create_feature_branch_mode(
 
 fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
     let area = centered_rect(84, 82, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let score_color = if state.prompt_analysis.score >= 8 {
         theme.success.to_color()
@@ -785,7 +785,7 @@ fn prompt_checklist_lines(analysis: &PromptAnalysis, theme: &Theme) -> Vec<Line<
 
 pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
     let area = centered_rect(60, 40, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" SuperVibe Mode ")
@@ -858,7 +858,7 @@ pub fn draw_steering_prompt_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(84, 82, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let score_color = if state.prompt_analysis.score >= 8 {
         theme.success.to_color()
@@ -1064,7 +1064,7 @@ pub fn draw_delete_feature_confirm(
     theme: &Theme,
 ) {
     let area = centered_rect(50, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let text = Paragraph::new(vec![
         Line::from(""),
@@ -1135,7 +1135,7 @@ pub fn draw_deleting_feature_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(50, 30, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let is_running = state.child.is_some();
     let border_color = if is_running {
@@ -1259,7 +1259,7 @@ pub fn draw_fork_feature_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 40, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let source_name = &state.source_branch;
     let title = format!(" Fork Feature: {} ", source_name);

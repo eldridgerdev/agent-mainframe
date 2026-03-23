@@ -408,12 +408,16 @@ pub struct MarkdownViewerState {
     pub source_path: PathBuf,
     pub content: String,
     pub scroll_offset: usize,
+    pub rendered_width: u16,
+    pub rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
 }
 
 pub struct MarkdownFilePickerState {
     pub files: Vec<PathBuf>,
     pub selected: usize,
+    pub plan_only: bool,
     pub workdir: PathBuf,
     pub repo_root: Option<PathBuf>,
     pub from_view: Option<ViewState>,

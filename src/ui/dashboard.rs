@@ -62,7 +62,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::picker::draw_session_switcher(frame, state, app.config.nerd_font, &app.theme);
@@ -76,7 +76,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::dialogs::draw_help(frame, &app.theme);
@@ -90,7 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
@@ -104,7 +104,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::dialogs::draw_latest_prompt_dialog(frame, state.prompt.as_deref(), &app.theme);
@@ -118,7 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
@@ -133,7 +133,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.pane_content,
                 false,
                 app.pending_inputs.len(),
-                app.tmux_cursor,
+                None,
                 &app.theme,
             );
         }
@@ -147,7 +147,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
@@ -164,7 +164,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::picker::draw_command_picker(frame, state, &app.theme);
@@ -186,7 +186,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::picker::draw_markdown_file_picker(frame, state, &app.theme);
@@ -203,7 +203,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         let rows = app.bookmark_picker_rows();
@@ -229,7 +229,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.pane_content,
             false,
             app.pending_inputs.len(),
-            app.tmux_cursor,
+            None,
             &app.theme,
         );
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);

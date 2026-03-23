@@ -38,7 +38,7 @@ pub fn draw_diff_review_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(92, 82, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Diff Review ")
@@ -372,7 +372,7 @@ pub fn draw_running_hook_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(90, 70, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let is_running = state.child.is_some();
     let border_color = if is_running {
@@ -503,7 +503,7 @@ pub fn draw_running_hook_dialog(
 
 pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState, theme: &Theme) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(format!(" {} ", state.title))
@@ -564,7 +564,7 @@ pub fn draw_hook_prompt_dialog(frame: &mut Frame, state: &HookPromptState, theme
 
 pub fn draw_latest_prompt_dialog(frame: &mut Frame, prompt: Option<&str>, theme: &Theme) {
     let area = centered_rect(80, 70, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Latest Prompt ")

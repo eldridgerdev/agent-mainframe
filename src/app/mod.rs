@@ -205,6 +205,7 @@ pub struct App {
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
+    pub latest_prompt_cache: HashMap<String, String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -231,6 +232,7 @@ impl App {
         setup::ensure_notify_scripts();
         crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
+        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -264,6 +266,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
+            latest_prompt_cache,
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -313,6 +316,7 @@ impl App {
         worktree: Box<dyn WorktreeOps>,
     ) -> Self {
         use crate::extension::ExtensionConfig;
+        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         Self {
             store,
             store_path: PathBuf::new(),
@@ -333,6 +337,7 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
+            latest_prompt_cache,
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -353,6 +358,50 @@ impl App {
             last_file_notification_count: 0,
             vscode_available: false,
         }
+    }
+
+    fn build_latest_prompt_cache(store: &ProjectStore) -> HashMap<String, String> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                if let Some(prompt) = crate::app::util::read_latest_prompt(&feature.workdir)
+                    .map(|prompt| prompt.trim().to_string())
+                    .filter(|prompt| !prompt.is_empty())
+                {
+                    cache.insert(feature.tmux_session.clone(), prompt);
+                }
+            }
+        }
+
+        cache
+    }
+
+    pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return;
+        };
+
+        if let Some(prompt) = crate::app::util::read_latest_prompt(&feature.workdir)
+            .map(|prompt| prompt.trim().to_string())
+            .filter(|prompt| !prompt.is_empty())
+        {
+            self.latest_prompt_cache
+                .insert(feature.tmux_session.clone(), prompt);
+        } else {
+            self.latest_prompt_cache.remove(&feature.tmux_session);
+        }
+    }
+
+    pub fn latest_prompt_for_session(&self, tmux_session: &str) -> Option<&str> {
+        self.latest_prompt_cache
+            .get(tmux_session)
+            .map(String::as_str)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

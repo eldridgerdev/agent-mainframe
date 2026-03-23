@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::app::{CreateBatchFeaturesState, CreateBatchFeaturesStep};
@@ -38,7 +38,7 @@ pub fn draw_create_batch_features_dialog(
 
 fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Create Batch Features ")
@@ -99,7 +99,7 @@ fn draw_batch_workspace_path(frame: &mut Frame, state: &CreateBatchFeaturesState
 
 fn draw_batch_project_name(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Create Batch Features ")
@@ -164,7 +164,7 @@ fn draw_batch_feature_base_name(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 30, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Create Batch Features ")
@@ -224,7 +224,7 @@ fn draw_batch_feature_base_name(
 
 fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 30, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Create Batch Features ")
@@ -297,7 +297,7 @@ fn draw_batch_feature_count(frame: &mut Frame, state: &CreateBatchFeaturesState,
 
 fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesState, theme: &Theme) {
     let area = centered_rect(60, 50, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Create Batch Features ")

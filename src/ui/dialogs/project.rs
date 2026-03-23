@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 
 use crate::app::{CreateProjectState, CreateProjectStep};
@@ -19,7 +19,7 @@ pub fn draw_create_project_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(60, 40, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" New Project ")
@@ -133,7 +133,7 @@ fn cursor_span_project<'a>(
 
 pub fn draw_delete_project_confirm(frame: &mut Frame, name: &str, theme: &Theme) {
     let area = centered_rect(50, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let text = Paragraph::new(vec![
         Line::from(""),

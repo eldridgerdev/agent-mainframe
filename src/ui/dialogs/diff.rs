@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
@@ -30,7 +30,7 @@ struct FileHighlights {
 
 pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
     let area = centered_rect(96, 90, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let border_color = if state.error.is_some() {
         theme.danger.to_color()

@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 
 use crate::app::{
@@ -15,7 +15,7 @@ use super::super::dashboard::centered_rect;
 
 pub fn draw_rename_session_dialog(frame: &mut Frame, state: &RenameSessionState, theme: &Theme) {
     let area = centered_rect(50, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Rename Session ")
@@ -41,7 +41,7 @@ pub fn draw_rename_session_dialog(frame: &mut Frame, state: &RenameSessionState,
 
 pub fn draw_rename_feature_dialog(frame: &mut Frame, state: &RenameFeatureState, theme: &Theme) {
     let area = centered_rect(50, 25, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(" Rename Feature ")
@@ -129,7 +129,7 @@ fn draw_agent_config_dialog(
     theme: &Theme,
 ) {
     let area = centered_rect(50, 35, frame.area());
-    frame.render_widget(Clear, area);
+    crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
         .title(title)

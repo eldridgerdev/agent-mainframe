@@ -169,8 +169,49 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-pub fn handle_markdown_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
-    match key {
+const MARKDOWN_FAST_SCROLL_STEP: usize = 8;
+
+pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up
+        )
+    {
+        if let AppMode::MarkdownViewer(state) = &mut app.mode {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    state.scroll_offset =
+                        state.scroll_offset.saturating_add(MARKDOWN_FAST_SCROLL_STEP);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    state.scroll_offset =
+                        state.scroll_offset.saturating_sub(MARKDOWN_FAST_SCROLL_STEP);
+                }
+                _ => {}
+            }
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Char('b') => {
+            let picker = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::MarkdownViewer(mut state) => {
+                    if let Some(picker) = state.return_to_picker.take() {
+                        picker
+                    } else {
+                        app.mode = AppMode::MarkdownViewer(state);
+                        return Ok(());
+                    }
+                }
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.mode = AppMode::MarkdownFilePicker(picker);
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::MarkdownViewer(state) => state.from_view,
@@ -454,11 +495,14 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
     use std::collections::HashMap;
 
     use super::*;
-    use crate::app::{SteeringPromptState, ViewState};
-    use crate::project::{ProjectStore, VibeMode};
+    use crate::app::{
+        MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState, ViewState,
+    };
+    use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use tempfile::TempDir;
 
@@ -488,6 +532,37 @@ mod tests {
             prompt.to_string(),
         ));
         app
+    }
+
+    fn markdown_view() -> ViewState {
+        ViewState::new(
+            "demo".to_string(),
+            "feature".to_string(),
+            "amf-feature".to_string(),
+            "claude".to_string(),
+            "Claude 1".to_string(),
+            VibeMode::Vibeless,
+            false,
+        )
+    }
+
+    fn markdown_app() -> App {
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project::new(
+                "demo".into(),
+                PathBuf::from("/tmp/demo"),
+                true,
+                AgentKind::Claude,
+            )],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+        App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        )
     }
 
     #[test]
@@ -552,6 +627,120 @@ mod tests {
                 assert_eq!(state.editor.text(), "draft");
             }
             _ => panic!("expected steering prompt to stay open"),
+        }
+    }
+
+    #[test]
+    fn markdown_viewer_b_returns_to_picker_when_available() {
+        let mut app = markdown_app();
+        let view = markdown_view();
+        let picker = MarkdownFilePickerState {
+            files: vec![PathBuf::from("a.md"), PathBuf::from("b.md")],
+            selected: 1,
+            plan_only: true,
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: Some(PathBuf::from("/tmp/demo-repo")),
+            from_view: Some(view.clone()),
+        };
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "b.md".into(),
+            source_path: PathBuf::from("b.md"),
+            content: "# Title".into(),
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: Some(picker),
+            from_view: Some(view),
+        });
+
+        handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => {
+                assert_eq!(state.selected, 1);
+                assert_eq!(state.files.len(), 2);
+            }
+            _ => panic!("expected markdown picker after pressing b"),
+        }
+    }
+
+    #[test]
+    fn markdown_viewer_b_is_noop_without_picker_context() {
+        let mut app = markdown_app();
+        let view = markdown_view();
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "notes.md".into(),
+            source_path: PathBuf::from("notes.md"),
+            content: "# Title".into(),
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: None,
+            from_view: Some(view),
+        });
+
+        handle_markdown_viewer_key(&mut app, KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(app.mode, AppMode::MarkdownViewer(_)));
+    }
+
+    #[test]
+    fn markdown_viewer_ctrl_j_scrolls_faster() {
+        let mut app = markdown_app();
+        let view = markdown_view();
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "notes.md".into(),
+            source_path: PathBuf::from("notes.md"),
+            content: "# Title".into(),
+            scroll_offset: 3,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: None,
+            from_view: Some(view),
+        });
+
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownViewer(state) => {
+                assert_eq!(state.scroll_offset, 3 + MARKDOWN_FAST_SCROLL_STEP);
+            }
+            _ => panic!("expected markdown viewer to stay open"),
+        }
+    }
+
+    #[test]
+    fn markdown_viewer_ctrl_up_scrolls_back_faster() {
+        let mut app = markdown_app();
+        let view = markdown_view();
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "notes.md".into(),
+            source_path: PathBuf::from("notes.md"),
+            content: "# Title".into(),
+            scroll_offset: 12,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: None,
+            from_view: Some(view),
+        });
+
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownViewer(state) => {
+                assert_eq!(state.scroll_offset, 12 - MARKDOWN_FAST_SCROLL_STEP);
+            }
+            _ => panic!("expected markdown viewer to stay open"),
         }
     }
 }

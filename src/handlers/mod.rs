@@ -89,6 +89,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
         AppMode::SyntaxLanguagePicker(_) => handle_syntax_language_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),
-        AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key.code),
+        AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key),
     }
 }

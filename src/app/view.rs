@@ -166,6 +166,20 @@ impl App {
         }
     }
 
+    pub fn toggle_sidebar_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.sidebar_visible = !view.sidebar_visible;
+            if !view.sidebar_visible {
+                view.todos_expanded = false;
+            }
+            self.message = Some(if view.sidebar_visible {
+                "Showed sidebar".into()
+            } else {
+                "Hid sidebar".into()
+            });
+        }
+    }
+
     pub fn inject_latest_prompt(&mut self) -> Result<()> {
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::LatestPrompt(state) => state,

@@ -291,6 +291,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
         }
+        KeyCode::Char('b') => {
+            app.toggle_sidebar_in_view();
+        }
         KeyCode::Char('v') => {
             app.toggle_expanded_todos_in_view();
         }
@@ -563,6 +566,31 @@ mod tests {
 
         match &app.mode {
             AppMode::Viewing(view) => assert!(!view.todos_expanded),
+            _ => panic!("expected Viewing mode"),
+        }
+    }
+
+    #[test]
+    fn leader_b_toggles_sidebar_visibility() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => {
+                assert!(!view.sidebar_visible);
+                assert!(!view.todos_expanded);
+            }
+            _ => panic!("expected Viewing mode"),
+        }
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert!(view.sidebar_visible),
             _ => panic!("expected Viewing mode"),
         }
     }

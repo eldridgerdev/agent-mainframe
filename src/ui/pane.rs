@@ -18,6 +18,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("/", "Command picker"),
     ("i", "Pending inputs"),
     ("s", "Steering coach"),
+    ("b", "Show/hide sidebar"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
     ("v", "Expand/collapse todos"),
@@ -814,6 +815,14 @@ mod tests {
     }
 
     #[test]
+    fn hidden_claude_sidebar_uses_full_width() {
+        let mut view = sample_view(crate::project::SessionKind::Claude);
+        view.sidebar_visible = false;
+        let width = viewing_main_width(&view, 120);
+        assert_eq!(width, 120);
+    }
+
+    #[test]
     fn claude_sidebar_shell_renders_in_view() {
         let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -855,6 +864,7 @@ mod tests {
     #[test]
     fn sample_view_defaults_to_collapsed_todos() {
         let view = sample_view(crate::project::SessionKind::Claude);
+        assert!(view.sidebar_visible);
         assert!(!view.todos_expanded);
     }
 }

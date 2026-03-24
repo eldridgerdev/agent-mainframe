@@ -147,9 +147,20 @@ pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
 }
 
 pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Option<ClaudeTaskState> {
-    let path = session_id
+    let session_id = session_id
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| latest_claude_session_id(workdir));
+
+    if let Some(session_id) = session_id.as_deref()
+        && let Some(state) = read_claude_task_state_from_task_store(session_id)
+    {
+        return Some(state);
+    }
+
+    let path = session_id
+        .as_deref()
         .and_then(|session_id| claude_session_jsonl_path(workdir, session_id))
         .or_else(|| latest_claude_session_jsonl_path(workdir))?;
     let content = std::fs::read_to_string(path).ok()?;
@@ -262,6 +273,72 @@ fn latest_claude_session_jsonl_path(workdir: &Path) -> Option<PathBuf> {
         })
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, path)| path)
+}
+
+fn latest_claude_session_id(workdir: &Path) -> Option<String> {
+    latest_claude_session_jsonl_path(workdir)?
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(ToOwned::to_owned)
+}
+
+fn read_claude_task_state_from_task_store(session_id: &str) -> Option<ClaudeTaskState> {
+    let home = std::env::var("HOME").ok()?;
+    let tasks_dir = PathBuf::from(home)
+        .join(".claude")
+        .join("tasks")
+        .join(session_id);
+    if !tasks_dir.is_dir() {
+        return None;
+    }
+
+    let mut task_entries: Vec<(u64, PathBuf)> = std::fs::read_dir(&tasks_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let id = path.file_stem()?.to_str()?.parse::<u64>().ok()?;
+            (path.extension().and_then(|ext| ext.to_str()) == Some("json")).then_some((id, path))
+        })
+        .collect();
+    task_entries.sort_by_key(|(id, _)| *id);
+
+    let mut tasks = Vec::new();
+    for (_, path) in task_entries {
+        let content = std::fs::read_to_string(path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let id = value.get("id")?.as_str()?.trim();
+        let subject = value.get("subject")?.as_str()?.trim();
+        if id.is_empty() || subject.is_empty() {
+            continue;
+        }
+
+        tasks.push(ClaudeTask {
+            id: id.to_string(),
+            subject: subject.to_string(),
+            description: value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned),
+            active_form: value
+                .get("activeForm")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned),
+            status: value
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .unwrap_or("pending")
+                .to_string(),
+        });
+    }
+
+    (!tasks.is_empty()).then_some(ClaudeTaskState { tasks })
 }
 
 fn parse_claude_task_state_from_jsonl(content: &str) -> Option<ClaudeTaskState> {
@@ -539,5 +616,50 @@ mod tests {
             Some("Working newest session")
         );
         let _ = std::fs::remove_dir_all(&projects_dir);
+    }
+
+    #[test]
+    fn read_claude_task_state_prefers_task_store_when_available() {
+        let workdir = TempDir::new().unwrap();
+        let home = dirs::home_dir().expect("home dir");
+        let session_id = "831cde32-0aa9-4791-9eda-8c7b6699d1ae-test";
+
+        let projects_dir = home
+            .join(".claude")
+            .join("projects")
+            .join(encode_claude_path(workdir.path()));
+        std::fs::create_dir_all(&projects_dir).unwrap();
+        std::fs::write(
+            projects_dir.join(format!("{session_id}.jsonl")),
+            r#"{"message":{"content":[{"type":"tool_use","name":"TaskCreate","input":{"subject":"Transcript task"}}]}}"#,
+        )
+        .unwrap();
+
+        let tasks_dir = home.join(".claude").join("tasks").join(session_id);
+        std::fs::create_dir_all(&tasks_dir).unwrap();
+        std::fs::write(
+            tasks_dir.join("1.json"),
+            r#"{
+  "id": "1",
+  "subject": "Stored task",
+  "description": "From tasks dir",
+  "activeForm": "Working from tasks dir",
+  "status": "in_progress"
+}"#,
+        )
+        .unwrap();
+
+        let state = read_claude_task_state(workdir.path(), Some(session_id)).expect("task state");
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks[0].subject, "Stored task");
+        assert_eq!(
+            state
+                .current_task()
+                .and_then(|task| task.active_form.as_deref()),
+            Some("Working from tasks dir")
+        );
+
+        let _ = std::fs::remove_dir_all(&projects_dir);
+        let _ = std::fs::remove_dir_all(&tasks_dir);
     }
 }

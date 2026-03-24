@@ -23,6 +23,13 @@ pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
     fetch_codex_sessions_from_root(workdir, &sessions_root)
 }
 
+pub fn session_info_for_workdir(workdir: &Path, session_id: &str) -> Result<Option<CodexSessionInfo>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    session_info_for_workdir_from_root(workdir, session_id, &sessions_root)
+}
+
 fn fetch_codex_sessions_from_root(
     workdir: &Path,
     sessions_root: &Path,
@@ -54,6 +61,41 @@ fn fetch_codex_sessions_from_root(
 
     sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
     Ok(sessions)
+}
+
+fn session_info_for_workdir_from_root(
+    workdir: &Path,
+    session_id: &str,
+    sessions_root: &Path,
+) -> Result<Option<CodexSessionInfo>> {
+    if !sessions_root.is_dir() {
+        return Ok(None);
+    }
+
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(info) = parse_codex_session_file(&path, workdir) else {
+                continue;
+            };
+            if info.id == session_id {
+                return Ok(Some(info));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
@@ -410,5 +452,27 @@ mod tests {
 
         let prompt = latest_prompt_for_workdir_from_root(&workdir, tmp.path()).unwrap();
         assert_eq!(prompt, None);
+    }
+
+    #[test]
+    fn session_info_for_workdir_returns_matching_session() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/current.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T11:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"current title\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let info =
+            session_info_for_workdir_from_root(&workdir, "sess-current", tmp.path()).unwrap();
+        assert_eq!(info.as_ref().map(|info| info.title.as_str()), Some("current title"));
     }
 }

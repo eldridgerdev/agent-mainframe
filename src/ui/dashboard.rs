@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{FeatureSession, SessionKind};
+use crate::token_tracking::TokenUsageProvider;
 
 fn build_agent_sidebar_data(
     app: &App,
@@ -80,13 +81,21 @@ fn build_agent_sidebar_data(
             .clone()
             .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     };
-
-    Some(super::pane::AgentSidebarData {
-        agent_kind: sidebar_kind,
-        session_text: format!(
+    let session_metadata = format_codex_session_metadata(&sidebar_kind, session, &feature.workdir);
+    let session_text = match session_metadata {
+        Some(metadata) => format!(
+            "Target: {}/{}\nAgent: {}\nSession: {}\n{}\nMode: {}\nBranch: {}",
+            project.name, feature_label, agent_label, session_line, metadata, mode_label, feature.branch
+        ),
+        None => format!(
             "Target: {}/{}\nAgent: {}\nSession: {}\nMode: {}\nBranch: {}",
             project.name, feature_label, agent_label, session_line, mode_label, feature.branch
         ),
+    };
+
+    Some(super::pane::AgentSidebarData {
+        agent_kind: sidebar_kind,
+        session_text,
         status_text: format!("Activity: {}\n{}", activity_line, usage_line),
         prompt_text,
         summary_text,
@@ -97,6 +106,36 @@ fn session_sidebar_line(session: Option<&FeatureSession>, fallback_label: &str) 
     session
         .map(|session| session.label.clone())
         .unwrap_or_else(|| fallback_label.to_string())
+}
+
+fn format_codex_session_metadata(
+    sidebar_kind: &SessionKind,
+    session: Option<&FeatureSession>,
+    workdir: &std::path::Path,
+) -> Option<String> {
+    if *sidebar_kind != SessionKind::Codex {
+        return None;
+    }
+
+    let source = session
+        .and_then(|session| session.token_usage_source.as_ref())
+        .filter(|source| source.provider == TokenUsageProvider::Codex)?;
+    let short_id = shorten_session_id(&source.id);
+
+    let title = crate::app::codex_session_info_for_workdir(workdir, &source.id)
+        .ok()
+        .flatten()
+        .map(|info| info.title)
+        .filter(|title| !title.trim().is_empty() && title != "Untitled");
+
+    Some(match title {
+        Some(title) => format!("Thread: {short_id}\nTitle: {title}"),
+        None => format!("Thread: {short_id}"),
+    })
+}
+
+fn shorten_session_id(session_id: &str) -> String {
+    session_id.chars().take(8).collect()
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -514,6 +553,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
     use ratatui::layout::Rect;
 
     // ── centered_rect ─────────────────────────────────────────
@@ -572,6 +612,40 @@ mod tests {
         assert_eq!(
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
+        );
+    }
+
+    #[test]
+    fn shorten_session_id_truncates_long_ids() {
+        assert_eq!(shorten_session_id("1234567890abcdef"), "12345678");
+    }
+
+    #[test]
+    fn format_codex_session_metadata_returns_none_for_non_codex_sidebar() {
+        let session = FeatureSession {
+            id: "session-1".into(),
+            kind: SessionKind::Codex,
+            label: "Codex".into(),
+            tmux_window: "codex".into(),
+            claude_session_id: None,
+            token_usage_source: Some(TokenUsageSource {
+                provider: TokenUsageProvider::Codex,
+                id: "1234567890abcdef".into(),
+            }),
+            created_at: chrono::Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        };
+
+        assert_eq!(
+            format_codex_session_metadata(
+                &SessionKind::Claude,
+                Some(&session),
+                std::path::Path::new("/tmp/unused")
+            ),
+            None
         );
     }
 }

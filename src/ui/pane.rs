@@ -343,7 +343,7 @@ fn draw_claude_sidebar(
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
+            Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
             Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
             Constraint::Length(sidebar_section_height(&data.prompt_text, 6, 9)),
             Constraint::Min(2),
@@ -416,7 +416,9 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
 
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
     let lower = value.to_lowercase();
-    let color = if label == "State" {
+    let color = if title == "Session" {
+        theme.text.to_color()
+    } else if label == "State" {
         match lower.as_str() {
             "active" => theme.status_active.to_color(),
             "idle" => theme.status_idle.to_color(),
@@ -460,7 +462,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     };
 
     let mut style = Style::default().fg(color);
-    if label == "State"
+    if (title == "Session" && !value.trim().is_empty())
+        || label == "State"
         || label == "Tool"
         || label == "Mode"
         || lower.contains("waiting")

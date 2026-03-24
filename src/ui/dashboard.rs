@@ -101,8 +101,8 @@ fn build_claude_sidebar_data(
 
     Some(super::pane::ClaudeSidebarData {
         session_text: format!(
-            "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
-            project.name, feature_label, session_line, mode_label, feature.branch
+            "Project: {}\nFeature: {}\nMode: {}\nSession: {}\nBranch: {}",
+            project.name, feature_label, mode_label, session_line, feature.branch
         ),
         status_text: format_sidebar_status(
             &activity_line,

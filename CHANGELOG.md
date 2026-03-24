@@ -10,7 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- `amf upgrade` now resolves the actual release asset from GitHub's
+  release metadata instead of hardcoding a guessed download URL, so
+  future packaging changes do not regress into `404` download failures.
+- macOS `x86_64` upgrade detection now only selects the Apple Silicon
+  bundle when AMF is running under Rosetta on Apple Silicon. Native
+  Intel Macs now get a clear unsupported-platform error instead of a
+  misleading architecture mapping.
 
 ## [v0.12.0] - 2026-03-24
 

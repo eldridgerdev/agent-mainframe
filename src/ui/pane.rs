@@ -37,7 +37,6 @@ const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeSidebarData {
-    pub session_text: String,
     pub status_text: String,
     pub task_text: String,
     pub prompt_text: String,
@@ -344,7 +343,6 @@ fn draw_claude_sidebar(
     }
 
     let fallback = ClaudeSidebarData {
-        session_text: "Claude sidebar loading".to_string(),
         status_text: "No sidebar data available.".to_string(),
         task_text: "No task data yet.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
@@ -356,14 +354,12 @@ fn draw_claude_sidebar(
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
                     Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-                    Constraint::Min(8),
+                    Constraint::Min(10),
                 ])
                 .split(inner)
                 .to_vec(),
             vec![
-                ("Session", data.session_text.as_str()),
                 ("Status", data.status_text.as_str()),
                 ("Todos", data.task_text.as_str()),
             ],
@@ -373,16 +369,14 @@ fn draw_claude_sidebar(
             Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
                     Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-                    Constraint::Length(sidebar_section_height(&data.task_text, 8, 12)),
-                    Constraint::Length(sidebar_section_height(&data.prompt_text, 5, 7)),
-                    Constraint::Min(2),
+                    Constraint::Length(sidebar_section_height(&data.task_text, 11, 15)),
+                    Constraint::Length(sidebar_section_height(&data.prompt_text, 6, 8)),
+                    Constraint::Length(sidebar_section_height(&data.summary_text, 1, 3)),
                 ])
                 .split(inner)
                 .to_vec(),
             vec![
-                ("Session", data.session_text.as_str()),
                 ("Status", data.status_text.as_str()),
                 ("Todos", data.task_text.as_str()),
                 ("Prompt", data.prompt_text.as_str()),
@@ -426,7 +420,6 @@ fn sidebar_section_title(title: &str, theme: &Theme) -> Line<'static> {
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
-        "Session" => theme.project_title.to_color(),
         "Status" => theme.warning.to_color(),
         "Todos" => theme.success.to_color(),
         "Prompt" => theme.session_icon_claude.to_color(),
@@ -530,9 +523,7 @@ fn styled_todo_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
 
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
     let lower = value.to_lowercase();
-    let color = if title == "Session" {
-        theme.text.to_color()
-    } else if label == "State" {
+    let color = if label == "State" {
         match lower.as_str() {
             "active" => theme.status_active.to_color(),
             "idle" => theme.status_idle.to_color(),
@@ -576,8 +567,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     };
 
     let mut style = Style::default().fg(color);
-    if (title == "Session" && !value.trim().is_empty())
-        || label == "State"
+    if label == "State"
         || label == "Tool"
         || label == "Mode"
         || lower.contains("waiting")
@@ -829,7 +819,6 @@ mod tests {
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
         let sidebar = ClaudeSidebarData {
-            session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             task_text: "Current: Investigate task tracking".into(),
             prompt_text: "Preview: Resume the task.".into(),
@@ -857,6 +846,7 @@ mod tests {
         assert!(rendered.contains("Claude Sidebar"));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+        assert!(!rendered.contains("Session"));
         assert!(rendered.contains("Todos"));
         assert!(rendered.contains("Prompt"));
     }

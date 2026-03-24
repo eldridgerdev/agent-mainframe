@@ -6,7 +6,6 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::FeatureSession;
 use chrono::{DateTime, Datelike, Utc};
 
 fn build_claude_sidebar_data(
@@ -35,13 +34,6 @@ fn build_claude_sidebar_data(
                 .iter()
                 .find(|session| matches!(session.kind, crate::project::SessionKind::Claude))
         });
-
-    let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
-    let mode_label = if view.review {
-        "Review".to_string()
-    } else {
-        view.vibe_mode.display_name().to_string()
-    };
     let matching_inputs: Vec<_> = app
         .pending_inputs
         .iter()
@@ -79,7 +71,6 @@ fn build_claude_sidebar_data(
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let session_line = session_sidebar_line(session);
     let task_text = app
         .task_state_for_session(&feature.tmux_session)
         .map(format_sidebar_task)
@@ -104,10 +95,6 @@ fn build_claude_sidebar_data(
     };
 
     Some(super::pane::ClaudeSidebarData {
-        session_text: format!(
-            "Project: {}\nFeature: {}\nMode: {}\nSession: {}\nBranch: {}",
-            project.name, feature_label, mode_label, session_line, feature.branch
-        ),
         status_text: format_sidebar_status(
             &activity_line,
             tool_line.as_deref(),
@@ -118,12 +105,6 @@ fn build_claude_sidebar_data(
         prompt_text,
         summary_text,
     })
-}
-
-fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
-    session
-        .map(|session| session.label.clone())
-        .unwrap_or_else(|| "Claude".to_string())
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {

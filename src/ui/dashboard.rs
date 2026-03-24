@@ -85,15 +85,6 @@ fn build_claude_sidebar_data(
             )
         })
         .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
-    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
-        "Generating summary...".to_string()
-    } else {
-        feature
-            .summary
-            .clone()
-            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
-    };
-
     Some(super::pane::ClaudeSidebarData {
         status_text: format_sidebar_status(
             &activity_line,
@@ -103,7 +94,6 @@ fn build_claude_sidebar_data(
         ),
         task_text,
         prompt_text,
-        summary_text,
     })
 }
 

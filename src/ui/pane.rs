@@ -40,7 +40,6 @@ pub(crate) struct ClaudeSidebarData {
     pub status_text: String,
     pub task_text: String,
     pub prompt_text: String,
-    pub summary_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,7 +345,6 @@ fn draw_claude_sidebar(
         status_text: "No sidebar data available.".to_string(),
         task_text: "No task data yet.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
-        summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
     let (sections, sections_with_content): (Vec<Rect>, Vec<(&str, &str)>) = if todos_expanded {
@@ -370,9 +368,8 @@ fn draw_claude_sidebar(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-                    Constraint::Length(sidebar_section_height(&data.task_text, 11, 15)),
-                    Constraint::Length(sidebar_section_height(&data.prompt_text, 6, 8)),
-                    Constraint::Length(sidebar_section_height(&data.summary_text, 1, 3)),
+                    Constraint::Min(sidebar_section_height(&data.task_text, 11, 13)),
+                    Constraint::Length(sidebar_section_height(&data.prompt_text, 4, 5)),
                 ])
                 .split(inner)
                 .to_vec(),
@@ -380,7 +377,6 @@ fn draw_claude_sidebar(
                 ("Status", data.status_text.as_str()),
                 ("Todos", data.task_text.as_str()),
                 ("Prompt", data.prompt_text.as_str()),
-                ("Summary", data.summary_text.as_str()),
             ],
         )
     };
@@ -423,7 +419,6 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Status" => theme.warning.to_color(),
         "Todos" => theme.success.to_color(),
         "Prompt" => theme.session_icon_claude.to_color(),
-        "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
 }
@@ -552,9 +547,9 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.success.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
-    } else if lower.contains("unavailable") || lower.contains("no summary yet") {
+    } else if lower.contains("unavailable") {
         theme.text_muted.to_color()
-    } else if title == "Summary" || title == "Todos" {
+    } else if title == "Todos" {
         theme.text.to_color()
     } else if matches!(label, "Input" | "Output" | "Effective") {
         theme.status_detail.to_color()
@@ -822,7 +817,6 @@ mod tests {
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             task_text: "Current: Investigate task tracking".into(),
             prompt_text: "Preview: Resume the task.".into(),
-            summary_text: "Sidebar ready.".into(),
         };
 
         terminal
@@ -845,7 +839,6 @@ mod tests {
 
         assert!(rendered.contains("Claude Sidebar"));
         assert!(rendered.contains("Waiting for input"));
-        assert!(rendered.contains("Resume the task."));
         assert!(!rendered.contains("Session"));
         assert!(rendered.contains("Todos"));
         assert!(rendered.contains("Prompt"));

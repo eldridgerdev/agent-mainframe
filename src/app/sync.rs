@@ -70,15 +70,13 @@ impl App {
                         && matches!(session.kind, SessionKind::Claude)
                         && session.claude_session_id.is_some()
                     {
-                        session.token_usage_source =
-                            session
-                                .claude_session_id
-                                .as_ref()
-                                .map(|id| TokenUsageSource {
-                                    provider: TokenUsageProvider::Claude,
-                                    id: id.clone(),
-                                });
-                        discovered_sources |= session.token_usage_source.is_some();
+                        if let Some(id) = session.claude_session_id.as_ref() {
+                            session.set_token_usage_source_exact(TokenUsageSource {
+                                provider: TokenUsageProvider::Claude,
+                                id: id.clone(),
+                            });
+                            discovered_sources = true;
+                        }
                     }
 
                     if session
@@ -86,17 +84,19 @@ impl App {
                         .as_ref()
                         .is_some_and(|source| source.provider != expected_provider)
                     {
-                        session.token_usage_source = None;
+                        session.clear_token_usage_source();
                         discovered_sources = true;
                     }
 
                     if session.token_usage_source.is_none() {
-                        session.token_usage_source = tracker.discover_source(
+                        if let Some(source) = tracker.discover_source(
                             &session.kind,
                             &feature.workdir,
                             session.created_at,
-                        );
-                        discovered_sources |= session.token_usage_source.is_some();
+                        ) {
+                            session.set_token_usage_source_inferred(source);
+                            discovered_sources = true;
+                        }
                     }
 
                     session.status_text = session

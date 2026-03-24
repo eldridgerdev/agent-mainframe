@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::{FeatureSession, SessionKind};
+use crate::project::{FeatureSession, SessionKind, TokenUsageSourceMatch};
 use crate::token_tracking::TokenUsageProvider;
 
 fn build_agent_sidebar_data(
@@ -106,10 +106,18 @@ fn build_agent_sidebar_data(
         ),
     };
 
+    let status_text = match format_codex_usage_source_confidence(&sidebar_kind, session) {
+        Some(confidence) => format!(
+            "Activity: {}\n{}\n{}",
+            activity_line, usage_line, confidence
+        ),
+        None => format!("Activity: {}\n{}", activity_line, usage_line),
+    };
+
     Some(super::pane::AgentSidebarData {
         agent_kind: sidebar_kind,
         session_text,
-        status_text: format!("Activity: {}\n{}", activity_line, usage_line),
+        status_text,
         prompt_text,
         summary_text,
     })
@@ -144,6 +152,21 @@ fn format_codex_session_metadata(
     Some(match title {
         Some(title) => format!("Thread: {short_id}\nTitle: {title}"),
         None => format!("Thread: {short_id}"),
+    })
+}
+
+fn format_codex_usage_source_confidence(
+    sidebar_kind: &SessionKind,
+    session: Option<&FeatureSession>,
+) -> Option<String> {
+    if *sidebar_kind != SessionKind::Codex {
+        return None;
+    }
+
+    let match_kind = session?.token_usage_source_match.as_ref()?;
+    Some(match match_kind {
+        TokenUsageSourceMatch::Exact => "Usage source: exact thread match".to_string(),
+        TokenUsageSourceMatch::Inferred => "Usage source: inferred workdir match".to_string(),
     })
 }
 
@@ -689,6 +712,7 @@ mod tests {
                 provider: TokenUsageProvider::Codex,
                 id: "1234567890abcdef".into(),
             }),
+            token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
             created_at: chrono::Utc::now(),
             command: None,
             on_stop: None,
@@ -717,6 +741,7 @@ mod tests {
                 provider: TokenUsageProvider::Codex,
                 id: session_id.into(),
             }),
+            token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
             created_at: chrono::Utc::now(),
             command: None,
             on_stop: None,
@@ -745,5 +770,25 @@ mod tests {
         );
 
         assert!(prompt.contains("fallback prompt"));
+    }
+
+    #[test]
+    fn format_codex_usage_source_confidence_uses_exact_match_label() {
+        let session = codex_feature_session("sess-current");
+        assert_eq!(
+            format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
+            Some("Usage source: exact thread match".to_string())
+        );
+    }
+
+    #[test]
+    fn format_codex_usage_source_confidence_uses_inferred_match_label() {
+        let mut session = codex_feature_session("sess-current");
+        session.token_usage_source_match = Some(TokenUsageSourceMatch::Inferred);
+
+        assert_eq!(
+            format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
+            Some("Usage source: inferred workdir match".to_string())
+        );
     }
 }

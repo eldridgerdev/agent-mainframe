@@ -264,7 +264,7 @@ impl App {
             match session.kind {
                 SessionKind::Claude => {
                     session.claude_session_id = Some(claude_session_id.to_string());
-                    session.token_usage_source = Some(TokenUsageSource {
+                    session.set_token_usage_source_exact(TokenUsageSource {
                         provider: TokenUsageProvider::Claude,
                         id: claude_session_id.to_string(),
                     });

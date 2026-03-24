@@ -350,10 +350,12 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 // ── Phase 3: App integration tests using mock trait objects ──
 
-use crate::project::{AgentKind, Feature, FeatureSession, Project, SessionKind};
+use crate::project::{
+    AgentKind, Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch,
+};
 use crate::token_tracking::{SessionTokenTracker, TokenUsageProvider, TokenUsageSource};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
-use chrono::{Duration, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use tempfile::NamedTempFile;
 
 /// Build a minimal `ProjectStore` with one project and one
@@ -452,6 +454,7 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
         tmux_window: label.to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: Utc::now(),
         command: None,
         on_stop: None,
@@ -2331,6 +2334,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             tmux_window: "claude".to_string(),
             claude_session_id: Some("resume-me".to_string()),
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: now,
             command: None,
             on_stop: None,
@@ -2344,6 +2348,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             tmux_window: "terminal".to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: now,
             command: None,
             on_stop: None,
@@ -2463,6 +2468,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         tmux_window: "custom".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: Some("./start.sh".to_string()),
         on_stop: None,
@@ -2519,6 +2525,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         tmux_window: "codex".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,
@@ -2622,6 +2629,7 @@ fn sync_session_status_shows_agent_token_usage() {
             provider: TokenUsageProvider::Claude,
             id: "claude-123".to_string(),
         }),
+        token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
         created_at: now,
         command: None,
         on_stop: None,
@@ -2682,6 +2690,114 @@ fn sync_session_status_shows_agent_token_usage() {
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("12 in · 4 out · 32 eff · <$0.01".to_string()),
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact),
+    );
+}
+
+#[test]
+fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
+    let home = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let session_dir = home
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("03")
+        .join("13");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("rollout.jsonl"),
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-1\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":100,\"cached_input_tokens\":40,\"output_tokens\":7,\"reasoning_output_tokens\":3,\"total_tokens\":110}}}}}}}}\n"
+            ),
+            workdir.path().display()
+        ),
+    )
+    .unwrap();
+
+    let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 13, 59, 30).unwrap();
+    let session = FeatureSession {
+        id: "codex-sess".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-1".to_string(),
+        }),
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Inferred),
     );
 }
 
@@ -2745,6 +2861,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             tmux_window: "claude".to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,
@@ -3166,6 +3283,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         tmux_window: "claude".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,
@@ -3339,6 +3457,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         tmux_window: "claude".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,

@@ -2717,6 +2717,92 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
 }
 
 #[test]
+fn drain_ipc_messages_tracks_live_claude_task_state() {
+    let repo = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = store_with_worktree_agent(
+        repo.path(),
+        workdir.path(),
+        AgentKind::Claude,
+        ProjectStatus::Idle,
+        vec![FeatureSession {
+            id: "claude-1".to_string(),
+            kind: SessionKind::Claude,
+            label: "Claude".to_string(),
+            tmux_window: "claude".to_string(),
+            claude_session_id: Some("resume-me".to_string()),
+            token_usage_source: None,
+            created_at: now,
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        }],
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let ipc_dir = TempDir::new().unwrap();
+    let socket_path = ipc_dir.path().join("amf.sock");
+    let guard = crate::ipc::start(&socket_path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    app.ipc = Some(guard);
+
+    crate::ipc::send(
+        &socket_path,
+        &serde_json::json!({
+            "type": "tool-start",
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "tool_name": "TaskCreate",
+            "task_subject": "Investigate sidebar task data",
+            "task_description": "Review Claude task events"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    crate::ipc::send(
+        &socket_path,
+        &serde_json::json!({
+            "type": "tool-start",
+            "session_id": "amf-my-feat",
+            "cwd": workdir.path().display().to_string(),
+            "tool_name": "TaskUpdate",
+            "task_id": "1",
+            "task_status": "in_progress",
+            "task_active_form": "Updating sidebar task section"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(25));
+
+    app.drain_ipc_messages();
+
+    let task_state = app
+        .task_state_for_session("amf-my-feat")
+        .expect("task state");
+    assert_eq!(task_state.tasks.len(), 1);
+    assert_eq!(
+        task_state.current_task().map(|task| task.subject.as_str()),
+        Some("Investigate sidebar task data")
+    );
+    assert_eq!(
+        task_state
+            .current_task()
+            .and_then(|task| task.active_form.as_deref()),
+        Some("Updating sidebar task section")
+    );
+    assert_eq!(
+        app.active_tool_for_session("amf-my-feat"),
+        Some("TaskUpdate")
+    );
+}
+
+#[test]
 fn custom_diff_review_notification_opens_prompt_while_viewing() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_worktree_agent(

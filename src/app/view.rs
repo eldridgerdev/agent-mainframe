@@ -61,6 +61,7 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
         self.refresh_latest_prompt_for_feature(pi, fi);
+        self.refresh_task_state_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {

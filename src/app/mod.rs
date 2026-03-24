@@ -207,6 +207,7 @@ pub struct App {
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, crate::app::util::PromptEntry>,
     pub active_tool_cache: HashMap<String, String>,
+    pub task_state_cache: HashMap<String, crate::app::util::ClaudeTaskState>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -234,6 +235,7 @@ impl App {
         crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let task_state_cache = Self::build_task_state_cache(&store);
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -269,6 +271,7 @@ impl App {
             pending_inputs: Vec::new(),
             latest_prompt_cache,
             active_tool_cache: HashMap::new(),
+            task_state_cache,
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -319,6 +322,7 @@ impl App {
     ) -> Self {
         use crate::extension::ExtensionConfig;
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let task_state_cache = Self::build_task_state_cache(&store);
         Self {
             store,
             store_path: PathBuf::new(),
@@ -341,6 +345,7 @@ impl App {
             pending_inputs: Vec::new(),
             latest_prompt_cache,
             active_tool_cache: HashMap::new(),
+            task_state_cache,
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -385,6 +390,28 @@ impl App {
         cache
     }
 
+    fn build_task_state_cache(
+        store: &ProjectStore,
+    ) -> HashMap<String, crate::app::util::ClaudeTaskState> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                let session_id = feature
+                    .sessions
+                    .iter()
+                    .find_map(|session| session.claude_session_id.as_deref());
+                if let Some(task_state) =
+                    crate::app::util::read_claude_task_state(&feature.workdir, session_id)
+                {
+                    cache.insert(feature.tmux_session.clone(), task_state);
+                }
+            }
+        }
+
+        cache
+    }
+
     pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {
         let Some(feature) = self
             .store
@@ -409,6 +436,30 @@ impl App {
         }
     }
 
+    pub(crate) fn refresh_task_state_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return;
+        };
+
+        let session_id = feature
+            .sessions
+            .iter()
+            .find_map(|session| session.claude_session_id.as_deref());
+        if let Some(task_state) =
+            crate::app::util::read_claude_task_state(&feature.workdir, session_id)
+        {
+            self.task_state_cache
+                .insert(feature.tmux_session.clone(), task_state);
+        } else {
+            self.task_state_cache.remove(&feature.tmux_session);
+        }
+    }
+
     pub fn latest_prompt_for_session(
         &self,
         tmux_session: &str,
@@ -418,6 +469,13 @@ impl App {
 
     pub fn active_tool_for_session(&self, tmux_session: &str) -> Option<&str> {
         self.active_tool_cache.get(tmux_session).map(String::as_str)
+    }
+
+    pub fn task_state_for_session(
+        &self,
+        tmux_session: &str,
+    ) -> Option<&crate::app::util::ClaudeTaskState> {
+        self.task_state_cache.get(tmux_session)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

@@ -80,6 +80,10 @@ fn build_claude_sidebar_data(
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session);
+    let task_text = app
+        .task_state_for_session(&feature.tmux_session)
+        .map(format_sidebar_task)
+        .unwrap_or_else(|| "No task data yet.".to_string());
     let prompt_text = app
         .latest_prompt_for_session(&feature.tmux_session)
         .map(|prompt| {
@@ -110,6 +114,7 @@ fn build_claude_sidebar_data(
             request_line.as_deref(),
             &usage_line,
         ),
+        task_text,
         prompt_text,
         summary_text,
     })
@@ -244,6 +249,41 @@ fn format_sidebar_usage(status: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn format_sidebar_task(task_state: &crate::app::util::ClaudeTaskState) -> String {
+    let total = task_state.tasks.len();
+    if total == 0 {
+        return "No task data yet.".to_string();
+    }
+
+    let completed = task_state.completed_count();
+    let active = usize::from(task_state.current_task().is_some());
+    let pending = task_state.pending_count();
+
+    let mut lines = vec![format!(
+        "{total} tasks ({completed} done, {active} active, {pending} open)"
+    )];
+
+    for task in &task_state.tasks {
+        let prefix = match task.status.as_str() {
+            "completed" => "[x]",
+            "in_progress" => "[>]",
+            "pending" => "[ ]",
+            _ => "[?]",
+        };
+        lines.push(format!(
+            "{prefix} {}",
+            compact_sidebar_text(&task.subject, 46)
+        ));
+        if task.status == "in_progress"
+            && let Some(active_form) = task.active_form.as_deref()
+        {
+            lines.push(format!("    {}", compact_sidebar_text(active_form, 44)));
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn format_sidebar_status(
@@ -727,6 +767,40 @@ mod tests {
                 "Input: 16.0k tokens"
             ),
             "Activity: Waiting for 1 input\nRequest: Need user answer\nInput: 16.0k tokens"
+        );
+    }
+
+    #[test]
+    fn sidebar_task_renders_todo_list_with_active_item() {
+        let task_state = crate::app::util::ClaudeTaskState {
+            tasks: vec![
+                crate::app::util::ClaudeTask {
+                    id: "1".into(),
+                    subject: "Explore sidebar".into(),
+                    description: None,
+                    active_form: None,
+                    status: "completed".into(),
+                },
+                crate::app::util::ClaudeTask {
+                    id: "2".into(),
+                    subject: "Implement task sidebar".into(),
+                    description: None,
+                    active_form: Some("Updating sidebar rendering".into()),
+                    status: "in_progress".into(),
+                },
+                crate::app::util::ClaudeTask {
+                    id: "3".into(),
+                    subject: "Run tests".into(),
+                    description: None,
+                    active_form: None,
+                    status: "pending".into(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            format_sidebar_task(&task_state),
+            "3 tasks (1 done, 1 active, 1 open)\n[x] Explore sidebar\n[>] Implement task sidebar\n    Updating sidebar rendering\n[ ] Run tests"
         );
     }
 }

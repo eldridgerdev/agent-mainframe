@@ -12,6 +12,29 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.12.0] - 2026-03-24
+
+### Added
+
+- Claude session sidebar — a new panel in view mode showing live session
+  metadata: current tool activity, pending input detail, active prompt
+  context, task todos (expanded inline), and plan progress. Toggle
+  visibility with a keybind. Task data is sourced from the Claude task
+  store when available, with transcript fallback.
+- Latest prompt dialog now shows a scrollable list of all Claude session
+  prompts with timestamps. Navigate with `j`/`k`, copy the selected
+  prompt to clipboard with `y` (uses `wl-copy` with `xclip` fallback).
+  Each entry shows a colored timestamp and the first line of the prompt,
+  truncated with an ellipsis when needed.
+
+### Changed
+
+- Markdown viewer and picker UX improvements.
+
+### Migration
+
+- No store migration is required.
+
 ## [v0.11.1] - 2026-03-19
 
 ### Changed

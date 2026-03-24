@@ -63,6 +63,9 @@ fn build_claude_sidebar_data(
     } else {
         status_line
     };
+    let tool_line = app
+        .active_tool_for_session(&feature.tmux_session)
+        .map(|tool| format!("Tool: {tool}"));
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
@@ -92,7 +95,7 @@ fn build_claude_sidebar_data(
             "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
             project.name, feature_label, session_line, mode_label, feature.branch
         ),
-        status_text: format!("Activity: {}\n{}", activity_line, usage_line),
+        status_text: format_sidebar_status(&activity_line, tool_line.as_deref(), &usage_line),
         prompt_text,
         summary_text,
     })
@@ -227,6 +230,15 @@ fn format_sidebar_usage(status: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn format_sidebar_status(activity: &str, tool: Option<&str>, usage: &str) -> String {
+    let mut lines = vec![format!("Activity: {activity}")];
+    if let Some(tool) = tool.filter(|tool| !tool.trim().is_empty()) {
+        lines.push(tool.to_string());
+    }
+    lines.extend(usage.lines().map(str::to_string));
+    lines.join("\n")
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
@@ -667,6 +679,18 @@ mod tests {
         assert_eq!(
             format_prompt_preview("call a tool so i can see this wrap better", 12, 4),
             "call a tool\nso i can see\nthis wrap\nbetter"
+        );
+    }
+
+    #[test]
+    fn sidebar_status_includes_active_tool_line() {
+        assert_eq!(
+            format_sidebar_status(
+                "Running tool",
+                Some("Tool: Edit"),
+                "Input: 16.0k tokens\nOutput: 2.0k tokens"
+            ),
+            "Activity: Running tool\nTool: Edit\nInput: 16.0k tokens\nOutput: 2.0k tokens"
         );
     }
 }

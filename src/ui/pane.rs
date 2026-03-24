@@ -425,6 +425,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         }
     } else if label == "At" {
         theme.text_muted.to_color()
+    } else if label == "Tool" {
+        theme.info.to_color()
     } else if label == "Mode" {
         match lower.as_str() {
             "vibeless" => theme.mode_vibeless.to_color(),
@@ -459,6 +461,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
 
     let mut style = Style::default().fg(color);
     if label == "State"
+        || label == "Tool"
         || label == "Mode"
         || lower.contains("waiting")
         || lower.contains("thinking")

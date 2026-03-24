@@ -206,6 +206,7 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, crate::app::util::PromptEntry>,
+    pub active_tool_cache: HashMap<String, String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -267,6 +268,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            active_tool_cache: HashMap::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -338,6 +340,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            active_tool_cache: HashMap::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -411,6 +414,10 @@ impl App {
         tmux_session: &str,
     ) -> Option<&crate::app::util::PromptEntry> {
         self.latest_prompt_cache.get(tmux_session)
+    }
+
+    pub fn active_tool_for_session(&self, tmux_session: &str) -> Option<&str> {
+        self.active_tool_cache.get(tmux_session).map(String::as_str)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

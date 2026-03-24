@@ -423,6 +423,11 @@ impl App {
                         .clone()
                         .or(msg.tool.clone())
                         .unwrap_or_default();
+                    if label.trim().is_empty() {
+                        self.active_tool_cache.remove(&sid);
+                    } else {
+                        self.active_tool_cache.insert(sid.clone(), label.clone());
+                    }
                     self.log_debug("ipc", format!("tool-start for {sid} ({label})"));
                 }
                 continue;
@@ -431,6 +436,7 @@ impl App {
             if msg_type == "tool-stop" {
                 if let Some(sid) = msg.session_id {
                     self.ipc_tool_sessions.remove(&sid);
+                    self.active_tool_cache.remove(&sid);
                     self.log_debug("ipc", format!("tool-stop for {sid}"));
                 }
                 continue;

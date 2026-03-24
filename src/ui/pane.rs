@@ -382,17 +382,35 @@ fn draw_claude_sidebar(
     };
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
-        let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme.effective_bg()))
-            .block(
-                Block::default()
-                    .title(sidebar_section_title(title, theme))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(accent)),
-            );
+        let paragraph = Paragraph::new(sidebar_section_lines(
+            title,
+            body,
+            section.height.saturating_sub(2),
+            theme,
+        ))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(theme.effective_bg()))
+        .block(
+            Block::default()
+                .title(sidebar_section_title(title, theme))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent)),
+        );
         frame.render_widget(paragraph, *section);
     }
+}
+
+fn sidebar_section_lines<'a>(
+    title: &str,
+    body: &'a str,
+    visible_lines: u16,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
+    if title == "Todos" {
+        return focused_todo_lines(body, visible_lines as usize, theme);
+    }
+
+    styled_sidebar_lines(title, body, theme)
 }
 
 fn sidebar_section_title(title: &str, theme: &Theme) -> Line<'static> {
@@ -455,6 +473,83 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
             }
         })
         .collect()
+}
+
+fn focused_todo_lines<'a>(body: &'a str, visible_lines: usize, theme: &Theme) -> Vec<Line<'a>> {
+    let raw_lines: Vec<&str> = body.lines().collect();
+    if visible_lines == 0 || raw_lines.is_empty() {
+        return Vec::new();
+    }
+
+    let (start, end) = todo_focus_window(&raw_lines, visible_lines);
+    raw_lines[start..end]
+        .iter()
+        .map(|line| styled_todo_line(line, theme))
+        .collect()
+}
+
+fn todo_focus_window(lines: &[&str], visible_lines: usize) -> (usize, usize) {
+    let total = lines.len();
+    if total <= visible_lines {
+        return (0, total);
+    }
+
+    let active_idx = lines.iter().position(|line| line.starts_with("[>] "));
+    let active_detail_idx = active_idx.and_then(|idx| {
+        lines
+            .get(idx + 1)
+            .filter(|line| line.starts_with("    "))
+            .map(|_| idx + 1)
+    });
+
+    let next_unfinished_idx = active_idx
+        .and_then(|idx| {
+            lines
+                .iter()
+                .enumerate()
+                .skip(idx + 1)
+                .find(|(_, line)| line.starts_with("[ ] ") || line.starts_with("[>] "))
+                .map(|(idx, _)| idx)
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.starts_with("[ ] ") || line.starts_with("[>] "))
+                .map(|(idx, _)| idx)
+        });
+
+    let focus_idx = next_unfinished_idx
+        .or(active_detail_idx)
+        .or(active_idx)
+        .unwrap_or(0);
+
+    let mut start = focus_idx.saturating_add(1).saturating_sub(visible_lines);
+
+    if let Some(active) = active_idx
+        && active < start
+    {
+        start = active;
+    }
+
+    if let Some(active_detail) = active_detail_idx
+        && active_detail >= start + visible_lines
+    {
+        start = active_detail
+            .saturating_add(1)
+            .saturating_sub(visible_lines);
+    }
+
+    if let Some(next_unfinished) = next_unfinished_idx
+        && next_unfinished >= start + visible_lines
+    {
+        start = next_unfinished
+            .saturating_add(1)
+            .saturating_sub(visible_lines);
+    }
+
+    let end = (start + visible_lines).min(total);
+    (start.min(total.saturating_sub(visible_lines)), end)
 }
 
 fn styled_todo_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
@@ -849,5 +944,40 @@ mod tests {
         let view = sample_view(crate::project::SessionKind::Claude);
         assert!(view.sidebar_visible);
         assert!(!view.todos_expanded);
+    }
+
+    #[test]
+    fn todo_focus_window_keeps_active_and_next_open_visible() {
+        let lines = [
+            "8 tasks (3 done, 1 active, 4 open)",
+            "[x] Done one",
+            "[x] Done two",
+            "[>] Current task",
+            "    Working on current task",
+            "[ ] Next task",
+            "[ ] Later task",
+        ];
+
+        let (start, end) = todo_focus_window(&lines, 4);
+        let visible = &lines[start..end];
+
+        assert!(visible.contains(&"[>] Current task"));
+        assert!(visible.contains(&"[ ] Next task"));
+    }
+
+    #[test]
+    fn todo_focus_window_prefers_first_open_when_no_active_task() {
+        let lines = [
+            "5 tasks (2 done, 0 active, 3 open)",
+            "[x] Done one",
+            "[x] Done two",
+            "[ ] First open",
+            "[ ] Second open",
+        ];
+
+        let (start, end) = todo_focus_window(&lines, 2);
+        let visible = &lines[start..end];
+
+        assert!(visible.contains(&"[ ] First open"));
     }
 }

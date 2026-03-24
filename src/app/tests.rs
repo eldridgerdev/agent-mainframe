@@ -3,7 +3,9 @@ use super::setup::{
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
-use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
+use super::util::{
+    latest_prompt_path, read_all_prompts, read_latest_prompt, shorten_path, slugify,
+};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
@@ -90,6 +92,18 @@ fn read_latest_prompt_falls_back_to_codex_path() {
         read_latest_prompt(workdir.path()).as_deref(),
         Some("codex prompt")
     );
+}
+
+#[test]
+fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
+    let workdir = TempDir::new().unwrap();
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&codex_path, "codex prompt history").unwrap();
+
+    let prompts = read_all_prompts(workdir.path());
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].text, "codex prompt history");
 }
 
 // ── AppConfig defaults ───────────────────────────────────

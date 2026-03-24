@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -8,6 +9,12 @@ pub struct CodexSessionInfo {
     pub id: String,
     pub title: String,
     pub updated: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexPromptEntry {
+    pub text: String,
+    pub timestamp: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +122,16 @@ pub fn latest_prompt_for_session_id(workdir: &Path, session_id: &str) -> Result<
     latest_prompt_for_session_id_from_root(workdir, session_id, &sessions_root)
 }
 
+pub fn prompt_history_for_session_id(
+    workdir: &Path,
+    session_id: &str,
+) -> Result<Vec<CodexPromptEntry>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(Vec::new());
+    };
+    prompt_history_for_session_id_from_root(workdir, session_id, &sessions_root)
+}
+
 fn latest_prompt_for_workdir_from_root(
     workdir: &Path,
     sessions_root: &Path,
@@ -197,8 +214,117 @@ fn latest_prompt_for_session_id_from_root(
     Ok(newest_prompt.map(|(_, prompt)| prompt))
 }
 
+fn prompt_history_for_session_id_from_root(
+    workdir: &Path,
+    session_id: &str,
+    sessions_root: &Path,
+) -> Result<Vec<CodexPromptEntry>> {
+    if !sessions_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut prompts = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+
+            for prompt in prompt_history_from_file(&path, workdir, session_id).unwrap_or_default() {
+                let dedupe_key = (prompt.timestamp, prompt.text.clone());
+                if seen.insert(dedupe_key) {
+                    prompts.push(prompt);
+                }
+            }
+        }
+    }
+
+    prompts.sort_by(|a, b| match (b.timestamp, a.timestamp) {
+        (Some(bt), Some(at)) => bt.cmp(&at),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    Ok(prompts)
+}
+
 fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionInfo> {
     parse_codex_session_file_details(path, workdir).map(|parsed| parsed.info)
+}
+
+fn prompt_history_from_file(
+    path: &Path,
+    workdir: &Path,
+    session_id: &str,
+) -> Option<Vec<CodexPromptEntry>> {
+    let contents = std::fs::read_to_string(path).ok()?;
+
+    let mut file_session_id: Option<String> = None;
+    let mut file_cwd: Option<PathBuf> = None;
+    let mut prompts = Vec::new();
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let value: Value = serde_json::from_str(line).ok()?;
+        let timestamp = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(parse_timestamp);
+
+        match value.get("type").and_then(|v| v.as_str()) {
+            Some("session_meta") => {
+                let payload = value.get("payload")?;
+                file_session_id = payload
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+                    .or(file_session_id);
+                file_cwd = payload
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(PathBuf::from)
+                    .or(file_cwd);
+            }
+            Some("event_msg") => {
+                if let Some(prompt) = extract_prompt_from_event(&value) {
+                    prompts.push(CodexPromptEntry {
+                        text: prompt,
+                        timestamp,
+                    });
+                }
+            }
+            Some("response_item") => {
+                if let Some(prompt) = extract_prompt_from_response_item(&value) {
+                    prompts.push(CodexPromptEntry {
+                        text: prompt,
+                        timestamp,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if file_cwd.as_deref()? != workdir || file_session_id.as_deref()? != session_id {
+        return None;
+    }
+
+    Some(prompts)
 }
 
 fn parse_codex_session_file_details(path: &Path, workdir: &Path) -> Option<ParsedCodexSession> {
@@ -598,5 +724,53 @@ mod tests {
         let prompt =
             latest_prompt_for_session_id_from_root(&workdir, "sess-current", tmp.path()).unwrap();
         assert_eq!(prompt.as_deref(), Some("newer prompt"));
+    }
+
+    #[test]
+    fn prompt_history_for_session_id_returns_only_matching_session_prompts() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/09/other.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-09T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-other\",\"timestamp\":\"2026-03-09T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-09T10:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"wrong prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        write_session(
+            tmp.path(),
+            "2026/03/09/current.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-09T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-09T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-09T11:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"first prompt\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-09T11:02:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"second prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let prompts =
+            prompt_history_for_session_id_from_root(&workdir, "sess-current", tmp.path()).unwrap();
+
+        assert_eq!(
+            prompts,
+            vec![
+                CodexPromptEntry {
+                    text: "second prompt".to_string(),
+                    timestamp: Some(1_773_054_120),
+                },
+                CodexPromptEntry {
+                    text: "first prompt".to_string(),
+                    timestamp: Some(1_773_054_060),
+                },
+            ]
+        );
     }
 }

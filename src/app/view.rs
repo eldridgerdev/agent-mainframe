@@ -126,7 +126,7 @@ impl App {
             }
         };
 
-        let workdir = self
+        let feature_prompt_context = self
             .store
             .projects
             .iter()
@@ -137,15 +137,36 @@ impl App {
                     .iter()
                     .find(|feature| feature.name == view.feature_name)
             })
-            .map(|feature| feature.workdir.clone());
+            .map(|feature| {
+                let prompt_session_id = feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.tmux_window == view.window)
+                    .and_then(|session| {
+                        session
+                            .token_usage_source
+                            .as_ref()
+                            .filter(|source| {
+                                view.session_kind == SessionKind::Codex
+                                    && source.provider
+                                        == crate::token_tracking::TokenUsageProvider::Codex
+                            })
+                            .map(|source| source.id.clone())
+                    });
+                (feature.workdir.clone(), prompt_session_id)
+            });
 
-        let Some(workdir) = workdir else {
+        let Some((workdir, prompt_session_id)) = feature_prompt_context else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return;
         };
 
-        let prompts = crate::app::util::read_all_prompts(&workdir);
+        let prompts = crate::app::util::read_all_prompts_for_session(
+            &workdir,
+            &view.session_kind,
+            prompt_session_id.as_deref(),
+        );
         self.mode = AppMode::LatestPrompt(LatestPromptState {
             prompts,
             selected: 0,

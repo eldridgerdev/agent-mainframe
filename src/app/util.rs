@@ -1,3 +1,4 @@
+use crate::project::SessionKind;
 use crate::worktree::WorktreeManager;
 use std::path::{Path, PathBuf};
 
@@ -54,12 +55,7 @@ pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
 }
 
 pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
-    let paths = [
-        latest_prompt_path(workdir),
-        workdir.join(".codex").join("latest-prompt.txt"),
-    ];
-
-    paths
+    latest_prompt_fallback_paths(workdir)
         .into_iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
         .or_else(|| {
@@ -72,33 +68,42 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
 pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
     let mut entries = read_prompts_from_claude_sessions(workdir);
 
-    // Fall back to latest-prompt.txt if no session entries found
+    // Fall back to the latest prompt file if no session entries found.
     if entries.is_empty() {
-        let path = latest_prompt_path(workdir);
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if !text.trim().is_empty() {
-                let ts = std::fs::metadata(&path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
-                entries.push(PromptEntry {
-                    text,
-                    timestamp: ts,
-                });
-            }
+        if let Some(prompt) = read_latest_prompt_entry(workdir) {
+            entries.push(prompt);
         }
     }
 
-    // Sort by timestamp descending (latest first), None timestamps at end
-    entries.sort_by(|a, b| match (b.timestamp, a.timestamp) {
-        (Some(bt), Some(at)) => bt.cmp(&at),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
-    });
+    sort_prompt_entries(&mut entries);
 
     entries
+}
+
+pub fn read_all_prompts_for_session(
+    workdir: &Path,
+    session_kind: &SessionKind,
+    session_id: Option<&str>,
+) -> Vec<PromptEntry> {
+    if *session_kind == SessionKind::Codex
+        && let Some(session_id) = session_id
+    {
+        let mut entries = super::codex_sessions::prompt_history_for_session_id(workdir, session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| PromptEntry {
+                text: entry.text,
+                timestamp: entry.timestamp,
+            })
+            .collect::<Vec<_>>();
+
+        if !entries.is_empty() {
+            sort_prompt_entries(&mut entries);
+            return entries;
+        }
+    }
+
+    read_all_prompts(workdir)
 }
 
 fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
@@ -173,6 +178,43 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
     }
 
     entries
+}
+
+fn latest_prompt_fallback_paths(workdir: &Path) -> [PathBuf; 2] {
+    [
+        latest_prompt_path(workdir),
+        workdir.join(".codex").join("latest-prompt.txt"),
+    ]
+}
+
+fn read_latest_prompt_entry(workdir: &Path) -> Option<PromptEntry> {
+    for path in latest_prompt_fallback_paths(workdir) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+
+        let timestamp = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64);
+
+        return Some(PromptEntry { text, timestamp });
+    }
+
+    None
+}
+
+fn sort_prompt_entries(entries: &mut [PromptEntry]) {
+    entries.sort_by(|a, b| match (b.timestamp, a.timestamp) {
+        (Some(bt), Some(at)) => bt.cmp(&at),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
 }
 
 fn extract_user_prompt_text(value: &serde_json::Value) -> Option<String> {

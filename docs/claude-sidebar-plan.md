@@ -37,13 +37,13 @@ matching opencode's content is a separate instrumentation problem.
 - [x] Add transcript fallback when `claude_session_id` is missing
 - [x] Improve todo styling and widen the sidebar for better readability
 - [x] Add a focused todo viewer with a visible sidebar keybind hint
-- [ ] Add a show/hide sidebar keybind, defaulting to shown
-- [ ] Remove the `Session` section
-- [ ] Remove the `Summary` section
-- [ ] Auto-scroll the todo list so the active and next unfinished items stay in
+- [x] Add a show/hide sidebar keybind, defaulting to shown
+- [x] Remove the `Session` section
+- [x] Remove the `Summary` section
+- [x] Auto-scroll the todo list so the active and next unfinished items stay in
   view
-- [ ] Investigate whether `TodoWrite` can become a real source of truth
-- [ ] Decide whether to add a richer current-task model beyond the task list
+- [x] Investigate whether `TodoWrite` can become a real source of truth
+- [x] Decide whether to add a richer current-task model beyond the task list
 
 ## Implementation Plan
 
@@ -177,7 +177,7 @@ Queue these for the next working session.
 1. Add sidebar expansion keybinds
    - add keybinds to open sidebar sections in a larger focused view
    - the todo list viewer and its sidebar hint are now implemented
-   - decide whether any other sidebar section needs an expanded view
+   - no other sidebar section currently needs an expanded view
    - add a keybind to show/hide the sidebar entirely
    - keep the sidebar shown by default
 
@@ -200,16 +200,19 @@ These are explicitly in scope for the sidebar, but should be treated as a later
 phase after the existing-metadata passes above.
 
 1. Real todo list
-   - investigate whether Claude hooks, local sidecar files, or another AMF
-     mechanism can provide a durable structured todo list
-   - prefer a source that is local to the worktree and stable across refreshes
+   - use Claude's `tasks/<session_id>/` store as the preferred source when it
+     exists
+   - keep transcript parsing as the fallback when task-store files are missing
+   - do not depend on `todos/` or `TodoWrite` yet because current local files
+     are still empty and not proven stable
 
 2. Current task
-   - investigate how to represent Claude's current task in a way that is more
-     reliable than inferring it from a single prompt preview
-   - prefer structured task/context metadata over brittle text scraping
+   - use the existing task list plus `activeForm` as the current-task model
+   - do not add a separate current-task abstraction yet
+   - revisit only if Claude exposes richer structured task context than the
+     current task store
 
-Investigation result so far:
+Investigation result:
 
 - AMF still does not have its own real structured todo artifact for Claude
   sessions, but Claude Code itself now appears to have two relevant internal
@@ -224,12 +227,13 @@ Investigation result so far:
     task tools are hookable by name in the existing hook system
   - task directories appear to be keyed by Claude `sessionId`, which AMF
     already stores as `claude_session_id`
-- `todos/` exists, but the current evidence is weaker:
-  - the files are plain JSON arrays and many are empty
-  - local transcripts did not yet surface a concrete `TodoWrite` event or a
-    non-empty todo file
-  - todo filenames look session/agent keyed, but the exact stability and
-    schema need validation before AMF should depend on them directly
+- `todos/` exists, but the current evidence is still weak:
+  - the files are plain JSON arrays and the local samples inspected so far are
+    empty
+  - local transcripts still did not surface a concrete `TodoWrite` or
+    `TodoRead` tool event
+  - todo filenames look session/agent keyed, but the schema and lifecycle are
+    still not strong enough for AMF to depend on directly
 - existing AMF-managed artifacts remain useful, but they are not substitutes
   for a real todo/task source:
   - `.claude/latest-prompt.txt`
@@ -238,6 +242,16 @@ Investigation result so far:
   - repo/worktree plan files such as `PLAN.md` / `.claude/plan.md`
 - `PLAN.md` and related plan-mode files may still provide useful context, but
   they are not the same structured task state Claude is already using.
+
+Current decision:
+
+- AMF should prefer `~/.claude/tasks/<session_id>/` as the structured source of
+  truth for Claude task state when available
+- AMF should fall back to Claude transcripts when the task store is absent
+- AMF should not switch to `todos/` / `TodoWrite` unless future evidence shows
+  non-empty, stable files or real emitted events
+- AMF does not need a richer standalone current-task model yet; the existing
+  task list plus `activeForm` is sufficient for the current sidebar
 
 Current recommendation:
 

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{TextSelection, ViewState};
-use crate::project::VibeMode;
+use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
 const LEADER_COMMANDS: &[(&str, &str)] = &[
@@ -34,7 +34,8 @@ const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
 const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ClaudeSidebarData {
+pub(crate) struct AgentSidebarData {
+    pub agent_kind: SessionKind,
     pub session_text: String,
     pub status_text: String,
     pub prompt_text: String,
@@ -54,7 +55,7 @@ pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
 }
 
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
-    if !view.has_claude_sidebar() {
+    if view.sidebar_session_kind().is_none() {
         return None;
     }
 
@@ -122,7 +123,7 @@ pub fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,
-    sidebar_data: Option<&ClaudeSidebarData>,
+    sidebar_data: Option<&AgentSidebarData>,
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
@@ -255,7 +256,7 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_claude_sidebar(frame, sidebar_area, sidebar_data, theme);
+        draw_agent_sidebar(frame, sidebar_area, sidebar_data, theme);
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -306,22 +307,31 @@ pub fn draw(
     }
 }
 
-fn draw_claude_sidebar(
+fn draw_agent_sidebar(
     frame: &mut Frame,
     area: Rect,
-    data: Option<&ClaudeSidebarData>,
+    data: Option<&AgentSidebarData>,
     theme: &Theme,
 ) {
     if area.width < 16 || area.height < 8 {
         return;
     }
 
+    let (agent_kind, title, title_color) = data
+        .map(|data| {
+            let (title, color) = sidebar_title_and_color(&data.agent_kind, theme);
+            (data.agent_kind.clone(), title, color)
+        })
+        .unwrap_or_else(|| {
+            let kind = SessionKind::Claude;
+            let (title, color) = sidebar_title_and_color(&kind, theme);
+            (kind, title, color)
+        });
+
     let block = Block::default()
         .title(Span::styled(
-            " Claude Sidebar ",
-            Style::default()
-                .fg(theme.session_icon_claude.to_color())
-                .add_modifier(Modifier::BOLD),
+            format!(" {title} "),
+            Style::default().fg(title_color).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
@@ -333,8 +343,9 @@ fn draw_claude_sidebar(
         return;
     }
 
-    let fallback = ClaudeSidebarData {
-        session_text: "Claude sidebar loading".to_string(),
+    let fallback = AgentSidebarData {
+        agent_kind,
+        session_text: format!("{title} loading"),
         status_text: "No sidebar data available.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
         summary_text: "No summary available yet.".to_string(),
@@ -370,6 +381,14 @@ fn draw_claude_sidebar(
                     .border_style(Style::default().fg(accent)),
             );
         frame.render_widget(paragraph, *section);
+    }
+}
+
+fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static str, Color) {
+    match agent_kind {
+        SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
+        SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
+        _ => ("Agent Sidebar", theme.border.to_color()),
     }
 }
 
@@ -655,12 +674,21 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_view(session_kind: crate::project::SessionKind) -> ViewState {
+        let (window, label) = match session_kind {
+            crate::project::SessionKind::Claude => ("claude", "Claude"),
+            crate::project::SessionKind::Codex => ("codex", "Codex"),
+            crate::project::SessionKind::Opencode => ("opencode", "Opencode"),
+            crate::project::SessionKind::Terminal => ("terminal", "Terminal"),
+            crate::project::SessionKind::Nvim => ("nvim", "Nvim"),
+            crate::project::SessionKind::Vscode => ("vscode", "VSCode"),
+            crate::project::SessionKind::Custom => ("custom", "Custom"),
+        };
         ViewState::new(
             "proj".into(),
             "feat".into(),
             "amf-feat".into(),
-            "claude".into(),
-            "Claude".into(),
+            window.into(),
+            label.into(),
             session_kind,
             VibeMode::Vibeless,
             false,
@@ -674,8 +702,14 @@ mod tests {
     }
 
     #[test]
-    fn non_claude_sessions_keep_full_width() {
+    fn codex_sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
+        assert_eq!(width, 88);
+    }
+
+    #[test]
+    fn non_sidebar_sessions_keep_full_width() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Terminal), 120);
         assert_eq!(width, 120);
     }
 
@@ -685,7 +719,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
-        let sidebar = ClaudeSidebarData {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
             session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
@@ -714,5 +749,42 @@ mod tests {
         assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+    }
+
+    #[test]
+    fn codex_sidebar_shell_renders_in_view() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            session_text: "Target: proj/feat\nAgent: Codex".into(),
+            status_text: "Thinking\nInput: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Codex Sidebar"));
+        assert!(rendered.contains("Codex sidebar ready."));
+        assert!(rendered.contains("Continue the"));
     }
 }

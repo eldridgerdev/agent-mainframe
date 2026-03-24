@@ -6,15 +6,19 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::FeatureSession;
+use crate::project::{FeatureSession, SessionKind};
 
-fn build_claude_sidebar_data(
+fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
-) -> Option<super::pane::ClaudeSidebarData> {
-    if !view.has_claude_sidebar() {
-        return None;
-    }
+) -> Option<super::pane::AgentSidebarData> {
+    let sidebar_kind = view.sidebar_session_kind()?;
+
+    let (agent_label, fallback_session_label) = match sidebar_kind {
+        SessionKind::Claude => ("Claude", "Claude"),
+        SessionKind::Codex => ("Codex", "Codex"),
+        _ => return None,
+    };
 
     let (project, feature) = app.store.projects.iter().find_map(|project| {
         project
@@ -28,16 +32,13 @@ fn build_claude_sidebar_data(
         .sessions
         .iter()
         .find(|session| session.tmux_window == view.window)
-        .or_else(|| {
-            feature
-                .sessions
-                .iter()
-                .find(|session| matches!(session.kind, crate::project::SessionKind::Claude))
-        });
+        .or_else(|| feature.sessions.iter().find(|session| session.kind == sidebar_kind));
 
     let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
     let mode_label = if view.review {
         "Review".to_string()
+    } else if feature.plan_mode {
+        format!("{} + Plan", view.vibe_mode.display_name())
     } else {
         view.vibe_mode.display_name().to_string()
     };
@@ -66,7 +67,7 @@ fn build_claude_sidebar_data(
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let session_line = session_sidebar_line(session);
+    let session_line = session_sidebar_line(session, fallback_session_label);
     let prompt_text = app
         .latest_prompt_for_session(&feature.tmux_session)
         .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
@@ -80,10 +81,11 @@ fn build_claude_sidebar_data(
             .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     };
 
-    Some(super::pane::ClaudeSidebarData {
+    Some(super::pane::AgentSidebarData {
+        agent_kind: sidebar_kind,
         session_text: format!(
-            "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
-            project.name, feature_label, session_line, mode_label, feature.branch
+            "Target: {}/{}\nAgent: {}\nSession: {}\nMode: {}\nBranch: {}",
+            project.name, feature_label, agent_label, session_line, mode_label, feature.branch
         ),
         status_text: format!("Activity: {}\n{}", activity_line, usage_line),
         prompt_text,
@@ -91,10 +93,10 @@ fn build_claude_sidebar_data(
     })
 }
 
-fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
+fn session_sidebar_line(session: Option<&FeatureSession>, fallback_label: &str) -> String {
     session
         .map(|session| session.label.clone())
-        .unwrap_or_else(|| "Claude".to_string())
+        .unwrap_or_else(|| fallback_label.to_string())
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -151,7 +153,7 @@ fn format_sidebar_usage(status: &str) -> String {
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
-    let sidebar_data = build_claude_sidebar_data(app, view);
+    let sidebar_data = build_agent_sidebar_data(app, view);
     super::pane::draw(
         frame,
         view,

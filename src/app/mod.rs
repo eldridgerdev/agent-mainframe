@@ -50,6 +50,7 @@ use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 pub use self::setup::load_config;
+pub use codex_sessions::latest_prompt_for_session_id as codex_latest_prompt_for_session_id;
 pub use codex_sessions::session_info_for_workdir as codex_session_info_for_workdir;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};

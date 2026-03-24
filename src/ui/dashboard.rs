@@ -33,7 +33,12 @@ fn build_agent_sidebar_data(
         .sessions
         .iter()
         .find(|session| session.tmux_window == view.window)
-        .or_else(|| feature.sessions.iter().find(|session| session.kind == sidebar_kind));
+        .or_else(|| {
+            feature
+                .sessions
+                .iter()
+                .find(|session| session.kind == sidebar_kind)
+        });
 
     let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
     let mode_label = if view.review {
@@ -69,10 +74,12 @@ fn build_agent_sidebar_data(
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session, fallback_session_label);
-    let prompt_text = app
-        .latest_prompt_for_session(&feature.tmux_session)
-        .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
-        .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
+    let prompt_text = sidebar_prompt_text(
+        &sidebar_kind,
+        session,
+        &feature.workdir,
+        app.latest_prompt_for_session(&feature.tmux_session),
+    );
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
         "Generating summary...".to_string()
     } else {
@@ -85,7 +92,13 @@ fn build_agent_sidebar_data(
     let session_text = match session_metadata {
         Some(metadata) => format!(
             "Target: {}/{}\nAgent: {}\nSession: {}\n{}\nMode: {}\nBranch: {}",
-            project.name, feature_label, agent_label, session_line, metadata, mode_label, feature.branch
+            project.name,
+            feature_label,
+            agent_label,
+            session_line,
+            metadata,
+            mode_label,
+            feature.branch
         ),
         None => format!(
             "Target: {}/{}\nAgent: {}\nSession: {}\nMode: {}\nBranch: {}",
@@ -132,6 +145,49 @@ fn format_codex_session_metadata(
         Some(title) => format!("Thread: {short_id}\nTitle: {title}"),
         None => format!("Thread: {short_id}"),
     })
+}
+
+fn sidebar_prompt_text(
+    sidebar_kind: &SessionKind,
+    session: Option<&FeatureSession>,
+    workdir: &std::path::Path,
+    fallback_prompt: Option<&str>,
+) -> String {
+    let prompt = select_sidebar_prompt(
+        codex_session_prompt(sidebar_kind, session, workdir),
+        fallback_prompt,
+    );
+
+    prompt
+        .map(|prompt| format!("Preview: {}", compact_sidebar_text(&prompt, 120)))
+        .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string())
+}
+
+fn select_sidebar_prompt(
+    session_prompt: Option<String>,
+    fallback_prompt: Option<&str>,
+) -> Option<String> {
+    session_prompt.or_else(|| fallback_prompt.map(ToOwned::to_owned))
+}
+
+fn codex_session_prompt(
+    sidebar_kind: &SessionKind,
+    session: Option<&FeatureSession>,
+    workdir: &std::path::Path,
+) -> Option<String> {
+    if *sidebar_kind != SessionKind::Codex {
+        return None;
+    }
+
+    let source = session
+        .and_then(|session| session.token_usage_source.as_ref())
+        .filter(|source| source.provider == TokenUsageProvider::Codex)?;
+
+    crate::app::codex_latest_prompt_for_session_id(workdir, &source.id)
+        .ok()
+        .flatten()
+        .map(|prompt| prompt.trim().to_string())
+        .filter(|prompt| !prompt.is_empty())
 }
 
 fn shorten_session_id(session_id: &str) -> String {
@@ -553,6 +609,7 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::FeatureSession;
     use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
     use ratatui::layout::Rect;
 
@@ -647,5 +704,46 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn codex_feature_session(session_id: &str) -> FeatureSession {
+        FeatureSession {
+            id: "session-1".into(),
+            kind: SessionKind::Codex,
+            label: "Codex".into(),
+            tmux_window: "codex".into(),
+            claude_session_id: None,
+            token_usage_source: Some(TokenUsageSource {
+                provider: TokenUsageProvider::Codex,
+                id: session_id.into(),
+            }),
+            created_at: chrono::Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        }
+    }
+
+    #[test]
+    fn select_sidebar_prompt_prefers_session_specific_prompt() {
+        assert_eq!(
+            select_sidebar_prompt(Some("session prompt".to_string()), Some("fallback prompt")),
+            Some("session prompt".to_string())
+        );
+    }
+
+    #[test]
+    fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
+        let session = codex_feature_session("missing-session");
+
+        let prompt = sidebar_prompt_text(
+            &SessionKind::Codex,
+            Some(&session),
+            std::path::Path::new("/tmp/unused"),
+            Some("fallback prompt"),
+        );
+
+        assert!(prompt.contains("fallback prompt"));
     }
 }

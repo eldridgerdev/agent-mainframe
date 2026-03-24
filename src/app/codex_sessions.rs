@@ -23,7 +23,10 @@ pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
     fetch_codex_sessions_from_root(workdir, &sessions_root)
 }
 
-pub fn session_info_for_workdir(workdir: &Path, session_id: &str) -> Result<Option<CodexSessionInfo>> {
+pub fn session_info_for_workdir(
+    workdir: &Path,
+    session_id: &str,
+) -> Result<Option<CodexSessionInfo>> {
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(None);
     };
@@ -105,6 +108,13 @@ pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
     latest_prompt_for_workdir_from_root(workdir, &sessions_root)
 }
 
+pub fn latest_prompt_for_session_id(workdir: &Path, session_id: &str) -> Result<Option<String>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    latest_prompt_for_session_id_from_root(workdir, session_id, &sessions_root)
+}
+
 fn latest_prompt_for_workdir_from_root(
     workdir: &Path,
     sessions_root: &Path,
@@ -131,6 +141,49 @@ fn latest_prompt_for_workdir_from_root(
             let Some(parsed) = parse_codex_session_file_details(&path, workdir) else {
                 continue;
             };
+            let Some(prompt) = parsed.latest_prompt else {
+                continue;
+            };
+            match &newest_prompt {
+                Some((updated, _)) if *updated >= parsed.info.updated => {}
+                _ => newest_prompt = Some((parsed.info.updated, prompt)),
+            }
+        }
+    }
+
+    Ok(newest_prompt.map(|(_, prompt)| prompt))
+}
+
+fn latest_prompt_for_session_id_from_root(
+    workdir: &Path,
+    session_id: &str,
+    sessions_root: &Path,
+) -> Result<Option<String>> {
+    if !sessions_root.is_dir() {
+        return Ok(None);
+    }
+
+    let mut newest_prompt: Option<(i64, String)> = None;
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(parsed) = parse_codex_session_file_details(&path, workdir) else {
+                continue;
+            };
+            if parsed.info.id != session_id {
+                continue;
+            }
             let Some(prompt) = parsed.latest_prompt else {
                 continue;
             };
@@ -473,6 +526,77 @@ mod tests {
 
         let info =
             session_info_for_workdir_from_root(&workdir, "sess-current", tmp.path()).unwrap();
-        assert_eq!(info.as_ref().map(|info| info.title.as_str()), Some("current title"));
+        assert_eq!(
+            info.as_ref().map(|info| info.title.as_str()),
+            Some("current title")
+        );
+    }
+
+    #[test]
+    fn latest_prompt_for_session_id_returns_matching_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/other.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T11:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-other\",\"timestamp\":\"2026-03-08T10:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T11:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"other prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/current.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T12:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T11:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T12:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"current prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let prompt =
+            latest_prompt_for_session_id_from_root(&workdir, "sess-current", tmp.path()).unwrap();
+        assert_eq!(prompt.as_deref(), Some("current prompt"));
+    }
+
+    #[test]
+    fn latest_prompt_for_session_id_prefers_newest_matching_file() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/older.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T10:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"older prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/newer.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T13:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T12:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T13:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"newer prompt\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let prompt =
+            latest_prompt_for_session_id_from_root(&workdir, "sess-current", tmp.path()).unwrap();
+        assert_eq!(prompt.as_deref(), Some("newer prompt"));
     }
 }

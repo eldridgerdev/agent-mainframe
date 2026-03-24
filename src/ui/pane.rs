@@ -331,7 +331,9 @@ fn draw_agent_sidebar(
     let block = Block::default()
         .title(Span::styled(
             format!(" {title} "),
-            Style::default().fg(title_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))

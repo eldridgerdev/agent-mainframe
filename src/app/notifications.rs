@@ -453,16 +453,18 @@ impl App {
                 }
                 let normalized_prompt = prompt.trim();
                 if !normalized_prompt.is_empty() {
+                    let entry = crate::app::util::PromptEntry {
+                        text: normalized_prompt.to_string(),
+                        timestamp: Some(Utc::now().timestamp()),
+                    };
                     if let Some(sid) = session_id {
-                        self.latest_prompt_cache
-                            .insert(sid, normalized_prompt.to_string());
+                        self.latest_prompt_cache.insert(sid, entry);
                     } else if !cwd.is_empty() {
                         let cwd_path = PathBuf::from(&cwd);
                         if let Some((pi, fi)) = self.project_feature_for_cwd(&cwd_path).3 {
                             let tmux_session =
                                 self.store.projects[pi].features[fi].tmux_session.clone();
-                            self.latest_prompt_cache
-                                .insert(tmux_session, normalized_prompt.to_string());
+                            self.latest_prompt_cache.insert(tmux_session, entry);
                         }
                     }
                 }

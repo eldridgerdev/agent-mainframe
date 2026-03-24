@@ -205,7 +205,7 @@ pub struct App {
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
-    pub latest_prompt_cache: HashMap<String, String>,
+    pub latest_prompt_cache: HashMap<String, crate::app::util::PromptEntry>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -360,14 +360,19 @@ impl App {
         }
     }
 
-    fn build_latest_prompt_cache(store: &ProjectStore) -> HashMap<String, String> {
+    fn build_latest_prompt_cache(
+        store: &ProjectStore,
+    ) -> HashMap<String, crate::app::util::PromptEntry> {
         let mut cache = HashMap::new();
 
         for project in &store.projects {
             for feature in &project.features {
-                if let Some(prompt) = crate::app::util::read_latest_prompt(&feature.workdir)
-                    .map(|prompt| prompt.trim().to_string())
-                    .filter(|prompt| !prompt.is_empty())
+                if let Some(prompt) = crate::app::util::read_latest_prompt_entry(&feature.workdir)
+                    .map(|mut prompt| {
+                        prompt.text = prompt.text.trim().to_string();
+                        prompt
+                    })
+                    .filter(|prompt| !prompt.text.is_empty())
                 {
                     cache.insert(feature.tmux_session.clone(), prompt);
                 }
@@ -387,9 +392,12 @@ impl App {
             return;
         };
 
-        if let Some(prompt) = crate::app::util::read_latest_prompt(&feature.workdir)
-            .map(|prompt| prompt.trim().to_string())
-            .filter(|prompt| !prompt.is_empty())
+        if let Some(prompt) = crate::app::util::read_latest_prompt_entry(&feature.workdir)
+            .map(|mut prompt| {
+                prompt.text = prompt.text.trim().to_string();
+                prompt
+            })
+            .filter(|prompt| !prompt.text.is_empty())
         {
             self.latest_prompt_cache
                 .insert(feature.tmux_session.clone(), prompt);
@@ -398,10 +406,11 @@ impl App {
         }
     }
 
-    pub fn latest_prompt_for_session(&self, tmux_session: &str) -> Option<&str> {
-        self.latest_prompt_cache
-            .get(tmux_session)
-            .map(String::as_str)
+    pub fn latest_prompt_for_session(
+        &self,
+        tmux_session: &str,
+    ) -> Option<&crate::app::util::PromptEntry> {
+        self.latest_prompt_cache.get(tmux_session)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

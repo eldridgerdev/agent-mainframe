@@ -345,8 +345,8 @@ fn draw_claude_sidebar(
         .constraints([
             Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
             Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
-            Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
-            Constraint::Min(4),
+            Constraint::Length(sidebar_section_height(&data.prompt_text, 6, 9)),
+            Constraint::Min(2),
         ])
         .split(inner);
     let sections_with_content = [
@@ -375,9 +375,9 @@ fn draw_claude_sidebar(
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
-        "Session" => theme.primary.to_color(),
+        "Session" => theme.project_title.to_color(),
         "Status" => theme.warning.to_color(),
-        "Prompt" => theme.secondary.to_color(),
+        "Prompt" => theme.session_icon_claude.to_color(),
         "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
@@ -423,6 +423,18 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
             "stopped" => theme.status_stopped.to_color(),
             _ => theme.text.to_color(),
         }
+    } else if label == "At" {
+        theme.text_muted.to_color()
+    } else if label == "Mode" {
+        match lower.as_str() {
+            "vibeless" => theme.mode_vibeless.to_color(),
+            "vibe" => theme.mode_vibe.to_color(),
+            "supervibe" => theme.mode_supervibe.to_color(),
+            "review" => theme.mode_review.to_color(),
+            _ => theme.text.to_color(),
+        }
+    } else if label == "Cost" {
+        theme.warning.to_color()
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
@@ -433,18 +445,21 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
-    } else if title == "Prompt" {
-        theme.secondary.to_color()
     } else if title == "Summary" {
         theme.text.to_color()
-    } else if label == "Usage" {
+    } else if matches!(label, "Input" | "Output" | "Effective") {
         theme.status_detail.to_color()
+    } else if label == "Branch" {
+        theme.text_muted.to_color()
+    } else if title == "Prompt" {
+        theme.text.to_color()
     } else {
         theme.text.to_color()
     };
 
     let mut style = Style::default().fg(color);
     if label == "State"
+        || label == "Mode"
         || lower.contains("waiting")
         || lower.contains("thinking")
         || lower.contains("running tool")
@@ -711,8 +726,8 @@ mod tests {
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
         assert!(rendered.contains("Claude Sidebar"));
-        assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+        assert!(rendered.contains("Prompt"));
     }
 }

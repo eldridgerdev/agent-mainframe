@@ -69,6 +69,10 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
         })
 }
 
+pub fn read_latest_prompt_entry(workdir: &Path) -> Option<PromptEntry> {
+    read_all_prompts(workdir).into_iter().next()
+}
+
 pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
     let mut entries = read_prompts_from_claude_sessions(workdir);
 

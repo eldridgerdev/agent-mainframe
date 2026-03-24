@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::FeatureSession;
+use chrono::{DateTime, Datelike, Utc};
 
 fn build_claude_sidebar_data(
     app: &App,
@@ -69,7 +70,13 @@ fn build_claude_sidebar_data(
     let session_line = session_sidebar_line(session);
     let prompt_text = app
         .latest_prompt_for_session(&feature.tmux_session)
-        .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
+        .map(|prompt| {
+            format!(
+                "At: {}\nPreview:\n{}",
+                format_prompt_timestamp(prompt.timestamp),
+                format_prompt_preview(&prompt.text, 24, 4)
+            )
+        })
         .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
         "Generating summary...".to_string()
@@ -105,6 +112,78 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn format_prompt_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+        .map(|dt| {
+            if dt.year() == Utc::now().year() {
+                dt.format("%b %-d %-I:%M %p").to_string()
+            } else {
+                dt.format("%b %-d %Y %-I:%M %p").to_string()
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_prompt_preview(text: &str, width: usize, max_lines: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() || width == 0 || max_lines == 0 {
+        return String::new();
+    }
+
+    let words: Vec<&str> = compact.split(' ').collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut index = 0;
+
+    while index < words.len() {
+        let word = words[index];
+        let separator = if current.is_empty() { 0 } else { 1 };
+
+        if current.len() + separator + word.len() <= width {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+            index += 1;
+            continue;
+        }
+
+        if current.is_empty() {
+            let mut chunk = word
+                .chars()
+                .take(width.saturating_sub(1))
+                .collect::<String>();
+            chunk.push('…');
+            lines.push(chunk);
+            return lines.join("\n");
+        }
+
+        lines.push(current);
+        current = String::new();
+        if lines.len() == max_lines {
+            break;
+        }
+    }
+
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+
+    if index < words.len()
+        && let Some(last) = lines.last_mut()
+    {
+        if last.chars().count() >= width && width > 1 {
+            last.pop();
+        }
+        if !last.ends_with('…') {
+            last.push('…');
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -566,10 +645,28 @@ mod tests {
     }
 
     #[test]
+    fn prompt_timestamp_is_formatted_as_utc_time() {
+        assert_eq!(format_prompt_timestamp(Some(0)), "Jan 1 1970 12:00 AM");
+    }
+
+    #[test]
+    fn prompt_timestamp_handles_missing_values() {
+        assert_eq!(format_prompt_timestamp(None), "unknown");
+    }
+
+    #[test]
     fn sidebar_usage_falls_back_when_format_is_unknown() {
         assert_eq!(
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
+        );
+    }
+
+    #[test]
+    fn prompt_preview_wraps_before_truncating() {
+        assert_eq!(
+            format_prompt_preview("call a tool so i can see this wrap better", 12, 4),
+            "call a tool\nso i can see\nthis wrap\nbetter"
         );
     }
 }

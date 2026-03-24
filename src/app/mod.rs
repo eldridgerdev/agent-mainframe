@@ -11,6 +11,7 @@ mod hooks;
 mod navigation;
 mod notifications;
 mod opencode;
+pub(crate) mod opencode_storage;
 mod project_ops;
 mod rename;
 mod review;
@@ -206,6 +207,7 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, String>,
+    pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -233,6 +235,7 @@ impl App {
         crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let opencode_sidebar_cache = Self::build_opencode_sidebar_cache(&store);
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -267,6 +270,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            opencode_sidebar_cache,
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -317,6 +321,7 @@ impl App {
     ) -> Self {
         use crate::extension::ExtensionConfig;
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let opencode_sidebar_cache = Self::build_opencode_sidebar_cache(&store);
         Self {
             store,
             store_path: PathBuf::new(),
@@ -338,6 +343,7 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            opencode_sidebar_cache,
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -377,6 +383,34 @@ impl App {
         cache
     }
 
+    fn build_opencode_sidebar_cache(
+        store: &ProjectStore,
+    ) -> HashMap<String, opencode_storage::OpencodeSidebarData> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                let preferred_session_id = feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.kind == SessionKind::Opencode)
+                    .and_then(|session| session.token_usage_source.as_ref())
+                    .filter(|source| {
+                        source.provider == crate::token_tracking::TokenUsageProvider::Opencode
+                    })
+                    .map(|source| source.id.as_str());
+
+                if let Some(data) =
+                    opencode_storage::read_sidebar_data(&feature.workdir, preferred_session_id)
+                {
+                    cache.insert(feature.tmux_session.clone(), data);
+                }
+            }
+        }
+
+        cache
+    }
+
     pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {
         let Some(feature) = self
             .store
@@ -395,6 +429,34 @@ impl App {
                 .insert(feature.tmux_session.clone(), prompt);
         } else {
             self.latest_prompt_cache.remove(&feature.tmux_session);
+        }
+    }
+
+    pub(crate) fn refresh_opencode_sidebar_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return;
+        };
+
+        let preferred_session_id = feature
+            .sessions
+            .iter()
+            .find(|session| session.kind == SessionKind::Opencode)
+            .and_then(|session| session.token_usage_source.as_ref())
+            .filter(|source| source.provider == crate::token_tracking::TokenUsageProvider::Opencode)
+            .map(|source| source.id.as_str());
+
+        if let Some(data) =
+            opencode_storage::read_sidebar_data(&feature.workdir, preferred_session_id)
+        {
+            self.opencode_sidebar_cache
+                .insert(feature.tmux_session.clone(), data);
+        } else {
+            self.opencode_sidebar_cache.remove(&feature.tmux_session);
         }
     }
 

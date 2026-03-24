@@ -6,13 +6,10 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::FeatureSession;
+use crate::project::{Feature, FeatureSession, SessionKind};
 
-fn build_claude_sidebar_data(
-    app: &App,
-    view: &crate::app::ViewState,
-) -> Option<super::pane::ClaudeSidebarData> {
-    if !view.has_claude_sidebar() {
+fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::pane::SidebarData> {
+    if !view.has_sidebar() {
         return None;
     }
 
@@ -32,7 +29,7 @@ fn build_claude_sidebar_data(
             feature
                 .sessions
                 .iter()
-                .find(|session| matches!(session.kind, crate::project::SessionKind::Claude))
+                .find(|session| session.kind == view.session_kind)
         });
 
     let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
@@ -67,10 +64,20 @@ fn build_claude_sidebar_data(
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session);
-    let prompt_text = app
-        .latest_prompt_for_session(&feature.tmux_session)
-        .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
-        .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
+    let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
+    let prompt_text = match view.session_kind {
+        SessionKind::Opencode => opencode_sidebar
+            .and_then(|sidebar| sidebar.latest_prompt.as_deref())
+            .or_else(|| app.latest_prompt_for_session(&feature.tmux_session))
+            .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
+            .unwrap_or_else(|| "No recent prompt available yet.".to_string()),
+        _ => app
+            .latest_prompt_for_session(&feature.tmux_session)
+            .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
+            .unwrap_or_else(|| {
+                "No recent prompt.\nUse leader+l to open prompt history.".to_string()
+            }),
+    };
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
         "Generating summary...".to_string()
     } else {
@@ -80,12 +87,22 @@ fn build_claude_sidebar_data(
             .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     };
 
-    Some(super::pane::ClaudeSidebarData {
-        session_text: format!(
-            "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
-            project.name, feature_label, session_line, mode_label, feature.branch
+    Some(super::pane::SidebarData {
+        title: sidebar_title(&view.session_kind),
+        title_color: sidebar_title_color(&view.session_kind, &app.theme),
+        session_text: session_text(
+            project.name.as_str(),
+            feature,
+            feature_label,
+            session_line.as_str(),
+            mode_label.as_str(),
+            opencode_sidebar,
         ),
-        status_text: format!("Activity: {}\n{}", activity_line, usage_line),
+        status_text: status_text(
+            activity_line.as_str(),
+            usage_line.as_str(),
+            opencode_sidebar,
+        ),
         prompt_text,
         summary_text,
     })
@@ -94,7 +111,62 @@ fn build_claude_sidebar_data(
 fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
     session
         .map(|session| session.label.clone())
-        .unwrap_or_else(|| "Claude".to_string())
+        .unwrap_or_else(|| "Session".to_string())
+}
+
+fn session_text(
+    project_name: &str,
+    feature: &Feature,
+    feature_label: &str,
+    session_line: &str,
+    mode_label: &str,
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> String {
+    let mut lines = vec![
+        format!("Target: {project_name}/{feature_label}"),
+        format!("Session: {session_line}"),
+    ];
+    if let Some(title) = opencode_sidebar
+        .and_then(|sidebar| sidebar.title.as_deref())
+        .filter(|title| !title.is_empty())
+    {
+        lines.push(format!("Title: {}", compact_sidebar_text(title, 80)));
+    }
+    lines.push(format!("Mode: {mode_label}"));
+    if feature.plan_mode {
+        lines.push("Plan mode: on".to_string());
+    }
+    lines.push(format!("Branch: {}", feature.branch));
+    lines.join("\n")
+}
+
+fn status_text(
+    activity_line: &str,
+    usage_line: &str,
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> String {
+    let mut lines = vec![format!("Activity: {activity_line}"), usage_line.to_string()];
+    if let Some(change_line) = opencode_sidebar.and_then(|sidebar| sidebar.change_summary_line()) {
+        lines.push(change_line);
+    }
+    lines.join("\n")
+}
+
+fn sidebar_title(session_kind: &SessionKind) -> &'static str {
+    match session_kind {
+        SessionKind::Opencode => " Opencode Sidebar ",
+        _ => " Claude Sidebar ",
+    }
+}
+
+fn sidebar_title_color(
+    session_kind: &SessionKind,
+    theme: &crate::theme::Theme,
+) -> ratatui::style::Color {
+    match session_kind {
+        SessionKind::Opencode => theme.session_icon_opencode.to_color(),
+        _ => theme.session_icon_claude.to_color(),
+    }
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -151,7 +223,7 @@ fn format_sidebar_usage(status: &str) -> String {
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
-    let sidebar_data = build_claude_sidebar_data(app, view);
+    let sidebar_data = build_sidebar_data(app, view);
     super::pane::draw(
         frame,
         view,

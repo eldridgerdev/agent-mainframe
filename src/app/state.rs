@@ -112,8 +112,11 @@ impl ViewState {
         }
     }
 
-    pub fn has_claude_sidebar(&self) -> bool {
-        self.session_kind == SessionKind::Claude
+    pub fn has_sidebar(&self) -> bool {
+        matches!(
+            self.session_kind,
+            SessionKind::Claude | SessionKind::Opencode
+        )
     }
 }
 

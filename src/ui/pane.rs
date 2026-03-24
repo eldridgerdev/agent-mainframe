@@ -30,11 +30,13 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("?", "Help"),
 ];
 
-const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
-const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
+const SIDEBAR_WIDTH: u16 = 32;
+const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ClaudeSidebarData {
+pub(crate) struct SidebarData {
+    pub title: &'static str,
+    pub title_color: Color,
     pub session_text: String,
     pub status_text: String,
     pub prompt_text: String,
@@ -54,15 +56,15 @@ pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
 }
 
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
-    if !view.has_claude_sidebar() {
+    if !view.has_sidebar() {
         return None;
     }
 
-    if total_width < CLAUDE_SIDEBAR_MIN_MAIN_WIDTH + CLAUDE_SIDEBAR_WIDTH {
+    if total_width < SIDEBAR_MIN_MAIN_WIDTH + SIDEBAR_WIDTH {
         return None;
     }
 
-    Some(CLAUDE_SIDEBAR_WIDTH)
+    Some(SIDEBAR_WIDTH)
 }
 
 fn split_content_area(content_area: Rect, view: &ViewState) -> ContentLayout {
@@ -122,7 +124,7 @@ pub fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,
-    sidebar_data: Option<&ClaudeSidebarData>,
+    sidebar_data: Option<&SidebarData>,
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
@@ -255,7 +257,7 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_claude_sidebar(frame, sidebar_area, sidebar_data, theme);
+        draw_sidebar(frame, sidebar_area, sidebar_data, theme);
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -306,21 +308,18 @@ pub fn draw(
     }
 }
 
-fn draw_claude_sidebar(
-    frame: &mut Frame,
-    area: Rect,
-    data: Option<&ClaudeSidebarData>,
-    theme: &Theme,
-) {
+fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme: &Theme) {
     if area.width < 16 || area.height < 8 {
         return;
     }
 
     let block = Block::default()
         .title(Span::styled(
-            " Claude Sidebar ",
+            data.map(|data| data.title).unwrap_or(" Sidebar "),
             Style::default()
-                .fg(theme.session_icon_claude.to_color())
+                .fg(data
+                    .map(|data| data.title_color)
+                    .unwrap_or(theme.primary.to_color()))
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
@@ -333,7 +332,9 @@ fn draw_claude_sidebar(
         return;
     }
 
-    let fallback = ClaudeSidebarData {
+    let fallback = SidebarData {
+        title: " Sidebar ",
+        title_color: theme.primary.to_color(),
         session_text: "Claude sidebar loading".to_string(),
         status_text: "No sidebar data available.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
@@ -668,13 +669,13 @@ mod tests {
     }
 
     #[test]
-    fn claude_sidebar_width_is_reserved_when_view_is_wide_enough() {
+    fn sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
         assert_eq!(width, 88);
     }
 
     #[test]
-    fn non_claude_sessions_keep_full_width() {
+    fn sessions_without_sidebar_keep_full_width() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
         assert_eq!(width, 120);
     }
@@ -685,7 +686,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
-        let sidebar = ClaudeSidebarData {
+        let sidebar = SidebarData {
+            title: " Claude Sidebar ",
+            title_color: theme.session_icon_claude.to_color(),
             session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
@@ -714,5 +717,44 @@ mod tests {
         assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+    }
+
+    #[test]
+    fn opencode_sidebar_shell_renders_in_view() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Opencode);
+        let theme = Theme::default();
+        let sidebar = SidebarData {
+            title: " Opencode Sidebar ",
+            title_color: theme.session_icon_opencode.to_color(),
+            session_text: "Project: proj\nTitle: Sidebar plan".into(),
+            status_text: "Activity: Ready\nChanges: 2 files · +10 / -3".into(),
+            prompt_text: "Preview: implement the sidebar".into(),
+            summary_text: "Summary ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Opencode Sidebar"));
+        assert!(rendered.contains("Summary ready."));
+        assert!(rendered.contains("Changes: 2 files"));
+        assert!(rendered.contains("implement"));
     }
 }

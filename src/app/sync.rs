@@ -41,9 +41,14 @@ impl App {
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
         let pricing = self.config.token_pricing.clone();
         let mut discovered_sources = false;
+        let mut opencode_refresh_targets = Vec::new();
 
-        for project in &mut self.store.projects {
-            for feature in &mut project.features {
+        for (pi, project) in self.store.projects.iter_mut().enumerate() {
+            for (fi, feature) in project.features.iter_mut().enumerate() {
+                let refresh_opencode_sidebar = feature
+                    .sessions
+                    .iter()
+                    .any(|session| session.kind == SessionKind::Opencode);
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
                         let status_path = feature
@@ -105,7 +110,15 @@ impl App {
                         .and_then(|source| tracker.read_usage(source, &feature.workdir))
                         .map(|usage| format_token_usage(&usage, &pricing));
                 }
+
+                if refresh_opencode_sidebar {
+                    opencode_refresh_targets.push((pi, fi));
+                }
             }
+        }
+
+        for (pi, fi) in opencode_refresh_targets {
+            self.refresh_opencode_sidebar_for_feature(pi, fi);
         }
 
         if discovered_sources && let Err(err) = self.save() {

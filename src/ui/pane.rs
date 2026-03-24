@@ -20,6 +20,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("s", "Steering coach"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
+    ("v", "Expand/collapse todos"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
     ("o", "Scroll mode"),
@@ -256,7 +257,13 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_claude_sidebar(frame, sidebar_area, sidebar_data, theme);
+        draw_claude_sidebar(
+            frame,
+            sidebar_area,
+            sidebar_data,
+            view.todos_expanded,
+            theme,
+        );
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -311,6 +318,7 @@ fn draw_claude_sidebar(
     frame: &mut Frame,
     area: Rect,
     data: Option<&ClaudeSidebarData>,
+    todos_expanded: bool,
     theme: &Theme,
 ) {
     if area.width < 16 || area.height < 8 {
@@ -342,23 +350,45 @@ fn draw_claude_sidebar(
         summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
-            Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-            Constraint::Length(sidebar_section_height(&data.task_text, 8, 12)),
-            Constraint::Length(sidebar_section_height(&data.prompt_text, 5, 7)),
-            Constraint::Min(2),
-        ])
-        .split(inner);
-    let sections_with_content = [
-        ("Session", data.session_text.as_str()),
-        ("Status", data.status_text.as_str()),
-        ("Todos", data.task_text.as_str()),
-        ("Prompt", data.prompt_text.as_str()),
-        ("Summary", data.summary_text.as_str()),
-    ];
+    let (sections, sections_with_content): (Vec<Rect>, Vec<(&str, &str)>) = if todos_expanded {
+        (
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
+                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
+                    Constraint::Min(8),
+                ])
+                .split(inner)
+                .to_vec(),
+            vec![
+                ("Session", data.session_text.as_str()),
+                ("Status", data.status_text.as_str()),
+                ("Todos", data.task_text.as_str()),
+            ],
+        )
+    } else {
+        (
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(sidebar_section_height(&data.session_text, 5, 5)),
+                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
+                    Constraint::Length(sidebar_section_height(&data.task_text, 8, 12)),
+                    Constraint::Length(sidebar_section_height(&data.prompt_text, 5, 7)),
+                    Constraint::Min(2),
+                ])
+                .split(inner)
+                .to_vec(),
+            vec![
+                ("Session", data.session_text.as_str()),
+                ("Status", data.status_text.as_str()),
+                ("Todos", data.task_text.as_str()),
+                ("Prompt", data.prompt_text.as_str()),
+                ("Summary", data.summary_text.as_str()),
+            ],
+        )
+    };
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
         let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
@@ -366,15 +396,31 @@ fn draw_claude_sidebar(
             .style(Style::default().bg(theme.effective_bg()))
             .block(
                 Block::default()
-                    .title(Span::styled(
-                        format!(" {} ", title),
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ))
+                    .title(sidebar_section_title(title, theme))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(accent)),
             );
         frame.render_widget(paragraph, *section);
     }
+}
+
+fn sidebar_section_title(title: &str, theme: &Theme) -> Line<'static> {
+    let accent = sidebar_section_color(title, theme);
+    let mut spans = vec![Span::styled(
+        format!(" {} ", title),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    )];
+
+    if title == "Todos" {
+        spans.push(Span::styled(
+            "leader+v ",
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Line::from(spans)
 }
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
@@ -804,5 +850,11 @@ mod tests {
         assert!(rendered.contains("Resume the task."));
         assert!(rendered.contains("Todos"));
         assert!(rendered.contains("Prompt"));
+    }
+
+    #[test]
+    fn sample_view_defaults_to_collapsed_todos() {
+        let view = sample_view(crate::project::SessionKind::Claude);
+        assert!(!view.todos_expanded);
     }
 }

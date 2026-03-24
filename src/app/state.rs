@@ -81,6 +81,7 @@ pub struct ViewState {
     pub scroll_total_lines: usize,
     pub scroll_passthrough: bool,
     pub selection: TextSelection,
+    pub todos_expanded: bool,
 }
 
 impl ViewState {
@@ -109,6 +110,7 @@ impl ViewState {
             scroll_total_lines: 0,
             scroll_passthrough: false,
             selection: TextSelection::default(),
+            todos_expanded: false,
         }
     }
 

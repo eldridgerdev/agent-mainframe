@@ -291,6 +291,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
         }
+        KeyCode::Char('v') => {
+            app.toggle_expanded_todos_in_view();
+        }
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
         }
@@ -537,6 +540,30 @@ mod tests {
                 assert_eq!(state.view.session, "amf-feature");
             }
             _ => panic!("expected LatestPrompt mode"),
+        }
+    }
+
+    #[test]
+    fn leader_v_toggles_expanded_todos() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('v')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => {
+                assert!(view.todos_expanded);
+            }
+            _ => panic!("expected Viewing mode"),
+        }
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('v')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert!(!view.todos_expanded),
+            _ => panic!("expected Viewing mode"),
         }
     }
 

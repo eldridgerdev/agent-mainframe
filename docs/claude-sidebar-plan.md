@@ -36,7 +36,7 @@ matching opencode's content is a separate instrumentation problem.
 - [x] Render a real `Todos` list from Claude task state in the sidebar
 - [x] Add transcript fallback when `claude_session_id` is missing
 - [x] Improve todo styling and widen the sidebar for better readability
-- [ ] Add expandable sidebar-section views with visible keybind hints
+- [x] Add a focused todo viewer with a visible sidebar keybind hint
 - [ ] Add a show/hide sidebar keybind, defaulting to shown
 - [ ] Remove the `Session` section
 - [ ] Remove the `Summary` section
@@ -176,8 +176,8 @@ Queue these for the next working session.
 
 1. Add sidebar expansion keybinds
    - add keybinds to open sidebar sections in a larger focused view
-   - the primary target is the todo list, since it can grow beyond the sidebar
-   - show the relevant keybind hint directly in the sidebar section title/body
+   - the todo list viewer and its sidebar hint are now implemented
+   - decide whether any other sidebar section needs an expanded view
    - add a keybind to show/hide the sidebar entirely
    - keep the sidebar shown by default
 

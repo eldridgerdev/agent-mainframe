@@ -155,6 +155,17 @@ impl App {
         self.message = None;
     }
 
+    pub fn toggle_expanded_todos_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.todos_expanded = !view.todos_expanded;
+            self.message = Some(if view.todos_expanded {
+                "Expanded todos".into()
+            } else {
+                "Collapsed todos".into()
+            });
+        }
+    }
+
     pub fn inject_latest_prompt(&mut self) -> Result<()> {
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::LatestPrompt(state) => state,

@@ -170,6 +170,11 @@ amf upgrade
 
 > The upgrade command fetches the latest release over HTTPS. If you
 > previously saw TLS errors on upgrade, this is fixed in v0.10.1.
+>
+> If you are upgrading from a version older than v0.11.1 and see a
+> `404` during download, reinstall once from the latest release bundle.
+> Older AMF versions expected standalone release binaries, but releases
+> now publish `.tar.gz` bundles.
 
 Check the installed version:
 

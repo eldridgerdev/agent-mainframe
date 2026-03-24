@@ -61,6 +61,7 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
         self.refresh_latest_prompt_for_feature(pi, fi);
+        self.refresh_task_state_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
@@ -152,6 +153,31 @@ impl App {
             view,
         });
         self.message = None;
+    }
+
+    pub fn toggle_expanded_todos_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.todos_expanded = !view.todos_expanded;
+            self.message = Some(if view.todos_expanded {
+                "Expanded todos".into()
+            } else {
+                "Collapsed todos".into()
+            });
+        }
+    }
+
+    pub fn toggle_sidebar_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.sidebar_visible = !view.sidebar_visible;
+            if !view.sidebar_visible {
+                view.todos_expanded = false;
+            }
+            self.message = Some(if view.sidebar_visible {
+                "Showed sidebar".into()
+            } else {
+                "Hid sidebar".into()
+            });
+        }
     }
 
     pub fn inject_latest_prompt(&mut self) -> Result<()> {

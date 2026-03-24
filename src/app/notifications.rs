@@ -99,6 +99,118 @@ impl App {
         (project_name, feature_name, agent_name, indices)
     }
 
+    fn apply_live_task_create(
+        &mut self,
+        tmux_session: &str,
+        subject: Option<String>,
+        description: Option<String>,
+        active_form: Option<String>,
+    ) {
+        let subject = subject
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let Some(subject) = subject else {
+            return;
+        };
+
+        let next_id = self
+            .task_state_cache
+            .get(tmux_session)
+            .and_then(|state| {
+                state
+                    .tasks
+                    .iter()
+                    .filter_map(|task| task.id.parse::<usize>().ok())
+                    .max()
+            })
+            .unwrap_or(0)
+            + 1;
+
+        let state = self
+            .task_state_cache
+            .entry(tmux_session.to_string())
+            .or_default();
+        state.tasks.push(crate::app::util::ClaudeTask {
+            id: next_id.to_string(),
+            subject,
+            description: description
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            active_form: active_form
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            status: "pending".to_string(),
+        });
+    }
+
+    fn apply_live_task_update(
+        &mut self,
+        tmux_session: &str,
+        task_id: Option<String>,
+        status: Option<String>,
+        active_form: Option<String>,
+        subject: Option<String>,
+        description: Option<String>,
+    ) {
+        let task_id = task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let Some(task_id) = task_id else {
+            return;
+        };
+
+        let state = self
+            .task_state_cache
+            .entry(tmux_session.to_string())
+            .or_default();
+        let task = if let Some(task) = state.tasks.iter_mut().find(|task| task.id == task_id) {
+            task
+        } else {
+            state.tasks.push(crate::app::util::ClaudeTask {
+                id: task_id.clone(),
+                subject: subject
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("Task {task_id}")),
+                description: None,
+                active_form: None,
+                status: "pending".to_string(),
+            });
+            state.tasks.last_mut().expect("inserted task should exist")
+        };
+
+        if let Some(status) = status
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            task.status = status;
+        }
+        if let Some(active_form) = active_form
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            task.active_form = Some(active_form);
+        }
+        if let Some(subject) = subject
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            task.subject = subject;
+        }
+        if let Some(description) = description
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            task.description = Some(description);
+        }
+    }
+
     pub(crate) fn open_diff_review_prompt(&mut self, input: &PendingInput) {
         let response_file = input.response_file.clone().unwrap_or_default();
         let proceed_signal = input.proceed_signal.clone().unwrap_or_default();
@@ -178,6 +290,11 @@ impl App {
             relative_path: Option<String>,
             tool: Option<String>,
             tool_name: Option<String>,
+            task_id: Option<String>,
+            task_subject: Option<String>,
+            task_description: Option<String>,
+            task_active_form: Option<String>,
+            task_status: Option<String>,
             change_id: Option<String>,
             old_snippet: Option<String>,
             new_snippet: Option<String>,
@@ -423,6 +540,28 @@ impl App {
                         .clone()
                         .or(msg.tool.clone())
                         .unwrap_or_default();
+                    if label.trim().is_empty() {
+                        self.active_tool_cache.remove(&sid);
+                    } else {
+                        self.active_tool_cache.insert(sid.clone(), label.clone());
+                    }
+                    match label.as_str() {
+                        "TaskCreate" => self.apply_live_task_create(
+                            &sid,
+                            msg.task_subject.clone(),
+                            msg.task_description.clone(),
+                            msg.task_active_form.clone(),
+                        ),
+                        "TaskUpdate" => self.apply_live_task_update(
+                            &sid,
+                            msg.task_id.clone(),
+                            msg.task_status.clone(),
+                            msg.task_active_form.clone(),
+                            msg.task_subject.clone(),
+                            msg.task_description.clone(),
+                        ),
+                        _ => {}
+                    }
                     self.log_debug("ipc", format!("tool-start for {sid} ({label})"));
                 }
                 continue;
@@ -431,6 +570,7 @@ impl App {
             if msg_type == "tool-stop" {
                 if let Some(sid) = msg.session_id {
                     self.ipc_tool_sessions.remove(&sid);
+                    self.active_tool_cache.remove(&sid);
                     self.log_debug("ipc", format!("tool-stop for {sid}"));
                 }
                 continue;
@@ -453,16 +593,18 @@ impl App {
                 }
                 let normalized_prompt = prompt.trim();
                 if !normalized_prompt.is_empty() {
+                    let entry = crate::app::util::PromptEntry {
+                        text: normalized_prompt.to_string(),
+                        timestamp: Some(Utc::now().timestamp()),
+                    };
                     if let Some(sid) = session_id {
-                        self.latest_prompt_cache
-                            .insert(sid, normalized_prompt.to_string());
+                        self.latest_prompt_cache.insert(sid, entry);
                     } else if !cwd.is_empty() {
                         let cwd_path = PathBuf::from(&cwd);
                         if let Some((pi, fi)) = self.project_feature_for_cwd(&cwd_path).3 {
                             let tmux_session =
                                 self.store.projects[pi].features[fi].tmux_session.clone();
-                            self.latest_prompt_cache
-                                .insert(tmux_session, normalized_prompt.to_string());
+                            self.latest_prompt_cache.insert(tmux_session, entry);
                         }
                     }
                 }

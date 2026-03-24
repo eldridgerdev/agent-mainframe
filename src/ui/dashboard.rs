@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::FeatureSession;
+use chrono::{DateTime, Datelike, Utc};
 
 fn build_claude_sidebar_data(
     app: &App,
@@ -34,14 +34,7 @@ fn build_claude_sidebar_data(
                 .iter()
                 .find(|session| matches!(session.kind, crate::project::SessionKind::Claude))
         });
-
-    let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
-    let mode_label = if view.review {
-        "Review".to_string()
-    } else {
-        view.vibe_mode.display_name().to_string()
-    };
-    let waiting_count = app
+    let matching_inputs: Vec<_> = app
         .pending_inputs
         .iter()
         .filter(|input| {
@@ -49,7 +42,8 @@ fn build_claude_sidebar_data(
                 || (input.project_name.as_deref() == Some(project.name.as_str())
                     && input.feature_name.as_deref() == Some(feature.name.as_str()))
         })
-        .count();
+        .collect();
+    let waiting_count = matching_inputs.len();
     let status_line = match waiting_count {
         0 => "Ready".to_string(),
         1 => "Waiting for 1 input".to_string(),
@@ -62,39 +56,45 @@ fn build_claude_sidebar_data(
     } else {
         status_line
     };
+    let tool_line = app
+        .active_tool_for_session(&feature.tmux_session)
+        .map(|tool| format!("Tool: {tool}"));
+    let request_line = matching_inputs.iter().find_map(|input| {
+        let message = input.message.trim();
+        if message.is_empty() {
+            None
+        } else {
+            Some(format!("Request: {}", compact_sidebar_text(message, 60)))
+        }
+    });
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let session_line = session_sidebar_line(session);
+    let task_text = app
+        .task_state_for_session(&feature.tmux_session)
+        .map(format_sidebar_task)
+        .unwrap_or_else(|| "No task data yet.".to_string());
     let prompt_text = app
         .latest_prompt_for_session(&feature.tmux_session)
-        .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
+        .map(|prompt| {
+            format!(
+                "At: {}\nPreview:\n{}",
+                format_prompt_timestamp(prompt.timestamp),
+                format_prompt_preview(&prompt.text, 24, 4)
+            )
+        })
         .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string());
-    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
-        "Generating summary...".to_string()
-    } else {
-        feature
-            .summary
-            .clone()
-            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
-    };
-
     Some(super::pane::ClaudeSidebarData {
-        session_text: format!(
-            "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
-            project.name, feature_label, session_line, mode_label, feature.branch
+        status_text: format_sidebar_status(
+            &activity_line,
+            tool_line.as_deref(),
+            request_line.as_deref(),
+            &usage_line,
         ),
-        status_text: format!("Activity: {}\n{}", activity_line, usage_line),
+        task_text,
         prompt_text,
-        summary_text,
     })
-}
-
-fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
-    session
-        .map(|session| session.label.clone())
-        .unwrap_or_else(|| "Claude".to_string())
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -105,6 +105,78 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn format_prompt_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0))
+        .map(|dt| {
+            if dt.year() == Utc::now().year() {
+                dt.format("%b %-d %-I:%M %p").to_string()
+            } else {
+                dt.format("%b %-d %Y %-I:%M %p").to_string()
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_prompt_preview(text: &str, width: usize, max_lines: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() || width == 0 || max_lines == 0 {
+        return String::new();
+    }
+
+    let words: Vec<&str> = compact.split(' ').collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut index = 0;
+
+    while index < words.len() {
+        let word = words[index];
+        let separator = if current.is_empty() { 0 } else { 1 };
+
+        if current.len() + separator + word.len() <= width {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+            index += 1;
+            continue;
+        }
+
+        if current.is_empty() {
+            let mut chunk = word
+                .chars()
+                .take(width.saturating_sub(1))
+                .collect::<String>();
+            chunk.push('…');
+            lines.push(chunk);
+            return lines.join("\n");
+        }
+
+        lines.push(current);
+        current = String::new();
+        if lines.len() == max_lines {
+            break;
+        }
+    }
+
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(current);
+    }
+
+    if index < words.len()
+        && let Some(last) = lines.last_mut()
+    {
+        if last.chars().count() >= width && width > 1 {
+            last.pop();
+        }
+        if !last.ends_with('…') {
+            last.push('…');
+        }
+    }
+
+    lines.join("\n")
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -148,6 +220,58 @@ fn format_sidebar_usage(status: &str) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn format_sidebar_task(task_state: &crate::app::util::ClaudeTaskState) -> String {
+    let total = task_state.tasks.len();
+    if total == 0 {
+        return "No task data yet.".to_string();
+    }
+
+    let completed = task_state.completed_count();
+    let active = usize::from(task_state.current_task().is_some());
+    let pending = task_state.pending_count();
+
+    let mut lines = vec![format!(
+        "{total} tasks ({completed} done, {active} active, {pending} open)"
+    )];
+
+    for task in &task_state.tasks {
+        let prefix = match task.status.as_str() {
+            "completed" => "[x]",
+            "in_progress" => "[>]",
+            "pending" => "[ ]",
+            _ => "[?]",
+        };
+        lines.push(format!(
+            "{prefix} {}",
+            compact_sidebar_text(&task.subject, 46)
+        ));
+        if task.status == "in_progress"
+            && let Some(active_form) = task.active_form.as_deref()
+        {
+            lines.push(format!("    {}", compact_sidebar_text(active_form, 44)));
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn format_sidebar_status(
+    activity: &str,
+    tool: Option<&str>,
+    request: Option<&str>,
+    usage: &str,
+) -> String {
+    let mut lines = vec![format!("Activity: {activity}")];
+    if let Some(tool) = tool.filter(|tool| !tool.trim().is_empty()) {
+        lines.push(tool.to_string());
+    }
+    if let Some(request) = request.filter(|request| !request.trim().is_empty()) {
+        lines.push(request.to_string());
+    }
+    lines.extend(usage.lines().map(str::to_string));
+    lines.join("\n")
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
@@ -566,10 +690,88 @@ mod tests {
     }
 
     #[test]
+    fn prompt_timestamp_is_formatted_as_utc_time() {
+        assert_eq!(format_prompt_timestamp(Some(0)), "Jan 1 1970 12:00 AM");
+    }
+
+    #[test]
+    fn prompt_timestamp_handles_missing_values() {
+        assert_eq!(format_prompt_timestamp(None), "unknown");
+    }
+
+    #[test]
     fn sidebar_usage_falls_back_when_format_is_unknown() {
         assert_eq!(
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
+        );
+    }
+
+    #[test]
+    fn prompt_preview_wraps_before_truncating() {
+        assert_eq!(
+            format_prompt_preview("call a tool so i can see this wrap better", 12, 4),
+            "call a tool\nso i can see\nthis wrap\nbetter"
+        );
+    }
+
+    #[test]
+    fn sidebar_status_includes_active_tool_line() {
+        assert_eq!(
+            format_sidebar_status(
+                "Running tool",
+                Some("Tool: Edit"),
+                None,
+                "Input: 16.0k tokens\nOutput: 2.0k tokens"
+            ),
+            "Activity: Running tool\nTool: Edit\nInput: 16.0k tokens\nOutput: 2.0k tokens"
+        );
+    }
+
+    #[test]
+    fn sidebar_status_includes_request_line() {
+        assert_eq!(
+            format_sidebar_status(
+                "Waiting for 1 input",
+                None,
+                Some("Request: Need user answer"),
+                "Input: 16.0k tokens"
+            ),
+            "Activity: Waiting for 1 input\nRequest: Need user answer\nInput: 16.0k tokens"
+        );
+    }
+
+    #[test]
+    fn sidebar_task_renders_todo_list_with_active_item() {
+        let task_state = crate::app::util::ClaudeTaskState {
+            tasks: vec![
+                crate::app::util::ClaudeTask {
+                    id: "1".into(),
+                    subject: "Explore sidebar".into(),
+                    description: None,
+                    active_form: None,
+                    status: "completed".into(),
+                },
+                crate::app::util::ClaudeTask {
+                    id: "2".into(),
+                    subject: "Implement task sidebar".into(),
+                    description: None,
+                    active_form: Some("Updating sidebar rendering".into()),
+                    status: "in_progress".into(),
+                },
+                crate::app::util::ClaudeTask {
+                    id: "3".into(),
+                    subject: "Run tests".into(),
+                    description: None,
+                    active_form: None,
+                    status: "pending".into(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            format_sidebar_task(&task_state),
+            "3 tasks (1 done, 1 active, 1 open)\n[x] Explore sidebar\n[>] Implement task sidebar\n    Updating sidebar rendering\n[ ] Run tests"
         );
     }
 }

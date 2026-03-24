@@ -18,8 +18,10 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("/", "Command picker"),
     ("i", "Pending inputs"),
     ("s", "Steering coach"),
+    ("b", "Show/hide sidebar"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
+    ("v", "Expand/collapse todos"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
     ("o", "Scroll mode"),
@@ -30,15 +32,14 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("?", "Help"),
 ];
 
-const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
+const CLAUDE_SIDEBAR_WIDTH: u16 = 36;
 const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeSidebarData {
-    pub session_text: String,
     pub status_text: String,
+    pub task_text: String,
     pub prompt_text: String,
-    pub summary_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,7 +256,13 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_claude_sidebar(frame, sidebar_area, sidebar_data, theme);
+        draw_claude_sidebar(
+            frame,
+            sidebar_area,
+            sidebar_data,
+            view.todos_expanded,
+            theme,
+        );
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -310,6 +317,7 @@ fn draw_claude_sidebar(
     frame: &mut Frame,
     area: Rect,
     data: Option<&ClaudeSidebarData>,
+    todos_expanded: bool,
     theme: &Theme,
 ) {
     if area.width < 16 || area.height < 8 {
@@ -334,51 +342,101 @@ fn draw_claude_sidebar(
     }
 
     let fallback = ClaudeSidebarData {
-        session_text: "Claude sidebar loading".to_string(),
         status_text: "No sidebar data available.".to_string(),
+        task_text: "No task data yet.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
-        summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
-            Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
-            Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
-            Constraint::Min(4),
-        ])
-        .split(inner);
-    let sections_with_content = [
-        ("Session", data.session_text.as_str()),
-        ("Status", data.status_text.as_str()),
-        ("Prompt", data.prompt_text.as_str()),
-        ("Summary", data.summary_text.as_str()),
-    ];
+    let (sections, sections_with_content): (Vec<Rect>, Vec<(&str, &str)>) = if todos_expanded {
+        (
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
+                    Constraint::Min(10),
+                ])
+                .split(inner)
+                .to_vec(),
+            vec![
+                ("Status", data.status_text.as_str()),
+                ("Todos", data.task_text.as_str()),
+            ],
+        )
+    } else {
+        (
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
+                    Constraint::Min(sidebar_section_height(&data.task_text, 11, 13)),
+                    Constraint::Length(sidebar_section_height(&data.prompt_text, 4, 5)),
+                ])
+                .split(inner)
+                .to_vec(),
+            vec![
+                ("Status", data.status_text.as_str()),
+                ("Todos", data.task_text.as_str()),
+                ("Prompt", data.prompt_text.as_str()),
+            ],
+        )
+    };
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
-        let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme.effective_bg()))
-            .block(
-                Block::default()
-                    .title(Span::styled(
-                        format!(" {} ", title),
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(accent)),
-            );
+        let paragraph = Paragraph::new(sidebar_section_lines(
+            title,
+            body,
+            section.height.saturating_sub(2),
+            theme,
+        ))
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(theme.effective_bg()))
+        .block(
+            Block::default()
+                .title(sidebar_section_title(title, theme))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent)),
+        );
         frame.render_widget(paragraph, *section);
     }
 }
 
+fn sidebar_section_lines<'a>(
+    title: &str,
+    body: &'a str,
+    visible_lines: u16,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
+    if title == "Todos" {
+        return focused_todo_lines(body, visible_lines as usize, theme);
+    }
+
+    styled_sidebar_lines(title, body, theme)
+}
+
+fn sidebar_section_title(title: &str, theme: &Theme) -> Line<'static> {
+    let accent = sidebar_section_color(title, theme);
+    let mut spans = vec![Span::styled(
+        format!(" {} ", title),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    )];
+
+    if title == "Todos" {
+        spans.push(Span::styled(
+            "leader+v ",
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    Line::from(spans)
+}
+
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
-        "Session" => theme.primary.to_color(),
         "Status" => theme.warning.to_color(),
-        "Prompt" => theme.secondary.to_color(),
-        "Summary" => theme.info.to_color(),
+        "Todos" => theme.success.to_color(),
+        "Prompt" => theme.session_icon_claude.to_color(),
         _ => theme.border.to_color(),
     }
 }
@@ -391,6 +449,9 @@ fn sidebar_section_height(body: &str, min_inner_lines: u16, max_inner_lines: u16
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            if title == "Todos" {
+                return styled_todo_line(line, theme);
+            }
             if let Some((label, value)) = line.split_once(": ") {
                 Line::from(vec![
                     Span::styled(
@@ -414,6 +475,142 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
         .collect()
 }
 
+fn focused_todo_lines<'a>(body: &'a str, visible_lines: usize, theme: &Theme) -> Vec<Line<'a>> {
+    let raw_lines: Vec<&str> = body.lines().collect();
+    if visible_lines == 0 || raw_lines.is_empty() {
+        return Vec::new();
+    }
+
+    let (start, end) = todo_focus_window(&raw_lines, visible_lines);
+    raw_lines[start..end]
+        .iter()
+        .map(|line| styled_todo_line(line, theme))
+        .collect()
+}
+
+fn todo_focus_window(lines: &[&str], visible_lines: usize) -> (usize, usize) {
+    let total = lines.len();
+    if total <= visible_lines {
+        return (0, total);
+    }
+
+    let active_idx = lines.iter().position(|line| line.starts_with("[>] "));
+    let active_detail_idx = active_idx.and_then(|idx| {
+        lines
+            .get(idx + 1)
+            .filter(|line| line.starts_with("    "))
+            .map(|_| idx + 1)
+    });
+
+    let next_unfinished_idx = active_idx
+        .and_then(|idx| {
+            lines
+                .iter()
+                .enumerate()
+                .skip(idx + 1)
+                .find(|(_, line)| line.starts_with("[ ] ") || line.starts_with("[>] "))
+                .map(|(idx, _)| idx)
+        })
+        .or_else(|| {
+            lines
+                .iter()
+                .enumerate()
+                .find(|(_, line)| line.starts_with("[ ] ") || line.starts_with("[>] "))
+                .map(|(idx, _)| idx)
+        });
+
+    let focus_idx = next_unfinished_idx
+        .or(active_detail_idx)
+        .or(active_idx)
+        .unwrap_or(0);
+
+    let mut start = focus_idx.saturating_add(1).saturating_sub(visible_lines);
+
+    if let Some(active) = active_idx
+        && active < start
+    {
+        start = active;
+    }
+
+    if let Some(active_detail) = active_detail_idx
+        && active_detail >= start + visible_lines
+    {
+        start = active_detail
+            .saturating_add(1)
+            .saturating_sub(visible_lines);
+    }
+
+    if let Some(next_unfinished) = next_unfinished_idx
+        && next_unfinished >= start + visible_lines
+    {
+        start = next_unfinished
+            .saturating_add(1)
+            .saturating_sub(visible_lines);
+    }
+
+    let end = (start + visible_lines).min(total);
+    (start.min(total.saturating_sub(visible_lines)), end)
+}
+
+fn styled_todo_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
+    if line.starts_with("[x] ") {
+        let text = line.trim_start_matches("[x] ");
+        return Line::from(vec![
+            Span::styled(
+                "[x] ".to_string(),
+                Style::default()
+                    .fg(theme.success.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                text.to_string(),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]);
+    }
+
+    if line.starts_with("[>] ") {
+        let text = line.trim_start_matches("[>] ");
+        return Line::from(vec![
+            Span::styled(
+                "[>] ".to_string(),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                text.to_string(),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]);
+    }
+
+    if line.starts_with("[ ] ") {
+        let text = line.trim_start_matches("[ ] ");
+        return Line::from(vec![
+            Span::styled(
+                "[ ] ".to_string(),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(text.to_string(), Style::default().fg(theme.text.to_color())),
+        ]);
+    }
+
+    if line.starts_with("    ") {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(theme.status_detail.to_color()),
+        ));
+    }
+
+    Line::from(Span::styled(
+        line.to_string(),
+        Style::default().fg(theme.text_muted.to_color()),
+    ))
+}
+
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
     let lower = value.to_lowercase();
     let color = if label == "State" {
@@ -423,6 +620,20 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
             "stopped" => theme.status_stopped.to_color(),
             _ => theme.text.to_color(),
         }
+    } else if label == "At" {
+        theme.text_muted.to_color()
+    } else if label == "Tool" {
+        theme.info.to_color()
+    } else if label == "Mode" {
+        match lower.as_str() {
+            "vibeless" => theme.mode_vibeless.to_color(),
+            "vibe" => theme.mode_vibe.to_color(),
+            "supervibe" => theme.mode_supervibe.to_color(),
+            "review" => theme.mode_review.to_color(),
+            _ => theme.text.to_color(),
+        }
+    } else if label == "Cost" {
+        theme.warning.to_color()
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
@@ -431,20 +642,24 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.success.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
-    } else if lower.contains("unavailable") || lower.contains("no summary yet") {
+    } else if lower.contains("unavailable") {
+        theme.text_muted.to_color()
+    } else if title == "Todos" {
+        theme.text.to_color()
+    } else if matches!(label, "Input" | "Output" | "Effective") {
+        theme.status_detail.to_color()
+    } else if label == "Branch" {
         theme.text_muted.to_color()
     } else if title == "Prompt" {
-        theme.secondary.to_color()
-    } else if title == "Summary" {
         theme.text.to_color()
-    } else if label == "Usage" {
-        theme.status_detail.to_color()
     } else {
         theme.text.to_color()
     };
 
     let mut style = Style::default().fg(color);
     if label == "State"
+        || label == "Tool"
+        || label == "Mode"
         || lower.contains("waiting")
         || lower.contains("thinking")
         || lower.contains("running tool")
@@ -670,12 +885,20 @@ mod tests {
     #[test]
     fn claude_sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
-        assert_eq!(width, 88);
+        assert_eq!(width, 84);
     }
 
     #[test]
     fn non_claude_sessions_keep_full_width() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
+        assert_eq!(width, 120);
+    }
+
+    #[test]
+    fn hidden_claude_sidebar_uses_full_width() {
+        let mut view = sample_view(crate::project::SessionKind::Claude);
+        view.sidebar_visible = false;
+        let width = viewing_main_width(&view, 120);
         assert_eq!(width, 120);
     }
 
@@ -686,10 +909,9 @@ mod tests {
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
         let sidebar = ClaudeSidebarData {
-            session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            task_text: "Current: Investigate task tracking".into(),
             prompt_text: "Preview: Resume the task.".into(),
-            summary_text: "Sidebar ready.".into(),
         };
 
         terminal
@@ -711,8 +933,51 @@ mod tests {
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
         assert!(rendered.contains("Claude Sidebar"));
-        assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
-        assert!(rendered.contains("Resume the task."));
+        assert!(!rendered.contains("Session"));
+        assert!(rendered.contains("Todos"));
+        assert!(rendered.contains("Prompt"));
+    }
+
+    #[test]
+    fn sample_view_defaults_to_collapsed_todos() {
+        let view = sample_view(crate::project::SessionKind::Claude);
+        assert!(view.sidebar_visible);
+        assert!(!view.todos_expanded);
+    }
+
+    #[test]
+    fn todo_focus_window_keeps_active_and_next_open_visible() {
+        let lines = [
+            "8 tasks (3 done, 1 active, 4 open)",
+            "[x] Done one",
+            "[x] Done two",
+            "[>] Current task",
+            "    Working on current task",
+            "[ ] Next task",
+            "[ ] Later task",
+        ];
+
+        let (start, end) = todo_focus_window(&lines, 4);
+        let visible = &lines[start..end];
+
+        assert!(visible.contains(&"[>] Current task"));
+        assert!(visible.contains(&"[ ] Next task"));
+    }
+
+    #[test]
+    fn todo_focus_window_prefers_first_open_when_no_active_task() {
+        let lines = [
+            "5 tasks (2 done, 0 active, 3 open)",
+            "[x] Done one",
+            "[x] Done two",
+            "[ ] First open",
+            "[ ] Second open",
+        ];
+
+        let (start, end) = todo_focus_window(&lines, 2);
+        let visible = &lines[start..end];
+
+        assert!(visible.contains(&"[ ] First open"));
     }
 }

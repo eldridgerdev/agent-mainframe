@@ -61,6 +61,12 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
         self.refresh_latest_prompt_for_feature(pi, fi);
+        self.refresh_codex_sidebar_cache_for_view(
+            &project_name,
+            &feature_name,
+            &session_window,
+            &session_kind,
+        );
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {

@@ -208,6 +208,8 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, String>,
+    pub codex_session_title_cache: HashMap<String, Option<String>>,
+    pub codex_session_prompt_cache: HashMap<String, Option<String>>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -269,6 +271,8 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            codex_session_title_cache: HashMap::new(),
+            codex_session_prompt_cache: HashMap::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -340,6 +344,8 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            codex_session_title_cache: HashMap::new(),
+            codex_session_prompt_cache: HashMap::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -404,6 +410,91 @@ impl App {
         self.latest_prompt_cache
             .get(tmux_session)
             .map(String::as_str)
+    }
+
+    fn codex_sidebar_cache_key(workdir: &Path, session_id: &str) -> String {
+        format!("{}::{session_id}", workdir.display())
+    }
+
+    pub(crate) fn refresh_codex_sidebar_cache_for_session(
+        &mut self,
+        workdir: &Path,
+        session_id: &str,
+    ) {
+        let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
+        let title = crate::app::codex_session_info_for_workdir(workdir, session_id)
+            .ok()
+            .flatten()
+            .map(|info| info.title)
+            .filter(|title| !title.trim().is_empty() && title != "Untitled");
+        self.codex_session_title_cache
+            .insert(cache_key.clone(), title);
+
+        let prompt = crate::app::codex_latest_prompt_for_session_id(workdir, session_id)
+            .ok()
+            .flatten()
+            .map(|prompt| prompt.trim().to_string())
+            .filter(|prompt| !prompt.is_empty());
+        self.codex_session_prompt_cache.insert(cache_key, prompt);
+    }
+
+    pub(crate) fn refresh_codex_sidebar_cache_for_view(
+        &mut self,
+        project_name: &str,
+        feature_name: &str,
+        window: &str,
+        session_kind: &SessionKind,
+    ) {
+        if *session_kind != SessionKind::Codex {
+            return;
+        }
+
+        let context = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == feature_name)
+            })
+            .and_then(|feature| {
+                feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.tmux_window == window)
+                    .and_then(|session| {
+                        session
+                            .token_usage_source
+                            .as_ref()
+                            .filter(|source| {
+                                source.provider == crate::token_tracking::TokenUsageProvider::Codex
+                            })
+                            .map(|source| (feature.workdir.clone(), source.id.clone()))
+                    })
+            });
+
+        let Some((workdir, session_id)) = context else {
+            return;
+        };
+
+        self.refresh_codex_sidebar_cache_for_session(&workdir, &session_id);
+    }
+
+    pub fn cached_codex_session_title(&self, workdir: &Path, session_id: &str) -> Option<&str> {
+        let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
+        self.codex_session_title_cache
+            .get(&cache_key)
+            .and_then(|title| title.as_deref())
+    }
+
+    pub fn cached_codex_session_prompt(&self, workdir: &Path, session_id: &str) -> Option<&str> {
+        let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
+        self.codex_session_prompt_cache
+            .get(&cache_key)
+            .and_then(|prompt| prompt.as_deref())
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

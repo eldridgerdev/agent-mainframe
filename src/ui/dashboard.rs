@@ -7,7 +7,7 @@ use ratatui::{
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{FeatureSession, SessionKind, TokenUsageSourceMatch};
-use crate::token_tracking::TokenUsageProvider;
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 fn build_agent_sidebar_data(
     app: &App,
@@ -74,10 +74,10 @@ fn build_agent_sidebar_data(
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session, fallback_session_label);
+    let codex_source = codex_sidebar_source(&sidebar_kind, session);
     let prompt_text = sidebar_prompt_text(
-        &sidebar_kind,
-        session,
-        &feature.workdir,
+        codex_source
+            .and_then(|source| app.cached_codex_session_prompt(&feature.workdir, &source.id)),
         app.latest_prompt_for_session(&feature.tmux_session),
     );
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
@@ -88,7 +88,11 @@ fn build_agent_sidebar_data(
             .clone()
             .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     };
-    let session_metadata = format_codex_session_metadata(&sidebar_kind, session, &feature.workdir);
+    let session_metadata = format_codex_session_metadata(
+        codex_source,
+        codex_source
+            .and_then(|source| app.cached_codex_session_title(&feature.workdir, &source.id)),
+    );
     let session_text = match session_metadata {
         Some(metadata) => format!(
             "Target: {}/{}\nAgent: {}\nSession: {}\n{}\nMode: {}\nBranch: {}",
@@ -129,26 +133,24 @@ fn session_sidebar_line(session: Option<&FeatureSession>, fallback_label: &str) 
         .unwrap_or_else(|| fallback_label.to_string())
 }
 
-fn format_codex_session_metadata(
+fn codex_sidebar_source<'a>(
     sidebar_kind: &SessionKind,
-    session: Option<&FeatureSession>,
-    workdir: &std::path::Path,
-) -> Option<String> {
+    session: Option<&'a FeatureSession>,
+) -> Option<&'a TokenUsageSource> {
     if *sidebar_kind != SessionKind::Codex {
         return None;
     }
 
-    let source = session
+    session
         .and_then(|session| session.token_usage_source.as_ref())
-        .filter(|source| source.provider == TokenUsageProvider::Codex)?;
-    let short_id = shorten_session_id(&source.id);
+        .filter(|source| source.provider == TokenUsageProvider::Codex)
+}
 
-    let title = crate::app::codex_session_info_for_workdir(workdir, &source.id)
-        .ok()
-        .flatten()
-        .map(|info| info.title)
-        .filter(|title| !title.trim().is_empty() && title != "Untitled");
-
+fn format_codex_session_metadata(
+    source: Option<&TokenUsageSource>,
+    title: Option<&str>,
+) -> Option<String> {
+    let short_id = shorten_session_id(&source?.id);
     Some(match title {
         Some(title) => format!("Thread: {short_id}\nTitle: {title}"),
         None => format!("Thread: {short_id}"),
@@ -170,47 +172,20 @@ fn format_codex_usage_source_confidence(
     })
 }
 
-fn sidebar_prompt_text(
-    sidebar_kind: &SessionKind,
-    session: Option<&FeatureSession>,
-    workdir: &std::path::Path,
-    fallback_prompt: Option<&str>,
-) -> String {
-    let prompt = select_sidebar_prompt(
-        codex_session_prompt(sidebar_kind, session, workdir),
-        fallback_prompt,
-    );
-
+fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&str>) -> String {
+    let prompt = select_sidebar_prompt(session_prompt, fallback_prompt);
     prompt
         .map(|prompt| format!("Preview: {}", compact_sidebar_text(&prompt, 120)))
         .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string())
 }
 
 fn select_sidebar_prompt(
-    session_prompt: Option<String>,
+    session_prompt: Option<&str>,
     fallback_prompt: Option<&str>,
 ) -> Option<String> {
-    session_prompt.or_else(|| fallback_prompt.map(ToOwned::to_owned))
-}
-
-fn codex_session_prompt(
-    sidebar_kind: &SessionKind,
-    session: Option<&FeatureSession>,
-    workdir: &std::path::Path,
-) -> Option<String> {
-    if *sidebar_kind != SessionKind::Codex {
-        return None;
-    }
-
-    let source = session
-        .and_then(|session| session.token_usage_source.as_ref())
-        .filter(|source| source.provider == TokenUsageProvider::Codex)?;
-
-    crate::app::codex_latest_prompt_for_session_id(workdir, &source.id)
-        .ok()
-        .flatten()
-        .map(|prompt| prompt.trim().to_string())
-        .filter(|prompt| !prompt.is_empty())
+    session_prompt
+        .map(ToOwned::to_owned)
+        .or_else(|| fallback_prompt.map(ToOwned::to_owned))
 }
 
 fn shorten_session_id(session_id: &str) -> String {
@@ -720,12 +695,9 @@ mod tests {
             status_text: None,
         };
 
+        let source = codex_sidebar_source(&SessionKind::Claude, Some(&session));
         assert_eq!(
-            format_codex_session_metadata(
-                &SessionKind::Claude,
-                Some(&session),
-                std::path::Path::new("/tmp/unused")
-            ),
+            format_codex_session_metadata(source, Some("unused title")),
             None
         );
     }
@@ -753,21 +725,14 @@ mod tests {
     #[test]
     fn select_sidebar_prompt_prefers_session_specific_prompt() {
         assert_eq!(
-            select_sidebar_prompt(Some("session prompt".to_string()), Some("fallback prompt")),
+            select_sidebar_prompt(Some("session prompt"), Some("fallback prompt")),
             Some("session prompt".to_string())
         );
     }
 
     #[test]
     fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
-        let session = codex_feature_session("missing-session");
-
-        let prompt = sidebar_prompt_text(
-            &SessionKind::Codex,
-            Some(&session),
-            std::path::Path::new("/tmp/unused"),
-            Some("fallback prompt"),
-        );
+        let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
         assert!(prompt.contains("fallback prompt"));
     }

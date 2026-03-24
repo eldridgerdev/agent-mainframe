@@ -344,7 +344,7 @@ fn draw_claude_sidebar(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
-            Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
+            Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
             Constraint::Length(sidebar_section_height(&data.prompt_text, 6, 9)),
             Constraint::Min(2),
         ])

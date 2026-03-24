@@ -42,7 +42,7 @@ fn build_claude_sidebar_data(
     } else {
         view.vibe_mode.display_name().to_string()
     };
-    let waiting_count = app
+    let matching_inputs: Vec<_> = app
         .pending_inputs
         .iter()
         .filter(|input| {
@@ -50,7 +50,8 @@ fn build_claude_sidebar_data(
                 || (input.project_name.as_deref() == Some(project.name.as_str())
                     && input.feature_name.as_deref() == Some(feature.name.as_str()))
         })
-        .count();
+        .collect();
+    let waiting_count = matching_inputs.len();
     let status_line = match waiting_count {
         0 => "Ready".to_string(),
         1 => "Waiting for 1 input".to_string(),
@@ -66,6 +67,14 @@ fn build_claude_sidebar_data(
     let tool_line = app
         .active_tool_for_session(&feature.tmux_session)
         .map(|tool| format!("Tool: {tool}"));
+    let request_line = matching_inputs.iter().find_map(|input| {
+        let message = input.message.trim();
+        if message.is_empty() {
+            None
+        } else {
+            Some(format!("Request: {}", compact_sidebar_text(message, 60)))
+        }
+    });
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
@@ -95,7 +104,12 @@ fn build_claude_sidebar_data(
             "Target: {}/{}\nSession: {}\nMode: {}\nBranch: {}",
             project.name, feature_label, session_line, mode_label, feature.branch
         ),
-        status_text: format_sidebar_status(&activity_line, tool_line.as_deref(), &usage_line),
+        status_text: format_sidebar_status(
+            &activity_line,
+            tool_line.as_deref(),
+            request_line.as_deref(),
+            &usage_line,
+        ),
         prompt_text,
         summary_text,
     })
@@ -232,10 +246,18 @@ fn format_sidebar_usage(status: &str) -> String {
     }
 }
 
-fn format_sidebar_status(activity: &str, tool: Option<&str>, usage: &str) -> String {
+fn format_sidebar_status(
+    activity: &str,
+    tool: Option<&str>,
+    request: Option<&str>,
+    usage: &str,
+) -> String {
     let mut lines = vec![format!("Activity: {activity}")];
     if let Some(tool) = tool.filter(|tool| !tool.trim().is_empty()) {
         lines.push(tool.to_string());
+    }
+    if let Some(request) = request.filter(|request| !request.trim().is_empty()) {
+        lines.push(request.to_string());
     }
     lines.extend(usage.lines().map(str::to_string));
     lines.join("\n")
@@ -688,9 +710,23 @@ mod tests {
             format_sidebar_status(
                 "Running tool",
                 Some("Tool: Edit"),
+                None,
                 "Input: 16.0k tokens\nOutput: 2.0k tokens"
             ),
             "Activity: Running tool\nTool: Edit\nInput: 16.0k tokens\nOutput: 2.0k tokens"
+        );
+    }
+
+    #[test]
+    fn sidebar_status_includes_request_line() {
+        assert_eq!(
+            format_sidebar_status(
+                "Waiting for 1 input",
+                None,
+                Some("Request: Need user answer"),
+                "Input: 16.0k tokens"
+            ),
+            "Activity: Waiting for 1 input\nRequest: Need user answer\nInput: 16.0k tokens"
         );
     }
 }

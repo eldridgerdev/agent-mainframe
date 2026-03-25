@@ -1,4 +1,5 @@
 use crate::worktree::WorktreeManager;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -69,8 +70,38 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
         })
 }
 
+pub(crate) fn read_latest_prompt_for_session(
+    workdir: &Path,
+    session_kind: Option<&crate::project::SessionKind>,
+    preferred_session_id: Option<&str>,
+) -> Option<String> {
+    let entries = read_all_prompts_for_session(workdir, session_kind, preferred_session_id);
+    entries
+        .into_iter()
+        .max_by(|a, b| match (a.timestamp, b.timestamp) {
+            (Some(at), Some(bt)) => at.cmp(&bt),
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (None, None) => std::cmp::Ordering::Equal,
+        })
+        .map(|entry| entry.text)
+}
+
 pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
-    let mut entries = read_prompts_from_claude_sessions(workdir);
+    read_all_prompts_for_session(workdir, None, None)
+}
+
+pub(crate) fn read_all_prompts_for_session(
+    workdir: &Path,
+    session_kind: Option<&crate::project::SessionKind>,
+    preferred_session_id: Option<&str>,
+) -> Vec<PromptEntry> {
+    let mut entries = match session_kind {
+        Some(crate::project::SessionKind::Opencode) => {
+            read_prompts_from_opencode_storage(workdir, preferred_session_id)
+        }
+        _ => read_prompts_from_claude_sessions(workdir),
+    };
 
     // Fall back to latest-prompt.txt if no session entries found
     if entries.is_empty() {
@@ -99,6 +130,17 @@ pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
     });
 
     entries
+}
+
+fn read_prompts_from_opencode_storage(
+    workdir: &Path,
+    preferred_session_id: Option<&str>,
+) -> Vec<PromptEntry> {
+    let Some(storage_root) = dirs::data_dir().map(|dir| dir.join("opencode").join("storage"))
+    else {
+        return Vec::new();
+    };
+    read_prompts_from_opencode_storage_root(&storage_root, workdir, preferred_session_id)
 }
 
 fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
@@ -175,6 +217,112 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
     entries
 }
 
+fn read_prompts_from_opencode_storage_root(
+    storage_root: &Path,
+    workdir: &Path,
+    preferred_session_id: Option<&str>,
+) -> Vec<PromptEntry> {
+    let Some(session_id) = find_opencode_session_id(storage_root, workdir, preferred_session_id)
+    else {
+        return Vec::new();
+    };
+    let message_root = storage_root.join("message").join(&session_id);
+    if !message_root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut entries = Vec::new();
+    for message_path in walk_json_files(&message_root) {
+        let Ok(contents) = std::fs::read_to_string(&message_path) else {
+            continue;
+        };
+        let Ok(message) = serde_json::from_str::<OpencodeMessage>(&contents) else {
+            continue;
+        };
+        if message.role != "user" {
+            continue;
+        }
+
+        let text = read_opencode_prompt_text(storage_root, &message.id).or_else(|| {
+            message
+                .summary
+                .and_then(|summary| summary.title)
+                .map(|title| title.trim().to_string())
+                .filter(|title| !title.is_empty())
+        });
+        let Some(text) = text else {
+            continue;
+        };
+
+        entries.push(PromptEntry {
+            text,
+            timestamp: Some(message.time.created / 1000),
+        });
+    }
+
+    entries
+}
+
+fn find_opencode_session_id(
+    storage_root: &Path,
+    workdir: &Path,
+    preferred_session_id: Option<&str>,
+) -> Option<String> {
+    let session_root = storage_root.join("session");
+    if !session_root.is_dir() {
+        return None;
+    }
+
+    let sessions = walk_json_files(&session_root)
+        .into_iter()
+        .filter_map(|path| parse_opencode_session(&path))
+        .collect::<Vec<_>>();
+
+    if let Some(session_id) = preferred_session_id
+        && sessions.iter().any(|session| session.id == session_id)
+    {
+        return Some(session_id.to_string());
+    }
+
+    sessions
+        .into_iter()
+        .filter(|session| session.directory == workdir)
+        .max_by_key(|session| session.updated)
+        .map(|session| session.id)
+}
+
+fn read_opencode_prompt_text(storage_root: &Path, message_id: &str) -> Option<String> {
+    let part_root = storage_root.join("part").join(message_id);
+    if !part_root.is_dir() {
+        return None;
+    }
+
+    let mut texts = Vec::new();
+    for part_path in walk_json_files(&part_root) {
+        let Ok(contents) = std::fs::read_to_string(part_path) else {
+            continue;
+        };
+        let Ok(part) = serde_json::from_str::<OpencodePart>(&contents) else {
+            continue;
+        };
+        if part.part_type != "text" {
+            continue;
+        }
+        let Some(text) = part.text.map(|text| text.trim().to_string()) else {
+            continue;
+        };
+        if !text.is_empty() {
+            texts.push(text);
+        }
+    }
+
+    if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    }
+}
+
 fn extract_user_prompt_text(value: &serde_json::Value) -> Option<String> {
     if let Some(content) = value["message"]["content"].as_str() {
         return Some(content.to_string());
@@ -203,6 +351,194 @@ fn encode_claude_path(path: &Path) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+fn walk_json_files(root: &Path) -> Vec<PathBuf> {
+    if !root.is_dir() {
+        return Vec::new();
+    }
+
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeSessionFile {
+    id: String,
+    directory: String,
+    time: OpencodeTime,
+}
+
+#[derive(Debug)]
+struct OpencodeSessionRecord {
+    id: String,
+    directory: PathBuf,
+    updated: i64,
+}
+
+fn parse_opencode_session(path: &Path) -> Option<OpencodeSessionRecord> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let session = serde_json::from_str::<OpencodeSessionFile>(&contents).ok()?;
+    Some(OpencodeSessionRecord {
+        id: session.id,
+        directory: PathBuf::from(session.directory),
+        updated: session.time.updated,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeTime {
+    updated: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeMessage {
+    id: String,
+    role: String,
+    time: OpencodeMessageTime,
+    #[serde(default)]
+    summary: Option<OpencodeMessageSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeMessageTime {
+    created: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodeMessageSummary {
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodePart {
+    #[serde(rename = "type")]
+    part_type: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn reads_opencode_prompts_from_selected_session_storage() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-prompts");
+        let storage = temp.path();
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-picked")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-1")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-2")).unwrap();
+
+        std::fs::write(
+            storage
+                .join("session")
+                .join("project-a")
+                .join("ses-picked.json"),
+            "{\"id\":\"ses-picked\",\"directory\":\"/other\",\"time\":{\"updated\":2}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage
+                .join("message")
+                .join("ses-picked")
+                .join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"user\",\"time\":{\"created\":1000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage
+                .join("message")
+                .join("ses-picked")
+                .join("msg-2.json"),
+            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":3000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-1").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"older prompt\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-2").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"latest prompt\"}",
+        )
+        .unwrap();
+
+        let entries =
+            read_prompts_from_opencode_storage_root(storage, &workdir, Some("ses-picked"));
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].text, "older prompt");
+        assert_eq!(entries[1].text, "latest prompt");
+    }
+
+    #[test]
+    fn reads_opencode_prompts_by_workdir_and_falls_back_to_summary_title() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-prompts");
+        let storage = temp.path();
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-1")).unwrap();
+
+        std::fs::write(
+            storage.join("session").join("project-a").join("ses-1.json"),
+            format!(
+                "{{\"id\":\"ses-1\",\"directory\":\"{}\",\"time\":{{\"updated\":5}}}}",
+                workdir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"assistant\",\"time\":{\"created\":1000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-2.json"),
+            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":2000},\"summary\":{\"title\":\"summary prompt\"}}",
+        )
+        .unwrap();
+
+        let entries = read_prompts_from_opencode_storage_root(storage, &workdir, None);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "summary prompt");
+        assert_eq!(entries[0].timestamp, Some(2));
+    }
+
+    #[test]
+    fn latest_prompt_for_session_prefers_newest_timestamp() {
+        let workdir = PathBuf::from("/tmp/unused");
+        let latest = read_latest_prompt_for_session(&workdir, None, None);
+        assert_eq!(latest, None);
+    }
 }
 
 pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {

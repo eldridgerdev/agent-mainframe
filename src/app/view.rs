@@ -60,8 +60,7 @@ impl App {
         let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
-        self.refresh_latest_prompt_for_feature(pi, fi);
-        self.refresh_opencode_sidebar_for_feature(pi, fi);
+        self.schedule_sidebar_load_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
@@ -127,7 +126,7 @@ impl App {
             }
         };
 
-        let workdir = self
+        let feature_data = self
             .store
             .projects
             .iter()
@@ -138,15 +137,37 @@ impl App {
                     .iter()
                     .find(|feature| feature.name == view.feature_name)
             })
-            .map(|feature| feature.workdir.clone());
+            .map(|feature| {
+                let preferred_opencode_session_id = feature
+                    .sessions
+                    .iter()
+                    .find(|session| {
+                        session.kind == SessionKind::Opencode && session.tmux_window == view.window
+                    })
+                    .and_then(|session| session.token_usage_source.as_ref())
+                    .filter(|source| {
+                        source.provider == crate::token_tracking::TokenUsageProvider::Opencode
+                    })
+                    .map(|source| source.id.clone());
 
-        let Some(workdir) = workdir else {
+                (
+                    feature.workdir.clone(),
+                    view.session_kind.clone(),
+                    preferred_opencode_session_id,
+                )
+            });
+
+        let Some((workdir, session_kind, preferred_opencode_session_id)) = feature_data else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return;
         };
 
-        let prompts = crate::app::util::read_all_prompts(&workdir);
+        let prompts = crate::app::util::read_all_prompts_for_session(
+            &workdir,
+            Some(&session_kind),
+            preferred_opencode_session_id.as_deref(),
+        );
         self.mode = AppMode::LatestPrompt(LatestPromptState {
             prompts,
             selected: 0,

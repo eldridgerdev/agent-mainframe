@@ -92,6 +92,47 @@ fn read_latest_prompt_falls_back_to_codex_path() {
     );
 }
 
+#[test]
+fn poll_sidebar_load_results_updates_feature_caches() {
+    let repo = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_load_tx
+        .send(super::SidebarLoadResult {
+            tmux_session: "amf-my-feat".to_string(),
+            latest_prompt: Some("lazy prompt".to_string()),
+            opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
+                session_id: "ses-1".to_string(),
+                title: Some("Loaded later".to_string()),
+                latest_prompt: Some("lazy prompt".to_string()),
+                reasoning_tokens: Some(12),
+                additions: Some(3),
+                deletions: Some(1),
+                files: Some(1),
+            }),
+        })
+        .unwrap();
+
+    app.poll_sidebar_load_results();
+
+    assert_eq!(
+        app.latest_prompt_for_session("amf-my-feat"),
+        Some("lazy prompt")
+    );
+    assert_eq!(
+        app.opencode_sidebar_cache
+            .get("amf-my-feat")
+            .and_then(|data| data.title.as_deref()),
+        Some("Loaded later")
+    );
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
 // ── AppConfig defaults ───────────────────────────────────
 
 #[test]

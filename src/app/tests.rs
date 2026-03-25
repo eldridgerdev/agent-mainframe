@@ -1805,6 +1805,29 @@ fn stop_feature_transitions_idle_to_stopped() {
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Feature(0, 0);
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), "cached prompt".to_string());
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
 
     app.stop_feature().unwrap();
 
@@ -1817,6 +1840,64 @@ fn stop_feature_transitions_idle_to_stopped() {
         "got: {:?}",
         app.message
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn complete_deleting_feature_clears_sidebar_caches() {
+    let repo = TempDir::new().unwrap();
+    let tmp = NamedTempFile::new().unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), "cached prompt".to_string());
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        tmux_session: "amf-my-feat".to_string(),
+        is_worktree: false,
+        repo: repo.path().to_path_buf(),
+        workdir: repo.path().to_path_buf(),
+        stage: DeleteStage::Completed,
+        child: None,
+        output: String::new(),
+        output_rx: None,
+        error: None,
+    });
+
+    app.complete_deleting_feature().unwrap();
+
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 // ── ensure_notification_hooks ─────────────────────────────

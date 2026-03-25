@@ -440,6 +440,12 @@ impl App {
         }
     }
 
+    pub(crate) fn clear_sidebar_state_for_session(&mut self, tmux_session: &str) {
+        self.pending_sidebar_loads.remove(tmux_session);
+        self.latest_prompt_cache.remove(tmux_session);
+        self.opencode_sidebar_cache.remove(tmux_session);
+    }
+
     pub fn latest_prompt_for_session(&self, tmux_session: &str) -> Option<&str> {
         self.latest_prompt_cache
             .get(tmux_session)

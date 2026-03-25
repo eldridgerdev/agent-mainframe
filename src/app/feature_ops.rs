@@ -824,6 +824,7 @@ impl App {
         };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
+        self.clear_sidebar_state_for_session(&tmux_session);
         self.save()?;
         self.message = Some(format!("Stopped '{}'", name));
 
@@ -964,11 +965,12 @@ impl App {
     }
 
     pub fn complete_deleting_feature(&mut self) -> Result<()> {
-        let (project_name, feature_name, had_error, error_msg) = {
+        let (project_name, feature_name, tmux_session, had_error, error_msg) = {
             match &self.mode {
                 AppMode::DeletingFeatureInProgress(s) => (
                     s.project_name.clone(),
                     s.feature_name.clone(),
+                    s.tmux_session.clone(),
                     s.error.is_some(),
                     s.error.clone(),
                 ),
@@ -989,6 +991,7 @@ impl App {
             return Ok(());
         }
 
+        self.clear_sidebar_state_for_session(&tmux_session);
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
@@ -1106,6 +1109,7 @@ impl App {
                         ),
                     );
                 } else {
+                    self.clear_sidebar_state_for_session(&deletion.tmux_session);
                     self.store
                         .remove_feature(&deletion.project_name, &deletion.feature_name);
                     let _ = self.save();

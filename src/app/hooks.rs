@@ -55,42 +55,53 @@ impl App {
             .projects
             .iter()
             .position(|project| project.name == project_name)?;
-        let project = self.store.projects.get_mut(pi)?;
-        project.collapsed = false;
+        let mut reused_tmux_session = None;
+        let fi = {
+            let project = self.store.projects.get_mut(pi)?;
+            project.collapsed = false;
 
-        let fi = if let Some(fi) = project
-            .features
-            .iter()
-            .position(|feature| feature.name == branch)
-        {
+            let fi = if let Some(fi) = project
+                .features
+                .iter()
+                .position(|feature| feature.name == branch)
+            {
+                fi
+            } else {
+                let mut feature = Feature::new(
+                    branch.to_string(),
+                    branch.to_string(),
+                    workdir.to_path_buf(),
+                    true,
+                    mode.clone(),
+                    review,
+                    plan_mode,
+                    agent.clone(),
+                    enable_chrome,
+                );
+                feature.pending_worktree_script = true;
+                project.features.push(feature);
+                project.features.len().saturating_sub(1)
+            };
+
+            if let Some(feature) = project.features.get_mut(fi) {
+                if feature.status != ProjectStatus::Stopped {
+                    reused_tmux_session = Some(feature.tmux_session.clone());
+                }
+                feature.workdir = workdir.to_path_buf();
+                feature.is_worktree = true;
+                feature.mode = mode.clone();
+                feature.review = review;
+                feature.plan_mode = plan_mode;
+                feature.agent = agent.clone();
+                feature.enable_chrome = enable_chrome;
+                feature.pending_worktree_script = true;
+                feature.status = ProjectStatus::Stopped;
+            }
             fi
-        } else {
-            let mut feature = Feature::new(
-                branch.to_string(),
-                branch.to_string(),
-                workdir.to_path_buf(),
-                true,
-                mode.clone(),
-                review,
-                plan_mode,
-                agent.clone(),
-                enable_chrome,
-            );
-            feature.pending_worktree_script = true;
-            project.features.push(feature);
-            project.features.len().saturating_sub(1)
         };
 
-        if let Some(feature) = project.features.get_mut(fi) {
-            feature.workdir = workdir.to_path_buf();
-            feature.is_worktree = true;
-            feature.mode = mode.clone();
-            feature.review = review;
-            feature.plan_mode = plan_mode;
-            feature.agent = agent.clone();
-            feature.enable_chrome = enable_chrome;
-            feature.pending_worktree_script = true;
-            feature.status = ProjectStatus::Stopped;
+        if let Some(tmux_session) = reused_tmux_session {
+            self.clear_sidebar_state_for_session(&tmux_session);
         }
 
         Some((pi, fi))

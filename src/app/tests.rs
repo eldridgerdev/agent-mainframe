@@ -749,6 +749,60 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
 }
 
 #[test]
+fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), "cached prompt".to_string());
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
+
+    app.start_worktree_hook(
+        "true",
+        workdir.path().to_path_buf(),
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+        None,
+    );
+
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(app.store.projects[0].features[0].pending_worktree_script);
+    assert_eq!(app.store.projects[0].features[0].status, ProjectStatus::Stopped);
+}
+
+#[test]
 fn start_feature_is_blocked_while_worktree_script_pending() {
     let store = store_with_feature(ProjectStatus::Stopped);
     let mut app = App::new_for_test(

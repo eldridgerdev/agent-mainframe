@@ -73,8 +73,7 @@ fn build_claude_sidebar_data(
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let task_text = app
         .task_state_for_session(&feature.tmux_session)
-        .map(format_sidebar_task)
-        .unwrap_or_else(|| "No task data yet.".to_string());
+        .map(format_sidebar_task);
     let prompt_text = app
         .latest_prompt_for_session(&feature.tmux_session)
         .map(|prompt| {

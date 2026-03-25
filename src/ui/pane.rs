@@ -38,7 +38,7 @@ const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 #[derive(Debug, Clone)]
 pub(crate) struct ClaudeSidebarData {
     pub status_text: String,
-    pub task_text: String,
+    pub task_text: Option<String>,
     pub prompt_text: String,
 }
 
@@ -343,43 +343,39 @@ fn draw_claude_sidebar(
 
     let fallback = ClaudeSidebarData {
         status_text: "No sidebar data available.".to_string(),
-        task_text: "No task data yet.".to_string(),
+        task_text: None,
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let (sections, sections_with_content): (Vec<Rect>, Vec<(&str, &str)>) = if todos_expanded {
-        (
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-                    Constraint::Min(10),
-                ])
-                .split(inner)
-                .to_vec(),
-            vec![
-                ("Status", data.status_text.as_str()),
-                ("Todos", data.task_text.as_str()),
-            ],
-        )
+    let mut constraints = vec![Constraint::Length(sidebar_section_height(
+        &data.status_text,
+        4,
+        7,
+    ))];
+    let mut sections_with_content: Vec<(&str, &str)> = vec![("Status", data.status_text.as_str())];
+
+    if let Some(task_text) = data.task_text.as_deref() {
+        if todos_expanded {
+            constraints.push(Constraint::Min(10));
+        } else {
+            constraints.push(Constraint::Min(sidebar_section_height(task_text, 11, 13)));
+        }
+        sections_with_content.push(("Todos", task_text));
+    }
+
+    let prompt_constraint = if data.task_text.is_some() && !todos_expanded {
+        Constraint::Length(sidebar_section_height(&data.prompt_text, 4, 5))
     } else {
-        (
-            Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(sidebar_section_height(&data.status_text, 4, 7)),
-                    Constraint::Min(sidebar_section_height(&data.task_text, 11, 13)),
-                    Constraint::Length(sidebar_section_height(&data.prompt_text, 4, 5)),
-                ])
-                .split(inner)
-                .to_vec(),
-            vec![
-                ("Status", data.status_text.as_str()),
-                ("Todos", data.task_text.as_str()),
-                ("Prompt", data.prompt_text.as_str()),
-            ],
-        )
+        Constraint::Min(sidebar_section_height(&data.prompt_text, 4, 5))
     };
+    constraints.push(prompt_constraint);
+    sections_with_content.push(("Prompt", data.prompt_text.as_str()));
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner)
+        .to_vec();
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
         let paragraph = Paragraph::new(sidebar_section_lines(
@@ -910,7 +906,7 @@ mod tests {
         let theme = Theme::default();
         let sidebar = ClaudeSidebarData {
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
-            task_text: "Current: Investigate task tracking".into(),
+            task_text: Some("Current: Investigate task tracking".into()),
             prompt_text: "Preview: Resume the task.".into(),
         };
 
@@ -936,6 +932,40 @@ mod tests {
         assert!(rendered.contains("Waiting for input"));
         assert!(!rendered.contains("Session"));
         assert!(rendered.contains("Todos"));
+        assert!(rendered.contains("Prompt"));
+    }
+
+    #[test]
+    fn claude_sidebar_hides_todos_when_task_data_is_missing() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+        let sidebar = ClaudeSidebarData {
+            status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            task_text: None,
+            prompt_text: "Preview: Resume the task.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Todos"));
         assert!(rendered.contains("Prompt"));
     }
 

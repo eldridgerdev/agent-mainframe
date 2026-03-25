@@ -385,13 +385,14 @@ fn draw_agent_sidebar(
         )));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
+    let has_work_text = data.work_text.as_deref().is_some();
     if let Some(plan_text) = data.plan_text.as_deref() {
-        constraints.push(Constraint::Length(sidebar_section_height(
-            plan_text,
-            inner.width,
-            2,
-            4,
-        )));
+        let plan_height = sidebar_section_height(plan_text, inner.width, 2, 4);
+        constraints.push(if has_work_text {
+            Constraint::Length(plan_height)
+        } else {
+            Constraint::Min(plan_height)
+        });
         sections_with_content.push(("Plan", plan_text));
     }
     if let Some(work_text) = data.work_text.as_deref() {
@@ -908,6 +909,47 @@ mod tests {
         assert!(rendered.contains("Inspect parser"));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn codex_sidebar_lets_plan_expand_when_work_is_absent() {
+        let backend = TestBackend::new(120, 36);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Input: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: Some(
+                "1. Inspect parser\n2. Patch reducer\n3. Re-run tests\n4. Verify layout\n5. Ship change"
+                    .into(),
+            ),
+            work_text: None,
+            summary_text: String::new(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Plan"));
+        assert!(rendered.contains("Ship change"));
+        assert!(!rendered.contains("Work"));
     }
 
     #[test]

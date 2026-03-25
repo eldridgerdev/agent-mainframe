@@ -363,7 +363,6 @@ fn draw_agent_sidebar(
     let data = data.unwrap_or(&fallback);
     let mut constraints = Vec::new();
     let mut sections_with_content = Vec::new();
-    let has_work_text = data.work_text.as_deref().is_some();
 
     if !data.status_text.trim().is_empty() {
         constraints.push(Constraint::Length(sidebar_section_height(
@@ -385,7 +384,7 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Work", work_text));
     }
     if !data.summary_text.trim().is_empty() {
-        let summary_height = summary_section_height(&data.summary_text, inner.width, has_work_text);
+        let summary_height = summary_section_height(&data.summary_text, inner.width);
         constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
@@ -456,12 +455,8 @@ fn prompt_section_height(body: &str, section_width: u16) -> u16 {
     sidebar_section_height(body, section_width, 1, 3)
 }
 
-fn summary_section_height(body: &str, section_width: u16, has_work_text: bool) -> u16 {
-    if has_work_text {
-        sidebar_section_height(body, section_width, 1, 3)
-    } else {
-        sidebar_section_height(body, section_width, 2, 4)
-    }
+fn summary_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 3)
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
@@ -797,13 +792,13 @@ mod tests {
     }
 
     #[test]
-    fn summary_section_height_is_more_compact_when_work_is_present() {
-        assert_eq!(summary_section_height("Short summary", 30, true), 3);
+    fn summary_section_height_is_compact() {
+        assert_eq!(summary_section_height("Short summary", 30), 3);
     }
 
     #[test]
-    fn summary_section_height_is_taller_without_work() {
-        assert_eq!(summary_section_height("Short summary", 30, false), 4);
+    fn summary_section_height_stays_compact_without_work() {
+        assert_eq!(summary_section_height("Short summary", 30), 3);
     }
 
     #[test]

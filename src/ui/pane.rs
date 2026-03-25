@@ -366,8 +366,6 @@ fn draw_agent_sidebar(
     let mut constraints = Vec::new();
     let mut sections_with_content = Vec::new();
     let has_work_text = data.work_text.as_deref().is_some();
-    let has_plan_text = data.plan_text.as_deref().is_some();
-    let has_priority_context = has_work_text || has_plan_text;
 
     if !data.status_text.trim().is_empty() {
         constraints.push(Constraint::Length(sidebar_section_height(
@@ -402,14 +400,12 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Plan", plan_text));
     }
     if !data.summary_text.trim().is_empty() {
-        let summary_height =
-            summary_section_height(&data.summary_text, inner.width, has_priority_context);
+        let summary_height = summary_section_height(&data.summary_text, inner.width, has_work_text);
         constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
     if !data.prompt_text.trim().is_empty() {
-        let prompt_height =
-            prompt_section_height(&data.prompt_text, inner.width, has_priority_context);
+        let prompt_height = prompt_section_height(&data.prompt_text, inner.width, has_work_text);
         constraints.push(Constraint::Length(prompt_height));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
@@ -472,16 +468,16 @@ fn sidebar_section_height(
     inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
 }
 
-fn prompt_section_height(body: &str, section_width: u16, has_priority_context: bool) -> u16 {
-    if has_priority_context {
+fn prompt_section_height(body: &str, section_width: u16, has_work_text: bool) -> u16 {
+    if has_work_text {
         sidebar_section_height(body, section_width, 1, 3)
     } else {
         sidebar_section_height(body, section_width, 2, 4)
     }
 }
 
-fn summary_section_height(body: &str, section_width: u16, has_priority_context: bool) -> u16 {
-    if has_priority_context {
+fn summary_section_height(body: &str, section_width: u16, has_work_text: bool) -> u16 {
+    if has_work_text {
         sidebar_section_height(body, section_width, 1, 3)
     } else {
         sidebar_section_height(body, section_width, 2, 4)
@@ -824,12 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_height_is_more_compact_when_plan_is_present() {
-        assert_eq!(prompt_section_height("Preview: Continue", 30, true), 3);
-    }
-
-    #[test]
-    fn prompt_section_height_is_taller_without_priority_context() {
+    fn prompt_section_height_is_taller_without_work() {
         assert_eq!(prompt_section_height("Preview: Continue", 30, false), 4);
     }
 
@@ -839,12 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_section_height_is_more_compact_when_plan_is_present() {
-        assert_eq!(summary_section_height("Short summary", 30, true), 3);
-    }
-
-    #[test]
-    fn summary_section_height_is_taller_without_priority_context() {
+    fn summary_section_height_is_taller_without_work() {
         assert_eq!(summary_section_height("Short summary", 30, false), 4);
     }
 

@@ -257,7 +257,14 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_agent_sidebar(frame, sidebar_area, sidebar_data, theme);
+        let fallback_agent_kind = view.sidebar_session_kind().unwrap_or(SessionKind::Claude);
+        draw_agent_sidebar(
+            frame,
+            sidebar_area,
+            sidebar_data,
+            fallback_agent_kind,
+            theme,
+        );
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -312,6 +319,7 @@ fn draw_agent_sidebar(
     frame: &mut Frame,
     area: Rect,
     data: Option<&AgentSidebarData>,
+    fallback_agent_kind: SessionKind,
     theme: &Theme,
 ) {
     if area.width < 16 || area.height < 8 {
@@ -324,7 +332,7 @@ fn draw_agent_sidebar(
             (data.agent_kind.clone(), title, color)
         })
         .unwrap_or_else(|| {
-            let kind = SessionKind::Claude;
+            let kind = fallback_agent_kind;
             let (title, color) = sidebar_title_and_color(&kind, theme);
             (kind, title, color)
         });
@@ -348,11 +356,11 @@ fn draw_agent_sidebar(
 
     let fallback = AgentSidebarData {
         agent_kind,
-        status_text: "No sidebar data available.".to_string(),
-        prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
+        status_text: String::new(),
+        prompt_text: String::new(),
         plan_text: None,
         work_text: None,
-        summary_text: "No summary available yet.".to_string(),
+        summary_text: String::new(),
     };
     let data = data.unwrap_or(&fallback);
     let mut constraints = Vec::new();
@@ -1039,5 +1047,28 @@ mod tests {
         assert!(!rendered.contains("Prompt"));
         assert!(rendered.contains("Status"));
         assert!(rendered.contains("Work"));
+    }
+
+    #[test]
+    fn codex_sidebar_without_data_keeps_codex_title_and_skips_placeholder_sections() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &view, "hello", None, false, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Codex Sidebar"));
+        assert!(!rendered.contains("Claude Sidebar"));
+        assert!(!rendered.contains("Status"));
+        assert!(!rendered.contains("Prompt"));
+        assert!(!rendered.contains("Summary"));
     }
 }

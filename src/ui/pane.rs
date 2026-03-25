@@ -365,6 +365,7 @@ fn draw_agent_sidebar(
     let data = data.unwrap_or(&fallback);
     let mut constraints = Vec::new();
     let mut sections_with_content = Vec::new();
+    let has_work_text = data.work_text.as_deref().is_some();
 
     if !data.status_text.trim().is_empty() {
         constraints.push(Constraint::Length(sidebar_section_height(
@@ -377,15 +378,14 @@ fn draw_agent_sidebar(
     }
 
     if !data.prompt_text.trim().is_empty() {
-        constraints.push(Constraint::Length(sidebar_section_height(
-            &data.prompt_text,
-            inner.width,
-            2,
-            4,
-        )));
+        let prompt_height = if has_work_text {
+            sidebar_section_height(&data.prompt_text, inner.width, 1, 3)
+        } else {
+            sidebar_section_height(&data.prompt_text, inner.width, 2, 4)
+        };
+        constraints.push(Constraint::Length(prompt_height));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
-    let has_work_text = data.work_text.as_deref().is_some();
     if let Some(plan_text) = data.plan_text.as_deref() {
         let plan_height = if has_work_text {
             sidebar_section_height(plan_text, inner.width, 1, 3)
@@ -804,6 +804,11 @@ mod tests {
             sidebar_section_height("1. Inspect parser\n2. Patch reducer", 30, 1, 3),
             4
         );
+    }
+
+    #[test]
+    fn prompt_section_height_is_more_compact_when_work_is_present() {
+        assert_eq!(sidebar_section_height("Preview: Continue", 30, 1, 3), 3);
     }
 
     #[test]

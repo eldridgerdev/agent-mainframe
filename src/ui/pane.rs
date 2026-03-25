@@ -366,6 +366,8 @@ fn draw_agent_sidebar(
     let mut constraints = Vec::new();
     let mut sections_with_content = Vec::new();
     let has_work_text = data.work_text.as_deref().is_some();
+    let has_plan_text = data.plan_text.as_deref().is_some();
+    let has_priority_context = has_work_text || has_plan_text;
 
     if !data.status_text.trim().is_empty() {
         constraints.push(Constraint::Length(sidebar_section_height(
@@ -400,11 +402,8 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Plan", plan_text));
     }
     if !data.prompt_text.trim().is_empty() {
-        let prompt_height = if has_work_text {
-            sidebar_section_height(&data.prompt_text, inner.width, 1, 3)
-        } else {
-            sidebar_section_height(&data.prompt_text, inner.width, 2, 4)
-        };
+        let prompt_height =
+            prompt_section_height(&data.prompt_text, inner.width, has_priority_context);
         constraints.push(Constraint::Length(prompt_height));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
@@ -474,6 +473,14 @@ fn sidebar_section_height(
         })
         .sum::<usize>() as u16;
     inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
+}
+
+fn prompt_section_height(body: &str, section_width: u16, has_priority_context: bool) -> u16 {
+    if has_priority_context {
+        sidebar_section_height(body, section_width, 1, 3)
+    } else {
+        sidebar_section_height(body, section_width, 2, 4)
+    }
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
@@ -808,7 +815,17 @@ mod tests {
 
     #[test]
     fn prompt_section_height_is_more_compact_when_work_is_present() {
-        assert_eq!(sidebar_section_height("Preview: Continue", 30, 1, 3), 3);
+        assert_eq!(prompt_section_height("Preview: Continue", 30, true), 3);
+    }
+
+    #[test]
+    fn prompt_section_height_is_more_compact_when_plan_is_present() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30, true), 3);
+    }
+
+    #[test]
+    fn prompt_section_height_is_taller_without_priority_context() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30, false), 4);
     }
 
     #[test]

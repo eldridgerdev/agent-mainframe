@@ -101,7 +101,7 @@ fn status_text(
     usage_line: &str,
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
-    let mut lines = vec![format!("Activity: {activity_line}")];
+    let mut lines = vec![activity_line.to_string()];
     if usage_line != "Usage: unavailable" {
         lines.push(usage_line.to_string());
     }
@@ -110,7 +110,7 @@ fn status_text(
         .filter(|tokens| *tokens > 0)
     {
         lines.push(format!(
-            "Reasoning: {} tokens",
+            "Reason: {}",
             crate::token_tracking::format_token_count(reasoning_tokens)
         ));
     }
@@ -266,13 +266,13 @@ fn format_sidebar_usage(status: &str) -> String {
 
     let mut lines = Vec::new();
     if let Some(value) = input {
-        lines.push(format!("Input: {value} tokens"));
+        lines.push(format!("In: {value}"));
     }
     if let Some(value) = output {
-        lines.push(format!("Output: {value} tokens"));
+        lines.push(format!("Out: {value}"));
     }
     if let Some(value) = effective {
-        lines.push(format!("Effective: {value} tokens"));
+        lines.push(format!("Eff: {value}"));
     }
     if let Some(cost_value) = cost {
         lines.push(format!("Cost: {cost_value}"));
@@ -696,7 +696,7 @@ mod tests {
     fn sidebar_usage_is_split_into_labeled_lines() {
         assert_eq!(
             format_sidebar_usage("16.0k in · 2.0k out · 21.8k eff · $0.07"),
-            "Input: 16.0k tokens\nOutput: 2.0k tokens\nEffective: 21.8k tokens\nCost: $0.07"
+            "In: 16.0k\nOut: 2.0k\nEff: 21.8k\nCost: $0.07"
         );
     }
 
@@ -712,7 +712,7 @@ mod tests {
     fn opencode_status_text_includes_reasoning_tokens() {
         let status = status_text(
             "Thinking",
-            "Input: 16.0k tokens",
+            "In: 16.0k",
             Some(&crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".into(),
                 title: None,
@@ -734,7 +734,7 @@ mod tests {
 
         assert_eq!(
             status,
-            "Activity: Thinking\nInput: 16.0k tokens\nReasoning: 4.2k tokens\nChanges: 2 files · +10 / -3"
+            "Thinking\nIn: 16.0k\nReason: 4.2k\nChanges: 2 files · +10 / -3"
         );
     }
 
@@ -896,6 +896,6 @@ mod tests {
 
     #[test]
     fn status_text_omits_unavailable_usage_line() {
-        assert_eq!(status_text("Ready", "Usage: unavailable", None), "Activity: Ready");
+        assert_eq!(status_text("Ready", "Usage: unavailable", None), "Ready");
     }
 }

@@ -523,12 +523,38 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
 
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), "cached prompt".to_string());
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
     app.sync_statuses();
 
     assert_eq!(
         app.store.projects[0].features[0].status,
         ProjectStatus::Stopped
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]
@@ -3448,6 +3474,32 @@ fn status_file_cleanup_during_remove() {
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.pending_sidebar_loads
+        .insert("amf-custom-cleanup-test-sess".to_string());
+    app.latest_prompt_cache.insert(
+        "amf-my-feat".to_string(),
+        "cached prompt".to_string(),
+    );
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
 
     // Selecting the session and removing it should clean
     // up the status file.
@@ -3460,6 +3512,9 @@ fn status_file_cleanup_during_remove() {
         !status_file.exists(),
         "status file should be removed on session removal"
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]

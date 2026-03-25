@@ -19,6 +19,7 @@ pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
+        let mut stopped_sessions = Vec::new();
         for project in &mut self.store.projects {
             for feature in &mut project.features {
                 if live_sessions.contains(&feature.tmux_session) {
@@ -26,9 +27,15 @@ impl App {
                         feature.status = ProjectStatus::Idle;
                     }
                 } else {
+                    if feature.status != ProjectStatus::Stopped {
+                        stopped_sessions.push(feature.tmux_session.clone());
+                    }
                     feature.status = ProjectStatus::Stopped;
                 }
             }
+        }
+        for tmux_session in stopped_sessions {
+            self.clear_sidebar_state_for_session(&tmux_session);
         }
     }
 

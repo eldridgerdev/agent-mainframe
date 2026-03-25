@@ -502,27 +502,53 @@ impl App {
             _ => return Ok(()),
         };
 
-        let feature = match self
-            .store
-            .projects
-            .get_mut(pi)
-            .and_then(|p| p.features.get_mut(fi))
-        {
-            Some(f) => f,
-            None => return Ok(()),
-        };
+        let (tmux_session, workdir, label, on_stop, session_id, is_custom, clear_sidebar) = {
+            let feature = match self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|p| p.features.get_mut(fi))
+            {
+                Some(f) => f,
+                None => return Ok(()),
+            };
 
-        let tmux_session = feature.tmux_session.clone();
-        let workdir = feature.workdir.clone();
-        let session = match feature.sessions.get(si) {
-            Some(s) => s,
-            None => return Ok(()),
+            let tmux_session = feature.tmux_session.clone();
+            let workdir = feature.workdir.clone();
+            let session = match feature.sessions.get(si) {
+                Some(s) => s,
+                None => return Ok(()),
+            };
+            let window = session.tmux_window.clone();
+            let label = session.label.clone();
+            let on_stop = session.on_stop.clone();
+            let session_id = session.id.clone();
+            let is_custom = session.kind == SessionKind::Custom;
+
+            if TmuxManager::session_exists(&tmux_session) {
+                let _ = TmuxManager::kill_window(&tmux_session, &window);
+            }
+
+            feature.sessions.remove(si);
+
+            let clear_sidebar = if feature.sessions.is_empty() {
+                let _ = TmuxManager::kill_session(&tmux_session);
+                feature.status = ProjectStatus::Stopped;
+                true
+            } else {
+                false
+            };
+
+            (
+                tmux_session,
+                workdir,
+                label,
+                on_stop,
+                session_id,
+                is_custom,
+                clear_sidebar,
+            )
         };
-        let window = session.tmux_window.clone();
-        let label = session.label.clone();
-        let on_stop = session.on_stop.clone();
-        let session_id = session.id.clone();
-        let is_custom = session.kind == SessionKind::Custom;
 
         // Run on_stop command for custom sessions before
         // killing the window.
@@ -550,15 +576,8 @@ impl App {
             let _ = std::fs::remove_file(status_file);
         }
 
-        if TmuxManager::session_exists(&tmux_session) {
-            let _ = TmuxManager::kill_window(&tmux_session, &window);
-        }
-
-        feature.sessions.remove(si);
-
-        if feature.sessions.is_empty() {
-            let _ = TmuxManager::kill_session(&tmux_session);
-            feature.status = ProjectStatus::Stopped;
+        if clear_sidebar {
+            self.clear_sidebar_state_for_session(&tmux_session);
         }
 
         self.selection = Selection::Feature(pi, fi);

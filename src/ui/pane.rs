@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
 use crate::app::{TextSelection, ViewState};
@@ -385,6 +385,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::TOP)
+                    .padding(Padding::new(1, 0, 0, 0))
                     .border_style(Style::default().fg(accent)),
             );
         frame.render_widget(paragraph, *section);

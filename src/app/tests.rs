@@ -3064,6 +3064,55 @@ fn ipc_diff_review_updates_codex_live_review_state() {
 }
 
 #[test]
+fn ipc_tool_activity_temporarily_overrides_older_review_work() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "message": "Review the change before continuing."
+    }));
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-start",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "tool_name": "Bash"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some("State: running tool\nTool: Bash")
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-stop",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "tool_name": "Bash"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the change before continuing."
+        )
+    );
+}
+
+#[test]
 fn open_command_picker_prepends_codex_debug_commands() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);

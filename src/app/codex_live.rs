@@ -9,6 +9,7 @@ pub struct CodexLiveThreadState {
     pub command_text: Option<String>,
     pub file_change_text: Option<String>,
     pub input_request_text: Option<String>,
+    active_work_item: Option<WorkItemKind>,
 }
 
 impl CodexLiveThreadState {
@@ -30,21 +31,24 @@ impl CodexLiveThreadState {
                 changed |= assign_if_some(&mut self.reasoning_text, extract_reasoning_text(raw));
             }
             "commandExecution" | "command_execution" => {
-                changed |= apply_command_event(&mut self.command_text, raw);
+                changed |= apply_command_event(self, raw);
             }
             "fileChange" | "file_change" => {
                 changed |=
                     assign_if_some(&mut self.file_change_text, extract_file_change_text(raw));
+                changed |= self.set_active_work_item(Some(WorkItemKind::FileChange));
             }
             "requestUserInput" | "request_user_input" => {
                 changed |= assign_if_some(
                     &mut self.input_request_text,
                     extract_input_request_text(raw),
                 );
+                changed |= self.set_active_work_item(Some(WorkItemKind::InputRequest));
             }
             "inputResolved" | "input_resolved" => {
                 changed |= clear_if_some(&mut self.input_request_text);
                 changed |= clear_if_some(&mut self.file_change_text);
+                changed |= self.reconcile_active_work_item();
             }
             _ => {}
         }
@@ -53,17 +57,43 @@ impl CodexLiveThreadState {
     }
 
     pub fn sidebar_work_text(&self) -> Option<String> {
-        if let Some(text) = &self.input_request_text {
-            return Some(text.clone());
+        match self
+            .active_work_item
+            .or_else(|| self.preferred_available_work_item())
+        {
+            Some(WorkItemKind::InputRequest) => self.input_request_text.clone(),
+            Some(WorkItemKind::FileChange) => self.file_change_text.clone(),
+            Some(WorkItemKind::Command) => self.command_text.clone(),
+            None => None,
         }
-        if let Some(text) = &self.file_change_text {
-            return Some(text.clone());
-        }
-        self.command_text.clone()
     }
 
     pub fn summary_prefix(&self) -> Option<String> {
         self.reasoning_text.clone()
+    }
+
+    fn set_active_work_item(&mut self, next: Option<WorkItemKind>) -> bool {
+        if self.active_work_item == next {
+            return false;
+        }
+        self.active_work_item = next;
+        true
+    }
+
+    fn reconcile_active_work_item(&mut self) -> bool {
+        self.set_active_work_item(self.preferred_available_work_item())
+    }
+
+    fn preferred_available_work_item(&self) -> Option<WorkItemKind> {
+        if self.input_request_text.is_some() {
+            Some(WorkItemKind::InputRequest)
+        } else if self.file_change_text.is_some() {
+            Some(WorkItemKind::FileChange)
+        } else if self.command_text.is_some() {
+            Some(WorkItemKind::Command)
+        } else {
+            None
+        }
     }
 }
 
@@ -93,7 +123,7 @@ fn clear_if_some(slot: &mut Option<String>) -> bool {
     changed
 }
 
-fn apply_command_event(slot: &mut Option<String>, raw: &Value) -> bool {
+fn apply_command_event(state: &mut CodexLiveThreadState, raw: &Value) -> bool {
     let phase = first_string(
         raw,
         &["/payload/phase", "/payload/status", "/phase", "/status"],
@@ -104,9 +134,22 @@ fn apply_command_event(slot: &mut Option<String>, raw: &Value) -> bool {
         .map(normalize_status)
         .unwrap_or(CommandStatus::Running)
     {
-        CommandStatus::Running => assign_if_some(slot, extract_command_text(raw)),
-        CommandStatus::Completed => clear_if_some(slot),
-        CommandStatus::Failed => assign_if_some(slot, extract_failed_command_text(raw)),
+        CommandStatus::Running => {
+            let mut changed = assign_if_some(&mut state.command_text, extract_command_text(raw));
+            changed |= state.set_active_work_item(Some(WorkItemKind::Command));
+            changed
+        }
+        CommandStatus::Completed => {
+            let mut changed = clear_if_some(&mut state.command_text);
+            changed |= state.reconcile_active_work_item();
+            changed
+        }
+        CommandStatus::Failed => {
+            let mut changed =
+                assign_if_some(&mut state.command_text, extract_failed_command_text(raw));
+            changed |= state.set_active_work_item(Some(WorkItemKind::Command));
+            changed
+        }
     }
 }
 
@@ -241,6 +284,13 @@ enum CommandStatus {
     Running,
     Completed,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkItemKind {
+    Command,
+    FileChange,
+    InputRequest,
 }
 
 fn normalize_status(status: &str) -> CommandStatus {
@@ -421,6 +471,91 @@ mod tests {
             Some(
                 "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
             )
+        );
+    }
+
+    #[test]
+    fn reducer_prefers_newer_command_over_existing_review_work() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "needs-review",
+                "message": "Review the diff before continuing."
+            }
+        }));
+
+        state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "running"
+            }
+        }));
+
+        assert_eq!(
+            state.sidebar_work_text().as_deref(),
+            Some("State: running tool\nTool: cargo test")
+        );
+    }
+
+    #[test]
+    fn reducer_restores_review_work_after_newer_command_completes() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "needs-review",
+                "message": "Review the diff before continuing."
+            }
+        }));
+        state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "running"
+            }
+        }));
+
+        state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "completed"
+            }
+        }));
+
+        assert_eq!(
+            state.sidebar_work_text().as_deref(),
+            Some(
+                "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the diff before continuing."
+            )
+        );
+    }
+
+    #[test]
+    fn reducer_prefers_newer_input_over_existing_command_work() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "running"
+            }
+        }));
+
+        state.apply_event(&json!({
+            "type": "requestUserInput",
+            "payload": {
+                "prompt": "Need approval before applying the patch."
+            }
+        }));
+
+        assert_eq!(
+            state.sidebar_work_text().as_deref(),
+            Some("State: waiting for input\nRequest: Need approval before applying the patch.")
         );
     }
 }

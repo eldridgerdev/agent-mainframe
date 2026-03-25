@@ -398,7 +398,7 @@ fn draw_agent_sidebar(
         constraints.push(Constraint::Min(sidebar_section_height(
             work_text,
             inner.width,
-            3,
+            2,
             6,
         )));
         sections_with_content.push(("Work", work_text));
@@ -781,6 +781,14 @@ mod tests {
     fn status_section_height_is_compact_for_short_status_text() {
         assert_eq!(
             sidebar_section_height("Activity: Ready\nInput: 1.2K tokens", 30, 2, 4),
+            4
+        );
+    }
+
+    #[test]
+    fn work_section_height_is_compact_for_short_work_text() {
+        assert_eq!(
+            sidebar_section_height("State: running tool\nTool: Bash", 30, 2, 6),
             4
         );
     }

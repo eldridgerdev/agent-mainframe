@@ -30,7 +30,8 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("?", "Help"),
 ];
 
-const SIDEBAR_WIDTH: u16 = 32;
+const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
+const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
 const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
@@ -56,16 +57,24 @@ pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
         .unwrap_or(total_width)
 }
 
+fn preferred_sidebar_width(view: &ViewState) -> u16 {
+    match view.session_kind {
+        crate::project::SessionKind::Opencode => OPENCODE_SIDEBAR_WIDTH,
+        _ => CLAUDE_SIDEBAR_WIDTH,
+    }
+}
+
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
     if !view.has_sidebar() {
         return None;
     }
 
-    if total_width < SIDEBAR_MIN_MAIN_WIDTH + SIDEBAR_WIDTH {
+    let sidebar_width = preferred_sidebar_width(view);
+    if total_width < SIDEBAR_MIN_MAIN_WIDTH + sidebar_width {
         return None;
     }
 
-    Some(SIDEBAR_WIDTH)
+    Some(sidebar_width)
 }
 
 fn split_content_area(content_area: Rect, view: &ViewState) -> ContentLayout {
@@ -723,6 +732,12 @@ mod tests {
     fn sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
         assert_eq!(width, 88);
+    }
+
+    #[test]
+    fn opencode_sidebar_reserves_more_width_when_view_is_wide_enough() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Opencode), 120);
+        assert_eq!(width, 84);
     }
 
     #[test]

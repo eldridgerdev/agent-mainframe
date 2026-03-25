@@ -1143,7 +1143,12 @@ pub fn draw_deleting_feature_dialog(
     throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
-    let area = centered_rect(50, 30, frame.area());
+    let has_error = state.error.is_some();
+    let area = if has_error {
+        centered_rect(50, 46, frame.area())
+    } else {
+        centered_rect(50, 30, frame.area())
+    };
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let is_running = state.child.is_some();
@@ -1167,9 +1172,9 @@ pub fn draw_deleting_feature_dialog(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(2),
+            Constraint::Min(if has_error { 3 } else { 2 }),
+            Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(inner);
@@ -1214,7 +1219,10 @@ pub fn draw_deleting_feature_dialog(
             ),
         ])
     };
-    frame.render_widget(Paragraph::new(status_text), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(status_text).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
 
     let feature_line = Paragraph::new(Line::from(vec![
         Span::styled(

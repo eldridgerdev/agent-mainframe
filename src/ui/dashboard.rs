@@ -78,6 +78,13 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
     };
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
         "Generating summary...".to_string()
+    } else if view.session_kind == SessionKind::Opencode {
+        opencode_sidebar
+            .and_then(|sidebar| sidebar.live_summary.as_deref())
+            .filter(|summary| !summary.is_empty())
+            .map(|summary| compact_sidebar_text(summary, 80))
+            .or_else(|| feature.summary.clone())
+            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     } else {
         feature
             .summary
@@ -696,6 +703,7 @@ mod tests {
                 pending_permission: None,
                 last_error: None,
                 lsp_summary: None,
+                live_summary: None,
                 reasoning_tokens: Some(4200),
                 additions: Some(10),
                 deletions: Some(3),
@@ -722,6 +730,7 @@ mod tests {
             pending_permission: Some("edit".into()),
             lsp_summary: Some("ready · 2 warnings".into()),
             last_error: Some("patch failed".into()),
+            live_summary: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -747,6 +756,7 @@ mod tests {
             pending_permission: None,
             last_error: None,
             lsp_summary: None,
+            live_summary: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -757,5 +767,36 @@ mod tests {
             todos.as_deref(),
             Some("Open: 3 items\n- finish parser\n- wire UI")
         );
+    }
+
+    #[test]
+    fn opencode_summary_prefers_live_sidecar_summary() {
+        let summary = Some("Persisted AMF summary".to_string());
+        let live = crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: Some("Live assistant summary".into()),
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        };
+
+        let picked = live
+            .live_summary
+            .as_deref()
+            .map(|text| compact_sidebar_text(text, 80))
+            .or(summary)
+            .unwrap();
+
+        assert_eq!(picked, "Live assistant summary");
     }
 }

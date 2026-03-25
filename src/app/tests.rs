@@ -117,6 +117,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 pending_permission: None,
                 last_error: None,
                 lsp_summary: Some("ready".to_string()),
+                live_summary: Some("live summary".to_string()),
                 reasoning_tokens: Some(12),
                 additions: Some(3),
                 deletions: Some(1),

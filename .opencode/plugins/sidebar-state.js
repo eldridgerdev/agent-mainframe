@@ -67,6 +67,23 @@ function extractPrompt(payload) {
   )
 }
 
+function extractMessageRole(payload) {
+  const role = payload?.message?.role || payload?.role || null
+  return typeof role === "string" ? role.toLowerCase() : null
+}
+
+function extractSummary(payload) {
+  return (
+    normalizePrompt(payload?.summary?.title) ||
+    normalizePrompt(payload?.message?.summary?.title) ||
+    normalizePrompt(payload?.summary?.content) ||
+    normalizePrompt(payload?.message?.summary?.content) ||
+    normalizePrompt(payload?.message?.content) ||
+    normalizePrompt(payload?.content) ||
+    normalizePrompt(payload?.text)
+  )
+}
+
 function normalizeError(value) {
   if (typeof value === "string") {
     const trimmed = value.trim()
@@ -223,6 +240,7 @@ function writeSidebarState(directory, sessionId) {
     pending_permission: state.pendingPermission || null,
     last_error: state.lastError || null,
     lsp_summary: state.lspSummary || null,
+    live_summary: state.liveSummary || null,
     additions: state.diff?.additions ?? null,
     deletions: state.diff?.deletions ?? null,
     files: state.diff?.files ?? null,
@@ -296,10 +314,20 @@ export const SidebarStatePlugin = async ({ directory }) => {
     },
     "message.updated": async ({ event }) => {
       const sessionId = sessionIdFrom(event)
-      const prompt = extractPrompt(event)
-      if (!prompt) return
+      const role = extractMessageRole(event)
       mutateState(directory, sessionId, (state) => {
-        state.latestPrompt = prompt
+        if (role === "user") {
+          const prompt = extractPrompt(event)
+          if (prompt) {
+            state.latestPrompt = prompt
+          }
+          return
+        }
+
+        const summary = extractSummary(event)
+        if (summary) {
+          state.liveSummary = summary
+        }
       })
     },
     "lsp.updated": async ({ event }) => {

@@ -417,9 +417,7 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
                 Line::from(vec![
                     Span::styled(
                         format!("{label}: "),
-                        Style::default()
-                            .fg(sidebar_section_color(title, theme))
-                            .add_modifier(Modifier::BOLD),
+                        sidebar_label_style(title, label, theme),
                     ),
                     Span::styled(
                         value.to_string(),
@@ -434,6 +432,23 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
             }
         })
         .collect()
+}
+
+fn sidebar_label_style(title: &str, label: &str, theme: &Theme) -> Style {
+    let color = match (title, label) {
+        ("Status", "In" | "Out" | "Eff" | "Cost" | "Reason" | "Changes") => {
+            theme.status_detail.to_color()
+        }
+        ("Todos", "Next" | "Then") => theme.text_muted.to_color(),
+        (_, "More") => theme.text_muted.to_color(),
+        _ => sidebar_section_color(title, theme),
+    };
+
+    let mut style = Style::default().fg(color);
+    if !matches!((title, label), ("Todos", "Next" | "Then") | (_, "More")) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
 }
 
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
@@ -459,6 +474,12 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
+    } else if title == "Status"
+        && matches!(label, "In" | "Out" | "Eff" | "Cost" | "Reason" | "Changes")
+    {
+        theme.status_detail.to_color()
+    } else if title == "Todos" && matches!(label, "Next" | "Then") {
+        theme.text.to_color()
     } else if label == "More" {
         theme.text_muted.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {

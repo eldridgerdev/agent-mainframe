@@ -390,7 +390,7 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
     if !data.prompt_text.trim().is_empty() {
-        let prompt_height = prompt_section_height(&data.prompt_text, inner.width, has_work_text);
+        let prompt_height = prompt_section_height(&data.prompt_text, inner.width);
         constraints.push(Constraint::Length(prompt_height));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
@@ -452,12 +452,8 @@ fn sidebar_section_height(
     inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
 }
 
-fn prompt_section_height(body: &str, section_width: u16, has_work_text: bool) -> u16 {
-    if has_work_text {
-        sidebar_section_height(body, section_width, 1, 3)
-    } else {
-        sidebar_section_height(body, section_width, 2, 4)
-    }
+fn prompt_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 3)
 }
 
 fn summary_section_height(body: &str, section_width: u16, has_work_text: bool) -> u16 {
@@ -791,13 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn prompt_section_height_is_more_compact_when_work_is_present() {
-        assert_eq!(prompt_section_height("Preview: Continue", 30, true), 3);
+    fn prompt_section_height_is_compact() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30), 3);
     }
 
     #[test]
-    fn prompt_section_height_is_taller_without_work() {
-        assert_eq!(prompt_section_height("Preview: Continue", 30, false), 4);
+    fn prompt_section_height_stays_compact_without_work() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30), 3);
     }
 
     #[test]

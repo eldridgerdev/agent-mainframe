@@ -459,6 +459,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" scroll  "),
             Span::styled("c", key_style()),
             Span::raw(" clear  "),
+            Span::styled("/", key_style()),
+            Span::raw(" actions  "),
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),

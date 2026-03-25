@@ -16,6 +16,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("w", "Session switcher"),
     ("n / p", "Next / prev feature"),
     ("/", "Command picker"),
+    ("a", "AMF local actions"),
     ("i", "Pending inputs"),
     ("s", "Steering coach"),
     ("b", "Show/hide sidebar"),

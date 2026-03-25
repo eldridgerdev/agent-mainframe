@@ -322,6 +322,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.open_command_picker(None);
         }
+        KeyCode::Char('a') => {
+            app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
+        }
         KeyCode::Char('h') => {
             app.open_bookmark_picker(None);
         }

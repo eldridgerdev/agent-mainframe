@@ -500,6 +500,16 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
                 state.scroll_offset = 0;
             }
         }
+        KeyCode::Char('/') => {
+            let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::DebugLog(state) => state.from_view,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_command_picker_with_focus(from_view, crate::app::CommandPickerFocus::Local);
+        }
         _ => {}
     }
     Ok(())
@@ -512,7 +522,8 @@ mod tests {
 
     use super::*;
     use crate::app::{
-        MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState, ViewState,
+        CommandAction, MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState,
+        ViewState,
     };
     use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -764,6 +775,32 @@ mod tests {
                 assert_eq!(state.scroll_offset, 12 - MARKDOWN_FAST_SCROLL_STEP);
             }
             _ => panic!("expected markdown viewer to stay open"),
+        }
+    }
+
+    #[test]
+    fn debug_log_slash_opens_local_command_picker() {
+        let mut app = markdown_app();
+        let view = markdown_view();
+        app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+            scroll_offset: 0,
+            from_view: Some(view.clone()),
+        });
+
+        handle_debug_log_key(&mut app, KeyCode::Char('/')).unwrap();
+
+        match &app.mode {
+            AppMode::CommandPicker(state) => {
+                assert!(matches!(
+                    state.commands.get(state.selected).map(|entry| &entry.action),
+                    Some(CommandAction::Local { .. })
+                ));
+                assert_eq!(
+                    state.from_view.as_ref().map(|from_view| &from_view.window),
+                    Some(&view.window)
+                );
+            }
+            _ => panic!("expected command picker after pressing / in debug log"),
         }
     }
 }

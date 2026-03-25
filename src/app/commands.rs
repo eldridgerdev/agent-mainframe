@@ -21,9 +21,17 @@ pub enum CommandExecutionOutcome {
 
 impl App {
     pub fn open_command_picker(&mut self, from_view: Option<ViewState>) {
+        self.open_command_picker_with_focus(from_view, CommandPickerFocus::Default);
+    }
+
+    pub fn open_command_picker_with_focus(
+        &mut self,
+        from_view: Option<ViewState>,
+        focus: CommandPickerFocus,
+    ) {
         let commands = self.collect_command_entries(from_view.as_ref());
         self.mode = AppMode::CommandPicker(CommandPickerState {
-            selected: 0,
+            selected: self.initial_command_picker_selection(&commands, focus),
             commands,
             from_view,
         });
@@ -161,6 +169,20 @@ impl App {
                 .then(a.id.cmp(&b.id))
         });
         commands
+    }
+
+    fn initial_command_picker_selection(
+        &self,
+        commands: &[CommandEntry],
+        focus: CommandPickerFocus,
+    ) -> usize {
+        match focus {
+            CommandPickerFocus::Default => 0,
+            CommandPickerFocus::Local => commands
+                .iter()
+                .position(CommandEntry::is_local)
+                .unwrap_or(0),
+        }
     }
 
     fn local_command_entries(

@@ -12,6 +12,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use uuid::Uuid;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -2309,13 +2310,14 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
     );
 
     let now = Utc::now();
+    let resume_id = format!("resume-{}", Uuid::new_v4());
     let sessions = vec![
         crate::project::FeatureSession {
             id: "agent-session".to_string(),
             kind: SessionKind::Claude,
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
-            claude_session_id: Some("resume-me".to_string()),
+            claude_session_id: Some(resume_id),
             token_usage_source: None,
             created_at: now,
             command: None,
@@ -2721,6 +2723,7 @@ fn drain_ipc_messages_tracks_live_claude_task_state() {
     let repo = TempDir::new().unwrap();
     let workdir = TempDir::new().unwrap();
     let now = Utc::now();
+    let resume_id = format!("resume-{}", Uuid::new_v4());
     let store = store_with_worktree_agent(
         repo.path(),
         workdir.path(),
@@ -2731,7 +2734,7 @@ fn drain_ipc_messages_tracks_live_claude_task_state() {
             kind: SessionKind::Claude,
             label: "Claude".to_string(),
             tmux_window: "claude".to_string(),
-            claude_session_id: Some("resume-me".to_string()),
+            claude_session_id: Some(resume_id),
             token_usage_source: None,
             created_at: now,
             command: None,

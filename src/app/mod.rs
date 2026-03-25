@@ -93,6 +93,12 @@ pub enum CommandAction {
     Local { command: LocalCommand },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandPickerFocus {
+    Default,
+    Local,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandEntry {
     pub id: String,

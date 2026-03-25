@@ -146,6 +146,15 @@ fn status_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
     let mut lines = vec![format!("Activity: {activity_line}"), usage_line.to_string()];
+    if let Some(reasoning_tokens) = opencode_sidebar
+        .and_then(|sidebar| sidebar.reasoning_tokens)
+        .filter(|tokens| *tokens > 0)
+    {
+        lines.push(format!(
+            "Reasoning: {} tokens",
+            crate::token_tracking::format_token_count(reasoning_tokens)
+        ));
+    }
     if let Some(change_line) = opencode_sidebar.and_then(|sidebar| sidebar.change_summary_line()) {
         lines.push(change_line);
     }
@@ -642,6 +651,28 @@ mod tests {
         assert_eq!(
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
+        );
+    }
+
+    #[test]
+    fn opencode_status_text_includes_reasoning_tokens() {
+        let status = status_text(
+            "Thinking",
+            "Input: 16.0k tokens",
+            Some(&crate::app::opencode_storage::OpencodeSidebarData {
+                session_id: "ses-1".into(),
+                title: None,
+                latest_prompt: None,
+                reasoning_tokens: Some(4200),
+                additions: Some(10),
+                deletions: Some(3),
+                files: Some(2),
+            }),
+        );
+
+        assert_eq!(
+            status,
+            "Activity: Thinking\nInput: 16.0k tokens\nReasoning: 4.2k tokens\nChanges: 2 files · +10 / -3"
         );
     }
 }

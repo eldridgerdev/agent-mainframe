@@ -6,6 +6,7 @@ pub struct OpencodeSidebarData {
     pub session_id: String,
     pub title: Option<String>,
     pub latest_prompt: Option<String>,
+    pub reasoning_tokens: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
     pub files: Option<u64>,
@@ -41,6 +42,7 @@ fn read_sidebar_data_from_root(
     let session = find_session(storage_root, workdir, preferred_session_id)?;
     Some(OpencodeSidebarData {
         latest_prompt: read_latest_user_prompt(storage_root, &session.id),
+        reasoning_tokens: read_reasoning_tokens(storage_root, &session.id),
         session_id: session.id,
         title: session.title,
         additions: session.summary.as_ref().map(|summary| summary.additions),
@@ -126,6 +128,45 @@ fn read_message_parts(storage_root: &Path, message_id: &str) -> Option<String> {
     } else {
         Some(texts.join("\n"))
     }
+}
+
+fn read_reasoning_tokens(storage_root: &Path, session_id: &str) -> Option<u64> {
+    let message_root = storage_root.join("message").join(session_id);
+    if !message_root.is_dir() {
+        return None;
+    }
+
+    let mut total = 0u64;
+    let mut found = false;
+
+    for message_path in walk_json_files(&message_root) {
+        let Some(message_id) = message_path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let part_root = storage_root.join("part").join(message_id);
+        if !part_root.is_dir() {
+            continue;
+        }
+
+        for part_path in walk_json_files(&part_root) {
+            let Ok(contents) = std::fs::read_to_string(part_path) else {
+                continue;
+            };
+            let Ok(part) = serde_json::from_str::<OpencodePart>(&contents) else {
+                continue;
+            };
+            if part.part_type != "step-finish" {
+                continue;
+            }
+            let Some(tokens) = part.tokens else {
+                continue;
+            };
+            total = total.saturating_add(tokens.reasoning);
+            found = true;
+        }
+    }
+
+    if found { Some(total) } else { None }
 }
 
 fn walk_json_files(root: &Path) -> Vec<PathBuf> {
@@ -233,6 +274,14 @@ struct OpencodePart {
     part_type: String,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    tokens: Option<OpencodePartTokens>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpencodePartTokens {
+    #[serde(default)]
+    reasoning: u64,
 }
 
 #[cfg(test)]
@@ -289,11 +338,17 @@ mod tests {
             "{\"type\":\"text\",\"text\":\"latest prompt\"}",
         )
         .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-new").join("prt-2.json"),
+            "{\"type\":\"step-finish\",\"tokens\":{\"reasoning\":9}}",
+        )
+        .unwrap();
 
         let data = read_sidebar_data_from_root(storage, &workdir, None).unwrap();
         assert_eq!(data.session_id, "ses-new");
         assert_eq!(data.title.as_deref(), Some("Newest"));
         assert_eq!(data.latest_prompt.as_deref(), Some("latest prompt"));
+        assert_eq!(data.reasoning_tokens, Some(9));
         assert_eq!(
             data.change_summary_line().as_deref(),
             Some("Changes: 6 files · +4 / -5")

@@ -53,13 +53,6 @@ fn build_agent_sidebar_data(
         1 => "Waiting for 1 input".to_string(),
         n => format!("Waiting for {n} inputs"),
     };
-    let activity_line = if app.ipc_tool_sessions.contains(&feature.tmux_session) {
-        "Running tool".to_string()
-    } else if app.is_feature_thinking(&feature.tmux_session) {
-        "Thinking".to_string()
-    } else {
-        status_line
-    };
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
@@ -85,6 +78,9 @@ fn build_agent_sidebar_data(
     let fallback_plan_text = app
         .sidebar_plan_for_session(&feature.tmux_session)
         .map(ToOwned::to_owned);
+    let work_text = codex_live
+        .and_then(|live| live.sidebar_work_text())
+        .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
     let summary_text = codex_live
         .and_then(|live| live.summary_prefix())
         .map(|reasoning| {
@@ -96,13 +92,16 @@ fn build_agent_sidebar_data(
         })
         .unwrap_or(summary_text);
     let summary_text = compact_sidebar_text(&summary_text, 80);
+    let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
+    let usage_confidence = format_codex_usage_source_confidence(&sidebar_kind, session);
 
-    let status_text = match format_codex_usage_source_confidence(&sidebar_kind, session) {
-        Some(confidence) => format!(
-            "Activity: {}\n{}\n{}",
-            activity_line, usage_line, confidence
-        ),
-        None => format!("Activity: {}\n{}", activity_line, usage_line),
+    let status_text = match (activity_line, usage_confidence) {
+        (Some(activity), Some(confidence)) => {
+            format!("Activity: {}\n{}\n{}", activity, usage_line, confidence)
+        }
+        (Some(activity), None) => format!("Activity: {}\n{}", activity, usage_line),
+        (None, Some(confidence)) => format!("{}\n{}", usage_line, confidence),
+        (None, None) => usage_line,
     };
 
     Some(super::pane::AgentSidebarData {
@@ -112,11 +111,13 @@ fn build_agent_sidebar_data(
         plan_text: codex_live
             .and_then(|live| live.plan_text.clone())
             .or(fallback_plan_text),
-        work_text: codex_live
-            .and_then(|live| live.sidebar_work_text())
-            .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
+        work_text,
         summary_text,
     })
+}
+
+fn sidebar_status_activity_text(has_work_text: bool, idle_text: String) -> Option<String> {
+    if has_work_text { None } else { Some(idle_text) }
 }
 
 fn codex_sidebar_source<'a>(
@@ -734,6 +735,15 @@ mod tests {
         );
 
         assert_eq!(compacted, "This is a longer summary that should be…");
+    }
+
+    #[test]
+    fn sidebar_status_activity_text_omits_activity_when_work_is_present() {
+        assert_eq!(sidebar_status_activity_text(true, "Ready".into()), None);
+        assert_eq!(
+            sidebar_status_activity_text(false, "Ready".into()),
+            Some("Ready".to_string())
+        );
     }
 
     #[test]

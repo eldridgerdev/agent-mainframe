@@ -238,10 +238,15 @@ fn extract_file_change_text(raw: &Value) -> Option<String> {
     let has_detail = detail.is_some();
     if let Some(detail) = detail {
         lines.push(format!("Request: {detail}"));
+    } else if let Some(request) = default_file_change_request(status.as_deref()) {
+        lines.push(format!("Request: {request}"));
     }
     if let Some(reason) = reason {
         lines.push(format!("Reason: {reason}"));
-    } else if !has_detail && let Some(status) = status {
+    } else if !has_detail
+        && default_file_change_request(status.as_deref()).is_none()
+        && let Some(status) = status
+    {
         lines.push(format!("Detail: {status}"));
     }
     Some(lines.join("\n"))
@@ -277,6 +282,14 @@ fn extract_input_request_text(raw: &Value) -> Option<String> {
         lines.push(format!("File: {path}"));
     }
     Some(lines.join("\n"))
+}
+
+fn default_file_change_request(status: Option<&str>) -> Option<&'static str> {
+    match status {
+        Some("needs-review") => Some("Review the proposed change before continuing."),
+        Some("needs-reason") => Some("Explain why this change is needed."),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,6 +483,26 @@ mod tests {
             state.sidebar_work_text().as_deref(),
             Some(
                 "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
+            )
+        );
+    }
+
+    #[test]
+    fn reducer_adds_default_request_for_change_reason_when_message_is_missing() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "needs-reason",
+                "tool": "Edit"
+            }
+        }));
+
+        assert_eq!(
+            state.sidebar_work_text().as_deref(),
+            Some(
+                "State: waiting for change reason\nFile: src/main.rs\nTool: Edit\nRequest: Explain why this change is needed."
             )
         );
     }

@@ -409,12 +409,12 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Work", work_text));
     }
     if !data.summary_text.trim().is_empty() {
-        constraints.push(Constraint::Length(sidebar_section_height(
-            &data.summary_text,
-            inner.width,
-            2,
-            4,
-        )));
+        let summary_height = if has_work_text {
+            sidebar_section_height(&data.summary_text, inner.width, 1, 3)
+        } else {
+            sidebar_section_height(&data.summary_text, inner.width, 2, 4)
+        };
+        constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
 
@@ -809,6 +809,11 @@ mod tests {
     #[test]
     fn prompt_section_height_is_more_compact_when_work_is_present() {
         assert_eq!(sidebar_section_height("Preview: Continue", 30, 1, 3), 3);
+    }
+
+    #[test]
+    fn summary_section_height_is_more_compact_when_work_is_present() {
+        assert_eq!(sidebar_section_height("Short summary", 30, 1, 3), 3);
     }
 
     #[test]

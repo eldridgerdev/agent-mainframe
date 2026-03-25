@@ -370,8 +370,8 @@ fn draw_agent_sidebar(
         constraints.push(Constraint::Length(sidebar_section_height(
             &data.status_text,
             inner.width,
+            2,
             4,
-            6,
         )));
         sections_with_content.push(("Status", data.status_text.as_str()));
     }
@@ -775,6 +775,14 @@ mod tests {
     fn non_sidebar_sessions_keep_full_width() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Terminal), 120);
         assert_eq!(width, 120);
+    }
+
+    #[test]
+    fn status_section_height_is_compact_for_short_status_text() {
+        assert_eq!(
+            sidebar_section_height("Activity: Ready\nInput: 1.2K tokens", 30, 2, 4),
+            4
+        );
     }
 
     #[test]

@@ -384,7 +384,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
                         format!(" {} ", title),
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ))
-                    .borders(Borders::ALL)
+                    .borders(Borders::TOP)
                     .border_style(Style::default().fg(accent)),
             );
         frame.render_widget(paragraph, *section);
@@ -404,7 +404,7 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
 
 fn sidebar_section_height(body: &str, min_inner_lines: u16, max_inner_lines: u16) -> u16 {
     let inner_lines = body.lines().count() as u16;
-    inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
+    inner_lines.clamp(min_inner_lines, max_inner_lines) + 1
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {

@@ -12,6 +12,7 @@ pub struct OpencodeSidebarData {
     pub todo_preview: Vec<String>,
     pub pending_permission: Option<String>,
     pub last_error: Option<String>,
+    pub lsp_summary: Option<String>,
     pub reasoning_tokens: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
@@ -66,6 +67,7 @@ fn read_sidebar_data_from_roots(
         todo_preview: Vec::new(),
         pending_permission: None,
         last_error: None,
+        lsp_summary: None,
         additions: session.summary.as_ref().map(|summary| summary.additions),
         deletions: session.summary.as_ref().map(|summary| summary.deletions),
         files: session.summary.as_ref().map(|summary| summary.files),
@@ -100,6 +102,9 @@ fn read_sidebar_data_from_roots(
         }
         if sidecar.last_error.is_some() {
             merged.last_error = sidecar.last_error;
+        }
+        if sidecar.lsp_summary.is_some() {
+            merged.lsp_summary = sidecar.lsp_summary;
         }
         if sidecar.additions.is_some() {
             merged.additions = sidecar.additions;
@@ -318,6 +323,7 @@ fn parse_sidecar_file(path: &Path) -> Option<(i64, OpencodeSidebarData)> {
             todo_preview: sidecar.todo_preview,
             pending_permission: sidecar.pending_permission,
             last_error: sidecar.last_error,
+            lsp_summary: sidecar.lsp_summary,
             reasoning_tokens: None,
             additions: sidecar.additions,
             deletions: sidecar.deletions,
@@ -411,6 +417,8 @@ struct OpencodeSidebarSidecar {
     pending_permission: Option<String>,
     #[serde(default)]
     last_error: Option<String>,
+    #[serde(default)]
+    lsp_summary: Option<String>,
     #[serde(default)]
     additions: Option<u64>,
     #[serde(default)]
@@ -606,7 +614,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             sidecar.join("ses-1.json"),
-            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"last_error\":\"patch failed\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"last_error\":\"patch failed\",\"lsp_summary\":\"ready · 2 warnings\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
         )
         .unwrap();
 
@@ -620,6 +628,7 @@ mod tests {
         assert!(data.todo_preview.is_empty());
         assert_eq!(data.pending_permission.as_deref(), Some("edit"));
         assert_eq!(data.last_error.as_deref(), Some("patch failed"));
+        assert_eq!(data.lsp_summary.as_deref(), Some("ready · 2 warnings"));
         assert_eq!(data.additions, Some(8));
         assert_eq!(data.files, Some(5));
     }

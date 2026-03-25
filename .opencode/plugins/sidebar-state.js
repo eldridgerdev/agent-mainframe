@@ -160,6 +160,53 @@ function extractPermission(event) {
   )
 }
 
+function extractNumber(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+function extractLspSummary(event) {
+  const status = normalizePrompt(
+    event?.status ||
+    event?.state ||
+    event?.health ||
+    event?.phase ||
+    event?.summary?.status
+  )
+  const errors =
+    extractNumber(event?.errors) ??
+    extractNumber(event?.errorCount) ??
+    extractNumber(event?.diagnostics?.errors)
+  const warnings =
+    extractNumber(event?.warnings) ??
+    extractNumber(event?.warningCount) ??
+    extractNumber(event?.diagnostics?.warnings)
+  const servers =
+    extractNumber(event?.servers?.length) ??
+    extractNumber(event?.serverCount)
+
+  const details = []
+  if (errors && errors > 0) {
+    details.push(`${errors} error${errors === 1 ? "" : "s"}`)
+  }
+  if (warnings && warnings > 0) {
+    details.push(`${warnings} warning${warnings === 1 ? "" : "s"}`)
+  }
+  if (details.length > 0 && status) {
+    return `${status} · ${details.join(", ")}`
+  }
+  if (details.length > 0) {
+    return details.join(", ")
+  }
+  if (status) {
+    return status
+  }
+  if (servers && servers > 0) {
+    return `${servers} server${servers === 1 ? "" : "s"}`
+  }
+  return null
+}
+
 function writeSidebarState(directory, sessionId) {
   const state = stateBySession.get(sessionId)
   if (!state) return
@@ -175,6 +222,7 @@ function writeSidebarState(directory, sessionId) {
     todo_preview: state.todoPreview || null,
     pending_permission: state.pendingPermission || null,
     last_error: state.lastError || null,
+    lsp_summary: state.lspSummary || null,
     additions: state.diff?.additions ?? null,
     deletions: state.diff?.deletions ?? null,
     files: state.diff?.files ?? null,
@@ -252,6 +300,13 @@ export const SidebarStatePlugin = async ({ directory }) => {
       if (!prompt) return
       mutateState(directory, sessionId, (state) => {
         state.latestPrompt = prompt
+      })
+    },
+    "lsp.updated": async ({ event }) => {
+      const sessionId = sessionIdFrom(event)
+      const summary = extractLspSummary(event)
+      mutateState(directory, sessionId, (state) => {
+        state.lspSummary = summary
       })
     },
   }

@@ -116,6 +116,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 todo_preview: vec!["finish parser".to_string(), "wire UI".to_string()],
                 pending_permission: None,
                 last_error: None,
+                lsp_summary: Some("ready".to_string()),
                 reasoning_tokens: Some(12),
                 additions: Some(3),
                 deletions: Some(1),

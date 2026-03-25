@@ -143,6 +143,12 @@ fn work_text(
     {
         lines.push(format!("Permission: {permission}"));
     }
+    if let Some(lsp_summary) = opencode_sidebar
+        .and_then(|sidebar| sidebar.lsp_summary.as_deref())
+        .filter(|summary| !summary.is_empty())
+    {
+        lines.push(format!("LSP: {}", compact_sidebar_text(lsp_summary, 72)));
+    }
     if let Some(error) = opencode_sidebar
         .and_then(|sidebar| sidebar.last_error.as_deref())
         .filter(|error| !error.is_empty())
@@ -689,6 +695,7 @@ mod tests {
                 todo_preview: Vec::new(),
                 pending_permission: None,
                 last_error: None,
+                lsp_summary: None,
                 reasoning_tokens: Some(4200),
                 additions: Some(10),
                 deletions: Some(3),
@@ -713,6 +720,7 @@ mod tests {
             todo_count: Some(3),
             todo_preview: Vec::new(),
             pending_permission: Some("edit".into()),
+            lsp_summary: Some("ready · 2 warnings".into()),
             last_error: Some("patch failed".into()),
             reasoning_tokens: None,
             additions: None,
@@ -722,7 +730,7 @@ mod tests {
 
         assert_eq!(
             work.as_deref(),
-            Some("State: busy\nTool: edit\nPermission: edit\nError: patch failed")
+            Some("State: busy\nTool: edit\nPermission: edit\nLSP: ready · 2 warnings\nError: patch failed")
         );
     }
 
@@ -738,6 +746,7 @@ mod tests {
             todo_preview: vec!["finish parser".into(), "wire UI".into()],
             pending_permission: None,
             last_error: None,
+            lsp_summary: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,

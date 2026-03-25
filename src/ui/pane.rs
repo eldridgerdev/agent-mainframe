@@ -444,12 +444,16 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         }
     } else if label == "Error" || lower.contains("error") || lower.contains("failed") {
         theme.danger.to_color()
+    } else if lower.contains("warning") {
+        theme.warning.to_color()
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
         theme.info.to_color()
-    } else if lower.contains("ready") {
+    } else if lower.contains("ready") || lower.contains("healthy") {
         theme.success.to_color()
+    } else if lower.contains("indexing") || lower.contains("loading") || lower.contains("syncing") {
+        theme.info.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {

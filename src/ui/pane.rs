@@ -408,11 +408,8 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
     if !data.summary_text.trim().is_empty() {
-        let summary_height = if has_work_text {
-            sidebar_section_height(&data.summary_text, inner.width, 1, 3)
-        } else {
-            sidebar_section_height(&data.summary_text, inner.width, 2, 4)
-        };
+        let summary_height =
+            summary_section_height(&data.summary_text, inner.width, has_priority_context);
         constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
@@ -476,6 +473,14 @@ fn sidebar_section_height(
 }
 
 fn prompt_section_height(body: &str, section_width: u16, has_priority_context: bool) -> u16 {
+    if has_priority_context {
+        sidebar_section_height(body, section_width, 1, 3)
+    } else {
+        sidebar_section_height(body, section_width, 2, 4)
+    }
+}
+
+fn summary_section_height(body: &str, section_width: u16, has_priority_context: bool) -> u16 {
     if has_priority_context {
         sidebar_section_height(body, section_width, 1, 3)
     } else {
@@ -830,7 +835,17 @@ mod tests {
 
     #[test]
     fn summary_section_height_is_more_compact_when_work_is_present() {
-        assert_eq!(sidebar_section_height("Short summary", 30, 1, 3), 3);
+        assert_eq!(summary_section_height("Short summary", 30, true), 3);
+    }
+
+    #[test]
+    fn summary_section_height_is_more_compact_when_plan_is_present() {
+        assert_eq!(summary_section_height("Short summary", 30, true), 3);
+    }
+
+    #[test]
+    fn summary_section_height_is_taller_without_priority_context() {
+        assert_eq!(summary_section_height("Short summary", 30, false), 4);
     }
 
     #[test]

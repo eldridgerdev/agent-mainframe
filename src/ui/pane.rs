@@ -387,7 +387,11 @@ fn draw_agent_sidebar(
     }
     let has_work_text = data.work_text.as_deref().is_some();
     if let Some(plan_text) = data.plan_text.as_deref() {
-        let plan_height = sidebar_section_height(plan_text, inner.width, 2, 4);
+        let plan_height = if has_work_text {
+            sidebar_section_height(plan_text, inner.width, 1, 3)
+        } else {
+            sidebar_section_height(plan_text, inner.width, 2, 4)
+        };
         constraints.push(if has_work_text {
             Constraint::Length(plan_height)
         } else {
@@ -790,6 +794,14 @@ mod tests {
     fn work_section_height_is_compact_for_short_work_text() {
         assert_eq!(
             sidebar_section_height("State: running tool\nTool: Bash", 30, 2, 6),
+            4
+        );
+    }
+
+    #[test]
+    fn plan_section_height_is_more_compact_when_work_is_present() {
+        assert_eq!(
+            sidebar_section_height("1. Inspect parser\n2. Patch reducer", 30, 1, 3),
             4
         );
     }

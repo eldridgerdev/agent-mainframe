@@ -62,12 +62,9 @@ fn build_agent_sidebar_data(
         app.latest_prompt_for_session(&feature.tmux_session),
     );
     let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
-        "Generating summary...".to_string()
+        Some("Generating summary...".to_string())
     } else {
-        feature
-            .summary
-            .clone()
-            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
+        feature.summary.clone()
     };
     let codex_live = if sidebar_kind == SessionKind::Codex {
         app.codex_live_thread(&feature.tmux_session)
@@ -80,17 +77,10 @@ fn build_agent_sidebar_data(
     let work_text = codex_live
         .and_then(|live| live.sidebar_work_text())
         .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
-    let summary_text = codex_live
-        .and_then(|live| live.summary_prefix())
-        .map(|reasoning| {
-            format!(
-                "Reasoning: {}\n\n{}",
-                compact_sidebar_text(&reasoning, 160),
-                summary_text
-            )
-        })
-        .unwrap_or(summary_text);
-    let summary_text = compact_sidebar_text(&summary_text, 80);
+    let summary_text = compose_sidebar_summary_text(
+        codex_live.and_then(|live| live.summary_prefix()),
+        summary_text,
+    );
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
     let usage_confidence = format_codex_usage_source_confidence(&sidebar_kind, session);
 
@@ -128,6 +118,28 @@ fn compose_sidebar_status_text(
         status_lines.push(confidence);
     }
     status_lines.join("\n")
+}
+
+fn compose_sidebar_summary_text(
+    reasoning_text: Option<String>,
+    summary_text: Option<String>,
+) -> String {
+    match (reasoning_text, summary_text) {
+        (Some(reasoning), Some(summary)) => compact_sidebar_text(
+            &format!(
+                "Reasoning: {}\n\n{}",
+                compact_sidebar_text(&reasoning, 160),
+                summary
+            ),
+            80,
+        ),
+        (Some(reasoning), None) => compact_sidebar_text(
+            &format!("Reasoning: {}", compact_sidebar_text(&reasoning, 160)),
+            80,
+        ),
+        (None, Some(summary)) => compact_sidebar_text(&summary, 80),
+        (None, None) => String::new(),
+    }
 }
 
 fn codex_sidebar_source<'a>(
@@ -766,6 +778,15 @@ mod tests {
         assert_eq!(
             compose_sidebar_status_text(None, Some("Input: 1.2K tokens".into()), None),
             "Input: 1.2K tokens"
+        );
+    }
+
+    #[test]
+    fn compose_sidebar_summary_text_omits_missing_summary() {
+        assert_eq!(compose_sidebar_summary_text(None, None), "");
+        assert_eq!(
+            compose_sidebar_summary_text(None, Some("Short summary".into())),
+            "Short summary"
         );
     }
 

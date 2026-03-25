@@ -143,6 +143,23 @@ fn codex_debug_event(command: CodexDebugCommand) -> serde_json::Value {
                 "text": "1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests"
             }
         }),
+        CodexDebugCommand::WorkChangeReasonDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/app/codex_live.rs",
+                "status": "needs-reason",
+                "tool": "Edit"
+            }
+        }),
+        CodexDebugCommand::WorkDiffReviewDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/ui/dashboard.rs",
+                "status": "needs-review",
+                "tool": "Edit",
+                "message": "Review the change before continuing."
+            }
+        }),
         CodexDebugCommand::WorkCommandDemo => json!({
             "type": "commandExecution",
             "payload": {
@@ -483,6 +500,37 @@ mod tests {
             Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
         );
         assert_eq!(app.message.as_deref(), Some("Applied 'demo-plan'"));
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn command_picker_change_reason_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![CommandEntry {
+                name: "demo-work-change-reason".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::WorkChangeReasonDemo),
+            }],
+            selected: 0,
+            from_view: None,
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .and_then(|live| live.sidebar_work_text())
+                .as_deref(),
+            Some(
+                "State: waiting for change reason\nFile: src/app/codex_live.rs\nTool: Edit\nRequest: Explain why this change is needed."
+            )
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Applied 'demo-work-change-reason'")
+        );
         assert!(matches!(app.mode, AppMode::Normal));
     }
 }

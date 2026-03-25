@@ -66,6 +66,8 @@ pub struct CodexSidebarMetadataResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexDebugCommand {
     PlanDemo,
+    WorkChangeReasonDemo,
+    WorkDiffReviewDemo,
     WorkCommandDemo,
     WorkFileDemo,
     WorkInputDemo,

@@ -3113,6 +3113,35 @@ fn ipc_tool_activity_temporarily_overrides_older_review_work() {
 }
 
 #[test]
+fn ipc_change_reason_adds_default_request_when_message_is_missing() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "change-reason",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "tool_name": "Edit"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for change reason\nFile: src/main.rs\nTool: Edit\nRequest: Explain why this change is needed."
+        )
+    );
+}
+
+#[test]
 fn open_command_picker_prepends_codex_debug_commands() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -3130,6 +3159,8 @@ fn open_command_picker_prepends_codex_debug_commands() {
             assert!(!state.commands.is_empty(), "expected commands");
             assert_eq!(state.commands[0].source, "AMF Debug");
             assert_eq!(state.commands[0].name, "demo-plan");
+            assert_eq!(state.commands[1].name, "demo-work-change-reason");
+            assert_eq!(state.commands[2].name, "demo-work-diff-review");
             assert!(matches!(
                 state.commands[0].action,
                 CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo)

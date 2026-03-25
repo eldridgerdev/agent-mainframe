@@ -116,6 +116,14 @@ pub fn scan_commands_recursive(base: &Path, dir: &Path, source: &str, out: &mut 
 fn codex_debug_commands() -> Vec<CommandEntry> {
     vec![
         codex_debug_command("demo-plan", CodexDebugCommand::PlanDemo),
+        codex_debug_command(
+            "demo-work-change-reason",
+            CodexDebugCommand::WorkChangeReasonDemo,
+        ),
+        codex_debug_command(
+            "demo-work-diff-review",
+            CodexDebugCommand::WorkDiffReviewDemo,
+        ),
         codex_debug_command("demo-work-command", CodexDebugCommand::WorkCommandDemo),
         codex_debug_command("demo-work-file", CodexDebugCommand::WorkFileDemo),
         codex_debug_command("demo-work-input", CodexDebugCommand::WorkInputDemo),

@@ -71,9 +71,6 @@ fn build_agent_sidebar_data(
     } else {
         None
     };
-    let fallback_plan_text = app
-        .sidebar_plan_for_session(&feature.tmux_session)
-        .map(ToOwned::to_owned);
     let work_text = codex_live
         .and_then(|live| live.sidebar_work_text())
         .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
@@ -90,9 +87,7 @@ fn build_agent_sidebar_data(
         agent_kind: sidebar_kind,
         status_text,
         prompt_text,
-        plan_text: codex_live
-            .and_then(|live| live.plan_text.clone())
-            .or(fallback_plan_text),
+        plan_text: None,
         work_text,
         summary_text,
     })
@@ -173,7 +168,12 @@ fn format_codex_usage_source_confidence(
 fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&str>) -> String {
     let prompt = select_sidebar_prompt(session_prompt, fallback_prompt);
     prompt
-        .map(|prompt| format!("Preview: {}", compact_sidebar_text(&prompt, 120)))
+        .map(|prompt| {
+            format!(
+                "Latest: Ctrl+Space l\nPreview: {}",
+                compact_sidebar_text(&prompt, 80)
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -746,12 +746,28 @@ mod tests {
     fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
         let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
+        assert!(prompt.contains("Latest: Ctrl+Space l"));
         assert!(prompt.contains("fallback prompt"));
     }
 
     #[test]
     fn sidebar_prompt_text_is_empty_when_no_prompt_is_available() {
         assert_eq!(sidebar_prompt_text(None, None), "");
+    }
+
+    #[test]
+    fn sidebar_prompt_text_truncates_long_prompt_preview() {
+        let prompt = sidebar_prompt_text(
+            Some(
+                "This is a much longer prompt preview that should be shortened once it crosses the sidebar limit for prompt text.",
+            ),
+            None,
+        );
+
+        assert_eq!(
+            prompt,
+            "Latest: Ctrl+Space l\nPreview: This is a much longer prompt preview that should be shortened once it crosses t…"
+        );
     }
 
     #[test]
@@ -900,5 +916,76 @@ mod tests {
             fallback_sidebar_work_text(&app, &project, &feature, &view).as_deref(),
             Some("State: waiting for input\nRequest: Need approval before applying the patch.")
         );
+    }
+
+    #[test]
+    fn build_agent_sidebar_data_omits_plan_section_for_codex() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![codex_feature_session("sess-current")],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Codex,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.sidebar_plan_cache
+            .insert("amf-feature".into(), "Plan\n1. Inspect\n2. Patch".into());
+        app.apply_codex_live_event(
+            "amf-feature",
+            &serde_json::json!({
+                "type": "plan",
+                "payload": { "text": "1. Inspect\n2. Patch" }
+            }),
+        );
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "codex".into(),
+            "Codex".into(),
+            SessionKind::Codex,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
+        assert_eq!(sidebar.plan_text, None);
     }
 }

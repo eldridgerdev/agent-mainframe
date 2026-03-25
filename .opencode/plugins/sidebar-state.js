@@ -1,7 +1,17 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs"
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "fs"
 import { join } from "path"
 
 const DEBUG_LOG = "/tmp/amf-opencode-sidebar-state.log"
+const SIDEBAR_MAX_FILES = 32
+const SIDEBAR_RETENTION_MS = 24 * 60 * 60 * 1000
 const stateBySession = new Map()
 
 function debug(message, data) {
@@ -31,10 +41,18 @@ function sessionIdFrom(value) {
   return (
     value?.sessionID ||
     value?.sessionId ||
+    value?.properties?.sessionID ||
+    value?.properties?.sessionId ||
     value?.event?.sessionID ||
     value?.event?.sessionId ||
+    value?.event?.properties?.sessionID ||
+    value?.event?.properties?.sessionId ||
     null
   )
+}
+
+function eventPayload(event) {
+  return event?.properties || event
 }
 
 function normalizePrompt(value) {
@@ -77,10 +95,7 @@ function extractSummary(payload) {
     normalizePrompt(payload?.summary?.title) ||
     normalizePrompt(payload?.message?.summary?.title) ||
     normalizePrompt(payload?.summary?.content) ||
-    normalizePrompt(payload?.message?.summary?.content) ||
-    normalizePrompt(payload?.message?.content) ||
-    normalizePrompt(payload?.content) ||
-    normalizePrompt(payload?.text)
+    normalizePrompt(payload?.message?.summary?.content)
   )
 }
 
@@ -179,6 +194,20 @@ function extractDiffSummary(event) {
   return { additions, deletions, files }
 }
 
+function extractSessionStatus(event) {
+  const status = event?.status
+  if (typeof status === "string") {
+    return status
+  }
+  if (status?.type === "retry" && typeof status?.attempt === "number") {
+    return `retry ${status.attempt}`
+  }
+  if (typeof status?.type === "string") {
+    return status.type
+  }
+  return null
+}
+
 function extractPermission(event) {
   return (
     event?.tool ||
@@ -259,6 +288,30 @@ function writeSidebarState(directory, sessionId) {
     updated_at: new Date().toISOString(),
   }
   writeFileSync(join(dir, `${sessionId}.json`), JSON.stringify(payload, null, 2) + "\n")
+  pruneSidebarFiles(dir, sessionId)
+}
+
+function pruneSidebarFiles(dir, activeSessionId) {
+  const staleBefore = Date.now() - SIDEBAR_RETENTION_MS
+  const entries = readdirSync(dir)
+    .filter((name) => name.endsWith(".json") && name !== `${activeSessionId}.json`)
+    .map((name) => {
+      const path = join(dir, name)
+      let mtimeMs = 0
+      try {
+        mtimeMs = statSync(path).mtimeMs
+      } catch (_) {}
+      return { path, mtimeMs }
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+
+  entries.forEach((entry, index) => {
+    if (entry.mtimeMs < staleBefore || index >= SIDEBAR_MAX_FILES - 1) {
+      try {
+        unlinkSync(entry.path)
+      } catch (_) {}
+    }
+  })
 }
 
 function mutateState(directory, sessionId, updater) {
@@ -272,41 +325,6 @@ function mutateState(directory, sessionId, updater) {
 export const SidebarStatePlugin = async ({ directory }) => {
   debug("plugin loaded", { directory })
   return {
-    "session.status": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      mutateState(directory, sessionId, (state) => {
-        state.status = event?.status || null
-      })
-    },
-    "session.diff": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      const summary = extractDiffSummary(event)
-      if (!summary) return
-      mutateState(directory, sessionId, (state) => {
-        state.diff = summary
-      })
-    },
-    "todo.updated": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      const todoCount = extractOpenTodoCount(event)
-      const todoPreview = extractTodoPreview(event)
-      mutateState(directory, sessionId, (state) => {
-        state.todoCount = todoCount
-        state.todoPreview = todoPreview
-      })
-    },
-    "permission.asked": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      mutateState(directory, sessionId, (state) => {
-        state.pendingPermission = extractPermission(event)
-      })
-    },
-    "permission.replied": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      mutateState(directory, sessionId, (state) => {
-        state.pendingPermission = null
-      })
-    },
     "tool.execute.before": async (input) => {
       const sessionId = sessionIdFrom(input)
       mutateState(directory, sessionId, (state) => {
@@ -324,30 +342,85 @@ export const SidebarStatePlugin = async ({ directory }) => {
         state.lastError = lastError
       })
     },
-    "message.updated": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      const role = extractMessageRole(event)
-      mutateState(directory, sessionId, (state) => {
-        if (role === "user") {
-          const prompt = extractPrompt(event)
-          if (prompt) {
-            state.latestPrompt = prompt
-          }
+    event: async ({ event }) => {
+      const payload = eventPayload(event)
+      switch (event?.type) {
+        case "session.status": {
+          const sessionId = sessionIdFrom(payload)
+          mutateState(directory, sessionId, (state) => {
+            state.status = extractSessionStatus(payload)
+          })
           return
         }
-
-        const summary = extractSummary(event)
-        if (summary) {
-          state.liveSummary = summary
+        case "session.diff": {
+          const sessionId = sessionIdFrom(payload)
+          const summary = extractDiffSummary(payload)
+          if (!summary) return
+          mutateState(directory, sessionId, (state) => {
+            state.diff = summary
+          })
+          return
         }
-      })
-    },
-    "lsp.updated": async ({ event }) => {
-      const sessionId = sessionIdFrom(event)
-      const summary = extractLspSummary(event)
-      mutateState(directory, sessionId, (state) => {
-        state.lspSummary = summary
-      })
+        case "todo.updated": {
+          const sessionId = sessionIdFrom(payload)
+          const todoCount = extractOpenTodoCount(payload)
+          const todoPreview = extractTodoPreview(payload)
+          mutateState(directory, sessionId, (state) => {
+            state.todoCount = todoCount
+            state.todoPreview = todoPreview
+          })
+          return
+        }
+        case "permission.asked": {
+          const sessionId = sessionIdFrom(payload)
+          mutateState(directory, sessionId, (state) => {
+            state.pendingPermission = extractPermission(payload)
+          })
+          return
+        }
+        case "permission.replied": {
+          const sessionId = sessionIdFrom(payload)
+          mutateState(directory, sessionId, (state) => {
+            state.pendingPermission = null
+          })
+          return
+        }
+        case "message.updated": {
+          const message = payload?.info || payload
+          const sessionId = sessionIdFrom(message)
+          const role = extractMessageRole(message)
+          mutateState(directory, sessionId, (state) => {
+            if (role === "user") {
+              const prompt = extractPrompt(message)
+              if (prompt) {
+                state.latestPrompt = prompt
+              }
+              state.liveSummary = null
+              return
+            }
+
+            if (role !== "assistant") {
+              return
+            }
+
+            const summary = extractSummary(message)
+            if (summary) {
+              state.liveSummary = summary
+            }
+          })
+          return
+        }
+        case "lsp.updated": {
+          const sessionId = sessionIdFrom(payload)
+          const summary = extractLspSummary(payload)
+          mutateState(directory, sessionId, (state) => {
+            state.lspSummary = summary
+          })
+          return
+        }
+        default:
+          return
+      }
     },
   }
 }

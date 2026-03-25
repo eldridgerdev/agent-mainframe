@@ -1534,7 +1534,17 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
     let sidebar_plugin = std::fs::read_to_string(plugin_dir.join("sidebar-state.js")).unwrap();
     assert!(
         sidebar_plugin.contains("SidebarStatePlugin")
-            && sidebar_plugin.contains("opencode-sidebar"),
+            && sidebar_plugin.contains("opencode-sidebar")
+            && sidebar_plugin.contains("state.liveSummary = null")
+            && sidebar_plugin.contains("role !== \"assistant\"")
+            && sidebar_plugin.contains("pruneSidebarFiles")
+            && sidebar_plugin.contains("SIDEBAR_MAX_FILES")
+            && sidebar_plugin.contains("normalizePrompt(payload?.message?.summary?.content)")
+            && sidebar_plugin.contains("function eventPayload(event)")
+            && sidebar_plugin.contains("event: async ({ event })")
+            && sidebar_plugin.contains("switch (event?.type)")
+            && sidebar_plugin.contains("case \"todo.updated\"")
+            && sidebar_plugin.contains("case \"message.updated\""),
         "expected sidebar-state.js to be installed, got: {sidebar_plugin}"
     );
 }

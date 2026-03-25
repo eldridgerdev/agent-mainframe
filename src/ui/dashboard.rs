@@ -76,21 +76,12 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
                 "No recent prompt.\nUse leader+l to open prompt history.".to_string()
             }),
     };
-    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
-        "Generating summary...".to_string()
-    } else if view.session_kind == SessionKind::Opencode {
-        opencode_sidebar
-            .and_then(|sidebar| sidebar.live_summary.as_deref())
-            .filter(|summary| !summary.is_empty())
-            .map(|summary| compact_sidebar_text(summary, 80))
-            .or_else(|| feature.summary.clone())
-            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
-    } else {
-        feature
-            .summary
-            .clone()
-            .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
-    };
+    let summary_text = sidebar_summary_text(
+        &view.session_kind,
+        app.summary_state.generating.contains(&feature.tmux_session),
+        feature.summary.as_deref(),
+        opencode_sidebar,
+    );
 
     Some(super::pane::SidebarData {
         title: sidebar_title(&view.session_kind),
@@ -192,6 +183,29 @@ fn todos_text(
             .map(|todo| format!("- {}", compact_sidebar_text(todo, 72))),
     );
     Some(lines.join("\n"))
+}
+
+fn sidebar_summary_text(
+    session_kind: &SessionKind,
+    generating: bool,
+    feature_summary: Option<&str>,
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> String {
+    if generating {
+        return "Generating summary...".to_string();
+    }
+
+    if *session_kind == SessionKind::Opencode
+        && let Some(summary) = opencode_sidebar
+            .and_then(|sidebar| sidebar.live_summary.as_deref())
+            .filter(|summary| !summary.is_empty())
+    {
+        return compact_sidebar_text(summary, 80);
+    }
+
+    feature_summary
+        .map(str::to_string)
+        .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
 }
 
 fn sidebar_title(session_kind: &SessionKind) -> &'static str {
@@ -797,7 +811,6 @@ mod tests {
 
     #[test]
     fn opencode_summary_prefers_live_sidecar_summary() {
-        let summary = Some("Persisted AMF summary".to_string());
         let live = crate::app::opencode_storage::OpencodeSidebarData {
             session_id: "ses-1".into(),
             title: None,
@@ -816,13 +829,53 @@ mod tests {
             files: None,
         };
 
-        let picked = live
-            .live_summary
-            .as_deref()
-            .map(|text| compact_sidebar_text(text, 80))
-            .or(summary)
-            .unwrap();
+        assert_eq!(
+            sidebar_summary_text(
+                &SessionKind::Opencode,
+                false,
+                Some("Persisted AMF summary"),
+                Some(&live),
+            ),
+            "Live assistant summary"
+        );
+    }
 
-        assert_eq!(picked, "Live assistant summary");
+    #[test]
+    fn summary_text_falls_back_to_feature_summary_without_live_opencode_summary() {
+        assert_eq!(
+            sidebar_summary_text(&SessionKind::Opencode, false, Some("Persisted AMF summary"), None),
+            "Persisted AMF summary"
+        );
+    }
+
+    #[test]
+    fn summary_text_prioritizes_generating_state_over_live_summary() {
+        let live = crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: Some("Live assistant summary".into()),
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        };
+
+        assert_eq!(
+            sidebar_summary_text(
+                &SessionKind::Opencode,
+                true,
+                Some("Persisted AMF summary"),
+                Some(&live),
+            ),
+            "Generating summary..."
+        );
     }
 }

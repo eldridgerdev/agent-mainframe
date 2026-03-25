@@ -30,7 +30,7 @@ impl CodexLiveThreadState {
                 changed |= assign_if_some(&mut self.reasoning_text, extract_reasoning_text(raw));
             }
             "commandExecution" | "command_execution" => {
-                changed |= assign_if_some(&mut self.command_text, extract_command_text(raw));
+                changed |= apply_command_event(&mut self.command_text, raw);
             }
             "fileChange" | "file_change" => {
                 changed |=
@@ -44,6 +44,7 @@ impl CodexLiveThreadState {
             }
             "inputResolved" | "input_resolved" => {
                 changed |= clear_if_some(&mut self.input_request_text);
+                changed |= clear_if_some(&mut self.file_change_text);
             }
             _ => {}
         }
@@ -53,7 +54,7 @@ impl CodexLiveThreadState {
 
     pub fn sidebar_work_text(&self) -> Option<String> {
         if let Some(text) = &self.input_request_text {
-            return Some(format!("Pending input: {text}"));
+            return Some(format!("State: waiting for input\nRequest: {text}"));
         }
         if let Some(text) = &self.file_change_text {
             return Some(text.clone());
@@ -92,6 +93,23 @@ fn clear_if_some(slot: &mut Option<String>) -> bool {
     changed
 }
 
+fn apply_command_event(slot: &mut Option<String>, raw: &Value) -> bool {
+    let phase = first_string(
+        raw,
+        &["/payload/phase", "/payload/status", "/phase", "/status"],
+    );
+
+    match phase
+        .as_deref()
+        .map(normalize_status)
+        .unwrap_or(CommandStatus::Running)
+    {
+        CommandStatus::Running => assign_if_some(slot, extract_command_text(raw)),
+        CommandStatus::Completed => clear_if_some(slot),
+        CommandStatus::Failed => assign_if_some(slot, extract_failed_command_text(raw)),
+    }
+}
+
 fn first_string(raw: &Value, pointers: &[&str]) -> Option<String> {
     pointers
         .iter()
@@ -114,19 +132,23 @@ fn extract_reasoning_text(raw: &Value) -> Option<String> {
 
 fn extract_command_text(raw: &Value) -> Option<String> {
     let command = first_string(raw, &["/payload/command", "/command"])?;
-    let phase = first_string(
-        raw,
-        &["/payload/phase", "/payload/status", "/phase", "/status"],
-    );
+    let lines = vec![format!("State: running tool"), format!("Tool: {command}")];
+    Some(lines.join("\n"))
+}
+
+fn extract_failed_command_text(raw: &Value) -> Option<String> {
+    let command = first_string(raw, &["/payload/command", "/command"])?;
     let exit_code = first_string(
         raw,
-        &["/payload/exit_code", "/payload/exitCode", "/exit_code"],
+        &[
+            "/payload/exit_code",
+            "/payload/exitCode",
+            "/exit_code",
+            "/exitCode",
+        ],
     );
 
-    let mut lines = vec![format!("Command: {command}")];
-    if let Some(phase) = phase {
-        lines.push(format!("State: {phase}"));
-    }
+    let mut lines = vec![format!("State: tool failed"), format!("Tool: {command}")];
     if let Some(exit_code) = exit_code {
         lines.push(format!("Exit: {exit_code}"));
     }
@@ -148,9 +170,14 @@ fn extract_file_change_text(raw: &Value) -> Option<String> {
         &["/payload/phase", "/payload/status", "/phase", "/status"],
     );
 
-    let mut lines = vec![format!("File: {path}")];
+    let state = match status.as_deref().map(normalize_status) {
+        Some(CommandStatus::Failed) => "review blocked",
+        Some(CommandStatus::Completed) => "review completed",
+        _ => "waiting for review",
+    };
+    let mut lines = vec![format!("State: {state}"), format!("File: {path}")];
     if let Some(status) = status {
-        lines.push(format!("State: {status}"));
+        lines.push(format!("Detail: {status}"));
     }
     Some(lines.join("\n"))
 }
@@ -160,6 +187,23 @@ fn extract_input_request_text(raw: &Value) -> Option<String> {
         raw,
         &["/payload/prompt", "/payload/message", "/prompt", "/message"],
     )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+fn normalize_status(status: &str) -> CommandStatus {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "completed" | "complete" | "finished" | "succeeded" | "success" | "done" | "stopped" => {
+            CommandStatus::Completed
+        }
+        "failed" | "error" | "blocked" | "rejected" => CommandStatus::Failed,
+        _ => CommandStatus::Running,
+    }
 }
 
 #[cfg(test)]
@@ -211,7 +255,7 @@ mod tests {
 
         assert_eq!(
             state.command_text.as_deref(),
-            Some("Command: cargo test\nState: running")
+            Some("State: running tool\nTool: cargo test")
         );
     }
 
@@ -228,7 +272,7 @@ mod tests {
 
         assert_eq!(
             state.file_change_text.as_deref(),
-            Some("File: src/main.rs\nState: proposed")
+            Some("State: waiting for review\nFile: src/main.rs\nDetail: proposed")
         );
     }
 
@@ -241,12 +285,54 @@ mod tests {
         }));
         assert_eq!(
             state.sidebar_work_text().as_deref(),
-            Some("Pending input: Need approval for migration.")
+            Some("State: waiting for input\nRequest: Need approval for migration.")
         );
 
         state.apply_event(&json!({
             "type": "inputResolved"
         }));
         assert_eq!(state.input_request_text, None);
+    }
+
+    #[test]
+    fn reducer_clears_completed_command_work() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "running"
+            }
+        }));
+
+        let changed = state.apply_event(&json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test",
+                "phase": "completed"
+            }
+        }));
+
+        assert!(changed);
+        assert_eq!(state.command_text, None);
+        assert_eq!(state.sidebar_work_text(), None);
+    }
+
+    #[test]
+    fn reducer_clears_review_work_when_input_is_resolved() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "proposed"
+            }
+        }));
+
+        state.apply_event(&json!({
+            "type": "inputResolved"
+        }));
+
+        assert_eq!(state.file_change_text, None);
     }
 }

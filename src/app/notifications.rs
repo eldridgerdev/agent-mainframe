@@ -688,6 +688,11 @@ impl App {
                     }),
                 );
             } else if matches!(notification_type.as_str(), "change-reason" | "diff-review") {
+                let review_status = if notification_type == "change-reason" {
+                    "needs-reason"
+                } else {
+                    "needs-review"
+                };
                 self.apply_codex_live_event(
                     &codex_session,
                     &serde_json::json!({
@@ -698,7 +703,7 @@ impl App {
                                 .clone()
                                 .or(msg.file_path.clone())
                                 .unwrap_or_default(),
-                            "status": "proposed"
+                            "status": review_status
                         }
                     }),
                 );

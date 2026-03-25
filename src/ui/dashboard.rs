@@ -192,7 +192,7 @@ fn fallback_sidebar_work_text(
     if let Some(first) = matching_inputs.first() {
         let message = first.message.trim();
         let mut text = format!(
-            "Pending input: {}",
+            "State: waiting for input\nRequest: {}",
             if message.is_empty() {
                 "Agent is waiting for input"
             } else {
@@ -206,11 +206,11 @@ fn fallback_sidebar_work_text(
     }
 
     if app.ipc_tool_sessions.contains(&feature.tmux_session) {
-        return Some("Tool activity is running".to_string());
+        return Some("State: running tool".to_string());
     }
 
     if app.is_feature_thinking(&feature.tmux_session) {
-        return Some("Codex is thinking".to_string());
+        return Some("State: thinking".to_string());
     }
 
     None
@@ -839,7 +839,7 @@ mod tests {
 
         assert_eq!(
             fallback_sidebar_work_text(&app, &project, &feature, &view).as_deref(),
-            Some("Pending input: Need approval before applying the patch.")
+            Some("State: waiting for input\nRequest: Need approval before applying the patch.")
         );
     }
 }

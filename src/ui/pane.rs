@@ -842,7 +842,7 @@ mod tests {
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
-            work_text: Some("Command: cargo test\nState: running".into()),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -882,7 +882,7 @@ mod tests {
             prompt_text: "Preview: Continue the refactor.".into(),
             plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
             work_text: Some(
-                "Pending input: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nCommand: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
+                "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
                     .into(),
             ),
             summary_text: "Small summary.".into(),

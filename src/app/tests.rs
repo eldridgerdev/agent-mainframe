@@ -2926,7 +2926,7 @@ fn ipc_input_request_updates_codex_live_work_state() {
         app.codex_live_thread("amf-my-feat")
             .and_then(|live| live.sidebar_work_text())
             .as_deref(),
-        Some("Pending input: Need approval before applying the patch.")
+        Some("State: waiting for input\nRequest: Need approval before applying the patch.")
     );
 }
 
@@ -2964,6 +2964,41 @@ fn ipc_prompt_submit_clears_codex_live_input_and_marks_thinking() {
 }
 
 #[test]
+fn ipc_prompt_submit_clears_codex_live_review_work() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.apply_codex_live_event(
+        "amf-my-feat",
+        &serde_json::json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "proposed"
+            }
+        }),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Reviewed the diff and continue."
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text()),
+        None
+    );
+}
+
+#[test]
 fn ipc_prompt_submit_refreshes_sidebar_plan_cache() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -2991,6 +3026,33 @@ fn ipc_prompt_submit_refreshes_sidebar_plan_cache() {
     assert_eq!(
         app.sidebar_plan_for_session("amf-my-feat"),
         Some("Plan\n1. Refresh plan cache\n2. Render update")
+    );
+}
+
+#[test]
+fn ipc_diff_review_updates_codex_live_review_state() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "message": "Review the change before continuing."
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some("State: waiting for review\nFile: src/main.rs\nDetail: needs-review")
     );
 }
 

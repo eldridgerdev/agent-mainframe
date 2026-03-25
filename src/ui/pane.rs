@@ -355,14 +355,26 @@ fn draw_agent_sidebar(
         summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let mut constraints = vec![
-        Constraint::Length(sidebar_section_height(&data.status_text, inner.width, 4, 6)),
-        Constraint::Length(sidebar_section_height(&data.prompt_text, inner.width, 2, 4)),
-    ];
-    let mut sections_with_content = vec![
-        ("Status", data.status_text.as_str()),
-        ("Prompt", data.prompt_text.as_str()),
-    ];
+    let mut constraints = Vec::new();
+    let mut sections_with_content = Vec::new();
+
+    if !data.status_text.trim().is_empty() {
+        constraints.push(Constraint::Length(sidebar_section_height(
+            &data.status_text,
+            inner.width,
+            4,
+            6,
+        )));
+        sections_with_content.push(("Status", data.status_text.as_str()));
+    }
+
+    constraints.push(Constraint::Length(sidebar_section_height(
+        &data.prompt_text,
+        inner.width,
+        2,
+        4,
+    )));
+    sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     if let Some(plan_text) = data.plan_text.as_deref() {
         constraints.push(Constraint::Length(sidebar_section_height(
             plan_text,
@@ -909,5 +921,43 @@ mod tests {
         assert!(rendered.contains("Queue"));
         assert!(rendered.contains("cargo test"));
         assert!(rendered.contains("Small summary."));
+    }
+
+    #[test]
+    fn codex_sidebar_skips_empty_status_section() {
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: String::new(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: None,
+            work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Status"));
+        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("Work"));
     }
 }

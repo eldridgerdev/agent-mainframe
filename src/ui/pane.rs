@@ -359,7 +359,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
             "Status" => (4, 6),
             "Work" => (2, 4),
             "Prompt" => (2, 4),
-            "Todos" => (2, 4),
+            "Todos" => (3, 5),
             _ => (2, 4),
         };
         constraints.push(Constraint::Length(sidebar_section_height(
@@ -456,6 +456,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
+    } else if label == "More" {
+        theme.text_muted.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
     } else if title == "Prompt" {

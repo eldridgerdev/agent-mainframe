@@ -171,17 +171,24 @@ fn todos_text(
         return None;
     }
 
+    let preview_count = sidebar.todo_preview.len().min(2) as u64;
     let mut lines = vec![format!(
         "Open: {todo_count} item{}",
         if todo_count == 1 { "" } else { "s" }
     )];
-    lines.extend(
-        sidebar
-            .todo_preview
-            .iter()
-            .take(3)
-            .map(|todo| format!("- {}", compact_sidebar_text(todo, 72))),
-    );
+    if let Some(first) = sidebar.todo_preview.first() {
+        lines.push(format!("Next: {}", compact_sidebar_text(first, 20)));
+    }
+    if let Some(second) = sidebar.todo_preview.get(1) {
+        lines.push(format!("Then: {}", compact_sidebar_text(second, 20)));
+    }
+    if todo_count > preview_count {
+        let hidden_count = todo_count - preview_count;
+        lines.push(format!(
+            "More: {hidden_count} more item{}",
+            if hidden_count == 1 { "" } else { "s" }
+        ));
+    }
     Some(lines.join("\n"))
 }
 
@@ -779,7 +786,7 @@ mod tests {
 
         assert_eq!(
             todos.as_deref(),
-            Some("Open: 3 items\n- finish parser\n- wire UI")
+            Some("Open: 3 items\nNext: finish parser\nThen: wire UI\nMore: 1 more item")
         );
     }
 
@@ -805,7 +812,7 @@ mod tests {
 
         assert_eq!(
             todos.as_deref(),
-            Some("Open: 5 items\n- finish parser\n- wire UI\n- add tests")
+            Some("Open: 5 items\nNext: finish parser\nThen: wire UI\nMore: 3 more items")
         );
     }
 

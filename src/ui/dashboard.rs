@@ -87,7 +87,6 @@ fn build_agent_sidebar_data(
         agent_kind: sidebar_kind,
         status_text,
         prompt_text,
-        plan_text: None,
         work_text,
         summary_text,
     })
@@ -919,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn build_agent_sidebar_data_omits_plan_section_for_codex() {
+    fn build_agent_sidebar_data_still_builds_for_codex_with_plan_sources_present() {
         let now = chrono::Utc::now();
         let feature = Feature {
             id: "feat-1".into(),
@@ -986,6 +985,6 @@ mod tests {
         );
 
         let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
-        assert_eq!(sidebar.plan_text, None);
+        assert_eq!(sidebar.agent_kind, SessionKind::Codex);
     }
 }

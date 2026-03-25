@@ -38,7 +38,6 @@ pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
     pub prompt_text: String,
-    pub plan_text: Option<String>,
     pub work_text: Option<String>,
     pub summary_text: String,
 }
@@ -358,7 +357,6 @@ fn draw_agent_sidebar(
         agent_kind,
         status_text: String::new(),
         prompt_text: String::new(),
-        plan_text: None,
         work_text: None,
         summary_text: String::new(),
     };
@@ -385,19 +383,6 @@ fn draw_agent_sidebar(
             6,
         )));
         sections_with_content.push(("Work", work_text));
-    }
-    if let Some(plan_text) = data.plan_text.as_deref() {
-        let plan_height = if has_work_text {
-            sidebar_section_height(plan_text, inner.width, 1, 3)
-        } else {
-            sidebar_section_height(plan_text, inner.width, 2, 4)
-        };
-        constraints.push(if has_work_text {
-            Constraint::Length(plan_height)
-        } else {
-            Constraint::Min(plan_height)
-        });
-        sections_with_content.push(("Plan", plan_text));
     }
     if !data.summary_text.trim().is_empty() {
         let summary_height = summary_section_height(&data.summary_text, inner.width, has_work_text);
@@ -444,7 +429,6 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
         "Status" => theme.warning.to_color(),
         "Prompt" => theme.secondary.to_color(),
-        "Plan" => theme.info.to_color(),
         "Work" => theme.primary.to_color(),
         "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
@@ -807,14 +791,6 @@ mod tests {
     }
 
     #[test]
-    fn plan_section_height_is_more_compact_when_work_is_present() {
-        assert_eq!(
-            sidebar_section_height("1. Inspect parser\n2. Patch reducer", 30, 1, 3),
-            4
-        );
-    }
-
-    #[test]
     fn prompt_section_height_is_more_compact_when_work_is_present() {
         assert_eq!(prompt_section_height("Preview: Continue", 30, true), 3);
     }
@@ -844,7 +820,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
-            plan_text: None,
             work_text: None,
             summary_text: "Sidebar ready.".into(),
         };
@@ -884,7 +859,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nInput: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: None,
             work_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
@@ -913,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_sidebar_renders_plan_and_work_sections_when_present() {
+    fn codex_sidebar_renders_work_section_when_present() {
         let backend = TestBackend::new(120, 34);
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Codex);
@@ -922,7 +896,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             summary_text: "Codex sidebar ready.".into(),
         };
@@ -945,52 +918,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
-        assert!(rendered.contains("Plan"));
-        assert!(rendered.contains("Inspect parser"));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
-    }
-
-    #[test]
-    fn codex_sidebar_places_work_above_plan_when_present() {
-        let backend = TestBackend::new(120, 34);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let view = sample_view(crate::project::SessionKind::Codex);
-        let theme = Theme::default();
-        let sidebar = AgentSidebarData {
-            agent_kind: crate::project::SessionKind::Codex,
-            status_text: "Thinking\nUsage: 1.2K tokens".into(),
-            prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
-            work_text: Some("State: running tool\nTool: cargo test".into()),
-            summary_text: "Codex sidebar ready.".into(),
-        };
-
-        terminal
-            .draw(|frame| {
-                draw(
-                    frame,
-                    &view,
-                    "hello",
-                    Some(&sidebar),
-                    false,
-                    0,
-                    None,
-                    &theme,
-                );
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let rendered = buffer
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        let work_index = rendered.find("Work").unwrap();
-        let plan_index = rendered.find("Plan").unwrap();
-
-        assert!(work_index < plan_index);
     }
 
     #[test]
@@ -1003,7 +932,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             summary_text: "Codex sidebar ready.".into(),
         };
@@ -1034,49 +962,6 @@ mod tests {
 
         assert!(work_index < prompt_index);
     }
-
-    #[test]
-    fn codex_sidebar_places_plan_above_prompt_when_present() {
-        let backend = TestBackend::new(120, 34);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let view = sample_view(crate::project::SessionKind::Codex);
-        let theme = Theme::default();
-        let sidebar = AgentSidebarData {
-            agent_kind: crate::project::SessionKind::Codex,
-            status_text: "Thinking\nUsage: 1.2K tokens".into(),
-            prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
-            work_text: Some("State: running tool\nTool: cargo test".into()),
-            summary_text: "Codex sidebar ready.".into(),
-        };
-
-        terminal
-            .draw(|frame| {
-                draw(
-                    frame,
-                    &view,
-                    "hello",
-                    Some(&sidebar),
-                    false,
-                    0,
-                    None,
-                    &theme,
-                );
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let rendered = buffer
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        let plan_index = rendered.find("Plan").unwrap();
-        let prompt_index = rendered.find("Prompt").unwrap();
-
-        assert!(plan_index < prompt_index);
-    }
-
     #[test]
     fn codex_sidebar_places_summary_above_prompt_when_present() {
         let backend = TestBackend::new(120, 34);
@@ -1087,7 +972,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: None,
             work_text: Some("State: running tool\nTool: cargo test".into()),
             summary_text: "Codex sidebar ready.".into(),
         };
@@ -1120,47 +1004,6 @@ mod tests {
     }
 
     #[test]
-    fn codex_sidebar_lets_plan_expand_when_work_is_absent() {
-        let backend = TestBackend::new(120, 36);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let view = sample_view(crate::project::SessionKind::Codex);
-        let theme = Theme::default();
-        let sidebar = AgentSidebarData {
-            agent_kind: crate::project::SessionKind::Codex,
-            status_text: "Input: 1.2K tokens".into(),
-            prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some(
-                "1. Inspect parser\n2. Patch reducer\n3. Re-run tests\n4. Verify layout\n5. Ship change"
-                    .into(),
-            ),
-            work_text: None,
-            summary_text: String::new(),
-        };
-
-        terminal
-            .draw(|frame| {
-                draw(
-                    frame,
-                    &view,
-                    "hello",
-                    Some(&sidebar),
-                    false,
-                    0,
-                    None,
-                    &theme,
-                );
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
-
-        assert!(rendered.contains("Plan"));
-        assert!(rendered.contains("Ship change"));
-        assert!(!rendered.contains("Work"));
-    }
-
-    #[test]
     fn codex_sidebar_lets_work_expand_and_keeps_summary_compact() {
         let backend = TestBackend::new(120, 38);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1170,7 +1013,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
             work_text: Some(
                 "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
                     .into(),
@@ -1211,7 +1053,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: String::new(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: None,
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             summary_text: "Codex sidebar ready.".into(),
         };
@@ -1249,7 +1090,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
-            plan_text: None,
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             summary_text: String::new(),
         };
@@ -1287,7 +1127,6 @@ mod tests {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
             prompt_text: String::new(),
-            plan_text: None,
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             summary_text: "Codex sidebar ready.".into(),
         };

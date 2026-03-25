@@ -53,12 +53,63 @@ pub use self::setup::load_config;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 
-pub struct CommandEntry {
-    pub name: String,
-    pub source: String,
-    pub path: PathBuf,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommandSection {
+    AmfDebug,
+    AmfDev,
+    Project,
+    Global,
 }
 
+impl CommandSection {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::AmfDebug => "AMF Debug",
+            Self::AmfDev => "AMF Dev",
+            Self::Project => "Project Commands",
+            Self::Global => "Global Commands",
+        }
+    }
+
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::AmfDebug | Self::AmfDev)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommand {
+    OpenDebugLog,
+    ClearDebugLog,
+    RefreshNotifications,
+    InjectTestInputRequest,
+    GenerateSummary,
+    OpenPlanMarkdown,
+    OpenLatestPrompt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAction {
+    SlashCommand { name: String },
+    Local { command: LocalCommand },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandEntry {
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub section: CommandSection,
+    pub action: CommandAction,
+    pub path: Option<PathBuf>,
+}
+
+impl CommandEntry {
+    pub fn is_local(&self) -> bool {
+        matches!(self.action, CommandAction::Local { .. })
+    }
+}
+
+#[derive(Clone)]
 pub struct CommandPickerState {
     pub commands: Vec<CommandEntry>,
     pub selected: usize,

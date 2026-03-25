@@ -283,10 +283,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                     return Ok(());
                 }
             };
-            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
-                scroll_offset: 0,
-                from_view: Some(view),
-            });
+            app.open_debug_log(Some(view));
         }
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();

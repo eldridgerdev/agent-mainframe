@@ -117,6 +117,18 @@ function extractTodoCount(event) {
   return null
 }
 
+function extractOpenTodoCount(event) {
+  const entries = Array.isArray(event?.todos)
+    ? event.todos
+    : Array.isArray(event?.items)
+      ? event.items
+      : null
+  if (!entries) {
+    return extractTodoCount(event)
+  }
+  return entries.filter((item) => !todoIsClosed(item)).length
+}
+
 function todoText(item) {
   const text =
     item?.content ||
@@ -276,10 +288,10 @@ export const SidebarStatePlugin = async ({ directory }) => {
     },
     "todo.updated": async ({ event }) => {
       const sessionId = sessionIdFrom(event)
-      const todoCount = extractTodoCount(event)
+      const todoCount = extractOpenTodoCount(event)
       const todoPreview = extractTodoPreview(event)
       mutateState(directory, sessionId, (state) => {
-        state.todoCount = todoPreview ? todoPreview.length : todoCount
+        state.todoCount = todoCount
         state.todoPreview = todoPreview
       })
     },

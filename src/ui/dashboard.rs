@@ -770,6 +770,32 @@ mod tests {
     }
 
     #[test]
+    fn opencode_todos_text_keeps_full_count_with_short_preview() {
+        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: Some(5),
+            todo_preview: vec!["finish parser".into(), "wire UI".into(), "add tests".into()],
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        }));
+
+        assert_eq!(
+            todos.as_deref(),
+            Some("Open: 5 items\n- finish parser\n- wire UI\n- add tests")
+        );
+    }
+
+    #[test]
     fn opencode_summary_prefers_live_sidecar_summary() {
         let summary = Some("Persisted AMF summary".to_string());
         let live = crate::app::opencode_storage::OpencodeSidebarData {

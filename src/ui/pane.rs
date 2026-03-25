@@ -386,15 +386,6 @@ fn draw_agent_sidebar(
         )));
         sections_with_content.push(("Work", work_text));
     }
-    if !data.prompt_text.trim().is_empty() {
-        let prompt_height = if has_work_text {
-            sidebar_section_height(&data.prompt_text, inner.width, 1, 3)
-        } else {
-            sidebar_section_height(&data.prompt_text, inner.width, 2, 4)
-        };
-        constraints.push(Constraint::Length(prompt_height));
-        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
-    }
     if let Some(plan_text) = data.plan_text.as_deref() {
         let plan_height = if has_work_text {
             sidebar_section_height(plan_text, inner.width, 1, 3)
@@ -407,6 +398,15 @@ fn draw_agent_sidebar(
             Constraint::Min(plan_height)
         });
         sections_with_content.push(("Plan", plan_text));
+    }
+    if !data.prompt_text.trim().is_empty() {
+        let prompt_height = if has_work_text {
+            sidebar_section_height(&data.prompt_text, inner.width, 1, 3)
+        } else {
+            sidebar_section_height(&data.prompt_text, inner.width, 2, 4)
+        };
+        constraints.push(Constraint::Length(prompt_height));
+        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
     if !data.summary_text.trim().is_empty() {
         let summary_height = if has_work_text {
@@ -1015,6 +1015,48 @@ mod tests {
         let prompt_index = rendered.find("Prompt").unwrap();
 
         assert!(work_index < prompt_index);
+    }
+
+    #[test]
+    fn codex_sidebar_places_plan_above_prompt_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let plan_index = rendered.find("Plan").unwrap();
+        let prompt_index = rendered.find("Prompt").unwrap();
+
+        assert!(plan_index < prompt_index);
     }
 
     #[test]

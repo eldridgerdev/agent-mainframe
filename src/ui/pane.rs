@@ -39,6 +39,8 @@ pub(crate) struct AgentSidebarData {
     pub session_text: String,
     pub status_text: String,
     pub prompt_text: String,
+    pub plan_text: Option<String>,
+    pub work_text: Option<String>,
     pub summary_text: String,
 }
 
@@ -350,24 +352,36 @@ fn draw_agent_sidebar(
         session_text: format!("{title} loading"),
         status_text: "No sidebar data available.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
+        plan_text: None,
+        work_text: None,
         summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
-            Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
-            Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
-            Constraint::Min(4),
-        ])
-        .split(inner);
-    let sections_with_content = [
+    let mut constraints = vec![
+        Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
+        Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
+        Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
+    ];
+    let mut sections_with_content = vec![
         ("Session", data.session_text.as_str()),
         ("Status", data.status_text.as_str()),
         ("Prompt", data.prompt_text.as_str()),
-        ("Summary", data.summary_text.as_str()),
     ];
+    if let Some(plan_text) = data.plan_text.as_deref() {
+        constraints.push(Constraint::Length(sidebar_section_height(plan_text, 2, 4)));
+        sections_with_content.push(("Plan", plan_text));
+    }
+    if let Some(work_text) = data.work_text.as_deref() {
+        constraints.push(Constraint::Length(sidebar_section_height(work_text, 2, 4)));
+        sections_with_content.push(("Work", work_text));
+    }
+    constraints.push(Constraint::Min(4));
+    sections_with_content.push(("Summary", data.summary_text.as_str()));
+
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(inner);
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
         let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
@@ -399,6 +413,8 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Session" => theme.primary.to_color(),
         "Status" => theme.warning.to_color(),
         "Prompt" => theme.secondary.to_color(),
+        "Plan" => theme.info.to_color(),
+        "Work" => theme.primary.to_color(),
         "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
@@ -726,6 +742,8 @@ mod tests {
             session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
+            plan_text: None,
+            work_text: None,
             summary_text: "Sidebar ready.".into(),
         };
 
@@ -764,6 +782,8 @@ mod tests {
             session_text: "Target: proj/feat\nAgent: Codex".into(),
             status_text: "Thinking\nInput: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: None,
+            work_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -788,5 +808,45 @@ mod tests {
         assert!(rendered.contains("Codex Sidebar"));
         assert!(rendered.contains("Codex sidebar ready."));
         assert!(rendered.contains("Continue the"));
+    }
+
+    #[test]
+    fn codex_sidebar_renders_plan_and_work_sections_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            session_text: "Target: proj/feat\nAgent: Codex".into(),
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
+            work_text: Some("Command: cargo test\nState: running".into()),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Plan"));
+        assert!(rendered.contains("Inspect parser"));
+        assert!(rendered.contains("Work"));
+        assert!(rendered.contains("cargo test"));
     }
 }

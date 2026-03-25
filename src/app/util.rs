@@ -55,14 +55,11 @@ pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
 }
 
 pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
+    // Keep normal view startup on cheap local files only. Full Codex session
+    // history remains available through explicit prompt-history actions.
     latest_prompt_fallback_paths(workdir)
         .into_iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
-        .or_else(|| {
-            super::codex_sessions::latest_prompt_for_workdir(workdir)
-                .ok()
-                .flatten()
-        })
 }
 
 pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {

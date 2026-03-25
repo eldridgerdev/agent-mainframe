@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::{FeatureSession, SessionKind, TokenUsageSourceMatch};
+use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 fn build_agent_sidebar_data(
@@ -88,6 +88,24 @@ fn build_agent_sidebar_data(
             .clone()
             .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
     };
+    let codex_live = if sidebar_kind == SessionKind::Codex {
+        app.codex_live_thread(&feature.tmux_session)
+    } else {
+        None
+    };
+    let fallback_plan_text = app
+        .sidebar_plan_for_session(&feature.tmux_session)
+        .map(ToOwned::to_owned);
+    let summary_text = codex_live
+        .and_then(|live| live.summary_prefix())
+        .map(|reasoning| {
+            format!(
+                "Reasoning: {}\n\n{}",
+                compact_sidebar_text(&reasoning, 160),
+                summary_text
+            )
+        })
+        .unwrap_or(summary_text);
     let session_metadata = format_codex_session_metadata(
         codex_source,
         codex_source
@@ -123,6 +141,12 @@ fn build_agent_sidebar_data(
         session_text,
         status_text,
         prompt_text,
+        plan_text: codex_live
+            .and_then(|live| live.plan_text.clone())
+            .or(fallback_plan_text),
+        work_text: codex_live
+            .and_then(|live| live.sidebar_work_text())
+            .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         summary_text,
     })
 }
@@ -200,6 +224,49 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn fallback_sidebar_work_text(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    view: &crate::app::ViewState,
+) -> Option<String> {
+    let matching_inputs = app
+        .pending_inputs
+        .iter()
+        .filter(|input| {
+            input.session_id == view.session
+                || (input.project_name.as_deref() == Some(project.name.as_str())
+                    && input.feature_name.as_deref() == Some(feature.name.as_str()))
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(first) = matching_inputs.first() {
+        let message = first.message.trim();
+        let mut text = format!(
+            "Pending input: {}",
+            if message.is_empty() {
+                "Agent is waiting for input"
+            } else {
+                message
+            }
+        );
+        if matching_inputs.len() > 1 {
+            text.push_str(&format!("\nQueue: {} pending", matching_inputs.len()));
+        }
+        return Some(text);
+    }
+
+    if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+        return Some("Tool activity is running".to_string());
+    }
+
+    if app.is_feature_thinking(&feature.tmux_session) {
+        return Some("Codex is thinking".to_string());
+    }
+
+    None
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -607,9 +674,16 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{App, PendingInput, ViewState};
     use crate::project::FeatureSession;
+    use crate::project::{
+        AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
+    };
     use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use ratatui::layout::Rect;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     // ── centered_rect ─────────────────────────────────────────
 
@@ -702,6 +776,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn format_codex_session_metadata_uses_short_thread_id_without_title() {
+        let source = TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "1234567890abcdef".into(),
+        };
+
+        assert_eq!(
+            format_codex_session_metadata(Some(&source), None),
+            Some("Thread: 12345678".to_string())
+        );
+    }
+
     fn codex_feature_session(session_id: &str) -> FeatureSession {
         FeatureSession {
             id: "session-1".into(),
@@ -754,6 +841,93 @@ mod tests {
         assert_eq!(
             format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
             Some("Usage source: inferred workdir match".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_sidebar_work_text_prefers_pending_input_message() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![codex_feature_session("sess-current")],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Codex,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project.clone()],
+                session_bookmarks: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.pending_inputs.push(PendingInput {
+            session_id: "amf-feature".into(),
+            cwd: "/tmp/demo".into(),
+            message: "Need approval before applying the patch.".into(),
+            notification_type: "input-request".into(),
+            file_path: PathBuf::new(),
+            target_file_path: None,
+            relative_path: None,
+            change_id: None,
+            tool: None,
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: None,
+            project_name: Some("demo".into()),
+            feature_name: Some("feature".into()),
+            proceed_signal: None,
+            request_id: None,
+            reply_socket: None,
+        });
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "codex".into(),
+            "Codex".into(),
+            SessionKind::Codex,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        assert_eq!(
+            fallback_sidebar_work_text(&app, &project, &feature, &view).as_deref(),
+            Some("Pending input: Need approval before applying the patch.")
         );
     }
 }

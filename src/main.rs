@@ -521,6 +521,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             app.show_error(e);
         }
 
+        app.poll_codex_sidebar_metadata();
+
         if let Some(alert) = debug::take_user_alert() {
             app.message = Some(alert);
         }

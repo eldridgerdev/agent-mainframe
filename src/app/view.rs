@@ -61,7 +61,8 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
         self.refresh_latest_prompt_for_feature(pi, fi);
-        self.refresh_codex_sidebar_cache_for_view(
+        self.refresh_sidebar_plan_for_feature(pi, fi);
+        self.request_codex_sidebar_metadata_for_view(
             &project_name,
             &feature_name,
             &session_window,

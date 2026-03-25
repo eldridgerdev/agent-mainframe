@@ -20,6 +20,7 @@ const MARKDOWN_VIEW_CANDIDATES: &[&str] = &[
     "PLAN.md",
     "plan.md",
 ];
+const SIDEBAR_PLAN_CANDIDATES: &[&str] = &[".claude/plan.md", "PLAN.md", "plan.md"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkdownViewScope {
@@ -139,6 +140,98 @@ pub fn collect_markdown_view_paths(workdir: &Path, repo_root: Option<&Path>) -> 
     }
 
     paths
+}
+
+pub fn preferred_plan_markdown_path(workdir: &Path, repo_root: Option<&Path>) -> Option<PathBuf> {
+    for candidate in SIDEBAR_PLAN_CANDIDATES {
+        let path = workdir.join(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    if let Some(repo_root) = repo_root
+        && repo_root != workdir
+    {
+        for candidate in SIDEBAR_PLAN_CANDIDATES {
+            let path = repo_root.join(candidate);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+pub fn read_plan_preview(workdir: &Path, repo_root: Option<&Path>) -> Option<String> {
+    let path = preferred_plan_markdown_path(workdir, repo_root)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    compact_plan_preview(&content)
+}
+
+fn compact_plan_preview(content: &str) -> Option<String> {
+    const MAX_LINES: usize = 6;
+    const MAX_CHARS: usize = 280;
+
+    let mut lines = Vec::new();
+    let mut used_chars = 0;
+
+    for raw_line in content.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() || trimmed == "---" {
+            continue;
+        }
+
+        let normalized = trimmed
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches('\r');
+        if normalized.is_empty() {
+            continue;
+        }
+
+        let remaining = MAX_CHARS.saturating_sub(used_chars);
+        if remaining == 0 {
+            break;
+        }
+
+        let normalized_chars = normalized.chars().count();
+        let mut line = normalized.to_string();
+        if normalized_chars > remaining {
+            line = normalized
+                .chars()
+                .take(remaining.saturating_sub(1))
+                .collect::<String>();
+            line.push('…');
+        }
+
+        used_chars += line.chars().count();
+        lines.push(line);
+
+        if lines.len() >= MAX_LINES || normalized_chars > remaining {
+            break;
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    let has_more_content = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "---")
+        .count()
+        > lines.len();
+    if has_more_content
+        && let Some(last) = lines.last_mut()
+        && !last.ends_with('…')
+    {
+        last.push('…');
+    }
+
+    Some(lines.join("\n"))
 }
 
 fn collect_markdown_paths_in_root(
@@ -1371,6 +1464,40 @@ mod tests {
         assert_eq!(
             markdown_view_scope(&repo_path, &worktree, Some(repo.path())),
             MarkdownViewScope::RepoRoot
+        );
+    }
+
+    #[test]
+    fn preferred_plan_markdown_path_prefers_worktree_before_repo_root() {
+        let repo = tempfile::TempDir::new().unwrap();
+        let worktree = repo.path().join(".worktrees").join("feature-a");
+        std::fs::create_dir_all(worktree.join(".claude")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        let worktree_plan = worktree.join(".claude").join("plan.md");
+        let repo_plan = repo.path().join(".claude").join("plan.md");
+        std::fs::write(&worktree_plan, "# Worktree Plan").unwrap();
+        std::fs::write(&repo_plan, "# Repo Plan").unwrap();
+
+        assert_eq!(
+            preferred_plan_markdown_path(&worktree, Some(repo.path())),
+            Some(worktree_plan)
+        );
+    }
+
+    #[test]
+    fn read_plan_preview_compacts_markdown_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("plan.md"),
+            "# Plan\n\n1. Inspect reducer\n2. Patch sidebar\n3. Run tests\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_plan_preview(dir.path(), None).as_deref(),
+            Some("Plan\n1. Inspect reducer\n2. Patch sidebar\n3. Run tests")
         );
     }
 

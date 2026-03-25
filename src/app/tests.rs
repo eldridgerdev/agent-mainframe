@@ -2847,6 +2847,150 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
 }
 
 #[test]
+fn apply_codex_live_event_updates_feature_live_state() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    let changed = app.apply_codex_live_event(
+        "amf-my-feat",
+        &serde_json::json!({
+            "type": "plan",
+            "payload": { "text": "1. Inspect\n2. Patch" }
+        }),
+    );
+
+    assert!(changed);
+    let live = app
+        .codex_live_thread("amf-my-feat")
+        .expect("expected live codex state");
+    assert_eq!(live.plan_text.as_deref(), Some("1. Inspect\n2. Patch"));
+}
+
+#[test]
+fn poll_codex_sidebar_metadata_updates_caches() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let cache_key = format!("{}::sess-current", workdir.path().display());
+    app.codex_sidebar_metadata_inflight
+        .insert(cache_key.clone());
+    app.codex_sidebar_metadata_tx
+        .send(CodexSidebarMetadataResult {
+            cache_key: cache_key.clone(),
+            title: Some("Sidebar title".into()),
+            prompt: Some("Sidebar prompt".into()),
+        })
+        .unwrap();
+
+    app.poll_codex_sidebar_metadata();
+
+    assert_eq!(
+        app.cached_codex_session_title(workdir.path(), "sess-current"),
+        Some("Sidebar title")
+    );
+    assert_eq!(
+        app.cached_codex_session_prompt(workdir.path(), "sess-current"),
+        Some("Sidebar prompt")
+    );
+    assert!(!app.codex_sidebar_metadata_inflight.contains(&cache_key));
+}
+
+#[test]
+fn ipc_input_request_updates_codex_live_work_state() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Need approval before applying the patch."
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some("Pending input: Need approval before applying the patch.")
+    );
+}
+
+#[test]
+fn ipc_prompt_submit_clears_codex_live_input_and_marks_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.apply_codex_live_event(
+        "amf-my-feat",
+        &serde_json::json!({
+            "type": "requestUserInput",
+            "payload": { "prompt": "Need approval before applying the patch." }
+        }),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Continue with the patch."
+    }));
+
+    assert!(app.ipc_thinking_sessions.contains("amf-my-feat"));
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text()),
+        None
+    );
+}
+
+#[test]
+fn open_command_picker_prepends_codex_debug_commands() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_command_picker(None);
+
+    match &app.mode {
+        AppMode::CommandPicker(state) => {
+            assert!(!state.commands.is_empty(), "expected commands");
+            assert_eq!(state.commands[0].source, "AMF Debug");
+            assert_eq!(state.commands[0].name, "demo-plan");
+            assert!(matches!(
+                state.commands[0].action,
+                CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo)
+            ));
+        }
+        _ => panic!("expected command picker"),
+    }
+}
+
+#[test]
 fn custom_diff_review_notification_opens_prompt_while_viewing() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_worktree_agent(

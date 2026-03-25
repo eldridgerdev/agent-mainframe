@@ -41,7 +41,6 @@ impl App {
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
         let pricing = self.config.token_pricing.clone();
         let mut discovered_sources = false;
-        let mut codex_sidebar_refreshes = Vec::new();
 
         for project in &mut self.store.projects {
             for feature in &mut project.features {
@@ -105,20 +104,8 @@ impl App {
                         .as_ref()
                         .and_then(|source| tracker.read_usage(source, &feature.workdir))
                         .map(|usage| format_token_usage(&usage, &pricing));
-
-                    if let Some(source) = session
-                        .token_usage_source
-                        .as_ref()
-                        .filter(|source| source.provider == TokenUsageProvider::Codex)
-                    {
-                        codex_sidebar_refreshes.push((feature.workdir.clone(), source.id.clone()));
-                    }
                 }
             }
-        }
-
-        for (workdir, session_id) in codex_sidebar_refreshes {
-            self.refresh_codex_sidebar_cache_for_session(&workdir, &session_id);
         }
 
         if discovered_sources && let Err(err) = self.save() {
@@ -444,6 +431,17 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub fn poll_codex_sidebar_metadata(&mut self) {
+        while let Ok(result) = self.codex_sidebar_metadata_rx.try_recv() {
+            self.codex_sidebar_metadata_inflight
+                .remove(&result.cache_key);
+            self.codex_session_title_cache
+                .insert(result.cache_key.clone(), result.title);
+            self.codex_session_prompt_cache
+                .insert(result.cache_key, result.prompt);
+        }
     }
 
     fn get_window_for_session(&self, tmux_session: &str, _agent: &AgentKind) -> Option<String> {

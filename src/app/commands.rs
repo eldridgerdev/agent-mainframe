@@ -3,6 +3,20 @@ use std::path::Path;
 use super::*;
 
 impl App {
+    pub fn command_picker_codex_target(&self, from_view: Option<&ViewState>) -> Option<String> {
+        if let Some(view) = from_view {
+            return (view.session_kind == SessionKind::Codex).then(|| view.session.clone());
+        }
+
+        self.selected_feature().and_then(|(_, feature)| {
+            feature
+                .sessions
+                .iter()
+                .any(|session| session.kind == SessionKind::Codex)
+                .then(|| feature.tmux_session.clone())
+        })
+    }
+
     pub fn open_command_picker(&mut self, from_view: Option<ViewState>) {
         let (repo, workdir) = match &self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
@@ -15,13 +29,22 @@ impl App {
             Selection::Project(pi) => (self.store.projects.get(*pi).map(|p| p.repo.clone()), None),
         };
 
-        let mut commands = Vec::new();
+        let mut commands = if self
+            .command_picker_codex_target(from_view.as_ref())
+            .is_some()
+        {
+            codex_debug_commands()
+        } else {
+            Vec::new()
+        };
 
+        let mut global_cmds = Vec::new();
         if let Some(home) = dirs::home_dir() {
             let global_cmd_dir = home.join(".claude").join("commands");
-            scan_commands_recursive(&global_cmd_dir, &global_cmd_dir, "Global", &mut commands);
+            scan_commands_recursive(&global_cmd_dir, &global_cmd_dir, "Global", &mut global_cmds);
         }
-        commands.sort_by(|a, b| a.name.cmp(&b.name));
+        global_cmds.sort_by(|a, b| a.name.cmp(&b.name));
+        commands.extend(global_cmds);
 
         let mut project_cmds = Vec::new();
         let mut scanned_repo = false;
@@ -83,8 +106,28 @@ pub fn scan_commands_recursive(base: &Path, dir: &Path, source: &str, out: &mut 
             out.push(CommandEntry {
                 name,
                 source: source.into(),
-                path,
+                path: Some(path),
+                action: CommandAction::SlashCommand,
             });
         }
+    }
+}
+
+fn codex_debug_commands() -> Vec<CommandEntry> {
+    vec![
+        codex_debug_command("demo-plan", CodexDebugCommand::PlanDemo),
+        codex_debug_command("demo-work-command", CodexDebugCommand::WorkCommandDemo),
+        codex_debug_command("demo-work-file", CodexDebugCommand::WorkFileDemo),
+        codex_debug_command("demo-work-input", CodexDebugCommand::WorkInputDemo),
+        codex_debug_command("demo-clear-input", CodexDebugCommand::ClearInputDemo),
+    ]
+}
+
+fn codex_debug_command(name: &str, action: CodexDebugCommand) -> CommandEntry {
+    CommandEntry {
+        name: name.to_string(),
+        source: "AMF Debug".to_string(),
+        path: None,
+        action: CommandAction::CodexLiveDemo(action),
     }
 }

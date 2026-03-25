@@ -1,7 +1,8 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
+use serde_json::json;
 
-use crate::app::{App, AppMode, Selection};
+use crate::app::{App, AppMode, CodexDebugCommand, CommandAction, Selection};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -72,42 +73,58 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::CommandPicker(state) = old_mode {
-                let selected_name = state.commands.get(state.selected).map(|c| c.name.clone());
+                let selected_command = state.commands.get(state.selected).cloned();
+                let return_view = state.from_view.clone();
 
-                if let Some(name) = selected_name {
-                    let command_text = format!("/{}", name);
+                if let Some(command) = selected_command {
+                    match command.action {
+                        CommandAction::CodexLiveDemo(debug_command) => {
+                            if let Some(session_id) =
+                                app.command_picker_codex_target(state.from_view.as_ref())
+                            {
+                                let event = codex_debug_event(debug_command);
+                                app.apply_codex_live_event(&session_id, &event);
+                                app.message = Some(format!("Applied '{}'", command.name.as_str()));
+                            } else {
+                                app.message = Some("No Codex session selected".into());
+                            }
+                        }
+                        CommandAction::SlashCommand => {
+                            let command_text = format!("/{}", command.name);
 
-                    let tmux_info = if let Some(ref view) = state.from_view {
-                        Some((view.session.clone(), view.window.clone()))
-                    } else if let Some((_, feature)) = app.selected_feature() {
-                        let window = feature
-                            .sessions
-                            .iter()
-                            .find(|s| {
-                                matches!(
-                                    s.kind,
-                                    SessionKind::Claude
-                                        | SessionKind::Opencode
-                                        | SessionKind::Codex
-                                )
-                            })
-                            .map(|s| s.tmux_window.clone())
-                            .unwrap_or_else(|| "terminal".into());
-                        Some((feature.tmux_session.clone(), window))
-                    } else {
-                        None
-                    };
+                            let tmux_info = if let Some(ref view) = state.from_view {
+                                Some((view.session.clone(), view.window.clone()))
+                            } else if let Some((_, feature)) = app.selected_feature() {
+                                let window = feature
+                                    .sessions
+                                    .iter()
+                                    .find(|s| {
+                                        matches!(
+                                            s.kind,
+                                            SessionKind::Claude
+                                                | SessionKind::Opencode
+                                                | SessionKind::Codex
+                                        )
+                                    })
+                                    .map(|s| s.tmux_window.clone())
+                                    .unwrap_or_else(|| "terminal".into());
+                                Some((feature.tmux_session.clone(), window))
+                            } else {
+                                None
+                            };
 
-                    if let Some((session, window)) = &tmux_info {
-                        let _ = TmuxManager::send_literal(session, window, &command_text);
-                        let _ = TmuxManager::send_key_name(session, window, "Enter");
-                        app.message = Some(format!("Sent '{}'", command_text));
-                    } else {
-                        app.message = Some("No active session to send to".into());
+                            if let Some((session, window)) = &tmux_info {
+                                let _ = TmuxManager::send_literal(session, window, &command_text);
+                                let _ = TmuxManager::send_key_name(session, window, "Enter");
+                                app.message = Some(format!("Sent '{}'", command_text));
+                            } else {
+                                app.message = Some("No active session to send to".into());
+                            }
+                        }
                     }
                 }
 
-                if let Some(view) = state.from_view {
+                if let Some(view) = return_view {
                     app.mode = AppMode::Viewing(view);
                 }
             }
@@ -115,6 +132,41 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn codex_debug_event(command: CodexDebugCommand) -> serde_json::Value {
+    match command {
+        CodexDebugCommand::PlanDemo => json!({
+            "type": "plan",
+            "thread_id": "thread-demo",
+            "payload": {
+                "text": "1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests"
+            }
+        }),
+        CodexDebugCommand::WorkCommandDemo => json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test codex_sidebar -- --nocapture",
+                "phase": "running"
+            }
+        }),
+        CodexDebugCommand::WorkFileDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/ui/dashboard.rs",
+                "status": "proposed"
+            }
+        }),
+        CodexDebugCommand::WorkInputDemo => json!({
+            "type": "requestUserInput",
+            "payload": {
+                "prompt": "Need approval before applying the patch."
+            }
+        }),
+        CodexDebugCommand::ClearInputDemo => json!({
+            "type": "inputResolved"
+        }),
+    }
 }
 
 pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
@@ -251,9 +303,13 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{MarkdownFilePickerState, ViewState};
-    use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
+    use crate::app::{CommandEntry, CommandPickerState, MarkdownFilePickerState, ViewState};
+    use crate::project::{
+        AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind,
+        VibeMode,
+    };
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use chrono::Utc;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -287,6 +343,69 @@ mod tests {
             VibeMode::Vibeless,
             false,
         )
+    }
+
+    fn codex_picker_app() -> App {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "codex-1".into(),
+                kind: SessionKind::Codex,
+                label: "Codex".into(),
+                tmux_window: "codex".into(),
+                claude_session_id: None,
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "proj-1".into(),
+                name: "demo".into(),
+                repo: PathBuf::from("/tmp/demo"),
+                collapsed: false,
+                features: vec![feature],
+                created_at: now,
+                preferred_agent: AgentKind::Codex,
+                is_git: false,
+            }],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = Selection::Feature(0, 0);
+        app
     }
 
     #[test]
@@ -338,6 +457,33 @@ mod tests {
             AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
             _ => panic!("expected markdown picker to stay open"),
         }
+    }
+
+    #[test]
+    fn command_picker_debug_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![CommandEntry {
+                name: "demo-plan".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo),
+            }],
+            selected: 0,
+            from_view: None,
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .unwrap()
+                .plan_text
+                .as_deref(),
+            Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
+        );
+        assert_eq!(app.message.as_deref(), Some("Applied 'demo-plan'"));
+        assert!(matches!(app.mode, AppMode::Normal));
     }
 }
 

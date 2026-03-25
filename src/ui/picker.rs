@@ -7,9 +7,9 @@ use ratatui::{
 };
 
 use crate::app::{
-    BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandPickerState,
-    MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput, SessionPickerState,
-    SessionSwitcherState, SyntaxLanguagePickerState, SyntaxOperationAction,
+    BookmarkPickerState, ClaudeSessionPickerState, CodexSessionPickerState, CommandAction,
+    CommandPickerState, MarkdownFilePickerState, OpencodeSessionPickerState, PendingInput,
+    SessionPickerState, SessionSwitcherState, SyntaxLanguagePickerState, SyntaxOperationAction,
 };
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -165,8 +165,15 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         }
 
         let is_selected = i == state.selected;
+        let prefix = match cmd.action {
+            CommandAction::SlashCommand => "/",
+            CommandAction::CodexLiveDemo(_) => "*",
+        };
         let line = Line::from(vec![
-            Span::styled("    /", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                format!("    {prefix}"),
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled(
                 &cmd.name,
                 if is_selected {
@@ -201,7 +208,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" send  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(" run  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));

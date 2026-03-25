@@ -1,6 +1,7 @@
 mod automation;
 mod claude_session_picker;
 mod claude_sessions;
+mod codex_live;
 mod codex_session_picker;
 mod codex_sessions;
 pub mod commands;
@@ -50,15 +51,39 @@ use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
 pub use self::setup::load_config;
-pub use codex_sessions::latest_prompt_for_session_id as codex_latest_prompt_for_session_id;
-pub use codex_sessions::session_info_for_workdir as codex_session_info_for_workdir;
+pub use codex_live::CodexLiveThreadState;
+pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 
+#[derive(Debug, Clone)]
+pub struct CodexSidebarMetadataResult {
+    pub cache_key: String,
+    pub title: Option<String>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexDebugCommand {
+    PlanDemo,
+    WorkCommandDemo,
+    WorkFileDemo,
+    WorkInputDemo,
+    ClearInputDemo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAction {
+    SlashCommand,
+    CodexLiveDemo(CodexDebugCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandEntry {
     pub name: String,
     pub source: String,
-    pub path: PathBuf,
+    pub path: Option<PathBuf>,
+    pub action: CommandAction,
 }
 
 pub struct CommandPickerState {
@@ -208,8 +233,13 @@ pub struct App {
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, String>,
+    pub sidebar_plan_cache: HashMap<String, String>,
     pub codex_session_title_cache: HashMap<String, Option<String>>,
     pub codex_session_prompt_cache: HashMap<String, Option<String>>,
+    pub codex_live_threads: HashMap<String, CodexLiveThreadState>,
+    pub codex_sidebar_metadata_tx: std::sync::mpsc::Sender<CodexSidebarMetadataResult>,
+    pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
+    pub codex_sidebar_metadata_inflight: std::collections::HashSet<String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub scroll_offset: usize,
@@ -248,6 +278,8 @@ impl App {
             .first()
             .map(|p| merge_project_extension_config(&global_ext, &p.repo))
             .unwrap_or(global_ext);
+        let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
+        let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
         Ok(Self {
@@ -271,8 +303,13 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            sidebar_plan_cache,
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
+            codex_live_threads: HashMap::new(),
+            codex_sidebar_metadata_tx,
+            codex_sidebar_metadata_rx,
+            codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -323,6 +360,8 @@ impl App {
     ) -> Self {
         use crate::extension::ExtensionConfig;
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
+        let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         Self {
             store,
             store_path: PathBuf::new(),
@@ -344,8 +383,13 @@ impl App {
             leader_activated_at: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            sidebar_plan_cache,
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
+            codex_live_threads: HashMap::new(),
+            codex_sidebar_metadata_tx,
+            codex_sidebar_metadata_rx,
+            codex_sidebar_metadata_inflight: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             scroll_offset: 0,
@@ -385,6 +429,22 @@ impl App {
         cache
     }
 
+    fn build_sidebar_plan_cache(store: &ProjectStore) -> HashMap<String, String> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                if let Some(plan) =
+                    crate::markdown::read_plan_preview(&feature.workdir, Some(&project.repo))
+                {
+                    cache.insert(feature.tmux_session.clone(), plan);
+                }
+            }
+        }
+
+        cache
+    }
+
     pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {
         let Some(feature) = self
             .store
@@ -406,8 +466,34 @@ impl App {
         }
     }
 
+    pub(crate) fn refresh_sidebar_plan_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some((project, feature)) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi).map(|feature| (project, feature)))
+        else {
+            return;
+        };
+
+        if let Some(plan) =
+            crate::markdown::read_plan_preview(&feature.workdir, Some(&project.repo))
+        {
+            self.sidebar_plan_cache
+                .insert(feature.tmux_session.clone(), plan);
+        } else {
+            self.sidebar_plan_cache.remove(&feature.tmux_session);
+        }
+    }
+
     pub fn latest_prompt_for_session(&self, tmux_session: &str) -> Option<&str> {
         self.latest_prompt_cache
+            .get(tmux_session)
+            .map(String::as_str)
+    }
+
+    pub fn sidebar_plan_for_session(&self, tmux_session: &str) -> Option<&str> {
+        self.sidebar_plan_cache
             .get(tmux_session)
             .map(String::as_str)
     }
@@ -416,29 +502,40 @@ impl App {
         format!("{}::{session_id}", workdir.display())
     }
 
-    pub(crate) fn refresh_codex_sidebar_cache_for_session(
+    pub(crate) fn request_codex_sidebar_metadata_for_session(
         &mut self,
         workdir: &Path,
         session_id: &str,
     ) {
         let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
-        let title = crate::app::codex_session_info_for_workdir(workdir, session_id)
-            .ok()
-            .flatten()
-            .map(|info| info.title)
-            .filter(|title| !title.trim().is_empty() && title != "Untitled");
-        self.codex_session_title_cache
-            .insert(cache_key.clone(), title);
+        if self.codex_sidebar_metadata_inflight.contains(&cache_key)
+            || (self.codex_session_title_cache.contains_key(&cache_key)
+                && self.codex_session_prompt_cache.contains_key(&cache_key))
+        {
+            return;
+        }
 
-        let prompt = crate::app::codex_latest_prompt_for_session_id(workdir, session_id)
-            .ok()
-            .flatten()
-            .map(|prompt| prompt.trim().to_string())
-            .filter(|prompt| !prompt.is_empty());
-        self.codex_session_prompt_cache.insert(cache_key, prompt);
+        self.codex_sidebar_metadata_inflight
+            .insert(cache_key.clone());
+        let tx = self.codex_sidebar_metadata_tx.clone();
+        let workdir = workdir.to_path_buf();
+        let session_id = session_id.to_string();
+        std::thread::spawn(move || {
+            let metadata = crate::app::codex_sidebar_metadata_for_session_id(&workdir, &session_id)
+                .ok()
+                .flatten();
+            let result = CodexSidebarMetadataResult {
+                cache_key,
+                title: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.title.clone()),
+                prompt: metadata.and_then(|metadata| metadata.latest_prompt),
+            };
+            let _ = tx.send(result);
+        });
     }
 
-    pub(crate) fn refresh_codex_sidebar_cache_for_view(
+    pub(crate) fn request_codex_sidebar_metadata_for_view(
         &mut self,
         project_name: &str,
         feature_name: &str,
@@ -480,7 +577,7 @@ impl App {
             return;
         };
 
-        self.refresh_codex_sidebar_cache_for_session(&workdir, &session_id);
+        self.request_codex_sidebar_metadata_for_session(&workdir, &session_id);
     }
 
     pub fn cached_codex_session_title(&self, workdir: &Path, session_id: &str) -> Option<&str> {
@@ -495,6 +592,18 @@ impl App {
         self.codex_session_prompt_cache
             .get(&cache_key)
             .and_then(|prompt| prompt.as_deref())
+    }
+
+    pub fn codex_live_thread(&self, tmux_session: &str) -> Option<&CodexLiveThreadState> {
+        self.codex_live_threads.get(tmux_session)
+    }
+
+    pub fn apply_codex_live_event(&mut self, tmux_session: &str, raw: &serde_json::Value) -> bool {
+        let state = self
+            .codex_live_threads
+            .entry(tmux_session.to_string())
+            .or_default();
+        state.apply_event(raw)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {

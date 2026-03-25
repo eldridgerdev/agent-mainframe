@@ -12,6 +12,12 @@ pub struct CodexSessionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSidebarMetadata {
+    pub title: Option<String>,
+    pub latest_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexPromptEntry {
     pub text: String,
     pub timestamp: Option<i64>,
@@ -122,6 +128,16 @@ pub fn latest_prompt_for_session_id(workdir: &Path, session_id: &str) -> Result<
     latest_prompt_for_session_id_from_root(workdir, session_id, &sessions_root)
 }
 
+pub fn sidebar_metadata_for_session_id(
+    workdir: &Path,
+    session_id: &str,
+) -> Result<Option<CodexSidebarMetadata>> {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return Ok(None);
+    };
+    sidebar_metadata_for_session_id_from_root(workdir, session_id, &sessions_root)
+}
+
 pub fn prompt_history_for_session_id(
     workdir: &Path,
     session_id: &str,
@@ -212,6 +228,52 @@ fn latest_prompt_for_session_id_from_root(
     }
 
     Ok(newest_prompt.map(|(_, prompt)| prompt))
+}
+
+fn sidebar_metadata_for_session_id_from_root(
+    workdir: &Path,
+    session_id: &str,
+    sessions_root: &Path,
+) -> Result<Option<CodexSidebarMetadata>> {
+    if !sessions_root.is_dir() {
+        return Ok(None);
+    }
+
+    let mut newest_session: Option<ParsedCodexSession> = None;
+    let mut stack = vec![sessions_root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(parsed) = parse_codex_session_file_details(&path, workdir) else {
+                continue;
+            };
+            if parsed.info.id != session_id {
+                continue;
+            }
+            match &newest_session {
+                Some(current) if current.info.updated >= parsed.info.updated => {}
+                _ => newest_session = Some(parsed),
+            }
+        }
+    }
+
+    Ok(newest_session.map(|parsed| CodexSidebarMetadata {
+        title: Some(parsed.info.title)
+            .filter(|title| !title.trim().is_empty() && title != "Untitled"),
+        latest_prompt: parsed
+            .latest_prompt
+            .filter(|prompt| !prompt.trim().is_empty()),
+    }))
 }
 
 fn prompt_history_for_session_id_from_root(
@@ -724,6 +786,49 @@ mod tests {
         let prompt =
             latest_prompt_for_session_id_from_root(&workdir, "sess-current", tmp.path()).unwrap();
         assert_eq!(prompt.as_deref(), Some("newer prompt"));
+    }
+
+    #[test]
+    fn sidebar_metadata_for_session_id_returns_title_and_prompt_from_newest_match() {
+        let tmp = TempDir::new().unwrap();
+        let workdir = tmp.path().join("repo");
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/older.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T10:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T09:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T10:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"older title\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        write_session(
+            tmp.path(),
+            "2026/03/08/newer.jsonl",
+            &format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-08T13:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-current\",\"timestamp\":\"2026-03-08T12:59:00Z\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-08T13:01:00Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"newer title\\nrest\"}}]}}}}\n"
+                ),
+                workdir.display()
+            ),
+        );
+
+        let metadata =
+            sidebar_metadata_for_session_id_from_root(&workdir, "sess-current", tmp.path())
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(
+            metadata,
+            CodexSidebarMetadata {
+                title: Some("newer title".to_string()),
+                latest_prompt: Some("newer title\nrest".to_string()),
+            }
+        );
     }
 
     #[test]

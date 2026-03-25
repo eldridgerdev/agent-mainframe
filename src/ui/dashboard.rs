@@ -67,14 +67,12 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         SessionKind::Opencode => opencode_sidebar
             .and_then(|sidebar| sidebar.latest_prompt.as_deref())
             .or_else(|| app.latest_prompt_for_session(&feature.tmux_session))
-            .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
-            .unwrap_or_else(|| "No recent prompt available yet.".to_string()),
+            .map(|prompt| compact_sidebar_text(prompt, 72))
+            .unwrap_or_else(|| "No recent prompt yet.".to_string()),
         _ => app
             .latest_prompt_for_session(&feature.tmux_session)
-            .map(|prompt| format!("Preview: {}", compact_sidebar_text(prompt, 120)))
-            .unwrap_or_else(|| {
-                "No recent prompt.\nUse leader+l to open prompt history.".to_string()
-            }),
+            .map(|prompt| compact_sidebar_text(prompt, 72))
+            .unwrap_or_else(|| "No recent prompt.\nleader+l for history.".to_string()),
     };
     let summary_text = sidebar_summary_text(
         &view.session_kind,

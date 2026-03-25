@@ -338,7 +338,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
         title_color: theme.primary.to_color(),
         status_text: "No sidebar data available.".to_string(),
         work_text: None,
-        prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
+        prompt_text: "No recent prompt.\nleader+l for history.".to_string(),
         todos_text: None,
         summary_text: None,
     };
@@ -721,7 +721,7 @@ mod tests {
             title_color: theme.session_icon_claude.to_color(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             work_text: None,
-            prompt_text: "Preview: Resume the task.".into(),
+            prompt_text: "Resume the task.".into(),
             todos_text: None,
             summary_text: Some("Sidebar ready.".into()),
         };
@@ -761,7 +761,7 @@ mod tests {
             title_color: theme.session_icon_opencode.to_color(),
             status_text: "Activity: Ready\nChanges: 2 files · +10 / -3".into(),
             work_text: Some("State: busy\nTool: edit".into()),
-            prompt_text: "Preview: implement the sidebar".into(),
+            prompt_text: "implement the sidebar".into(),
             todos_text: Some("Open: 3 items".into()),
             summary_text: Some("Summary ready.".into()),
         };

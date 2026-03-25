@@ -358,11 +358,11 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
     let mut constraints = Vec::with_capacity(sections_with_content.len() + 1);
     for (title, body) in &sections_with_content {
         let (min_lines, max_lines) = match *title {
-            "Status" => (4, 6),
+            "Status" => (2, 5),
             "Work" => (2, 4),
-            "Prompt" => (2, 4),
-            "Todos" => (3, 5),
-            _ => (2, 4),
+            "Prompt" => (2, 3),
+            "Todos" => (3, 4),
+            _ => (2, 3),
         };
         constraints.push(Constraint::Length(sidebar_section_height(
             body, min_lines, max_lines,

@@ -645,6 +645,7 @@ fn cleanup_claude_notification_hooks(workdir: &Path) {
 fn cleanup_opencode_plugins(workdir: &Path) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let themes_dir = workdir.join(".opencode").join("themes");
+    let sidebar_dir = workdir.join(".amf").join("opencode-sidebar");
 
     for file in [
         "input-request.js",
@@ -661,6 +662,8 @@ fn cleanup_opencode_plugins(workdir: &Path) {
     for theme in ["amf.json", "amf-tokyonight.json", "amf-catppuccin.json"] {
         let _ = std::fs::remove_file(themes_dir.join(theme));
     }
+
+    let _ = std::fs::remove_dir_all(sidebar_dir);
 }
 
 fn cleanup_codex_notify_hook(workdir: &Path) {

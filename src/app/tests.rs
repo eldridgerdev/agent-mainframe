@@ -2302,6 +2302,41 @@ fn cleanup_codex_hooks_restores_previous_notify_command() {
     );
 }
 
+#[test]
+fn cleanup_opencode_hooks_removes_sidebar_state_artifacts() {
+    let workdir = TempDir::new().unwrap();
+    let plugin_dir = workdir.path().join(".opencode").join("plugins");
+    let theme_dir = workdir.path().join(".opencode").join("themes");
+    let sidebar_dir = workdir.path().join(".amf").join("opencode-sidebar");
+
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::create_dir_all(&theme_dir).unwrap();
+    std::fs::create_dir_all(&sidebar_dir).unwrap();
+    std::fs::write(plugin_dir.join("sidebar-state.js"), "plugin").unwrap();
+    std::fs::write(plugin_dir.join("change-tracker.js"), "plugin").unwrap();
+    std::fs::write(theme_dir.join("amf.json"), "{}").unwrap();
+    std::fs::write(sidebar_dir.join("ses-1.json"), "{\"session_id\":\"ses-1\"}").unwrap();
+
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Opencode);
+
+    assert!(
+        !plugin_dir.join("sidebar-state.js").exists(),
+        "cleanup should remove the Opencode sidebar plugin"
+    );
+    assert!(
+        !plugin_dir.join("change-tracker.js").exists(),
+        "cleanup should remove the Opencode diff-review plugin"
+    );
+    assert!(
+        !theme_dir.join("amf.json").exists(),
+        "cleanup should remove injected Opencode themes"
+    );
+    assert!(
+        !sidebar_dir.exists(),
+        "cleanup should remove Opencode sidebar state files"
+    );
+}
+
 fn store_with_worktree_agent(
     repo: &std::path::Path,
     workdir: &std::path::Path,

@@ -345,7 +345,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
-            Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
+            Constraint::Length(sidebar_section_height(&data.status_text, 4, 8)),
             Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
             Constraint::Min(4),
         ])

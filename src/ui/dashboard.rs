@@ -52,7 +52,13 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         1 => "Waiting for 1 input".to_string(),
         n => format!("Waiting for {n} inputs"),
     };
-    let activity_line = if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+    let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
+    let activity_line = if opencode_sidebar
+        .and_then(|sidebar| sidebar.pending_permission.as_ref())
+        .is_some()
+    {
+        "Waiting on permission".to_string()
+    } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
         "Running tool".to_string()
     } else if app.is_feature_thinking(&feature.tmux_session) {
         "Thinking".to_string()
@@ -64,7 +70,6 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
     let session_line = session_sidebar_line(session);
-    let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
     let prompt_text = match view.session_kind {
         SessionKind::Opencode => opencode_sidebar
             .and_then(|sidebar| sidebar.latest_prompt.as_deref())
@@ -146,6 +151,24 @@ fn status_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
     let mut lines = vec![format!("Activity: {activity_line}"), usage_line.to_string()];
+    if let Some(tool) = opencode_sidebar
+        .and_then(|sidebar| sidebar.last_tool.as_deref())
+        .filter(|tool| !tool.is_empty())
+    {
+        lines.push(format!("Tool: {tool}"));
+    }
+    if let Some(todo_count) = opencode_sidebar.and_then(|sidebar| sidebar.todo_count) {
+        lines.push(format!(
+            "Todos: {todo_count} item{}",
+            if todo_count == 1 { "" } else { "s" }
+        ));
+    }
+    if let Some(permission) = opencode_sidebar
+        .and_then(|sidebar| sidebar.pending_permission.as_deref())
+        .filter(|permission| !permission.is_empty())
+    {
+        lines.push(format!("Permission: {permission}"));
+    }
     if let Some(reasoning_tokens) = opencode_sidebar
         .and_then(|sidebar| sidebar.reasoning_tokens)
         .filter(|tokens| *tokens > 0)
@@ -663,6 +686,10 @@ mod tests {
                 session_id: "ses-1".into(),
                 title: None,
                 latest_prompt: None,
+                status: None,
+                last_tool: None,
+                todo_count: None,
+                pending_permission: None,
                 reasoning_tokens: Some(4200),
                 additions: Some(10),
                 deletions: Some(3),
@@ -673,6 +700,32 @@ mod tests {
         assert_eq!(
             status,
             "Activity: Thinking\nInput: 16.0k tokens\nReasoning: 4.2k tokens\nChanges: 2 files · +10 / -3"
+        );
+    }
+
+    #[test]
+    fn opencode_status_text_shows_live_sidecar_details() {
+        let status = status_text(
+            "Ready",
+            "Usage: unavailable",
+            Some(&crate::app::opencode_storage::OpencodeSidebarData {
+                session_id: "ses-1".into(),
+                title: None,
+                latest_prompt: None,
+                status: Some("busy".into()),
+                last_tool: Some("edit".into()),
+                todo_count: Some(3),
+                pending_permission: Some("edit".into()),
+                reasoning_tokens: None,
+                additions: None,
+                deletions: None,
+                files: None,
+            }),
+        );
+
+        assert_eq!(
+            status,
+            "Activity: Ready\nUsage: unavailable\nTool: edit\nTodos: 3 items\nPermission: edit"
         );
     }
 }

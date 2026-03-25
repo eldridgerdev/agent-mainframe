@@ -110,6 +110,10 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 session_id: "ses-1".to_string(),
                 title: Some("Loaded later".to_string()),
                 latest_prompt: Some("lazy prompt".to_string()),
+                status: Some("busy".to_string()),
+                last_tool: Some("edit".to_string()),
+                todo_count: Some(2),
+                pending_permission: None,
                 reasoning_tokens: Some(12),
                 additions: Some(3),
                 deletions: Some(1),
@@ -1441,6 +1445,13 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
             && installed.contains("proposed_file")
             && installed.contains("buildReviewFiles"),
         "expected stale change-tracker.js to be replaced with the structured diff-review version, got: {installed}"
+    );
+
+    let sidebar_plugin = std::fs::read_to_string(plugin_dir.join("sidebar-state.js")).unwrap();
+    assert!(
+        sidebar_plugin.contains("SidebarStatePlugin")
+            && sidebar_plugin.contains("opencode-sidebar"),
+        "expected sidebar-state.js to be installed, got: {sidebar_plugin}"
     );
 }
 

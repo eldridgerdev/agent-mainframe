@@ -6,6 +6,10 @@ pub struct OpencodeSidebarData {
     pub session_id: String,
     pub title: Option<String>,
     pub latest_prompt: Option<String>,
+    pub status: Option<String>,
+    pub last_tool: Option<String>,
+    pub todo_count: Option<u64>,
+    pub pending_permission: Option<String>,
     pub reasoning_tokens: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
@@ -31,24 +35,74 @@ pub fn read_sidebar_data(
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSidebarData> {
     let storage_root = dirs::data_dir()?.join("opencode").join("storage");
-    read_sidebar_data_from_root(&storage_root, workdir, preferred_session_id)
+    let sidecar_root = workdir.join(".amf").join("opencode-sidebar");
+    read_sidebar_data_from_roots(&storage_root, &sidecar_root, workdir, preferred_session_id)
 }
 
-fn read_sidebar_data_from_root(
+fn read_sidebar_data_from_roots(
     storage_root: &Path,
+    sidecar_root: &Path,
     workdir: &Path,
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSidebarData> {
-    let session = find_session(storage_root, workdir, preferred_session_id)?;
-    Some(OpencodeSidebarData {
+    let session = find_session(storage_root, workdir, preferred_session_id);
+    let sidecar = read_sidecar(sidecar_root, preferred_session_id);
+
+    let session_id = sidecar
+        .as_ref()
+        .map(|data| data.session_id.clone())
+        .or_else(|| session.as_ref().map(|session| session.id.clone()))?;
+
+    let storage_data = session.map(|session| OpencodeSidebarData {
         latest_prompt: read_latest_user_prompt(storage_root, &session.id),
         reasoning_tokens: read_reasoning_tokens(storage_root, &session.id),
         session_id: session.id,
         title: session.title,
+        status: None,
+        last_tool: None,
+        todo_count: None,
+        pending_permission: None,
         additions: session.summary.as_ref().map(|summary| summary.additions),
         deletions: session.summary.as_ref().map(|summary| summary.deletions),
         files: session.summary.as_ref().map(|summary| summary.files),
-    })
+    });
+
+    let mut merged = storage_data.unwrap_or_else(|| OpencodeSidebarData {
+        session_id,
+        ..OpencodeSidebarData::default()
+    });
+
+    if let Some(sidecar) = sidecar {
+        if sidecar.title.is_some() {
+            merged.title = sidecar.title;
+        }
+        if sidecar.latest_prompt.is_some() {
+            merged.latest_prompt = sidecar.latest_prompt;
+        }
+        if sidecar.status.is_some() {
+            merged.status = sidecar.status;
+        }
+        if sidecar.last_tool.is_some() {
+            merged.last_tool = sidecar.last_tool;
+        }
+        if sidecar.todo_count.is_some() {
+            merged.todo_count = sidecar.todo_count;
+        }
+        if sidecar.pending_permission.is_some() {
+            merged.pending_permission = sidecar.pending_permission;
+        }
+        if sidecar.additions.is_some() {
+            merged.additions = sidecar.additions;
+        }
+        if sidecar.deletions.is_some() {
+            merged.deletions = sidecar.deletions;
+        }
+        if sidecar.files.is_some() {
+            merged.files = sidecar.files;
+        }
+    }
+
+    Some(merged)
 }
 
 fn find_session(
@@ -216,6 +270,50 @@ fn parse_message_file(path: &Path) -> Option<OpencodeMessage> {
     serde_json::from_str::<OpencodeMessage>(&contents).ok()
 }
 
+fn read_sidecar(
+    sidecar_root: &Path,
+    preferred_session_id: Option<&str>,
+) -> Option<OpencodeSidebarData> {
+    if !sidecar_root.is_dir() {
+        return None;
+    }
+
+    if let Some(session_id) = preferred_session_id {
+        let path = sidecar_root.join(format!("{session_id}.json"));
+        if path.exists() {
+            return parse_sidecar_file(&path).map(|(_, data)| data);
+        }
+    }
+
+    walk_json_files(sidecar_root)
+        .into_iter()
+        .filter_map(|path| parse_sidecar_file(&path))
+        .max_by_key(|(updated_at, _)| *updated_at)
+        .map(|(_, data)| data)
+}
+
+fn parse_sidecar_file(path: &Path) -> Option<(i64, OpencodeSidebarData)> {
+    let contents = std::fs::read_to_string(path).ok()?;
+    let sidecar = serde_json::from_str::<OpencodeSidebarSidecar>(&contents).ok()?;
+    let updated_at = sidecar.updated_at.unwrap_or_default();
+    Some((
+        updated_at,
+        OpencodeSidebarData {
+            session_id: sidecar.session_id,
+            title: None,
+            latest_prompt: sidecar.latest_prompt,
+            status: sidecar.status,
+            last_tool: sidecar.last_tool,
+            todo_count: sidecar.todo_count,
+            pending_permission: sidecar.pending_permission,
+            reasoning_tokens: None,
+            additions: sidecar.additions,
+            deletions: sidecar.deletions,
+            files: sidecar.files,
+        },
+    ))
+}
+
 #[derive(Debug, Clone)]
 struct OpencodeSessionRecord {
     id: String,
@@ -284,6 +382,44 @@ struct OpencodePartTokens {
     reasoning: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpencodeSidebarSidecar {
+    session_id: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    last_tool: Option<String>,
+    #[serde(default)]
+    latest_prompt: Option<String>,
+    #[serde(default)]
+    todo_count: Option<u64>,
+    #[serde(default)]
+    pending_permission: Option<String>,
+    #[serde(default)]
+    additions: Option<u64>,
+    #[serde(default)]
+    deletions: Option<u64>,
+    #[serde(default)]
+    files: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_optional_timestamp")]
+    updated_at: Option<i64>,
+}
+
+fn deserialize_optional_timestamp<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let parsed = match value {
+        Some(serde_json::Value::String(text)) => chrono::DateTime::parse_from_rfc3339(&text)
+            .ok()
+            .map(|dt| dt.timestamp()),
+        Some(serde_json::Value::Number(num)) => num.as_i64(),
+        _ => None,
+    };
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,7 +480,8 @@ mod tests {
         )
         .unwrap();
 
-        let data = read_sidebar_data_from_root(storage, &workdir, None).unwrap();
+        let sidecar_root = temp.path().join("sidecar");
+        let data = read_sidebar_data_from_roots(storage, &sidecar_root, &workdir, None).unwrap();
         assert_eq!(data.session_id, "ses-new");
         assert_eq!(data.title.as_deref(), Some("Newest"));
         assert_eq!(data.latest_prompt.as_deref(), Some("latest prompt"));
@@ -384,7 +521,10 @@ mod tests {
         )
         .unwrap();
 
-        let data = read_sidebar_data_from_root(storage, &workdir, Some("ses-picked")).unwrap();
+        let sidecar_root = temp.path().join("sidecar");
+        let data =
+            read_sidebar_data_from_roots(storage, &sidecar_root, &workdir, Some("ses-picked"))
+                .unwrap();
         assert_eq!(data.session_id, "ses-picked");
         assert_eq!(data.title.as_deref(), Some("Picked"));
         assert_eq!(data.latest_prompt.as_deref(), Some("picked prompt"));
@@ -413,7 +553,56 @@ mod tests {
         )
         .unwrap();
 
-        let data = read_sidebar_data_from_root(storage, &workdir, None).unwrap();
+        let sidecar_root = temp.path().join("sidecar");
+        let data = read_sidebar_data_from_roots(storage, &sidecar_root, &workdir, None).unwrap();
         assert_eq!(data.latest_prompt.as_deref(), Some("summary prompt"));
+    }
+
+    #[test]
+    fn sidecar_data_overrides_storage_when_present() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-sidebar");
+        let storage = temp.path().join("storage");
+        let sidecar = temp.path().join("sidecar");
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-1")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-1")).unwrap();
+        std::fs::create_dir_all(&sidecar).unwrap();
+
+        std::fs::write(
+            storage.join("session").join("project-a").join("ses-1.json"),
+            format!(
+                "{{\"id\":\"ses-1\",\"directory\":\"{}\",\"title\":\"Stored\",\"time\":{{\"updated\":1}},\"summary\":{{\"additions\":4,\"deletions\":1,\"files\":2}}}}",
+                workdir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"user\",\"time\":{\"created\":1}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-1").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"stored prompt\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            sidecar.join("ses-1.json"),
+            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+        )
+        .unwrap();
+
+        let data =
+            read_sidebar_data_from_roots(&storage, &sidecar, &workdir, Some("ses-1")).unwrap();
+        assert_eq!(data.title.as_deref(), Some("Stored"));
+        assert_eq!(data.latest_prompt.as_deref(), Some("live prompt"));
+        assert_eq!(data.status.as_deref(), Some("busy"));
+        assert_eq!(data.last_tool.as_deref(), Some("edit"));
+        assert_eq!(data.todo_count, Some(3));
+        assert_eq!(data.pending_permission.as_deref(), Some("edit"));
+        assert_eq!(data.additions, Some(8));
+        assert_eq!(data.files, Some(5));
     }
 }

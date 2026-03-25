@@ -16,6 +16,7 @@ const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 const CHANGE_TRACKER_JS: &str = include_str!("../../.opencode/plugins/change-tracker.js");
+const SIDEBAR_STATE_JS: &str = include_str!("../../.opencode/plugins/sidebar-state.js");
 const CUSTOM_DIFF_REVIEW_SH: &str =
     include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
@@ -525,17 +526,20 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let dst_diff_review_js = plugins_dir.join("diff-review.js");
     let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
     let dst_change_tracker = plugins_dir.join("change-tracker.js");
+    let dst_sidebar_state = plugins_dir.join("sidebar-state.js");
     let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
     let dst_explain = plugins_dir.join("explain.sh");
     let _ = std::fs::remove_file(&dst_diff_review_js);
     let _ = std::fs::remove_file(&dst_diff_review_sh);
     let _ = std::fs::remove_file(&dst_change_tracker);
+    let _ = std::fs::remove_file(&dst_sidebar_state);
     let _ = std::fs::remove_file(&dst_feedback_prompt);
     let _ = std::fs::remove_file(&dst_explain);
 
     if bundled_input_request.exists() {
         let _ = std::fs::copy(&bundled_input_request, &dst_input_request);
     }
+    let _ = std::fs::write(&dst_sidebar_state, SIDEBAR_STATE_JS);
 
     if matches!(mode, VibeMode::Vibeless) {
         let _ = std::fs::write(&dst_change_tracker, CHANGE_TRACKER_JS);
@@ -647,6 +651,7 @@ fn cleanup_opencode_plugins(workdir: &Path) {
         "diff-review.js",
         "diff-review.sh",
         "change-tracker.js",
+        "sidebar-state.js",
         "feedback-prompt.sh",
         "explain.sh",
     ] {

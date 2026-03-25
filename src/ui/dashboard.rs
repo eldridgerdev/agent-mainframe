@@ -108,7 +108,9 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
             usage_line.as_str(),
             opencode_sidebar,
         ),
+        work_text: work_text(opencode_sidebar),
         prompt_text,
+        todos_text: todos_text(opencode_sidebar),
         summary_text,
     })
 }
@@ -151,24 +153,6 @@ fn status_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
     let mut lines = vec![format!("Activity: {activity_line}"), usage_line.to_string()];
-    if let Some(tool) = opencode_sidebar
-        .and_then(|sidebar| sidebar.last_tool.as_deref())
-        .filter(|tool| !tool.is_empty())
-    {
-        lines.push(format!("Tool: {tool}"));
-    }
-    if let Some(todo_count) = opencode_sidebar.and_then(|sidebar| sidebar.todo_count) {
-        lines.push(format!(
-            "Todos: {todo_count} item{}",
-            if todo_count == 1 { "" } else { "s" }
-        ));
-    }
-    if let Some(permission) = opencode_sidebar
-        .and_then(|sidebar| sidebar.pending_permission.as_deref())
-        .filter(|permission| !permission.is_empty())
-    {
-        lines.push(format!("Permission: {permission}"));
-    }
     if let Some(reasoning_tokens) = opencode_sidebar
         .and_then(|sidebar| sidebar.reasoning_tokens)
         .filter(|tokens| *tokens > 0)
@@ -182,6 +166,48 @@ fn status_text(
         lines.push(change_line);
     }
     lines.join("\n")
+}
+
+fn work_text(
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(status) = opencode_sidebar
+        .and_then(|sidebar| sidebar.status.as_deref())
+        .filter(|status| !status.is_empty())
+    {
+        lines.push(format!("State: {status}"));
+    }
+    if let Some(tool) = opencode_sidebar
+        .and_then(|sidebar| sidebar.last_tool.as_deref())
+        .filter(|tool| !tool.is_empty())
+    {
+        lines.push(format!("Tool: {tool}"));
+    }
+    if let Some(permission) = opencode_sidebar
+        .and_then(|sidebar| sidebar.pending_permission.as_deref())
+        .filter(|permission| !permission.is_empty())
+    {
+        lines.push(format!("Permission: {permission}"));
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn todos_text(
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> Option<String> {
+    opencode_sidebar
+        .and_then(|sidebar| sidebar.todo_count)
+        .map(|todo_count| {
+            format!(
+                "Open: {todo_count} item{}",
+                if todo_count == 1 { "" } else { "s" }
+            )
+        })
 }
 
 fn sidebar_title(session_kind: &SessionKind) -> &'static str {
@@ -704,28 +730,43 @@ mod tests {
     }
 
     #[test]
-    fn opencode_status_text_shows_live_sidecar_details() {
-        let status = status_text(
-            "Ready",
-            "Usage: unavailable",
-            Some(&crate::app::opencode_storage::OpencodeSidebarData {
-                session_id: "ses-1".into(),
-                title: None,
-                latest_prompt: None,
-                status: Some("busy".into()),
-                last_tool: Some("edit".into()),
-                todo_count: Some(3),
-                pending_permission: Some("edit".into()),
-                reasoning_tokens: None,
-                additions: None,
-                deletions: None,
-                files: None,
-            }),
-        );
+    fn opencode_work_text_shows_live_sidecar_details() {
+        let work = work_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: Some("busy".into()),
+            last_tool: Some("edit".into()),
+            todo_count: Some(3),
+            pending_permission: Some("edit".into()),
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        }));
 
         assert_eq!(
-            status,
-            "Activity: Ready\nUsage: unavailable\nTool: edit\nTodos: 3 items\nPermission: edit"
+            work.as_deref(),
+            Some("State: busy\nTool: edit\nPermission: edit")
         );
+    }
+
+    #[test]
+    fn opencode_todos_text_renders_count() {
+        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: Some(3),
+            pending_permission: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        }));
+
+        assert_eq!(todos.as_deref(), Some("Open: 3 items"));
     }
 }

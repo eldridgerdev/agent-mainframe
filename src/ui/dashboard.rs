@@ -55,8 +55,7 @@ fn build_agent_sidebar_data(
     };
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
-        .map(format_sidebar_usage)
-        .unwrap_or_else(|| "Usage: unavailable".to_string());
+        .map(format_sidebar_usage);
     let prompt_text = sidebar_prompt_text(
         codex_sidebar_source(&sidebar_kind, session)
             .and_then(|source| app.cached_codex_session_prompt(&feature.workdir, &source.id)),
@@ -95,14 +94,7 @@ fn build_agent_sidebar_data(
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
     let usage_confidence = format_codex_usage_source_confidence(&sidebar_kind, session);
 
-    let status_text = match (activity_line, usage_confidence) {
-        (Some(activity), Some(confidence)) => {
-            format!("Activity: {}\n{}\n{}", activity, usage_line, confidence)
-        }
-        (Some(activity), None) => format!("Activity: {}\n{}", activity, usage_line),
-        (None, Some(confidence)) => format!("{}\n{}", usage_line, confidence),
-        (None, None) => usage_line,
-    };
+    let status_text = compose_sidebar_status_text(activity_line, usage_line, usage_confidence);
 
     Some(super::pane::AgentSidebarData {
         agent_kind: sidebar_kind,
@@ -118,6 +110,24 @@ fn build_agent_sidebar_data(
 
 fn sidebar_status_activity_text(has_work_text: bool, idle_text: String) -> Option<String> {
     if has_work_text { None } else { Some(idle_text) }
+}
+
+fn compose_sidebar_status_text(
+    activity_line: Option<String>,
+    usage_line: Option<String>,
+    usage_confidence: Option<String>,
+) -> String {
+    let mut status_lines = Vec::new();
+    if let Some(activity) = activity_line {
+        status_lines.push(format!("Activity: {activity}"));
+    }
+    if let Some(usage_line) = usage_line {
+        status_lines.push(usage_line);
+    }
+    if let Some(confidence) = usage_confidence {
+        status_lines.push(confidence);
+    }
+    status_lines.join("\n")
 }
 
 fn codex_sidebar_source<'a>(
@@ -743,6 +753,19 @@ mod tests {
         assert_eq!(
             sidebar_status_activity_text(false, "Ready".into()),
             Some("Ready".to_string())
+        );
+    }
+
+    #[test]
+    fn compose_sidebar_status_text_omits_missing_usage_lines() {
+        assert_eq!(compose_sidebar_status_text(None, None, None), "");
+        assert_eq!(
+            compose_sidebar_status_text(Some("Ready".into()), None, None),
+            "Activity: Ready"
+        );
+        assert_eq!(
+            compose_sidebar_status_text(None, Some("Input: 1.2K tokens".into()), None),
+            "Input: 1.2K tokens"
         );
     }
 

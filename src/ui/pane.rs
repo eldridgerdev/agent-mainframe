@@ -401,17 +401,17 @@ fn draw_agent_sidebar(
         });
         sections_with_content.push(("Plan", plan_text));
     }
-    if !data.prompt_text.trim().is_empty() {
-        let prompt_height =
-            prompt_section_height(&data.prompt_text, inner.width, has_priority_context);
-        constraints.push(Constraint::Length(prompt_height));
-        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
-    }
     if !data.summary_text.trim().is_empty() {
         let summary_height =
             summary_section_height(&data.summary_text, inner.width, has_priority_context);
         constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
+    }
+    if !data.prompt_text.trim().is_empty() {
+        let prompt_height =
+            prompt_section_height(&data.prompt_text, inner.width, has_priority_context);
+        constraints.push(Constraint::Length(prompt_height));
+        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
     }
 
     let sections = Layout::default()
@@ -1089,6 +1089,48 @@ mod tests {
         let prompt_index = rendered.find("Prompt").unwrap();
 
         assert!(plan_index < prompt_index);
+    }
+
+    #[test]
+    fn codex_sidebar_places_summary_above_prompt_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: None,
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let summary_index = rendered.find("Summary").unwrap();
+        let prompt_index = rendered.find("Prompt").unwrap();
+
+        assert!(summary_index < prompt_index);
     }
 
     #[test]

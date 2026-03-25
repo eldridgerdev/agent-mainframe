@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+const SIDECAR_FRESHNESS_SECS: i64 = 300;
+
 #[derive(Debug, Clone, Default)]
 pub struct OpencodeSidebarData {
     pub session_id: String,
@@ -40,7 +42,13 @@ pub fn read_sidebar_data(
 ) -> Option<OpencodeSidebarData> {
     let storage_root = dirs::data_dir()?.join("opencode").join("storage");
     let sidecar_root = workdir.join(".amf").join("opencode-sidebar");
-    read_sidebar_data_from_roots(&storage_root, &sidecar_root, workdir, preferred_session_id)
+    read_sidebar_data_from_roots_at_time(
+        &storage_root,
+        &sidecar_root,
+        workdir,
+        preferred_session_id,
+        chrono::Utc::now().timestamp(),
+    )
 }
 
 fn read_sidebar_data_from_roots(
@@ -49,8 +57,24 @@ fn read_sidebar_data_from_roots(
     workdir: &Path,
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSidebarData> {
+    read_sidebar_data_from_roots_at_time(
+        storage_root,
+        sidecar_root,
+        workdir,
+        preferred_session_id,
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+fn read_sidebar_data_from_roots_at_time(
+    storage_root: &Path,
+    sidecar_root: &Path,
+    workdir: &Path,
+    preferred_session_id: Option<&str>,
+    now_ts: i64,
+) -> Option<OpencodeSidebarData> {
     let session = find_session(storage_root, workdir, preferred_session_id);
-    let sidecar = read_sidecar(sidecar_root, preferred_session_id);
+    let sidecar = read_sidecar_at_time(sidecar_root, preferred_session_id, now_ts);
 
     let session_id = sidecar
         .as_ref()
@@ -294,6 +318,14 @@ fn read_sidecar(
     sidecar_root: &Path,
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSidebarData> {
+    read_sidecar_at_time(sidecar_root, preferred_session_id, chrono::Utc::now().timestamp())
+}
+
+fn read_sidecar_at_time(
+    sidecar_root: &Path,
+    preferred_session_id: Option<&str>,
+    now_ts: i64,
+) -> Option<OpencodeSidebarData> {
     if !sidecar_root.is_dir() {
         return None;
     }
@@ -301,15 +333,22 @@ fn read_sidecar(
     if let Some(session_id) = preferred_session_id {
         let path = sidecar_root.join(format!("{session_id}.json"));
         if path.exists() {
-            return parse_sidecar_file(&path).map(|(_, data)| data);
+            return parse_sidecar_file(&path)
+                .filter(|(updated_at, _)| sidecar_is_fresh(*updated_at, now_ts))
+                .map(|(_, data)| data);
         }
     }
 
     walk_json_files(sidecar_root)
         .into_iter()
         .filter_map(|path| parse_sidecar_file(&path))
+        .filter(|(updated_at, _)| sidecar_is_fresh(*updated_at, now_ts))
         .max_by_key(|(updated_at, _)| *updated_at)
         .map(|(_, data)| data)
+}
+
+fn sidecar_is_fresh(updated_at: i64, now_ts: i64) -> bool {
+    updated_at > 0 && updated_at >= now_ts.saturating_sub(SIDECAR_FRESHNESS_SECS)
 }
 
 fn parse_sidecar_file(path: &Path) -> Option<(i64, OpencodeSidebarData)> {
@@ -626,8 +665,16 @@ mod tests {
         )
         .unwrap();
 
-        let data =
-            read_sidebar_data_from_roots(&storage, &sidecar, &workdir, Some("ses-1")).unwrap();
+        let data = read_sidebar_data_from_roots_at_time(
+            &storage,
+            &sidecar,
+            &workdir,
+            Some("ses-1"),
+            chrono::DateTime::parse_from_rfc3339("2026-03-25T12:03:00Z")
+                .unwrap()
+                .timestamp(),
+        )
+        .unwrap();
         assert_eq!(data.title.as_deref(), Some("Stored"));
         assert_eq!(data.latest_prompt.as_deref(), Some("live prompt"));
         assert_eq!(data.status.as_deref(), Some("busy"));
@@ -656,7 +703,14 @@ mod tests {
         )
         .unwrap();
 
-        let data = read_sidecar(&sidecar, Some("ses-1")).unwrap();
+        let data = read_sidecar_at_time(
+            &sidecar,
+            Some("ses-1"),
+            chrono::DateTime::parse_from_rfc3339("2026-03-25T12:03:00Z")
+                .unwrap()
+                .timestamp(),
+        )
+        .unwrap();
         assert_eq!(data.todo_count, Some(3));
         assert_eq!(
             data.todo_preview,
@@ -666,5 +720,56 @@ mod tests {
                 "add tests".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn ignores_stale_sidecar_data_and_falls_back_to_storage() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-sidebar");
+        let storage = temp.path().join("storage");
+        let sidecar = temp.path().join("sidecar");
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-1")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-1")).unwrap();
+        std::fs::create_dir_all(&sidecar).unwrap();
+
+        std::fs::write(
+            storage.join("session").join("project-a").join("ses-1.json"),
+            format!(
+                "{{\"id\":\"ses-1\",\"directory\":\"{}\",\"title\":\"Stored\",\"time\":{{\"updated\":1}},\"summary\":{{\"additions\":4,\"deletions\":1,\"files\":2}}}}",
+                workdir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"user\",\"time\":{\"created\":1}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-1").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"stored prompt\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            sidecar.join("ses-1.json"),
+            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"latest_prompt\":\"live prompt\",\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+        )
+        .unwrap();
+
+        let data = read_sidebar_data_from_roots_at_time(
+            &storage,
+            &sidecar,
+            &workdir,
+            Some("ses-1"),
+            chrono::DateTime::parse_from_rfc3339("2026-03-25T12:10:01Z")
+                .unwrap()
+                .timestamp(),
+        )
+        .unwrap();
+
+        assert_eq!(data.latest_prompt.as_deref(), Some("stored prompt"));
+        assert_eq!(data.status, None);
     }
 }

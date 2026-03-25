@@ -142,10 +142,10 @@ fn format_codex_usage_source_confidence(
     }
 
     let match_kind = session?.token_usage_source_match.as_ref()?;
-    Some(match match_kind {
-        TokenUsageSourceMatch::Exact => "Usage source: exact thread match".to_string(),
-        TokenUsageSourceMatch::Inferred => "Usage source: inferred workdir match".to_string(),
-    })
+    match match_kind {
+        TokenUsageSourceMatch::Exact => None,
+        TokenUsageSourceMatch::Inferred => Some("Usage source: inferred workdir match".to_string()),
+    }
 }
 
 fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&str>) -> String {
@@ -747,11 +747,11 @@ mod tests {
     }
 
     #[test]
-    fn format_codex_usage_source_confidence_uses_exact_match_label() {
+    fn format_codex_usage_source_confidence_omits_exact_match_label() {
         let session = codex_feature_session("sess-current");
         assert_eq!(
             format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
-            Some("Usage source: exact thread match".to_string())
+            None
         );
     }
 

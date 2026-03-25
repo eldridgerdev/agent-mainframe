@@ -54,7 +54,7 @@ impl CodexLiveThreadState {
 
     pub fn sidebar_work_text(&self) -> Option<String> {
         if let Some(text) = &self.input_request_text {
-            return Some(format!("State: waiting for input\nRequest: {text}"));
+            return Some(text.clone());
         }
         if let Some(text) = &self.file_change_text {
             return Some(text.clone());
@@ -169,24 +169,71 @@ fn extract_file_change_text(raw: &Value) -> Option<String> {
         raw,
         &["/payload/phase", "/payload/status", "/phase", "/status"],
     );
+    let tool = first_string(
+        raw,
+        &["/payload/tool", "/payload/tool_name", "/tool", "/tool_name"],
+    );
+    let detail = first_string(
+        raw,
+        &["/payload/detail", "/payload/message", "/detail", "/message"],
+    );
+    let reason = first_string(raw, &["/payload/reason", "/reason"]);
 
-    let state = match status.as_deref().map(normalize_status) {
-        Some(CommandStatus::Failed) => "review blocked",
-        Some(CommandStatus::Completed) => "review completed",
-        _ => "waiting for review",
+    let state = match status.as_deref() {
+        Some("needs-review") => "waiting for diff review",
+        Some("needs-reason") => "waiting for change reason",
+        _ => match status.as_deref().map(normalize_status) {
+            Some(CommandStatus::Failed) => "review blocked",
+            Some(CommandStatus::Completed) => "review completed",
+            _ => "waiting for review",
+        },
     };
     let mut lines = vec![format!("State: {state}"), format!("File: {path}")];
-    if let Some(status) = status {
+    if let Some(tool) = tool {
+        lines.push(format!("Tool: {tool}"));
+    }
+    let has_detail = detail.is_some();
+    if let Some(detail) = detail {
+        lines.push(format!("Request: {detail}"));
+    }
+    if let Some(reason) = reason {
+        lines.push(format!("Reason: {reason}"));
+    } else if !has_detail && let Some(status) = status {
         lines.push(format!("Detail: {status}"));
     }
     Some(lines.join("\n"))
 }
 
 fn extract_input_request_text(raw: &Value) -> Option<String> {
-    first_string(
+    let prompt = first_string(
         raw,
         &["/payload/prompt", "/payload/message", "/prompt", "/message"],
-    )
+    )?;
+    let tool = first_string(
+        raw,
+        &["/payload/tool", "/payload/tool_name", "/tool", "/tool_name"],
+    );
+    let path = first_string(
+        raw,
+        &[
+            "/payload/path",
+            "/payload/relative_path",
+            "/path",
+            "/relative_path",
+        ],
+    );
+
+    let mut lines = vec![
+        "State: waiting for input".to_string(),
+        format!("Request: {prompt}"),
+    ];
+    if let Some(tool) = tool {
+        lines.push(format!("Tool: {tool}"));
+    }
+    if let Some(path) = path {
+        lines.push(format!("File: {path}"));
+    }
+    Some(lines.join("\n"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,5 +381,46 @@ mod tests {
         }));
 
         assert_eq!(state.file_change_text, None);
+    }
+
+    #[test]
+    fn reducer_formats_review_requests_with_specific_state_and_context() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "needs-review",
+                "tool": "Edit",
+                "message": "Review the diff before continuing."
+            }
+        }));
+
+        assert_eq!(
+            state.file_change_text.as_deref(),
+            Some(
+                "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the diff before continuing."
+            )
+        );
+    }
+
+    #[test]
+    fn reducer_formats_input_requests_with_tool_context() {
+        let mut state = CodexLiveThreadState::default();
+        state.apply_event(&json!({
+            "type": "requestUserInput",
+            "payload": {
+                "prompt": "Need approval before applying the patch.",
+                "tool": "Bash",
+                "relative_path": "src/main.rs"
+            }
+        }));
+
+        assert_eq!(
+            state.sidebar_work_text().as_deref(),
+            Some(
+                "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
+            )
+        );
     }
 }

@@ -678,12 +678,16 @@ impl App {
             self.codex_feature_for_message(Some(&session_id), &cwd_path)
         {
             if notification_type == "input-request" {
+                let tool = msg.tool_name.clone().or(msg.tool.clone());
+                let path = msg.relative_path.clone().or(msg.file_path.clone());
                 self.apply_codex_live_event(
                     &codex_session,
                     &serde_json::json!({
                         "type": "requestUserInput",
                         "payload": {
-                            "prompt": msg.message.clone().unwrap_or_default()
+                            "prompt": msg.message.clone().unwrap_or_default(),
+                            "tool": tool,
+                            "relative_path": path
                         }
                     }),
                 );
@@ -693,6 +697,7 @@ impl App {
                 } else {
                     "needs-review"
                 };
+                let tool = msg.tool_name.clone().or(msg.tool.clone());
                 self.apply_codex_live_event(
                     &codex_session,
                     &serde_json::json!({
@@ -703,7 +708,10 @@ impl App {
                                 .clone()
                                 .or(msg.file_path.clone())
                                 .unwrap_or_default(),
-                            "status": review_status
+                            "status": review_status,
+                            "tool": tool,
+                            "message": msg.message.clone(),
+                            "reason": msg.reason.clone()
                         }
                     }),
                 );

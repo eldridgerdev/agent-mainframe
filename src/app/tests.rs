@@ -2919,14 +2919,18 @@ fn ipc_input_request_updates_codex_live_work_state() {
         "source": "codex-notify",
         "session_id": "amf-my-feat",
         "cwd": workdir.path().display().to_string(),
-        "message": "Need approval before applying the patch."
+        "message": "Need approval before applying the patch.",
+        "tool_name": "Bash",
+        "relative_path": "src/main.rs"
     }));
 
     assert_eq!(
         app.codex_live_thread("amf-my-feat")
             .and_then(|live| live.sidebar_work_text())
             .as_deref(),
-        Some("State: waiting for input\nRequest: Need approval before applying the patch.")
+        Some(
+            "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
+        )
     );
 }
 
@@ -3045,14 +3049,17 @@ fn ipc_diff_review_updates_codex_live_review_state() {
         "session_id": "amf-my-feat",
         "cwd": workdir.path().display().to_string(),
         "file_path": "src/main.rs",
-        "message": "Review the change before continuing."
+        "message": "Review the change before continuing.",
+        "tool_name": "Edit"
     }));
 
     assert_eq!(
         app.codex_live_thread("amf-my-feat")
             .and_then(|live| live.sidebar_work_text())
             .as_deref(),
-        Some("State: waiting for review\nFile: src/main.rs\nDetail: needs-review")
+        Some(
+            "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the change before continuing."
+        )
     );
 }
 

@@ -2964,6 +2964,37 @@ fn ipc_prompt_submit_clears_codex_live_input_and_marks_thinking() {
 }
 
 #[test]
+fn ipc_prompt_submit_refreshes_sidebar_plan_cache() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("plan.md"),
+        "# Plan\n\n1. Refresh plan cache\n2. Render update\n",
+    )
+    .unwrap();
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Continue with the patch."
+    }));
+
+    assert_eq!(
+        app.sidebar_plan_for_session("amf-my-feat"),
+        Some("Plan\n1. Refresh plan cache\n2. Render update")
+    );
+}
+
+#[test]
 fn open_command_picker_prepends_codex_debug_commands() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);

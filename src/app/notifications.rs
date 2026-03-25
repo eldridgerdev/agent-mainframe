@@ -562,6 +562,9 @@ impl App {
                     }
                 }
             }
+            if let Some((pi, fi)) = self.project_feature_for_cwd(&cwd_path).3 {
+                self.refresh_sidebar_plan_for_feature(pi, fi);
+            }
             if let Some((codex_session, codex_window)) =
                 self.codex_feature_for_message(session_id.as_deref(), &cwd_path)
             {
@@ -618,7 +621,13 @@ impl App {
         }
 
         // Resolve project/feature from cwd.
-        let (project_name, feature_name, agent_name, _) = self.project_feature_for_cwd(&cwd_path);
+        let (project_name, feature_name, agent_name, indices) =
+            self.project_feature_for_cwd(&cwd_path);
+        if let Some((pi, fi)) = indices {
+            if self.store.projects[pi].features[fi].agent == AgentKind::Codex {
+                self.refresh_sidebar_plan_for_feature(pi, fi);
+            }
+        }
 
         // For diff-review while viewing the matching
         // feature, write the proceed signal immediately when

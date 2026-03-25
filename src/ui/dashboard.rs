@@ -15,9 +15,8 @@ fn build_agent_sidebar_data(
 ) -> Option<super::pane::AgentSidebarData> {
     let sidebar_kind = view.sidebar_session_kind()?;
 
-    let (agent_label, fallback_session_label) = match sidebar_kind {
-        SessionKind::Claude => ("Claude", "Claude"),
-        SessionKind::Codex => ("Codex", "Codex"),
+    match sidebar_kind {
+        SessionKind::Claude | SessionKind::Codex => {}
         _ => return None,
     };
 
@@ -40,14 +39,6 @@ fn build_agent_sidebar_data(
                 .find(|session| session.kind == sidebar_kind)
         });
 
-    let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
-    let mode_label = if view.review {
-        "Review".to_string()
-    } else if feature.plan_mode {
-        format!("{} + Plan", view.vibe_mode.display_name())
-    } else {
-        view.vibe_mode.display_name().to_string()
-    };
     let waiting_count = app
         .pending_inputs
         .iter()
@@ -73,10 +64,8 @@ fn build_agent_sidebar_data(
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let session_line = session_sidebar_line(session, fallback_session_label);
-    let codex_source = codex_sidebar_source(&sidebar_kind, session);
     let prompt_text = sidebar_prompt_text(
-        codex_source
+        codex_sidebar_source(&sidebar_kind, session)
             .and_then(|source| app.cached_codex_session_prompt(&feature.workdir, &source.id)),
         app.latest_prompt_for_session(&feature.tmux_session),
     );
@@ -106,27 +95,7 @@ fn build_agent_sidebar_data(
             )
         })
         .unwrap_or(summary_text);
-    let session_metadata = format_codex_session_metadata(
-        codex_source,
-        codex_source
-            .and_then(|source| app.cached_codex_session_title(&feature.workdir, &source.id)),
-    );
-    let session_text = match session_metadata {
-        Some(metadata) => format!(
-            "Target: {}/{}\nAgent: {}\nSession: {}\n{}\nMode: {}\nBranch: {}",
-            project.name,
-            feature_label,
-            agent_label,
-            session_line,
-            metadata,
-            mode_label,
-            feature.branch
-        ),
-        None => format!(
-            "Target: {}/{}\nAgent: {}\nSession: {}\nMode: {}\nBranch: {}",
-            project.name, feature_label, agent_label, session_line, mode_label, feature.branch
-        ),
-    };
+    let summary_text = compact_sidebar_text(&summary_text, 80);
 
     let status_text = match format_codex_usage_source_confidence(&sidebar_kind, session) {
         Some(confidence) => format!(
@@ -138,7 +107,6 @@ fn build_agent_sidebar_data(
 
     Some(super::pane::AgentSidebarData {
         agent_kind: sidebar_kind,
-        session_text,
         status_text,
         prompt_text,
         plan_text: codex_live
@@ -149,12 +117,6 @@ fn build_agent_sidebar_data(
             .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         summary_text,
     })
-}
-
-fn session_sidebar_line(session: Option<&FeatureSession>, fallback_label: &str) -> String {
-    session
-        .map(|session| session.label.clone())
-        .unwrap_or_else(|| fallback_label.to_string())
 }
 
 fn codex_sidebar_source<'a>(
@@ -168,17 +130,6 @@ fn codex_sidebar_source<'a>(
     session
         .and_then(|session| session.token_usage_source.as_ref())
         .filter(|source| source.provider == TokenUsageProvider::Codex)
-}
-
-fn format_codex_session_metadata(
-    source: Option<&TokenUsageSource>,
-    title: Option<&str>,
-) -> Option<String> {
-    let short_id = shorten_session_id(&source?.id);
-    Some(match title {
-        Some(title) => format!("Thread: {short_id}\nTitle: {title}"),
-        None => format!("Thread: {short_id}"),
-    })
 }
 
 fn format_codex_usage_source_confidence(
@@ -210,10 +161,6 @@ fn select_sidebar_prompt(
     session_prompt
         .map(ToOwned::to_owned)
         .or_else(|| fallback_prompt.map(ToOwned::to_owned))
-}
-
-fn shorten_session_id(session_id: &str) -> String {
-    session_id.chars().take(8).collect()
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -744,51 +691,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shorten_session_id_truncates_long_ids() {
-        assert_eq!(shorten_session_id("1234567890abcdef"), "12345678");
-    }
-
-    #[test]
-    fn format_codex_session_metadata_returns_none_for_non_codex_sidebar() {
-        let session = FeatureSession {
-            id: "session-1".into(),
-            kind: SessionKind::Codex,
-            label: "Codex".into(),
-            tmux_window: "codex".into(),
-            claude_session_id: None,
-            token_usage_source: Some(TokenUsageSource {
-                provider: TokenUsageProvider::Codex,
-                id: "1234567890abcdef".into(),
-            }),
-            token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
-            created_at: chrono::Utc::now(),
-            command: None,
-            on_stop: None,
-            pre_check: None,
-            status_text: None,
-        };
-
-        let source = codex_sidebar_source(&SessionKind::Claude, Some(&session));
-        assert_eq!(
-            format_codex_session_metadata(source, Some("unused title")),
-            None
-        );
-    }
-
-    #[test]
-    fn format_codex_session_metadata_uses_short_thread_id_without_title() {
-        let source = TokenUsageSource {
-            provider: TokenUsageProvider::Codex,
-            id: "1234567890abcdef".into(),
-        };
-
-        assert_eq!(
-            format_codex_session_metadata(Some(&source), None),
-            Some("Thread: 12345678".to_string())
-        );
-    }
-
     fn codex_feature_session(session_id: &str) -> FeatureSession {
         FeatureSession {
             id: "session-1".into(),
@@ -822,6 +724,16 @@ mod tests {
         let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
         assert!(prompt.contains("fallback prompt"));
+    }
+
+    #[test]
+    fn compact_sidebar_text_truncates_summary_text() {
+        let compacted = compact_sidebar_text(
+            "This is a longer summary that should be shortened once it crosses the sidebar limit.",
+            40,
+        );
+
+        assert_eq!(compacted, "This is a longer summary that should be…");
     }
 
     #[test]

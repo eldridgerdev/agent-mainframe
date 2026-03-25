@@ -36,7 +36,6 @@ const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 #[derive(Debug, Clone)]
 pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
-    pub session_text: String,
     pub status_text: String,
     pub prompt_text: String,
     pub plan_text: Option<String>,
@@ -349,7 +348,6 @@ fn draw_agent_sidebar(
 
     let fallback = AgentSidebarData {
         agent_kind,
-        session_text: format!("{title} loading"),
         status_text: "No sidebar data available.".to_string(),
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
         plan_text: None,
@@ -358,24 +356,37 @@ fn draw_agent_sidebar(
     };
     let data = data.unwrap_or(&fallback);
     let mut constraints = vec![
-        Constraint::Length(sidebar_section_height(&data.session_text, 4, 4)),
-        Constraint::Length(sidebar_section_height(&data.status_text, 4, 6)),
-        Constraint::Length(sidebar_section_height(&data.prompt_text, 2, 4)),
+        Constraint::Length(sidebar_section_height(&data.status_text, inner.width, 4, 6)),
+        Constraint::Length(sidebar_section_height(&data.prompt_text, inner.width, 2, 4)),
     ];
     let mut sections_with_content = vec![
-        ("Session", data.session_text.as_str()),
         ("Status", data.status_text.as_str()),
         ("Prompt", data.prompt_text.as_str()),
     ];
     if let Some(plan_text) = data.plan_text.as_deref() {
-        constraints.push(Constraint::Length(sidebar_section_height(plan_text, 2, 4)));
+        constraints.push(Constraint::Length(sidebar_section_height(
+            plan_text,
+            inner.width,
+            2,
+            4,
+        )));
         sections_with_content.push(("Plan", plan_text));
     }
     if let Some(work_text) = data.work_text.as_deref() {
-        constraints.push(Constraint::Length(sidebar_section_height(work_text, 2, 4)));
+        constraints.push(Constraint::Min(sidebar_section_height(
+            work_text,
+            inner.width,
+            3,
+            6,
+        )));
         sections_with_content.push(("Work", work_text));
     }
-    constraints.push(Constraint::Min(4));
+    constraints.push(Constraint::Length(sidebar_section_height(
+        &data.summary_text,
+        inner.width,
+        2,
+        4,
+    )));
     sections_with_content.push(("Summary", data.summary_text.as_str()));
 
     let sections = Layout::default()
@@ -410,7 +421,6 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
-        "Session" => theme.primary.to_color(),
         "Status" => theme.warning.to_color(),
         "Prompt" => theme.secondary.to_color(),
         "Plan" => theme.info.to_color(),
@@ -420,8 +430,20 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     }
 }
 
-fn sidebar_section_height(body: &str, min_inner_lines: u16, max_inner_lines: u16) -> u16 {
-    let inner_lines = body.lines().count() as u16;
+fn sidebar_section_height(
+    body: &str,
+    section_width: u16,
+    min_inner_lines: u16,
+    max_inner_lines: u16,
+) -> u16 {
+    let inner_width = section_width.saturating_sub(2).max(1) as usize;
+    let inner_lines = body
+        .lines()
+        .map(|line| {
+            let line_width = line.chars().count().max(1);
+            line_width.div_ceil(inner_width)
+        })
+        .sum::<usize>() as u16;
     inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
 }
 
@@ -739,7 +761,6 @@ mod tests {
         let theme = Theme::default();
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
-            session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
             plan_text: None,
@@ -769,6 +790,7 @@ mod tests {
         assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+        assert!(!rendered.contains("Session"));
     }
 
     #[test]
@@ -779,7 +801,6 @@ mod tests {
         let theme = Theme::default();
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
-            session_text: "Target: proj/feat\nAgent: Codex".into(),
             status_text: "Thinking\nInput: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             plan_text: None,
@@ -818,7 +839,6 @@ mod tests {
         let theme = Theme::default();
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
-            session_text: "Target: proj/feat\nAgent: Codex".into(),
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
@@ -848,5 +868,46 @@ mod tests {
         assert!(rendered.contains("Inspect parser"));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn codex_sidebar_lets_work_expand_and_keeps_summary_compact() {
+        let backend = TestBackend::new(120, 38);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            plan_text: Some("1. Inspect parser\n2. Patch reducer".into()),
+            work_text: Some(
+                "Pending input: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nCommand: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
+                    .into(),
+            ),
+            summary_text: "Small summary.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Queue"));
+        assert!(rendered.contains("cargo test"));
+        assert!(rendered.contains("Small summary."));
     }
 }

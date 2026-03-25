@@ -103,7 +103,10 @@ fn status_text(
     usage_line: &str,
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
-    let mut lines = vec![format!("Activity: {activity_line}"), usage_line.to_string()];
+    let mut lines = vec![format!("Activity: {activity_line}")];
+    if usage_line != "Usage: unavailable" {
+        lines.push(usage_line.to_string());
+    }
     if let Some(reasoning_tokens) = opencode_sidebar
         .and_then(|sidebar| sidebar.reasoning_tokens)
         .filter(|tokens| *tokens > 0)
@@ -197,9 +200,9 @@ fn sidebar_summary_text(
     generating: bool,
     feature_summary: Option<&str>,
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
-) -> String {
+) -> Option<String> {
     if generating {
-        return "Generating summary...".to_string();
+        return Some("Generating summary...".to_string());
     }
 
     if *session_kind == SessionKind::Opencode
@@ -207,12 +210,11 @@ fn sidebar_summary_text(
             .and_then(|sidebar| sidebar.live_summary.as_deref())
             .filter(|summary| !summary.is_empty())
     {
-        return compact_sidebar_text(summary, 80);
+        return Some(compact_sidebar_text(summary, 80));
     }
 
     feature_summary
         .map(str::to_string)
-        .unwrap_or_else(|| "No summary yet. Use leader+g to generate one.".to_string())
 }
 
 fn sidebar_title(session_kind: &SessionKind) -> &'static str {
@@ -843,7 +845,7 @@ mod tests {
                 Some("Persisted AMF summary"),
                 Some(&live),
             ),
-            "Live assistant summary"
+            Some("Live assistant summary".into())
         );
     }
 
@@ -851,7 +853,7 @@ mod tests {
     fn summary_text_falls_back_to_feature_summary_without_live_opencode_summary() {
         assert_eq!(
             sidebar_summary_text(&SessionKind::Opencode, false, Some("Persisted AMF summary"), None),
-            "Persisted AMF summary"
+            Some("Persisted AMF summary".into())
         );
     }
 
@@ -882,7 +884,20 @@ mod tests {
                 Some("Persisted AMF summary"),
                 Some(&live),
             ),
-            "Generating summary..."
+            Some("Generating summary...".into())
         );
+    }
+
+    #[test]
+    fn summary_text_is_absent_without_live_or_persisted_summary() {
+        assert_eq!(
+            sidebar_summary_text(&SessionKind::Opencode, false, None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn status_text_omits_unavailable_usage_line() {
+        assert_eq!(status_text("Ready", "Usage: unavailable", None), "Activity: Ready");
     }
 }

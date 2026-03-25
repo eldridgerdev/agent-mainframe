@@ -41,7 +41,7 @@ pub(crate) struct SidebarData {
     pub work_text: Option<String>,
     pub prompt_text: String,
     pub todos_text: Option<String>,
-    pub summary_text: String,
+    pub summary_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +340,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
         work_text: None,
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
         todos_text: None,
-        summary_text: "No summary available yet.".to_string(),
+        summary_text: None,
     };
     let data = data.unwrap_or(&fallback);
     let mut sections_with_content = vec![("Status", data.status_text.as_str())];
@@ -351,7 +351,9 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
     if let Some(todos_text) = data.todos_text.as_deref() {
         sections_with_content.push(("Todos", todos_text));
     }
-    sections_with_content.push(("Summary", data.summary_text.as_str()));
+    if let Some(summary_text) = data.summary_text.as_deref() {
+        sections_with_content.push(("Summary", summary_text));
+    }
 
     let mut constraints = Vec::with_capacity(sections_with_content.len() + 1);
     for (title, body) in &sections_with_content {
@@ -721,7 +723,7 @@ mod tests {
             work_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             todos_text: None,
-            summary_text: "Sidebar ready.".into(),
+            summary_text: Some("Sidebar ready.".into()),
         };
 
         terminal
@@ -761,7 +763,7 @@ mod tests {
             work_text: Some("State: busy\nTool: edit".into()),
             prompt_text: "Preview: implement the sidebar".into(),
             todos_text: Some("Open: 3 items".into()),
-            summary_text: "Summary ready.".into(),
+            summary_text: Some("Summary ready.".into()),
         };
 
         terminal

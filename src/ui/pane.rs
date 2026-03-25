@@ -37,7 +37,6 @@ const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 pub(crate) struct SidebarData {
     pub title: &'static str,
     pub title_color: Color,
-    pub session_text: String,
     pub status_text: String,
     pub work_text: Option<String>,
     pub prompt_text: String,
@@ -337,7 +336,6 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
     let fallback = SidebarData {
         title: " Sidebar ",
         title_color: theme.primary.to_color(),
-        session_text: "Claude sidebar loading".to_string(),
         status_text: "No sidebar data available.".to_string(),
         work_text: None,
         prompt_text: "No recent prompt.\nUse leader+l to open prompt history.".to_string(),
@@ -345,10 +343,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
         summary_text: "No summary available yet.".to_string(),
     };
     let data = data.unwrap_or(&fallback);
-    let mut sections_with_content = vec![
-        ("Session", data.session_text.as_str()),
-        ("Status", data.status_text.as_str()),
-    ];
+    let mut sections_with_content = vec![("Status", data.status_text.as_str())];
     if let Some(work_text) = data.work_text.as_deref() {
         sections_with_content.push(("Work", work_text));
     }
@@ -358,14 +353,9 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
     }
     sections_with_content.push(("Summary", data.summary_text.as_str()));
 
-    let mut constraints = Vec::with_capacity(sections_with_content.len());
-    for (idx, (title, body)) in sections_with_content.iter().enumerate() {
-        if idx + 1 == sections_with_content.len() {
-            constraints.push(Constraint::Min(4));
-            continue;
-        }
+    let mut constraints = Vec::with_capacity(sections_with_content.len() + 1);
+    for (title, body) in &sections_with_content {
         let (min_lines, max_lines) = match *title {
-            "Session" => (4, 4),
             "Status" => (4, 6),
             "Work" => (2, 4),
             "Prompt" => (2, 4),
@@ -376,6 +366,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
             body, min_lines, max_lines,
         )));
     }
+    constraints.push(Constraint::Min(0));
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
@@ -402,7 +393,6 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
 
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
-        "Session" => theme.primary.to_color(),
         "Status" => theme.warning.to_color(),
         "Work" => theme.secondary.to_color(),
         "Prompt" => theme.secondary.to_color(),
@@ -452,6 +442,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
             "stopped" => theme.status_stopped.to_color(),
             _ => theme.text.to_color(),
         }
+    } else if label == "Error" || lower.contains("error") || lower.contains("failed") {
+        theme.danger.to_color()
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
@@ -474,6 +466,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
 
     let mut style = Style::default().fg(color);
     if label == "State"
+        || label == "Error"
         || lower.contains("waiting")
         || lower.contains("thinking")
         || lower.contains("running tool")
@@ -717,7 +710,6 @@ mod tests {
         let sidebar = SidebarData {
             title: " Claude Sidebar ",
             title_color: theme.session_icon_claude.to_color(),
-            session_text: "Project: proj\nFeature: feat".into(),
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             work_text: None,
             prompt_text: "Preview: Resume the task.".into(),
@@ -758,7 +750,6 @@ mod tests {
         let sidebar = SidebarData {
             title: " Opencode Sidebar ",
             title_color: theme.session_icon_opencode.to_color(),
-            session_text: "Project: proj\nTitle: Sidebar plan".into(),
             status_text: "Activity: Ready\nChanges: 2 files · +10 / -3".into(),
             work_text: Some("State: busy\nTool: edit".into()),
             prompt_text: "Preview: implement the sidebar".into(),
@@ -785,6 +776,7 @@ mod tests {
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
         assert!(rendered.contains("Opencode Sidebar"));
+        assert!(!rendered.contains("Session"));
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("Todos"));
         assert!(rendered.contains("Summary ready."));

@@ -67,11 +67,73 @@ function extractPrompt(payload) {
   )
 }
 
+function normalizeError(value) {
+  if (typeof value === "string") {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (value && typeof value === "object") {
+    return (
+      normalizeError(value.message) ||
+      normalizeError(value.error) ||
+      normalizeError(value.text) ||
+      normalizeError(value.content)
+    )
+  }
+  return null
+}
+
+function extractError(payload) {
+  return (
+    normalizeError(payload?.error) ||
+    normalizeError(payload?.result?.error) ||
+    normalizeError(payload?.result) ||
+    normalizeError(payload?.data?.error) ||
+    normalizeError(payload?.message)
+  )
+}
+
 function extractTodoCount(event) {
   if (typeof event?.count === "number") return event.count
   if (Array.isArray(event?.todos)) return event.todos.length
   if (Array.isArray(event?.items)) return event.items.length
   return null
+}
+
+function todoText(item) {
+  const text =
+    item?.content ||
+    item?.text ||
+    item?.title ||
+    item?.label ||
+    item?.task ||
+    item?.name ||
+    null
+  if (typeof text !== "string") return null
+  const trimmed = text.trim()
+  return trimmed.length > 0 ? trimmed : null
+}
+
+function todoIsClosed(item) {
+  if (item?.done === true || item?.completed === true) return true
+  const status = (item?.status || item?.state || "").toString().toLowerCase()
+  return ["done", "completed", "closed", "cancelled", "canceled"].includes(status)
+}
+
+function extractTodoPreview(event) {
+  const entries = Array.isArray(event?.todos)
+    ? event.todos
+    : Array.isArray(event?.items)
+      ? event.items
+      : []
+  if (entries.length === 0) return null
+
+  const openTodos = entries
+    .filter((item) => !todoIsClosed(item))
+    .map(todoText)
+    .filter(Boolean)
+
+  return openTodos.slice(0, 3)
 }
 
 function extractDiffSummary(event) {
@@ -110,7 +172,9 @@ function writeSidebarState(directory, sessionId) {
     last_tool: state.lastTool || null,
     latest_prompt: state.latestPrompt || null,
     todo_count: state.todoCount ?? null,
+    todo_preview: state.todoPreview || null,
     pending_permission: state.pendingPermission || null,
+    last_error: state.lastError || null,
     additions: state.diff?.additions ?? null,
     deletions: state.diff?.deletions ?? null,
     files: state.diff?.files ?? null,
@@ -147,8 +211,10 @@ export const SidebarStatePlugin = async ({ directory }) => {
     "todo.updated": async ({ event }) => {
       const sessionId = sessionIdFrom(event)
       const todoCount = extractTodoCount(event)
+      const todoPreview = extractTodoPreview(event)
       mutateState(directory, sessionId, (state) => {
-        state.todoCount = todoCount
+        state.todoCount = todoPreview ? todoPreview.length : todoCount
+        state.todoPreview = todoPreview
       })
     },
     "permission.asked": async ({ event }) => {
@@ -168,13 +234,16 @@ export const SidebarStatePlugin = async ({ directory }) => {
       mutateState(directory, sessionId, (state) => {
         state.lastTool =
           input?.tool || input?.toolName || input?.name || input?.tool_name || null
+        state.lastError = null
       })
     },
     "tool.execute.after": async (input) => {
       const sessionId = sessionIdFrom(input)
+      const lastError = extractError(input)
       mutateState(directory, sessionId, (state) => {
         state.lastTool =
           input?.tool || input?.toolName || input?.name || input?.tool_name || state.lastTool || null
+        state.lastError = lastError
       })
     },
     "message.updated": async ({ event }) => {

@@ -9,7 +9,9 @@ pub struct OpencodeSidebarData {
     pub status: Option<String>,
     pub last_tool: Option<String>,
     pub todo_count: Option<u64>,
+    pub todo_preview: Vec<String>,
     pub pending_permission: Option<String>,
+    pub last_error: Option<String>,
     pub reasoning_tokens: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
@@ -61,7 +63,9 @@ fn read_sidebar_data_from_roots(
         status: None,
         last_tool: None,
         todo_count: None,
+        todo_preview: Vec::new(),
         pending_permission: None,
+        last_error: None,
         additions: session.summary.as_ref().map(|summary| summary.additions),
         deletions: session.summary.as_ref().map(|summary| summary.deletions),
         files: session.summary.as_ref().map(|summary| summary.files),
@@ -88,8 +92,14 @@ fn read_sidebar_data_from_roots(
         if sidecar.todo_count.is_some() {
             merged.todo_count = sidecar.todo_count;
         }
+        if !sidecar.todo_preview.is_empty() {
+            merged.todo_preview = sidecar.todo_preview;
+        }
         if sidecar.pending_permission.is_some() {
             merged.pending_permission = sidecar.pending_permission;
+        }
+        if sidecar.last_error.is_some() {
+            merged.last_error = sidecar.last_error;
         }
         if sidecar.additions.is_some() {
             merged.additions = sidecar.additions;
@@ -305,7 +315,9 @@ fn parse_sidecar_file(path: &Path) -> Option<(i64, OpencodeSidebarData)> {
             status: sidecar.status,
             last_tool: sidecar.last_tool,
             todo_count: sidecar.todo_count,
+            todo_preview: sidecar.todo_preview,
             pending_permission: sidecar.pending_permission,
+            last_error: sidecar.last_error,
             reasoning_tokens: None,
             additions: sidecar.additions,
             deletions: sidecar.deletions,
@@ -394,7 +406,11 @@ struct OpencodeSidebarSidecar {
     #[serde(default)]
     todo_count: Option<u64>,
     #[serde(default)]
+    todo_preview: Vec<String>,
+    #[serde(default)]
     pending_permission: Option<String>,
+    #[serde(default)]
+    last_error: Option<String>,
     #[serde(default)]
     additions: Option<u64>,
     #[serde(default)]
@@ -590,7 +606,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             sidecar.join("ses-1.json"),
-            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"last_error\":\"patch failed\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
         )
         .unwrap();
 
@@ -601,8 +617,33 @@ mod tests {
         assert_eq!(data.status.as_deref(), Some("busy"));
         assert_eq!(data.last_tool.as_deref(), Some("edit"));
         assert_eq!(data.todo_count, Some(3));
+        assert!(data.todo_preview.is_empty());
         assert_eq!(data.pending_permission.as_deref(), Some("edit"));
+        assert_eq!(data.last_error.as_deref(), Some("patch failed"));
         assert_eq!(data.additions, Some(8));
         assert_eq!(data.files, Some(5));
+    }
+
+    #[test]
+    fn parses_todo_preview_from_sidecar() {
+        let temp = TempDir::new().unwrap();
+        let sidecar = temp.path().join("sidecar");
+        std::fs::create_dir_all(&sidecar).unwrap();
+        std::fs::write(
+            sidecar.join("ses-1.json"),
+            "{\"session_id\":\"ses-1\",\"todo_count\":3,\"todo_preview\":[\"finish parser\",\"wire UI\",\"add tests\"],\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+        )
+        .unwrap();
+
+        let data = read_sidecar(&sidecar, Some("ses-1")).unwrap();
+        assert_eq!(data.todo_count, Some(3));
+        assert_eq!(
+            data.todo_preview,
+            vec![
+                "finish parser".to_string(),
+                "wire UI".to_string(),
+                "add tests".to_string()
+            ]
+        );
     }
 }

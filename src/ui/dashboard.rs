@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::{Feature, FeatureSession, SessionKind};
+use crate::project::SessionKind;
 
 fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::pane::SidebarData> {
     if !view.has_sidebar() {
@@ -32,12 +32,6 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
                 .find(|session| session.kind == view.session_kind)
         });
 
-    let feature_label = feature.nickname.as_deref().unwrap_or(&feature.name);
-    let mode_label = if view.review {
-        "Review".to_string()
-    } else {
-        view.vibe_mode.display_name().to_string()
-    };
     let waiting_count = app
         .pending_inputs
         .iter()
@@ -69,7 +63,6 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage)
         .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let session_line = session_sidebar_line(session);
     let prompt_text = match view.session_kind {
         SessionKind::Opencode => opencode_sidebar
             .and_then(|sidebar| sidebar.latest_prompt.as_deref())
@@ -95,14 +88,6 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
     Some(super::pane::SidebarData {
         title: sidebar_title(&view.session_kind),
         title_color: sidebar_title_color(&view.session_kind, &app.theme),
-        session_text: session_text(
-            project.name.as_str(),
-            feature,
-            feature_label,
-            session_line.as_str(),
-            mode_label.as_str(),
-            opencode_sidebar,
-        ),
         status_text: status_text(
             activity_line.as_str(),
             usage_line.as_str(),
@@ -113,38 +98,6 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         todos_text: todos_text(opencode_sidebar),
         summary_text,
     })
-}
-
-fn session_sidebar_line(session: Option<&FeatureSession>) -> String {
-    session
-        .map(|session| session.label.clone())
-        .unwrap_or_else(|| "Session".to_string())
-}
-
-fn session_text(
-    project_name: &str,
-    feature: &Feature,
-    feature_label: &str,
-    session_line: &str,
-    mode_label: &str,
-    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
-) -> String {
-    let mut lines = vec![
-        format!("Target: {project_name}/{feature_label}"),
-        format!("Session: {session_line}"),
-    ];
-    if let Some(title) = opencode_sidebar
-        .and_then(|sidebar| sidebar.title.as_deref())
-        .filter(|title| !title.is_empty())
-    {
-        lines.push(format!("Title: {}", compact_sidebar_text(title, 80)));
-    }
-    lines.push(format!("Mode: {mode_label}"));
-    if feature.plan_mode {
-        lines.push("Plan mode: on".to_string());
-    }
-    lines.push(format!("Branch: {}", feature.branch));
-    lines.join("\n")
 }
 
 fn status_text(
@@ -190,6 +143,12 @@ fn work_text(
     {
         lines.push(format!("Permission: {permission}"));
     }
+    if let Some(error) = opencode_sidebar
+        .and_then(|sidebar| sidebar.last_error.as_deref())
+        .filter(|error| !error.is_empty())
+    {
+        lines.push(format!("Error: {}", compact_sidebar_text(error, 72)));
+    }
     if lines.is_empty() {
         None
     } else {
@@ -200,14 +159,26 @@ fn work_text(
 fn todos_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> Option<String> {
-    opencode_sidebar
-        .and_then(|sidebar| sidebar.todo_count)
-        .map(|todo_count| {
-            format!(
-                "Open: {todo_count} item{}",
-                if todo_count == 1 { "" } else { "s" }
-            )
-        })
+    let sidebar = opencode_sidebar?;
+    let todo_count = sidebar
+        .todo_count
+        .unwrap_or_else(|| sidebar.todo_preview.len() as u64);
+    if todo_count == 0 && sidebar.todo_preview.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![format!(
+        "Open: {todo_count} item{}",
+        if todo_count == 1 { "" } else { "s" }
+    )];
+    lines.extend(
+        sidebar
+            .todo_preview
+            .iter()
+            .take(3)
+            .map(|todo| format!("- {}", compact_sidebar_text(todo, 72))),
+    );
+    Some(lines.join("\n"))
 }
 
 fn sidebar_title(session_kind: &SessionKind) -> &'static str {
@@ -715,7 +686,9 @@ mod tests {
                 status: None,
                 last_tool: None,
                 todo_count: None,
+                todo_preview: Vec::new(),
                 pending_permission: None,
+                last_error: None,
                 reasoning_tokens: Some(4200),
                 additions: Some(10),
                 deletions: Some(3),
@@ -738,7 +711,9 @@ mod tests {
             status: Some("busy".into()),
             last_tool: Some("edit".into()),
             todo_count: Some(3),
+            todo_preview: Vec::new(),
             pending_permission: Some("edit".into()),
+            last_error: Some("patch failed".into()),
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -747,7 +722,7 @@ mod tests {
 
         assert_eq!(
             work.as_deref(),
-            Some("State: busy\nTool: edit\nPermission: edit")
+            Some("State: busy\nTool: edit\nPermission: edit\nError: patch failed")
         );
     }
 
@@ -760,13 +735,18 @@ mod tests {
             status: None,
             last_tool: None,
             todo_count: Some(3),
+            todo_preview: vec!["finish parser".into(), "wire UI".into()],
             pending_permission: None,
+            last_error: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
             files: None,
         }));
 
-        assert_eq!(todos.as_deref(), Some("Open: 3 items"));
+        assert_eq!(
+            todos.as_deref(),
+            Some("Open: 3 items\n- finish parser\n- wire UI")
+        );
     }
 }

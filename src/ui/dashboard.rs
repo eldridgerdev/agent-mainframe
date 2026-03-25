@@ -174,7 +174,7 @@ fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&st
     let prompt = select_sidebar_prompt(session_prompt, fallback_prompt);
     prompt
         .map(|prompt| format!("Preview: {}", compact_sidebar_text(&prompt, 120)))
-        .unwrap_or_else(|| "No recent prompt.\nUse leader+l to open prompt history.".to_string())
+        .unwrap_or_default()
 }
 
 fn select_sidebar_prompt(
@@ -747,6 +747,11 @@ mod tests {
         let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
         assert!(prompt.contains("fallback prompt"));
+    }
+
+    #[test]
+    fn sidebar_prompt_text_is_empty_when_no_prompt_is_available() {
+        assert_eq!(sidebar_prompt_text(None, None), "");
     }
 
     #[test]

@@ -368,13 +368,15 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Status", data.status_text.as_str()));
     }
 
-    constraints.push(Constraint::Length(sidebar_section_height(
-        &data.prompt_text,
-        inner.width,
-        2,
-        4,
-    )));
-    sections_with_content.push(("Prompt", data.prompt_text.as_str()));
+    if !data.prompt_text.trim().is_empty() {
+        constraints.push(Constraint::Length(sidebar_section_height(
+            &data.prompt_text,
+            inner.width,
+            2,
+            4,
+        )));
+        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
+    }
     if let Some(plan_text) = data.plan_text.as_deref() {
         constraints.push(Constraint::Length(sidebar_section_height(
             plan_text,
@@ -998,6 +1000,44 @@ mod tests {
 
         assert!(!rendered.contains("Summary"));
         assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("Work"));
+    }
+
+    #[test]
+    fn codex_sidebar_skips_empty_prompt_section() {
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Input: 1.2K tokens".into(),
+            prompt_text: String::new(),
+            plan_text: None,
+            work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Prompt"));
+        assert!(rendered.contains("Status"));
         assert!(rendered.contains("Work"));
     }
 }

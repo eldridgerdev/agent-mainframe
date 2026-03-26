@@ -1,9 +1,7 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, AppMode, Selection};
-use crate::project::SessionKind;
-use crate::tmux::TmuxManager;
+use crate::app::{App, AppMode, CommandSection, Selection};
 
 fn markdown_file_matches_plan_filter(
     state: &crate::app::MarkdownFilePickerState,
@@ -39,6 +37,35 @@ fn clamp_markdown_picker_selection(state: &mut crate::app::MarkdownFilePickerSta
     }
 }
 
+fn jump_to_next_local_command(state: &mut crate::app::CommandPickerState) {
+    let mut section_starts = Vec::new();
+    let mut last_section = None;
+
+    for (idx, entry) in state.commands.iter().enumerate() {
+        if entry.section.is_local() && last_section != Some(entry.section) {
+            section_starts.push((entry.section, idx));
+        }
+        last_section = Some(entry.section);
+    }
+
+    if section_starts.is_empty() {
+        return;
+    }
+
+    let current_section = state.commands.get(state.selected).map(|entry| entry.section);
+    let next_idx = if current_section.is_some_and(CommandSection::is_local) {
+        let current_pos = section_starts
+            .iter()
+            .position(|(section, _)| Some(*section) == current_section)
+            .unwrap_or(0);
+        section_starts[(current_pos + 1) % section_starts.len()].1
+    } else {
+        section_starts[0].1
+    };
+
+    state.selected = next_idx;
+}
+
 pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -69,45 +96,27 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
         }
+        KeyCode::Char('D') => {
+            if let AppMode::CommandPicker(ref mut state) = app.mode {
+                jump_to_next_local_command(state);
+            }
+        }
         KeyCode::Enter => {
             let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::CommandPicker(state) = old_mode {
-                let selected_name = state.commands.get(state.selected).map(|c| c.name.clone());
+                let selected = state.commands.get(state.selected).cloned();
+                let from_view = state.from_view.clone();
 
-                if let Some(name) = selected_name {
-                    let command_text = format!("/{}", name);
-
-                    let tmux_info = if let Some(ref view) = state.from_view {
-                        Some((view.session.clone(), view.window.clone()))
-                    } else if let Some((_, feature)) = app.selected_feature() {
-                        let window = feature
-                            .sessions
-                            .iter()
-                            .find(|s| {
-                                matches!(
-                                    s.kind,
-                                    SessionKind::Claude
-                                        | SessionKind::Opencode
-                                        | SessionKind::Codex
-                                )
-                            })
-                            .map(|s| s.tmux_window.clone())
-                            .unwrap_or_else(|| "terminal".into());
-                        Some((feature.tmux_session.clone(), window))
-                    } else {
-                        None
-                    };
-
-                    if let Some((session, window)) = &tmux_info {
-                        let _ = TmuxManager::send_literal(session, window, &command_text);
-                        let _ = TmuxManager::send_key_name(session, window, "Enter");
-                        app.message = Some(format!("Sent '{}'", command_text));
-                    } else {
-                        app.message = Some("No active session to send to".into());
+                if let Some(entry) = selected {
+                    let outcome = app.execute_command_entry(&entry, from_view.clone())?;
+                    if matches!(
+                        outcome,
+                        crate::app::commands::CommandExecutionOutcome::ReturnToOrigin
+                    ) && let Some(view) = from_view
+                    {
+                        app.mode = AppMode::Viewing(view);
                     }
-                }
-
-                if let Some(view) = state.from_view {
+                } else if let Some(view) = from_view {
                     app.mode = AppMode::Viewing(view);
                 }
             }
@@ -223,20 +232,20 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
             if let AppMode::MarkdownFilePicker(mut state) = old_mode {
                 clamp_markdown_picker_selection(&mut state);
                 let path = state.files.get(state.selected).cloned();
-                if let (Some(path), Some(view)) = (path, state.from_view.clone()) {
+                if let Some(path) = path {
                     let return_to_picker = Some(crate::app::MarkdownFilePickerState {
                         files: state.files,
                         selected: state.selected,
                         plan_only: state.plan_only,
                         workdir: state.workdir.clone(),
                         repo_root: state.repo_root.clone(),
-                        from_view: Some(view.clone()),
+                        from_view: state.from_view.clone(),
                     });
                     return app.open_markdown_viewer_path(
                         path,
                         state.workdir,
                         state.repo_root,
-                        view,
+                        state.from_view,
                         return_to_picker,
                     );
                 }
@@ -251,7 +260,10 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{MarkdownFilePickerState, ViewState};
+    use crate::app::{
+        CommandAction, CommandEntry, CommandPickerState, CommandSection, LocalCommand,
+        MarkdownFilePickerState, ViewState,
+    };
     use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::collections::HashMap;
@@ -337,6 +349,59 @@ mod tests {
         match &app.mode {
             AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
             _ => panic!("expected markdown picker to stay open"),
+        }
+    }
+
+    #[test]
+    fn command_picker_d_jumps_and_cycles_local_sections() {
+        let mut app = picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![
+                CommandEntry {
+                    id: "project:deploy".into(),
+                    title: "deploy".into(),
+                    description: None,
+                    section: CommandSection::Project,
+                    action: CommandAction::SlashCommand {
+                        name: "deploy".into(),
+                    },
+                    path: Some(PathBuf::from("/tmp/demo/.claude/commands/deploy.md")),
+                },
+                CommandEntry {
+                    id: "local:open-debug".into(),
+                    title: "Open Debug Log".into(),
+                    description: None,
+                    section: CommandSection::AmfDebug,
+                    action: CommandAction::Local {
+                        command: LocalCommand::OpenDebugLog,
+                    },
+                    path: None,
+                },
+                CommandEntry {
+                    id: "local:generate-summary".into(),
+                    title: "Generate Summary".into(),
+                    description: None,
+                    section: CommandSection::AmfDev,
+                    action: CommandAction::Local {
+                        command: LocalCommand::GenerateSummary,
+                    },
+                    path: None,
+                },
+            ],
+            selected: 0,
+            from_view: Some(picker_view()),
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Char('D')).unwrap();
+        match &app.mode {
+            AppMode::CommandPicker(state) => assert_eq!(state.selected, 1),
+            _ => panic!("expected command picker to stay open"),
+        }
+
+        handle_command_picker_key(&mut app, KeyCode::Char('D')).unwrap();
+        match &app.mode {
+            AppMode::CommandPicker(state) => assert_eq!(state.selected, 2),
+            _ => panic!("expected command picker to stay open"),
         }
     }
 }

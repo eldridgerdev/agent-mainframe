@@ -294,6 +294,7 @@ All keys are forwarded to the tmux session except:
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
+| `a` | Command palette focused on AMF local actions |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
 | `x` | Stop session and exit view |
@@ -304,6 +305,22 @@ All keys are forwarded to the tmux session except:
 | `H` / `M` | Bookmark / unbookmark current session |
 | `1`-`9` | Jump to bookmark slot |
 | `?` | Show help |
+
+### Command Palette
+
+The leader command palette (`Ctrl+Space` then `/`) now mixes two kinds of entries:
+
+- slash commands discovered from global or project `.claude/commands`
+- AMF-owned local actions such as debug/dev/test helpers
+
+Inside the palette:
+
+- `Enter` executes the selected entry
+- `D` jumps between the AMF local sections
+- local actions are rendered with an `amf` badge instead of a `/` prefix
+
+Use `Ctrl+Space` then `a` to open the palette already focused on AMF local actions.
+From the debug log overlay, press `/` to jump straight into that local-actions view.
 
 ## How It Works
 

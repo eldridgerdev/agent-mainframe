@@ -228,8 +228,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc/q/?", key_style()),
             Span::raw(" close help"),
         ]),
-        AppMode::CommandPicker(_)
-        | AppMode::NotificationPicker(_, _)
+        AppMode::CommandPicker(_) => Line::from(vec![
+            Span::styled("j/k or \u{2191}/\u{2193}", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("D", key_style()),
+            Span::raw(" local  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" execute  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::NotificationPicker(_, _)
         | AppMode::SessionSwitcher(_)
         | AppMode::Searching(_)
         | AppMode::OpencodeSessionPicker(_)
@@ -450,6 +459,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" scroll  "),
             Span::styled("c", key_style()),
             Span::raw(" clear  "),
+            Span::styled("/", key_style()),
+            Span::raw(" actions  "),
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),

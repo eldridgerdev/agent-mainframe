@@ -104,7 +104,7 @@ pub fn draw_debug_log(
 
     let hint = Line::from(vec![
         Span::styled(
-            "j/k:scroll  c:clear  Esc:close  ",
+            "j/k:scroll  c:clear  /:actions  Esc:close  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(

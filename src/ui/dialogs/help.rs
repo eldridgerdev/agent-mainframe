@@ -113,7 +113,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q s t T w h / n p i b l v m r x f d D ? H M 1-9)",
+            "Leader key (then: q s t T w h / a n p i b l v m r x f d D ? H M 1-9)",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));
@@ -250,7 +250,20 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Custom commands picker",
+            "Command picker (slash + AMF actions)",
+            Style::default().fg(theme.text.to_color()),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "a"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "AMF local actions picker",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));

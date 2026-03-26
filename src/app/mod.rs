@@ -55,10 +55,66 @@ pub use self::setup::load_config;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommandSection {
+    AmfDebug,
+    AmfDev,
+    Project,
+    Global,
+}
+
+impl CommandSection {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::AmfDebug => "AMF Debug",
+            Self::AmfDev => "AMF Dev",
+            Self::Project => "Project Commands",
+            Self::Global => "Global Commands",
+        }
+    }
+
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::AmfDebug | Self::AmfDev)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommand {
+    OpenDebugLog,
+    ClearDebugLog,
+    RefreshNotifications,
+    InjectTestInputRequest,
+    GenerateSummary,
+    OpenPlanMarkdown,
+    OpenLatestPrompt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandAction {
+    SlashCommand { name: String },
+    Local { command: LocalCommand },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandPickerFocus {
+    Default,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandEntry {
-    pub name: String,
-    pub source: String,
-    pub path: PathBuf,
+    pub id: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub section: CommandSection,
+    pub action: CommandAction,
+    pub path: Option<PathBuf>,
+}
+
+impl CommandEntry {
+    pub fn is_local(&self) -> bool {
+        matches!(self.action, CommandAction::Local { .. })
+    }
 }
 
 pub struct CommandPickerState {
@@ -207,7 +263,9 @@ pub struct App {
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
     pub pending_inputs: Vec<PendingInput>,
-    pub latest_prompt_cache: HashMap<String, String>,
+    pub latest_prompt_cache: HashMap<String, crate::app::util::PromptEntry>,
+    pub active_tool_cache: HashMap<String, String>,
+    pub task_state_cache: HashMap<String, crate::app::util::ClaudeTaskState>,
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
@@ -235,7 +293,7 @@ pub struct App {
 
 struct SidebarLoadResult {
     tmux_session: String,
-    latest_prompt: Option<String>,
+    latest_prompt: Option<crate::app::util::PromptEntry>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
 }
 
@@ -245,6 +303,8 @@ impl App {
         crate::project::migrate_from_old_path();
         let store = ProjectStore::load(&store_path)?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
+        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let task_state_cache = Self::build_task_state_cache(&store);
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -278,7 +338,9 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
-            latest_prompt_cache: HashMap::new(),
+            latest_prompt_cache,
+            active_tool_cache: HashMap::new(),
+            task_state_cache,
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
@@ -333,6 +395,8 @@ impl App {
     ) -> Self {
         use crate::extension::ExtensionConfig;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
+        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        let task_state_cache = Self::build_task_state_cache(&store);
         Self {
             store,
             store_path: PathBuf::new(),
@@ -353,7 +417,9 @@ impl App {
             leader_active: false,
             leader_activated_at: None,
             pending_inputs: Vec::new(),
-            latest_prompt_cache: HashMap::new(),
+            latest_prompt_cache,
+            active_tool_cache: HashMap::new(),
+            task_state_cache,
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
@@ -378,6 +444,52 @@ impl App {
             last_file_notification_count: 0,
             vscode_available: false,
         }
+    }
+
+    fn build_latest_prompt_cache(
+        store: &ProjectStore,
+    ) -> HashMap<String, crate::app::util::PromptEntry> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                let prompt = if feature.agent == AgentKind::Opencode {
+                    latest_prompt_entry_for_feature(feature)
+                } else {
+                    crate::app::util::read_latest_prompt_entry(&feature.workdir)
+                };
+                if let Some(mut prompt) = prompt {
+                    prompt.text = prompt.text.trim().to_string();
+                    if !prompt.text.is_empty() {
+                        cache.insert(feature.tmux_session.clone(), prompt);
+                    }
+                }
+            }
+        }
+
+        cache
+    }
+
+    fn build_task_state_cache(
+        store: &ProjectStore,
+    ) -> HashMap<String, crate::app::util::ClaudeTaskState> {
+        let mut cache = HashMap::new();
+
+        for project in &store.projects {
+            for feature in &project.features {
+                let session_id = feature
+                    .sessions
+                    .iter()
+                    .find_map(|session| session.claude_session_id.as_deref());
+                if let Some(task_state) =
+                    crate::app::util::read_claude_task_state(&feature.workdir, session_id)
+                {
+                    cache.insert(feature.tmux_session.clone(), task_state);
+                }
+            }
+        }
+
+        cache
     }
 
     pub(crate) fn schedule_sidebar_load_for_feature(&mut self, pi: usize, fi: usize) {
@@ -420,20 +532,20 @@ impl App {
         while let Ok(result) = self.sidebar_load_rx.try_recv() {
             self.pending_sidebar_loads.remove(&result.tmux_session);
 
-            if let Some(prompt) = result
-                .latest_prompt
-                .map(|prompt| prompt.trim().to_string())
-                .filter(|prompt| !prompt.is_empty())
-            {
-                self.latest_prompt_cache
-                    .insert(result.tmux_session.clone(), prompt);
+            if let Some(mut prompt) = result.latest_prompt {
+                prompt.text = prompt.text.trim().to_string();
+                if prompt.text.is_empty() {
+                    self.latest_prompt_cache.remove(&result.tmux_session);
+                } else {
+                    self.latest_prompt_cache
+                        .insert(result.tmux_session.clone(), prompt);
+                }
             } else {
                 self.latest_prompt_cache.remove(&result.tmux_session);
             }
 
             if let Some(data) = result.opencode_sidebar {
-                self.opencode_sidebar_cache
-                    .insert(result.tmux_session, data);
+                self.opencode_sidebar_cache.insert(result.tmux_session, data);
             } else {
                 self.opencode_sidebar_cache.remove(&result.tmux_session);
             }
@@ -443,13 +555,79 @@ impl App {
     pub(crate) fn clear_sidebar_state_for_session(&mut self, tmux_session: &str) {
         self.pending_sidebar_loads.remove(tmux_session);
         self.latest_prompt_cache.remove(tmux_session);
+        self.active_tool_cache.remove(tmux_session);
+        self.task_state_cache.remove(tmux_session);
         self.opencode_sidebar_cache.remove(tmux_session);
     }
 
-    pub fn latest_prompt_for_session(&self, tmux_session: &str) -> Option<&str> {
-        self.latest_prompt_cache
-            .get(tmux_session)
-            .map(String::as_str)
+    pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return;
+        };
+
+        let prompt = if feature.agent == AgentKind::Opencode {
+            latest_prompt_entry_for_feature(feature)
+        } else {
+            crate::app::util::read_latest_prompt_entry(&feature.workdir)
+        };
+        if let Some(mut prompt) = prompt {
+            prompt.text = prompt.text.trim().to_string();
+            if prompt.text.is_empty() {
+                self.latest_prompt_cache.remove(&feature.tmux_session);
+            } else {
+                self.latest_prompt_cache
+                    .insert(feature.tmux_session.clone(), prompt);
+            }
+        } else {
+            self.latest_prompt_cache.remove(&feature.tmux_session);
+        }
+    }
+
+    pub(crate) fn refresh_task_state_for_feature(&mut self, pi: usize, fi: usize) {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return;
+        };
+
+        let session_id = feature
+            .sessions
+            .iter()
+            .find_map(|session| session.claude_session_id.as_deref());
+        if let Some(task_state) =
+            crate::app::util::read_claude_task_state(&feature.workdir, session_id)
+        {
+            self.task_state_cache
+                .insert(feature.tmux_session.clone(), task_state);
+        } else {
+            self.task_state_cache.remove(&feature.tmux_session);
+        }
+    }
+
+    pub fn latest_prompt_for_session(
+        &self,
+        tmux_session: &str,
+    ) -> Option<&crate::app::util::PromptEntry> {
+        self.latest_prompt_cache.get(tmux_session)
+    }
+
+    pub fn active_tool_for_session(&self, tmux_session: &str) -> Option<&str> {
+        self.active_tool_cache.get(tmux_session).map(String::as_str)
+    }
+
+    pub fn task_state_for_session(
+        &self,
+        tmux_session: &str,
+    ) -> Option<&crate::app::util::ClaudeTaskState> {
+        self.task_state_cache.get(tmux_session)
     }
 
     pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {
@@ -677,7 +855,7 @@ impl App {
     }
 }
 
-fn latest_prompt_for_feature(feature: &Feature) -> Option<String> {
+fn latest_prompt_entry_for_feature(feature: &Feature) -> Option<crate::app::util::PromptEntry> {
     let preferred_session_kind = match feature.agent {
         AgentKind::Claude => Some(SessionKind::Claude),
         AgentKind::Opencode => Some(SessionKind::Opencode),
@@ -696,11 +874,13 @@ fn latest_prompt_for_feature(feature: &Feature) -> Option<String> {
         None
     };
 
-    crate::app::util::read_latest_prompt_for_session(
+    crate::app::util::read_all_prompts_for_session(
         &feature.workdir,
         preferred_session_kind.as_ref(),
         preferred_opencode_session_id,
     )
+    .into_iter()
+    .next()
 }
 
 struct SidebarLoadRequest {
@@ -740,11 +920,13 @@ impl SidebarLoadRequest {
     }
 
     fn load(self) -> SidebarLoadResult {
-        let latest_prompt = crate::app::util::read_latest_prompt_for_session(
+        let latest_prompt = crate::app::util::read_all_prompts_for_session(
             &self.workdir,
             self.preferred_session_kind.as_ref(),
             self.preferred_opencode_session_id.as_deref(),
-        );
+        )
+        .into_iter()
+        .next();
         let opencode_sidebar = if self.preferred_session_kind == Some(SessionKind::Opencode) {
             opencode_storage::read_sidebar_data(
                 &self.workdir,

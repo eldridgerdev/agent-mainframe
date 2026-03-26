@@ -5,6 +5,38 @@ use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 
 impl App {
+    fn feature_workdir_for_view(&self, view: &ViewState) -> Option<PathBuf> {
+        self.store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone())
+    }
+
+    fn feature_markdown_context(
+        &self,
+        from_view: Option<&ViewState>,
+    ) -> Option<(PathBuf, Option<PathBuf>)> {
+        let workdir = if let Some(view) = from_view {
+            self.feature_workdir_for_view(view)?
+        } else {
+            self.selected_feature().map(|(_, feature)| feature.workdir.clone())?
+        };
+
+        let repo_root = WorktreeManager::is_worktree(&workdir)
+            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
+            .flatten()
+            .filter(|root| root != &workdir);
+
+        Some((workdir, repo_root))
+    }
+
     pub fn enter_view(&mut self) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
@@ -60,6 +92,8 @@ impl App {
         let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
+        self.refresh_latest_prompt_for_feature(pi, fi);
+        self.refresh_task_state_for_feature(pi, fi);
         self.schedule_sidebar_load_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
@@ -126,6 +160,10 @@ impl App {
             }
         };
 
+        self.open_latest_prompt_for_view(view);
+    }
+
+    pub fn open_latest_prompt_for_view(&mut self, view: ViewState) {
         let feature_data = self
             .store
             .projects
@@ -174,6 +212,31 @@ impl App {
             view,
         });
         self.message = None;
+    }
+
+    pub fn toggle_expanded_todos_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.todos_expanded = !view.todos_expanded;
+            self.message = Some(if view.todos_expanded {
+                "Expanded todos".into()
+            } else {
+                "Collapsed todos".into()
+            });
+        }
+    }
+
+    pub fn toggle_sidebar_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.sidebar_visible = !view.sidebar_visible;
+            if !view.sidebar_visible {
+                view.todos_expanded = false;
+            }
+            self.message = Some(if view.sidebar_visible {
+                "Showed sidebar".into()
+            } else {
+                "Hid sidebar".into()
+            });
+        }
     }
 
     pub fn inject_latest_prompt(&mut self) -> Result<()> {
@@ -254,29 +317,11 @@ impl App {
             }
         };
 
-        let workdir = self
-            .store
-            .projects
-            .iter()
-            .find(|project| project.name == view.project_name)
-            .and_then(|project| {
-                project
-                    .features
-                    .iter()
-                    .find(|feature| feature.name == view.feature_name)
-            })
-            .map(|feature| feature.workdir.clone());
-
-        let Some(workdir) = workdir else {
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return Ok(());
         };
-
-        let repo_root = WorktreeManager::is_worktree(&workdir)
-            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
-            .flatten()
-            .filter(|root| root != &workdir);
 
         let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
         if files.is_empty() {
@@ -293,7 +338,7 @@ impl App {
                 files[0].clone(),
                 workdir,
                 repo_root,
-                view,
+                Some(view),
                 None,
             );
         }
@@ -310,18 +355,64 @@ impl App {
         Ok(())
     }
 
+    pub fn open_markdown_viewer_for_command(
+        &mut self,
+        from_view: Option<ViewState>,
+        plan_only: bool,
+    ) -> Result<()> {
+        let (workdir, repo_root) = match self.feature_markdown_context(from_view.as_ref()) {
+            Some(context) => context,
+            None => {
+                self.message = Some("No feature selected".into());
+                return Ok(());
+            }
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return Ok(());
+        }
+
+        if files.len() == 1 {
+            return self.open_markdown_viewer_path(
+                files[0].clone(),
+                workdir,
+                repo_root,
+                from_view,
+                None,
+            );
+        }
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected: 0,
+            plan_only,
+            workdir,
+            repo_root,
+            from_view,
+        });
+        self.message = None;
+        Ok(())
+    }
+
     pub fn open_markdown_viewer_path(
         &mut self,
         path: PathBuf,
         workdir: PathBuf,
         repo_root: Option<PathBuf>,
-        view: ViewState,
+        view: Option<ViewState>,
         return_to_picker: Option<crate::app::MarkdownFilePickerState>,
     ) -> Result<()> {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                self.mode = AppMode::Viewing(view);
+                if let Some(view) = view {
+                    self.mode = AppMode::Viewing(view);
+                }
                 self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
                 return Ok(());
             }
@@ -337,7 +428,7 @@ impl App {
             rendered_width: 0,
             rendered_lines: Vec::new(),
             return_to_picker,
-            from_view: Some(view),
+            from_view: view,
         });
         self.message = None;
         Ok(())

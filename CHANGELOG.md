@@ -10,7 +10,38 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- `amf upgrade` now resolves the actual release asset from GitHub's
+  release metadata instead of hardcoding a guessed download URL, so
+  future packaging changes do not regress into `404` download failures.
+- macOS `x86_64` upgrade detection now only selects the Apple Silicon
+  bundle when AMF is running under Rosetta on Apple Silicon. Native
+  Intel Macs now get a clear unsupported-platform error instead of a
+  misleading architecture mapping.
+
+## [v0.12.0] - 2026-03-24
+
+### Added
+
+- Claude session sidebar — a new panel in view mode showing live session
+  metadata: current tool activity, pending input detail, active prompt
+  context, task todos (expanded inline), and plan progress. Toggle
+  visibility with a keybind. Task data is sourced from the Claude task
+  store when available, with transcript fallback.
+- Latest prompt dialog now shows a scrollable list of all Claude session
+  prompts with timestamps. Navigate with `j`/`k`, copy the selected
+  prompt to clipboard with `y` (uses `wl-copy` with `xclip` fallback).
+  Each entry shows a colored timestamp and the first line of the prompt,
+  truncated with an ellipsis when needed.
+
+### Changed
+
+- Markdown viewer and picker UX improvements.
+
+### Migration
+
+- No store migration is required.
 
 ## [v0.11.1] - 2026-03-19
 

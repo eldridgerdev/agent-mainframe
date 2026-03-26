@@ -23,6 +23,13 @@ impl App {
         }
     }
 
+    fn delete_failure_is_recoverable(stage: DeleteStage, output: &str) -> bool {
+        matches!(stage, DeleteStage::RemovingWorktree)
+            && output
+                .lines()
+                .any(|line| line.contains("not a working tree"))
+    }
+
     fn background_command_error(stage: DeleteStage, code: Option<i32>, output: &str) -> String {
         let fallback = match stage {
             DeleteStage::KillingTmux => "tmux kill-session failed",
@@ -916,7 +923,9 @@ impl App {
             let stage = state.stage;
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    if !status.success() {
+                    if !status.success()
+                        && !Self::delete_failure_is_recoverable(stage, &state.output)
+                    {
                         state.error = Some(Self::background_command_error(
                             stage,
                             status.code(),
@@ -1041,7 +1050,9 @@ impl App {
                 let stage = deletion.stage;
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        if !status.success() {
+                        if !status.success()
+                            && !Self::delete_failure_is_recoverable(stage, &deletion.output)
+                        {
                             deletion.error = Some(Self::background_command_error(
                                 stage,
                                 status.code(),
@@ -1407,5 +1418,34 @@ impl App {
         self.message = Some(response.message);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconciles_missing_worktree_remove_failure() {
+        assert!(App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: '/tmp/missing-worktree' is not a working tree",
+        ));
+    }
+
+    #[test]
+    fn preserves_real_worktree_remove_failures() {
+        assert!(!App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: '/tmp/worktree' contains modified or untracked files, use --force to delete it",
+        ));
+    }
+
+    #[test]
+    fn does_not_reconcile_non_worktree_delete_failures() {
+        assert!(!App::delete_failure_is_recoverable(
+            DeleteStage::KillingTmux,
+            "can't find session",
+        ));
     }
 }

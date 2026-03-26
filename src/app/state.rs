@@ -81,6 +81,8 @@ pub struct ViewState {
     pub scroll_total_lines: usize,
     pub scroll_passthrough: bool,
     pub selection: TextSelection,
+    pub sidebar_visible: bool,
+    pub todos_expanded: bool,
 }
 
 impl ViewState {
@@ -109,14 +111,21 @@ impl ViewState {
             scroll_total_lines: 0,
             scroll_passthrough: false,
             selection: TextSelection::default(),
+            sidebar_visible: true,
+            todos_expanded: false,
         }
     }
 
     pub fn has_sidebar(&self) -> bool {
-        matches!(
-            self.session_kind,
-            SessionKind::Claude | SessionKind::Opencode
-        )
+        match self.session_kind {
+            SessionKind::Claude => self.sidebar_visible,
+            SessionKind::Opencode => self.sidebar_visible,
+            _ => false,
+        }
+    }
+
+    pub fn has_claude_sidebar(&self) -> bool {
+        self.session_kind == SessionKind::Claude && self.sidebar_visible
     }
 }
 

@@ -31,7 +31,8 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
 ];
 
 const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
-const CLAUDE_SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
+const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
+const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentSidebarData {
@@ -39,6 +40,7 @@ pub(crate) struct AgentSidebarData {
     pub status_text: String,
     pub prompt_text: String,
     pub work_text: Option<String>,
+    pub todos_text: Option<String>,
     pub summary_text: String,
 }
 
@@ -54,16 +56,24 @@ pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
         .unwrap_or(total_width)
 }
 
+fn preferred_sidebar_width(view: &ViewState) -> u16 {
+    match view.session_kind {
+        SessionKind::Opencode => OPENCODE_SIDEBAR_WIDTH,
+        _ => CLAUDE_SIDEBAR_WIDTH,
+    }
+}
+
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
     if view.sidebar_session_kind().is_none() {
         return None;
     }
 
-    if total_width < CLAUDE_SIDEBAR_MIN_MAIN_WIDTH + CLAUDE_SIDEBAR_WIDTH {
+    let sidebar_width = preferred_sidebar_width(view);
+    if total_width < SIDEBAR_MIN_MAIN_WIDTH + sidebar_width {
         return None;
     }
 
-    Some(CLAUDE_SIDEBAR_WIDTH)
+    Some(sidebar_width)
 }
 
 fn split_content_area(content_area: Rect, view: &ViewState) -> ContentLayout {
@@ -358,6 +368,7 @@ fn draw_agent_sidebar(
         status_text: String::new(),
         prompt_text: String::new(),
         work_text: None,
+        todos_text: None,
         summary_text: String::new(),
     };
     let data = data.unwrap_or(&fallback);
@@ -374,6 +385,8 @@ fn draw_agent_sidebar(
         sections_with_content.push(("Status", data.status_text.as_str()));
     }
 
+    let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
+
     if let Some(work_text) = data.work_text.as_deref() {
         constraints.push(Constraint::Min(sidebar_section_height(
             work_text,
@@ -383,7 +396,7 @@ fn draw_agent_sidebar(
         )));
         sections_with_content.push(("Work", work_text));
     }
-    if !data.summary_text.trim().is_empty() {
+    if !is_opencode && !data.summary_text.trim().is_empty() {
         let summary_height = summary_section_height(&data.summary_text, inner.width);
         constraints.push(Constraint::Length(summary_height));
         sections_with_content.push(("Summary", data.summary_text.as_str()));
@@ -392,6 +405,16 @@ fn draw_agent_sidebar(
         let prompt_height = prompt_section_height(&data.prompt_text, inner.width);
         constraints.push(Constraint::Length(prompt_height));
         sections_with_content.push(("Prompt", data.prompt_text.as_str()));
+    }
+    if let Some(todos_text) = data.todos_text.as_deref() {
+        let todos_height = sidebar_section_height(todos_text, inner.width, 2, 4);
+        constraints.push(Constraint::Length(todos_height));
+        sections_with_content.push(("Todos", todos_text));
+    }
+    if is_opencode && !data.summary_text.trim().is_empty() {
+        let summary_height = summary_section_height(&data.summary_text, inner.width);
+        constraints.push(Constraint::Length(summary_height));
+        sections_with_content.push(("Summary", data.summary_text.as_str()));
     }
 
     let sections = Layout::default()
@@ -420,6 +443,7 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
     match agent_kind {
         SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
         SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
+        SessionKind::Opencode => ("Opencode Sidebar", theme.session_icon_opencode.to_color()),
         _ => ("Agent Sidebar", theme.border.to_color()),
     }
 }
@@ -429,6 +453,7 @@ fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
         "Status" => theme.warning.to_color(),
         "Prompt" => theme.secondary.to_color(),
         "Work" => theme.primary.to_color(),
+        "Todos" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
@@ -456,7 +481,7 @@ fn prompt_section_height(body: &str, section_width: u16) -> u16 {
 }
 
 fn summary_section_height(body: &str, section_width: u16) -> u16 {
-    sidebar_section_height(body, section_width, 1, 3)
+    sidebar_section_height(body, section_width, 1, 4)
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
@@ -504,6 +529,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
+    } else if title == "Todos" {
+        theme.success.to_color()
     } else if title == "Prompt" {
         theme.secondary.to_color()
     } else if title == "Summary" {
@@ -812,6 +839,7 @@ mod tests {
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
+            todos_text: None,
             summary_text: "Sidebar ready.".into(),
         };
 
@@ -851,6 +879,7 @@ mod tests {
             status_text: "Thinking\nInput: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -888,6 +917,7 @@ mod tests {
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -924,6 +954,7 @@ mod tests {
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -964,6 +995,7 @@ mod tests {
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -1008,6 +1040,7 @@ mod tests {
                 "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
                     .into(),
             ),
+            todos_text: None,
             summary_text: "Small summary.".into(),
         };
 
@@ -1045,6 +1078,7 @@ mod tests {
             status_text: String::new(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 
@@ -1082,6 +1116,7 @@ mod tests {
             status_text: "Input: 1.2K tokens".into(),
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
             summary_text: String::new(),
         };
 
@@ -1119,6 +1154,7 @@ mod tests {
             status_text: "Input: 1.2K tokens".into(),
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
             summary_text: "Codex sidebar ready.".into(),
         };
 

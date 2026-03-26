@@ -45,7 +45,7 @@ impl App {
         } else {
             Vec::new()
         };
-        commands.splice(0..0, local_debug_commands());
+        commands.extend(local_debug_commands());
 
         let mut global_cmds = Vec::new();
         if let Some(home) = dirs::home_dir() {

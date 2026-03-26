@@ -118,6 +118,22 @@ These are the main limits to call out.
 
 ## Recommended Plan
 
+### Loading Model
+
+The sidebar data path should be **lazy-loaded**.
+
+- **Do not block entering or restoring a session on sidebar data reads.**
+  Opening the tmux view should stay immediate even if local storage reads or
+  plugin sidecar files are slow.
+- **Render the sidebar shell first, then hydrate sections in the background.**
+  A loading / fallback state is acceptable; delayed session entry is not.
+- **Refresh opportunistically while the user is already working.**
+  Initial sidebar data can load after view entry, and richer state can continue
+  to update on the normal sync / event loop path.
+- **Treat lazy loading as a requirement for both Phase 1 and Phase 2.**
+  The source of data changes across phases, but the UX goal stays the same:
+  the user should not wait on sidebar hydration before using the session.
+
 ### Phase 1. Ship an Opencode sidebar on the existing tmux architecture
 
 Goal:
@@ -125,6 +141,7 @@ Goal:
 - get immediate parity with the current Claude sidebar
 - reuse the generalized sidebar shell that Codex also needs
 - use data AMF already has plus low-risk local Opencode storage reads
+- keep session entry fast by loading sidebar data after the view opens
 
 Files:
 
@@ -157,6 +174,11 @@ Implementation:
 
 6. Populate `Summary` from the existing AMF feature summary field first.
 
+7. Load Phase 1 sidebar data lazily after entering the view.
+   The initial render can show the sidebar shell with partial / loading data,
+   then fill in prompt, title, usage, and change summary once storage reads
+   complete.
+
 This phase should ship before any richer Opencode-specific work.
 
 ### Phase 2. Add a rich Opencode sidebar via local plugin sidecar state
@@ -165,6 +187,7 @@ Goal:
 
 - expose the best structured Opencode state without changing the runtime model
 - use officially supported plugin hooks instead of ANSI scraping
+- preserve the same non-blocking lazy-load behavior from Phase 1
 
 Files:
 
@@ -213,6 +236,15 @@ Implementation:
 5. Keep AMF resilient:
    if the plugin sidecar is absent or stale, fall back to the simpler Phase 1
    storage-based sidebar.
+
+6. Keep the Phase 2 reader lazy.
+   Plugin sidecar reads and refreshes should update the visible sidebar after
+   session entry, not gate opening the session itself.
+
+7. Add a focused UI polish pass once the data path is stable.
+   Prioritize content-driven section sizing, stronger visual separation between
+   sections, and better readability for `Todos`, including clearer count vs
+   preview treatment and tighter handling of sparse vs dense todo lists.
 
 This is the main path to "rich Opencode parity" and should be preferred over an
 immediate server integration.
@@ -290,6 +322,7 @@ cover the needed UX.
 
 ### Manual checks
 
+- session opens immediately even when sidebar data is still loading
 - fresh Opencode feature
 - restored Opencode session via `S`
 - Opencode feature in vibeless diff-review mode
@@ -298,6 +331,9 @@ cover the needed UX.
 - narrow terminal width fallback
 - leader menu / help / prompt dialog overlays while sidebar is visible
 - multiple Opencode sessions in one feature
+- visual clarity pass:
+  verify `Todos` remains easy to scan with 0, 1, 2, 3, and many open items,
+  and verify panels size to content instead of leaving confusing empty boxes
 
 ### Optional server project tests
 

@@ -15,6 +15,10 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+fn prompt_entry(text: &str) -> String {
+    text.to_string()
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]
@@ -95,6 +99,54 @@ fn read_latest_prompt_falls_back_to_codex_path() {
 }
 
 #[test]
+fn poll_sidebar_load_results_updates_feature_caches() {
+    let repo = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_load_tx
+        .send(super::SidebarLoadResult {
+            tmux_session: "amf-my-feat".to_string(),
+            latest_prompt: Some("lazy prompt".to_string()),
+            opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
+                session_id: "ses-1".to_string(),
+                title: Some("Loaded later".to_string()),
+                latest_prompt: Some("lazy prompt".to_string()),
+                status: Some("busy".to_string()),
+                last_tool: Some("edit".to_string()),
+                todo_count: Some(2),
+                todo_preview: vec!["finish parser".to_string(), "wire UI".to_string()],
+                pending_permission: None,
+                last_error: None,
+                lsp_summary: Some("ready".to_string()),
+                live_summary: Some("live summary".to_string()),
+                reasoning_tokens: Some(12),
+                additions: Some(3),
+                deletions: Some(1),
+                files: Some(1),
+            }),
+        })
+        .unwrap();
+
+    app.poll_sidebar_load_results();
+
+    assert_eq!(
+        app.latest_prompt_for_session("amf-my-feat"),
+        Some("lazy prompt")
+    );
+    assert_eq!(
+        app.opencode_sidebar_cache
+            .get("amf-my-feat")
+            .and_then(|data| data.title.as_deref()),
+        Some("Loaded later")
+    );
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
 fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
     let workdir = TempDir::new().unwrap();
     let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
@@ -491,12 +543,38 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
 
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
     app.sync_statuses();
 
     assert_eq!(
         app.store.projects[0].features[0].status,
         ProjectStatus::Stopped
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]
@@ -688,6 +766,60 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
     assert!(feature.is_worktree);
     assert!(feature.pending_worktree_script);
     assert_eq!(feature.status, ProjectStatus::Stopped);
+}
+
+#[test]
+fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
+
+    app.start_worktree_hook(
+        "true",
+        workdir.path().to_path_buf(),
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+        false,
+        None,
+    );
+
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+    assert!(app.store.projects[0].features[0].pending_worktree_script);
+    assert_eq!(app.store.projects[0].features[0].status, ProjectStatus::Stopped);
 }
 
 #[test]
@@ -1418,6 +1550,23 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
             && installed.contains("buildReviewFiles"),
         "expected stale change-tracker.js to be replaced with the structured diff-review version, got: {installed}"
     );
+
+    let sidebar_plugin = std::fs::read_to_string(plugin_dir.join("sidebar-state.js")).unwrap();
+    assert!(
+        sidebar_plugin.contains("SidebarStatePlugin")
+            && sidebar_plugin.contains("opencode-sidebar")
+            && sidebar_plugin.contains("state.liveSummary = null")
+            && sidebar_plugin.contains("role !== \"assistant\"")
+            && sidebar_plugin.contains("pruneSidebarFiles")
+            && sidebar_plugin.contains("SIDEBAR_MAX_FILES")
+            && sidebar_plugin.contains("normalizePrompt(payload?.message?.summary?.content)")
+            && sidebar_plugin.contains("function eventPayload(event)")
+            && sidebar_plugin.contains("event: async ({ event })")
+            && sidebar_plugin.contains("switch (event?.type)")
+            && sidebar_plugin.contains("case \"todo.updated\"")
+            && sidebar_plugin.contains("case \"message.updated\""),
+        "expected sidebar-state.js to be installed, got: {sidebar_plugin}"
+    );
 }
 
 #[test]
@@ -1766,6 +1915,29 @@ fn stop_feature_transitions_idle_to_stopped() {
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.store_path = tmp.path().to_path_buf();
     app.selection = Selection::Feature(0, 0);
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
 
     app.stop_feature().unwrap();
 
@@ -1778,6 +1950,64 @@ fn stop_feature_transitions_idle_to_stopped() {
         "got: {:?}",
         app.message
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn complete_deleting_feature_clears_sidebar_caches() {
+    let repo = TempDir::new().unwrap();
+    let tmp = NamedTempFile::new().unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        tmux_session: "amf-my-feat".to_string(),
+        is_worktree: false,
+        repo: repo.path().to_path_buf(),
+        workdir: repo.path().to_path_buf(),
+        stage: DeleteStage::Completed,
+        child: None,
+        output: String::new(),
+        output_rx: None,
+        error: None,
+    });
+
+    app.complete_deleting_feature().unwrap();
+
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 // ── ensure_notification_hooks ─────────────────────────────
@@ -2260,6 +2490,41 @@ fn cleanup_codex_hooks_restores_previous_notify_command() {
     assert!(
         !codex_dir.join("amf-codex-notify-original.json").exists(),
         "cleanup should remove any legacy Codex sidecar backup"
+    );
+}
+
+#[test]
+fn cleanup_opencode_hooks_removes_sidebar_state_artifacts() {
+    let workdir = TempDir::new().unwrap();
+    let plugin_dir = workdir.path().join(".opencode").join("plugins");
+    let theme_dir = workdir.path().join(".opencode").join("themes");
+    let sidebar_dir = workdir.path().join(".amf").join("opencode-sidebar");
+
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::create_dir_all(&theme_dir).unwrap();
+    std::fs::create_dir_all(&sidebar_dir).unwrap();
+    std::fs::write(plugin_dir.join("sidebar-state.js"), "plugin").unwrap();
+    std::fs::write(plugin_dir.join("change-tracker.js"), "plugin").unwrap();
+    std::fs::write(theme_dir.join("amf.json"), "{}").unwrap();
+    std::fs::write(sidebar_dir.join("ses-1.json"), "{\"session_id\":\"ses-1\"}").unwrap();
+
+    cleanup_agent_injected_files(workdir.path(), &AgentKind::Opencode);
+
+    assert!(
+        !plugin_dir.join("sidebar-state.js").exists(),
+        "cleanup should remove the Opencode sidebar plugin"
+    );
+    assert!(
+        !plugin_dir.join("change-tracker.js").exists(),
+        "cleanup should remove the Opencode diff-review plugin"
+    );
+    assert!(
+        !theme_dir.join("amf.json").exists(),
+        "cleanup should remove injected Opencode themes"
+    );
+    assert!(
+        !sidebar_dir.exists(),
+        "cleanup should remove Opencode sidebar state files"
     );
 }
 
@@ -3732,6 +3997,32 @@ fn status_file_cleanup_during_remove() {
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.pending_sidebar_loads
+        .insert("amf-custom-cleanup-test-sess".to_string());
+    app.latest_prompt_cache.insert(
+        "amf-my-feat".to_string(),
+        prompt_entry("cached prompt"),
+    );
+    app.opencode_sidebar_cache.insert(
+        "amf-my-feat".to_string(),
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".to_string(),
+            title: Some("cached".to_string()),
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        },
+    );
 
     // Selecting the session and removing it should clean
     // up the status file.
@@ -3744,6 +4035,9 @@ fn status_file_cleanup_during_remove() {
         !status_file.exists(),
         "status file should be removed on session removal"
     );
+    assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
+    assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]

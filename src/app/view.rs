@@ -2,9 +2,41 @@ use anyhow::Result;
 
 use super::*;
 use crate::tmux::TmuxManager;
-use crate::worktree::WorktreeManager;
 
 impl App {
+    fn feature_workdir_for_view(&self, view: &ViewState) -> Option<PathBuf> {
+        self.store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone())
+    }
+
+    fn feature_markdown_context(
+        &self,
+        from_view: Option<&ViewState>,
+    ) -> Option<(PathBuf, Option<PathBuf>)> {
+        let workdir = if let Some(view) = from_view {
+            self.feature_workdir_for_view(view)?
+        } else {
+            self.selected_feature().map(|(_, feature)| feature.workdir.clone())?
+        };
+
+        let repo_root = self
+            .worktree
+            .repo_root(&workdir)
+            .ok()
+            .filter(|root| root != &workdir);
+
+        Some((workdir, repo_root))
+    }
+
     pub fn enter_view(&mut self) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
@@ -68,6 +100,7 @@ impl App {
             &session_window,
             &session_kind,
         );
+        self.schedule_sidebar_load_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
@@ -145,25 +178,39 @@ impl App {
                     .find(|feature| feature.name == view.feature_name)
             })
             .map(|feature| {
-                let prompt_session_id = feature
+                let preferred_session_id = feature
                     .sessions
                     .iter()
                     .find(|session| session.tmux_window == view.window)
                     .and_then(|session| {
-                        session
-                            .token_usage_source
-                            .as_ref()
-                            .filter(|source| {
-                                view.session_kind == SessionKind::Codex
-                                    && source.provider
-                                        == crate::token_tracking::TokenUsageProvider::Codex
-                            })
-                            .map(|source| source.id.clone())
+                        session.token_usage_source.as_ref().and_then(|source| {
+                            let provider = &source.provider;
+                            match view.session_kind {
+                                SessionKind::Opencode
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Opencode =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                SessionKind::Codex
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Codex =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                _ => None,
+                            }
+                        })
                     });
-                (feature.workdir.clone(), prompt_session_id)
+
+                (
+                    feature.workdir.clone(),
+                    view.session_kind.clone(),
+                    preferred_session_id,
+                )
             });
 
-        let Some((workdir, prompt_session_id)) = feature_prompt_context else {
+        let Some((workdir, session_kind, preferred_session_id)) = feature_prompt_context else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return;
@@ -171,8 +218,8 @@ impl App {
 
         let prompts = crate::app::util::read_all_prompts_for_session(
             &workdir,
-            &view.session_kind,
-            prompt_session_id.as_deref(),
+            Some(&session_kind),
+            preferred_session_id.as_deref(),
         );
         self.mode = AppMode::LatestPrompt(LatestPromptState {
             prompts,
@@ -285,29 +332,11 @@ impl App {
             }
         };
 
-        let workdir = self
-            .store
-            .projects
-            .iter()
-            .find(|project| project.name == view.project_name)
-            .and_then(|project| {
-                project
-                    .features
-                    .iter()
-                    .find(|feature| feature.name == view.feature_name)
-            })
-            .map(|feature| feature.workdir.clone());
-
-        let Some(workdir) = workdir else {
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return Ok(());
         };
-
-        let repo_root = WorktreeManager::is_worktree(&workdir)
-            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
-            .flatten()
-            .filter(|root| root != &workdir);
 
         let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
         if files.is_empty() {
@@ -320,13 +349,7 @@ impl App {
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(
-                files[0].clone(),
-                workdir,
-                repo_root,
-                view,
-                None,
-            );
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view, None);
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
@@ -339,6 +362,20 @@ impl App {
         });
         self.message = None;
         Ok(())
+    }
+
+    pub fn open_markdown_viewer_for_command(
+        &mut self,
+        from_view: Option<ViewState>,
+        _plan_only: bool,
+    ) -> Result<()> {
+        let Some(view) = from_view else {
+            self.message = Some("No feature selected".into());
+            return Ok(());
+        };
+
+        self.mode = AppMode::Viewing(view);
+        self.open_markdown_viewer_from_view()
     }
 
     pub fn open_markdown_viewer_path(

@@ -218,6 +218,11 @@ impl App {
             self.do_stop_feature(pi, fi)?;
         }
 
+        if old_agent != next_agent {
+            let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
+            self.clear_sidebar_state_for_session(&tmux_session);
+        }
+
         if let Some(feature) = self
             .store
             .projects

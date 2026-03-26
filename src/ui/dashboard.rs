@@ -9,16 +9,18 @@ use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
+const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 32;
+const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
+const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 32;
+const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
+const SIDEBAR_WORK_VALUE_CHARS: usize = 28;
+const SIDEBAR_TODO_VALUE_CHARS: usize = 26;
+
 fn build_agent_sidebar_data(
     app: &App,
     view: &crate::app::ViewState,
 ) -> Option<super::pane::AgentSidebarData> {
     let sidebar_kind = view.sidebar_session_kind()?;
-
-    match sidebar_kind {
-        SessionKind::Claude | SessionKind::Codex => {}
-        _ => return None,
-    };
 
     let (project, feature) = app.store.projects.iter().find_map(|project| {
         project
@@ -53,6 +55,53 @@ fn build_agent_sidebar_data(
         1 => "Waiting for 1 input".to_string(),
         n => format!("Waiting for {n} inputs"),
     };
+
+    if sidebar_kind == SessionKind::Opencode {
+        let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
+        let usage_line = session
+            .and_then(|session| session.status_text.as_deref())
+            .map(format_sidebar_usage)
+            .filter(|line| line != "Usage: unavailable");
+        let prompt_text = opencode_sidebar_prompt_text(
+            opencode_sidebar
+                .and_then(|sidebar| sidebar.latest_prompt.as_deref())
+                .or_else(|| app.latest_prompt_for_session(&feature.tmux_session)),
+        );
+        let work_text = opencode_sidebar_work_text(opencode_sidebar);
+        let todos_text = opencode_sidebar_todos_text(opencode_sidebar);
+        let summary_text = opencode_sidebar_summary_text(
+            app.summary_state.generating.contains(&feature.tmux_session),
+            feature.summary.as_deref(),
+            opencode_sidebar,
+        );
+        let activity_line = if opencode_sidebar
+            .and_then(|sidebar| sidebar.pending_permission.as_ref())
+            .is_some()
+        {
+            "Waiting on permission".to_string()
+        } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+            "Running tool".to_string()
+        } else if app.is_feature_thinking(&feature.tmux_session) {
+            "Thinking".to_string()
+        } else {
+            status_line
+        };
+
+        return Some(super::pane::AgentSidebarData {
+            agent_kind: SessionKind::Opencode,
+            status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
+            prompt_text,
+            work_text,
+            todos_text,
+            summary_text,
+        });
+    }
+
+    match sidebar_kind {
+        SessionKind::Claude | SessionKind::Codex => {}
+        _ => return None,
+    };
+
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage);
@@ -88,8 +137,165 @@ fn build_agent_sidebar_data(
         status_text,
         prompt_text,
         work_text,
+        todos_text: None,
         summary_text,
     })
+}
+
+fn opencode_sidebar_status_text(
+    activity_line: String,
+    usage_line: Option<String>,
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> String {
+    let mut lines = vec![format!("Activity: {activity_line}")];
+    if let Some(usage_line) = usage_line {
+        lines.push(usage_line);
+    }
+    if let Some(reasoning_tokens) = opencode_sidebar
+        .and_then(|sidebar| sidebar.reasoning_tokens)
+        .filter(|tokens| *tokens > 0)
+    {
+        lines.push(format!(
+            "Reasoning: {}",
+            crate::token_tracking::format_token_count(reasoning_tokens)
+        ));
+    }
+    if let Some(change_line) = opencode_sidebar.and_then(|sidebar| sidebar.change_summary_line()) {
+        lines.push(change_line);
+    }
+    lines.join("\n")
+}
+
+fn opencode_sidebar_work_text(
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(status) = opencode_sidebar
+        .and_then(|sidebar| sidebar.status.as_deref())
+        .filter(|status| !status.is_empty())
+    {
+        lines.push(format!("State: {status}"));
+    }
+    if let Some(tool) = opencode_sidebar
+        .and_then(|sidebar| sidebar.last_tool.as_deref())
+        .filter(|tool| !tool.is_empty())
+    {
+        lines.push(format!("Tool: {tool}"));
+    }
+    if let Some(permission) = opencode_sidebar
+        .and_then(|sidebar| sidebar.pending_permission.as_deref())
+        .filter(|permission| !permission.is_empty())
+    {
+        lines.push(format!(
+            "Permission: {}",
+            compact_sidebar_text(permission, SIDEBAR_WORK_VALUE_CHARS)
+        ));
+    }
+    if let Some(lsp_summary) = opencode_sidebar
+        .and_then(|sidebar| sidebar.lsp_summary.as_deref())
+        .filter(|summary| !summary.is_empty())
+    {
+        lines.push(format!(
+            "LSP: {}",
+            compact_sidebar_text(lsp_summary, SIDEBAR_WORK_VALUE_CHARS)
+        ));
+    }
+    if let Some(error) = opencode_sidebar
+        .and_then(|sidebar| sidebar.last_error.as_deref())
+        .filter(|error| !error.is_empty())
+    {
+        lines.push(format!(
+            "Error: {}",
+            compact_sidebar_text(error, SIDEBAR_WORK_VALUE_CHARS)
+        ));
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn opencode_sidebar_todos_text(
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> Option<String> {
+    let sidebar = opencode_sidebar?;
+    let todo_count = sidebar
+        .todo_count
+        .unwrap_or_else(|| sidebar.todo_preview.len() as u64);
+    if todo_count == 0 && sidebar.todo_preview.is_empty() {
+        return None;
+    }
+
+    let preview_count = sidebar.todo_preview.len().min(2) as u64;
+    let mut lines = vec![format!(
+        "Open: {todo_count} item{}",
+        if todo_count == 1 { "" } else { "s" }
+    )];
+    if let Some(first) = sidebar.todo_preview.first() {
+        lines.push(format!(
+            "Next: {}",
+            compact_sidebar_text(first, SIDEBAR_TODO_VALUE_CHARS)
+        ));
+    }
+    if let Some(second) = sidebar.todo_preview.get(1) {
+        lines.push(format!(
+            "Then: {}",
+            compact_sidebar_text(second, SIDEBAR_TODO_VALUE_CHARS)
+        ));
+    }
+    if todo_count > preview_count {
+        let hidden_count = todo_count - preview_count;
+        lines.push(format!(
+            "More: {hidden_count} more item{}",
+            if hidden_count == 1 { "" } else { "s" }
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+fn opencode_sidebar_summary_text(
+    generating: bool,
+    feature_summary: Option<&str>,
+    opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
+) -> String {
+    if generating {
+        return "Generating summary...".to_string();
+    }
+
+    if let Some(summary) = opencode_sidebar
+        .and_then(|sidebar| sidebar.live_summary.as_deref())
+        .filter(|summary| !summary.is_empty())
+    {
+        return compact_sidebar_block(
+            summary,
+            SIDEBAR_SUMMARY_PREVIEW_COLS,
+            SIDEBAR_SUMMARY_PREVIEW_LINES,
+        );
+    }
+
+    feature_summary
+        .map(|summary| {
+            compact_sidebar_block(
+                summary,
+                SIDEBAR_SUMMARY_PREVIEW_COLS,
+                SIDEBAR_SUMMARY_PREVIEW_LINES,
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn opencode_sidebar_prompt_text(prompt: Option<&str>) -> String {
+    prompt
+        .map(|prompt| {
+            compact_sidebar_block(
+                prompt,
+                SIDEBAR_PROMPT_PREVIEW_COLS,
+                SIDEBAR_PROMPT_PREVIEW_LINES,
+            )
+        })
+        .unwrap_or_default()
 }
 
 fn sidebar_status_activity_text(has_work_text: bool, idle_text: String) -> Option<String> {
@@ -188,6 +394,56 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> String {
+    if max_cols == 0 || max_lines == 0 {
+        return String::new();
+    }
+
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return String::new();
+    }
+
+    let words: Vec<&str> = compact.split(' ').collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut index = 0;
+
+    while index < words.len() && lines.len() < max_lines {
+        let word = words[index];
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+
+        if candidate.chars().count() <= max_cols {
+            current = candidate;
+            index += 1;
+            continue;
+        }
+
+        if current.is_empty() {
+            lines.push(compact_sidebar_text(word, max_cols));
+            index += 1;
+        } else {
+            lines.push(current);
+            current = String::new();
+        }
+    }
+
+    if lines.len() < max_lines && !current.is_empty() {
+        lines.push(current);
+    }
+
+    if index < words.len() && let Some(last) = lines.pop() {
+        let trimmed = compact_sidebar_text(&last, max_cols.saturating_sub(1));
+        lines.push(format!("{trimmed}…"));
+    }
+
+    lines.join("\n")
 }
 
 fn fallback_sidebar_work_text(

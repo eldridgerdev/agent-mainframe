@@ -19,6 +19,7 @@ pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
+        let mut stopped_sessions = Vec::new();
         for project in &mut self.store.projects {
             for feature in &mut project.features {
                 if live_sessions.contains(&feature.tmux_session) {
@@ -26,9 +27,15 @@ impl App {
                         feature.status = ProjectStatus::Idle;
                     }
                 } else {
+                    if feature.status != ProjectStatus::Stopped {
+                        stopped_sessions.push(feature.tmux_session.clone());
+                    }
                     feature.status = ProjectStatus::Stopped;
                 }
             }
+        }
+        for tmux_session in stopped_sessions {
+            self.clear_sidebar_state_for_session(&tmux_session);
         }
     }
 
@@ -41,9 +48,16 @@ impl App {
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
         let pricing = self.config.token_pricing.clone();
         let mut discovered_sources = false;
+        let mut sidebar_refresh_targets = Vec::new();
 
-        for project in &mut self.store.projects {
-            for feature in &mut project.features {
+        for (pi, project) in self.store.projects.iter_mut().enumerate() {
+            for (fi, feature) in project.features.iter_mut().enumerate() {
+                let refresh_sidebar = feature.sessions.iter().any(|session| {
+                    matches!(
+                        session.kind,
+                        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                    )
+                });
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
                         let status_path = feature
@@ -105,7 +119,15 @@ impl App {
                         .and_then(|source| tracker.read_usage(source, &feature.workdir))
                         .map(|usage| format_token_usage(&usage, &pricing));
                 }
+
+                if refresh_sidebar {
+                    sidebar_refresh_targets.push((pi, fi));
+                }
             }
+        }
+
+        for (pi, fi) in sidebar_refresh_targets {
+            self.schedule_sidebar_load_for_feature(pi, fi);
         }
 
         if discovered_sources && let Err(err) = self.save() {

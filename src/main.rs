@@ -190,6 +190,7 @@ fn main() -> Result<()> {
         "setup",
         format!("Refreshed opencode plugins for {refreshed} feature(s)"),
     );
+    app.schedule_sidebar_loads_for_all_features();
 
     // Start IPC socket server for push-based hook notifications.
     let socket = ipc::socket_path();
@@ -613,6 +614,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
         if let Err(e) = app.poll_summary_result() {
             app.show_error(e);
         }
+
+        app.poll_sidebar_load_results();
 
         let poll_duration = if is_viewing {
             Duration::from_millis(50)

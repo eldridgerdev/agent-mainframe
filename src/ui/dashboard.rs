@@ -6,19 +6,21 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::SessionKind;
+use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
-const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 30;
+const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 32;
 const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
-const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 30;
+const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 32;
 const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
-const SIDEBAR_WORK_VALUE_CHARS: usize = 26;
-const SIDEBAR_TODO_VALUE_CHARS: usize = 24;
+const SIDEBAR_WORK_VALUE_CHARS: usize = 28;
+const SIDEBAR_TODO_VALUE_CHARS: usize = 26;
 
-fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::pane::SidebarData> {
-    if !view.has_sidebar() {
-        return None;
-    }
+fn build_agent_sidebar_data(
+    app: &App,
+    view: &crate::app::ViewState,
+) -> Option<super::pane::AgentSidebarData> {
+    let sidebar_kind = view.sidebar_session_kind()?;
 
     let (project, feature) = app.store.projects.iter().find_map(|project| {
         project
@@ -36,7 +38,7 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
             feature
                 .sessions
                 .iter()
-                .find(|session| session.kind == view.session_kind)
+                .find(|session| session.kind == sidebar_kind)
         });
 
     let waiting_count = app
@@ -53,74 +55,108 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         1 => "Waiting for 1 input".to_string(),
         n => format!("Waiting for {n} inputs"),
     };
-    let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
-    let activity_line = if opencode_sidebar
-        .and_then(|sidebar| sidebar.pending_permission.as_ref())
-        .is_some()
-    {
-        "Waiting on permission".to_string()
-    } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
-        "Running tool".to_string()
-    } else if app.is_feature_thinking(&feature.tmux_session) {
-        "Thinking".to_string()
-    } else {
-        status_line
+
+    if sidebar_kind == SessionKind::Opencode {
+        let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
+        let usage_line = session
+            .and_then(|session| session.status_text.as_deref())
+            .map(format_sidebar_usage)
+            .filter(|line| line != "Usage: unavailable");
+        let prompt_text = opencode_sidebar_prompt_text(
+            opencode_sidebar
+                .and_then(|sidebar| sidebar.latest_prompt.as_deref())
+                .or_else(|| app.latest_prompt_for_session(&feature.tmux_session)),
+        );
+        let work_text = opencode_sidebar_work_text(opencode_sidebar);
+        let todos_text = opencode_sidebar_todos_text(opencode_sidebar);
+        let summary_text = opencode_sidebar_summary_text(
+            app.summary_state.generating.contains(&feature.tmux_session),
+            feature.summary.as_deref(),
+            opencode_sidebar,
+        );
+        let activity_line = if opencode_sidebar
+            .and_then(|sidebar| sidebar.pending_permission.as_ref())
+            .is_some()
+        {
+            "Waiting on permission".to_string()
+        } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+            "Running tool".to_string()
+        } else if app.is_feature_thinking(&feature.tmux_session) {
+            "Thinking".to_string()
+        } else {
+            status_line
+        };
+
+        return Some(super::pane::AgentSidebarData {
+            agent_kind: SessionKind::Opencode,
+            status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
+            prompt_text,
+            work_text,
+            todos_text,
+            summary_text,
+        });
+    }
+
+    match sidebar_kind {
+        SessionKind::Claude | SessionKind::Codex => {}
+        _ => return None,
     };
+
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
-        .map(format_sidebar_usage)
-        .unwrap_or_else(|| "Usage: unavailable".to_string());
-    let prompt_text = match view.session_kind {
-        SessionKind::Opencode => opencode_sidebar
-            .and_then(|sidebar| sidebar.latest_prompt.as_deref())
-            .or_else(|| {
-                app.latest_prompt_for_session(&feature.tmux_session)
-                    .map(|entry| entry.text.as_str())
-            })
-            .map(sidebar_prompt_preview)
-            .unwrap_or_else(|| "No recent prompt yet.".to_string()),
-        _ => app
-            .latest_prompt_for_session(&feature.tmux_session)
-            .map(|entry| sidebar_prompt_preview(&entry.text))
-            .unwrap_or_else(|| "No recent prompt.\nleader+l for history.".to_string()),
-    };
-    let summary_text = sidebar_summary_text(
-        &view.session_kind,
-        app.summary_state.generating.contains(&feature.tmux_session),
-        feature.summary.as_deref(),
-        opencode_sidebar,
+        .map(format_sidebar_usage);
+    let prompt_text = sidebar_prompt_text(
+        codex_sidebar_source(&sidebar_kind, session)
+            .and_then(|source| app.cached_codex_session_prompt(&feature.workdir, &source.id)),
+        app.latest_prompt_for_session(&feature.tmux_session),
     );
+    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
+        Some("Generating summary...".to_string())
+    } else {
+        feature.summary.clone()
+    };
+    let codex_live = if sidebar_kind == SessionKind::Codex {
+        app.codex_live_thread(&feature.tmux_session)
+    } else {
+        None
+    };
+    let work_text = codex_live
+        .and_then(|live| live.sidebar_work_text())
+        .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
+    let summary_text = compose_sidebar_summary_text(
+        codex_live.and_then(|live| live.summary_prefix()),
+        summary_text,
+    );
+    let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
+    let usage_confidence = format_codex_usage_source_confidence(&sidebar_kind, session);
 
-    Some(super::pane::SidebarData {
-        title: sidebar_title(&view.session_kind),
-        title_color: sidebar_title_color(&view.session_kind, &app.theme),
-        status_text: status_text(
-            activity_line.as_str(),
-            usage_line.as_str(),
-            opencode_sidebar,
-        ),
-        work_text: work_text(opencode_sidebar),
+    let status_text = compose_sidebar_status_text(activity_line, usage_line, usage_confidence);
+
+    Some(super::pane::AgentSidebarData {
+        agent_kind: sidebar_kind,
+        status_text,
         prompt_text,
-        todos_text: todos_text(opencode_sidebar),
+        work_text,
+        todos_text: None,
         summary_text,
     })
 }
 
-fn status_text(
-    activity_line: &str,
-    usage_line: &str,
+fn opencode_sidebar_status_text(
+    activity_line: String,
+    usage_line: Option<String>,
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> String {
-    let mut lines = vec![activity_line.to_string()];
-    if usage_line != "Usage: unavailable" {
-        lines.push(usage_line.to_string());
+    let mut lines = vec![format!("Activity: {activity_line}")];
+    if let Some(usage_line) = usage_line {
+        lines.push(usage_line);
     }
     if let Some(reasoning_tokens) = opencode_sidebar
         .and_then(|sidebar| sidebar.reasoning_tokens)
         .filter(|tokens| *tokens > 0)
     {
         lines.push(format!(
-            "Reason: {}",
+            "Reasoning: {}",
             crate::token_tracking::format_token_count(reasoning_tokens)
         ));
     }
@@ -130,7 +166,7 @@ fn status_text(
     lines.join("\n")
 }
 
-fn work_text(
+fn opencode_sidebar_work_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> Option<String> {
     let mut lines = Vec::new();
@@ -150,7 +186,10 @@ fn work_text(
         .and_then(|sidebar| sidebar.pending_permission.as_deref())
         .filter(|permission| !permission.is_empty())
     {
-        lines.push(format!("Permission: {permission}"));
+        lines.push(format!(
+            "Permission: {}",
+            compact_sidebar_text(permission, SIDEBAR_WORK_VALUE_CHARS)
+        ));
     }
     if let Some(lsp_summary) = opencode_sidebar
         .and_then(|sidebar| sidebar.lsp_summary.as_deref())
@@ -170,6 +209,7 @@ fn work_text(
             compact_sidebar_text(error, SIDEBAR_WORK_VALUE_CHARS)
         ));
     }
+
     if lines.is_empty() {
         None
     } else {
@@ -177,7 +217,7 @@ fn work_text(
     }
 }
 
-fn todos_text(
+fn opencode_sidebar_todos_text(
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
 ) -> Option<String> {
     let sidebar = opencode_sidebar?;
@@ -215,42 +255,135 @@ fn todos_text(
     Some(lines.join("\n"))
 }
 
-fn sidebar_summary_text(
-    session_kind: &SessionKind,
+fn opencode_sidebar_summary_text(
     generating: bool,
     feature_summary: Option<&str>,
     opencode_sidebar: Option<&crate::app::opencode_storage::OpencodeSidebarData>,
-) -> Option<String> {
+) -> String {
     if generating {
-        return Some("Generating summary...".to_string());
+        return "Generating summary...".to_string();
     }
 
-    if *session_kind == SessionKind::Opencode
-        && let Some(summary) = opencode_sidebar
-            .and_then(|sidebar| sidebar.live_summary.as_deref())
-            .filter(|summary| !summary.is_empty())
+    if let Some(summary) = opencode_sidebar
+        .and_then(|sidebar| sidebar.live_summary.as_deref())
+        .filter(|summary| !summary.is_empty())
     {
-        return Some(sidebar_summary_preview(summary));
+        return compact_sidebar_block(
+            summary,
+            SIDEBAR_SUMMARY_PREVIEW_COLS,
+            SIDEBAR_SUMMARY_PREVIEW_LINES,
+        );
     }
 
-    feature_summary.map(sidebar_summary_preview)
+    feature_summary
+        .map(|summary| {
+            compact_sidebar_block(
+                summary,
+                SIDEBAR_SUMMARY_PREVIEW_COLS,
+                SIDEBAR_SUMMARY_PREVIEW_LINES,
+            )
+        })
+        .unwrap_or_default()
 }
 
-fn sidebar_title(session_kind: &SessionKind) -> &'static str {
-    match session_kind {
-        SessionKind::Opencode => " Opencode Sidebar ",
-        _ => " Claude Sidebar ",
+fn opencode_sidebar_prompt_text(prompt: Option<&str>) -> String {
+    prompt
+        .map(|prompt| {
+            compact_sidebar_block(
+                prompt,
+                SIDEBAR_PROMPT_PREVIEW_COLS,
+                SIDEBAR_PROMPT_PREVIEW_LINES,
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn sidebar_status_activity_text(has_work_text: bool, idle_text: String) -> Option<String> {
+    if has_work_text { None } else { Some(idle_text) }
+}
+
+fn compose_sidebar_status_text(
+    activity_line: Option<String>,
+    usage_line: Option<String>,
+    usage_confidence: Option<String>,
+) -> String {
+    let mut status_lines = Vec::new();
+    if let Some(activity) = activity_line {
+        status_lines.push(format!("Activity: {activity}"));
+    }
+    if let Some(usage_line) = usage_line {
+        status_lines.push(usage_line);
+    }
+    if let Some(confidence) = usage_confidence {
+        status_lines.push(confidence);
+    }
+    status_lines.join("\n")
+}
+
+fn compose_sidebar_summary_text(
+    reasoning_text: Option<String>,
+    summary_text: Option<String>,
+) -> String {
+    match (reasoning_text, summary_text) {
+        (Some(reasoning), Some(summary)) => compact_sidebar_text(
+            &format!(
+                "Reasoning: {}\n\n{}",
+                compact_sidebar_text(&reasoning, 160),
+                summary
+            ),
+            80,
+        ),
+        (Some(reasoning), None) => compact_sidebar_text(
+            &format!("Reasoning: {}", compact_sidebar_text(&reasoning, 160)),
+            80,
+        ),
+        (None, Some(summary)) => compact_sidebar_text(&summary, 80),
+        (None, None) => String::new(),
     }
 }
 
-fn sidebar_title_color(
-    session_kind: &SessionKind,
-    theme: &crate::theme::Theme,
-) -> ratatui::style::Color {
-    match session_kind {
-        SessionKind::Opencode => theme.session_icon_opencode.to_color(),
-        _ => theme.session_icon_claude.to_color(),
+fn codex_sidebar_source<'a>(
+    sidebar_kind: &SessionKind,
+    session: Option<&'a FeatureSession>,
+) -> Option<&'a TokenUsageSource> {
+    if *sidebar_kind != SessionKind::Codex {
+        return None;
     }
+
+    session
+        .and_then(|session| session.token_usage_source.as_ref())
+        .filter(|source| source.provider == TokenUsageProvider::Codex)
+}
+
+fn format_codex_usage_source_confidence(
+    sidebar_kind: &SessionKind,
+    session: Option<&FeatureSession>,
+) -> Option<String> {
+    if *sidebar_kind != SessionKind::Codex {
+        return None;
+    }
+
+    let match_kind = session?.token_usage_source_match.as_ref()?;
+    match match_kind {
+        TokenUsageSourceMatch::Exact => None,
+        TokenUsageSourceMatch::Inferred => Some("Usage source: inferred workdir match".to_string()),
+    }
+}
+
+fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&str>) -> String {
+    let prompt = select_sidebar_prompt(session_prompt, fallback_prompt);
+    prompt
+        .map(|prompt| format!("leader l\nPreview: {}", compact_sidebar_text(&prompt, 48)))
+        .unwrap_or_default()
+}
+
+fn select_sidebar_prompt(
+    session_prompt: Option<&str>,
+    fallback_prompt: Option<&str>,
+) -> Option<String> {
+    session_prompt
+        .map(ToOwned::to_owned)
+        .or_else(|| fallback_prompt.map(ToOwned::to_owned))
 }
 
 fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
@@ -261,22 +394,6 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
-}
-
-fn sidebar_prompt_preview(text: &str) -> String {
-    compact_sidebar_block(
-        text,
-        SIDEBAR_PROMPT_PREVIEW_COLS,
-        SIDEBAR_PROMPT_PREVIEW_LINES,
-    )
-}
-
-fn sidebar_summary_preview(text: &str) -> String {
-    compact_sidebar_block(
-        text,
-        SIDEBAR_SUMMARY_PREVIEW_COLS,
-        SIDEBAR_SUMMARY_PREVIEW_LINES,
-    )
 }
 
 fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> String {
@@ -322,15 +439,54 @@ fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> Strin
     }
 
     if index < words.len() && let Some(last) = lines.pop() {
-        let remainder = if last.ends_with('…') {
-            last
-        } else {
-            compact_sidebar_text(&last, max_cols.saturating_sub(1))
-        };
-        lines.push(format!("{remainder}…"));
+        let trimmed = compact_sidebar_text(&last, max_cols.saturating_sub(1));
+        lines.push(format!("{trimmed}…"));
     }
 
     lines.join("\n")
+}
+
+fn fallback_sidebar_work_text(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    view: &crate::app::ViewState,
+) -> Option<String> {
+    let matching_inputs = app
+        .pending_inputs
+        .iter()
+        .filter(|input| {
+            input.session_id == view.session
+                || (input.project_name.as_deref() == Some(project.name.as_str())
+                    && input.feature_name.as_deref() == Some(feature.name.as_str()))
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(first) = matching_inputs.first() {
+        let message = first.message.trim();
+        let mut text = format!(
+            "State: waiting for input\nRequest: {}",
+            if message.is_empty() {
+                "Agent is waiting for input"
+            } else {
+                message
+            }
+        );
+        if matching_inputs.len() > 1 {
+            text.push_str(&format!("\nQueue: {} pending", matching_inputs.len()));
+        }
+        return Some(text);
+    }
+
+    if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+        return Some("State: running tool".to_string());
+    }
+
+    if app.is_feature_thinking(&feature.tmux_session) {
+        return Some("State: thinking".to_string());
+    }
+
+    None
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -357,13 +513,13 @@ fn format_sidebar_usage(status: &str) -> String {
 
     let mut lines = Vec::new();
     if let Some(value) = input {
-        lines.push(format!("In: {value}"));
+        lines.push(format!("Input: {value} tokens"));
     }
     if let Some(value) = output {
-        lines.push(format!("Out: {value}"));
+        lines.push(format!("Output: {value} tokens"));
     }
     if let Some(value) = effective {
-        lines.push(format!("Eff: {value}"));
+        lines.push(format!("Effective: {value} tokens"));
     }
     if let Some(cost_value) = cost {
         lines.push(format!("Cost: {cost_value}"));
@@ -377,7 +533,7 @@ fn format_sidebar_usage(status: &str) -> String {
 }
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
-    let sidebar_data = build_sidebar_data(app, view);
+    let sidebar_data = build_agent_sidebar_data(app, view);
     super::pane::draw(
         frame,
         view,
@@ -738,7 +894,16 @@ pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{App, PendingInput, ViewState};
+    use crate::project::FeatureSession;
+    use crate::project::{
+        AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
+    };
+    use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use ratatui::layout::Rect;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     // ── centered_rect ─────────────────────────────────────────
 
@@ -787,7 +952,7 @@ mod tests {
     fn sidebar_usage_is_split_into_labeled_lines() {
         assert_eq!(
             format_sidebar_usage("16.0k in · 2.0k out · 21.8k eff · $0.07"),
-            "In: 16.0k\nOut: 2.0k\nEff: 21.8k\nCost: $0.07"
+            "Input: 16.0k tokens\nOutput: 2.0k tokens\nEffective: 21.8k tokens\nCost: $0.07"
         );
     }
 
@@ -799,284 +964,278 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sidebar_prompt_preview_wraps_into_two_lines() {
-        assert_eq!(
-            sidebar_prompt_preview(
-                "Please exercise the Opencode sidebar integration by doing these steps in order"
-            ),
-            "Please exercise the Opencode\nsidebar integration by doing…"
-        );
-    }
-
-    #[test]
-    fn sidebar_prompt_preview_compacts_whitespace() {
-        assert_eq!(
-            sidebar_prompt_preview("Please   exercise\n\n the   sidebar"),
-            "Please exercise the sidebar"
-        );
-    }
-
-    #[test]
-    fn sidebar_summary_preview_wraps_into_three_lines() {
-        assert_eq!(
-            sidebar_summary_preview(
-                "Live assistant summary covering prompt updates todos permissions and final observations"
-            ),
-            "Live assistant summary\ncovering prompt updates todos\npermissions and final…"
-        );
-    }
-
-    #[test]
-    fn opencode_status_text_includes_reasoning_tokens() {
-        let status = status_text(
-            "Thinking",
-            "In: 16.0k",
-            Some(&crate::app::opencode_storage::OpencodeSidebarData {
-                session_id: "ses-1".into(),
-                title: None,
-                latest_prompt: None,
-                status: None,
-                last_tool: None,
-                todo_count: None,
-                todo_preview: Vec::new(),
-                pending_permission: None,
-                last_error: None,
-                lsp_summary: None,
-                live_summary: None,
-                reasoning_tokens: Some(4200),
-                additions: Some(10),
-                deletions: Some(3),
-                files: Some(2),
+    fn codex_feature_session(session_id: &str) -> FeatureSession {
+        FeatureSession {
+            id: "session-1".into(),
+            kind: SessionKind::Codex,
+            label: "Codex".into(),
+            tmux_window: "codex".into(),
+            claude_session_id: None,
+            token_usage_source: Some(TokenUsageSource {
+                provider: TokenUsageProvider::Codex,
+                id: session_id.into(),
             }),
-        );
+            token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
+            created_at: chrono::Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+        }
+    }
 
+    #[test]
+    fn select_sidebar_prompt_prefers_session_specific_prompt() {
         assert_eq!(
-            status,
-            "Thinking\nIn: 16.0k\nReason: 4.2k\nChanges: 2 files · +10 / -3"
+            select_sidebar_prompt(Some("session prompt"), Some("fallback prompt")),
+            Some("session prompt".to_string())
         );
     }
 
     #[test]
-    fn opencode_work_text_shows_live_sidecar_details() {
-        let work = work_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: Some("busy".into()),
-            last_tool: Some("edit".into()),
-            todo_count: Some(3),
-            todo_preview: Vec::new(),
-            pending_permission: Some("edit".into()),
-            lsp_summary: Some("ready · 2 warnings".into()),
-            last_error: Some("patch failed".into()),
-            live_summary: None,
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        }));
+    fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
+        let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
-        assert_eq!(
-            work.as_deref(),
-            Some("State: busy\nTool: edit\nPermission: edit\nLSP: ready · 2 warnings\nError: patch failed")
-        );
+        assert!(prompt.contains("leader l"));
+        assert!(prompt.contains("fallback prompt"));
     }
 
     #[test]
-    fn opencode_work_text_truncates_long_error_to_sidebar_width() {
-        let work = work_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: Some("busy".into()),
-            last_tool: None,
-            todo_count: None,
-            todo_preview: Vec::new(),
-            pending_permission: None,
-            lsp_summary: None,
-            last_error: Some(
-                "patch application failed because the target hunk context no longer matched".into(),
+    fn sidebar_prompt_text_is_empty_when_no_prompt_is_available() {
+        assert_eq!(sidebar_prompt_text(None, None), "");
+    }
+
+    #[test]
+    fn sidebar_prompt_text_truncates_long_prompt_preview() {
+        let prompt = sidebar_prompt_text(
+            Some(
+                "This is a much longer prompt preview that should be shortened once it crosses the sidebar limit for prompt text.",
             ),
-            live_summary: None,
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        }));
+            None,
+        );
 
         assert_eq!(
-            work.as_deref(),
-            Some("State: busy\nError: patch application failed …")
+            prompt,
+            "leader l\nPreview: This is a much longer prompt preview that shoul…"
         );
     }
 
     #[test]
-    fn opencode_todos_text_renders_count() {
-        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: None,
-            last_tool: None,
-            todo_count: Some(3),
-            todo_preview: vec!["finish parser".into(), "wire UI".into()],
-            pending_permission: None,
-            last_error: None,
-            lsp_summary: None,
-            live_summary: None,
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        }));
+    fn compact_sidebar_text_truncates_summary_text() {
+        let compacted = compact_sidebar_text(
+            "This is a longer summary that should be shortened once it crosses the sidebar limit.",
+            40,
+        );
 
+        assert_eq!(compacted, "This is a longer summary that should be…");
+    }
+
+    #[test]
+    fn sidebar_status_activity_text_omits_activity_when_work_is_present() {
+        assert_eq!(sidebar_status_activity_text(true, "Ready".into()), None);
         assert_eq!(
-            todos.as_deref(),
-            Some("Open: 3 items\nNext: finish parser\nThen: wire UI\nMore: 1 more item")
+            sidebar_status_activity_text(false, "Ready".into()),
+            Some("Ready".to_string())
         );
     }
 
     #[test]
-    fn opencode_todos_text_keeps_full_count_with_short_preview() {
-        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: None,
-            last_tool: None,
-            todo_count: Some(5),
-            todo_preview: vec!["finish parser".into(), "wire UI".into(), "add tests".into()],
-            pending_permission: None,
-            last_error: None,
-            lsp_summary: None,
-            live_summary: None,
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        }));
-
+    fn compose_sidebar_status_text_omits_missing_usage_lines() {
+        assert_eq!(compose_sidebar_status_text(None, None, None), "");
         assert_eq!(
-            todos.as_deref(),
-            Some("Open: 5 items\nNext: finish parser\nThen: wire UI\nMore: 3 more items")
+            compose_sidebar_status_text(Some("Ready".into()), None, None),
+            "Activity: Ready"
+        );
+        assert_eq!(
+            compose_sidebar_status_text(None, Some("Input: 1.2K tokens".into()), None),
+            "Input: 1.2K tokens"
         );
     }
 
     #[test]
-    fn opencode_todos_text_truncates_preview_to_sidebar_width() {
-        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: None,
-            last_tool: None,
-            todo_count: Some(2),
-            todo_preview: vec![
-                "verify prompt updates are reflected immediately in the sidebar".into(),
-                "verify second long item also gets trimmed cleanly".into(),
-            ],
-            pending_permission: None,
-            last_error: None,
-            lsp_summary: None,
-            live_summary: None,
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        }));
-
+    fn compose_sidebar_summary_text_omits_missing_summary() {
+        assert_eq!(compose_sidebar_summary_text(None, None), "");
         assert_eq!(
-            todos.as_deref(),
-            Some("Open: 2 items\nNext: verify prompt updates a…\nThen: verify second long item…")
+            compose_sidebar_summary_text(None, Some("Short summary".into())),
+            "Short summary"
         );
     }
 
     #[test]
-    fn opencode_summary_prefers_live_sidecar_summary() {
-        let live = crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: None,
-            last_tool: None,
-            todo_count: None,
-            todo_preview: Vec::new(),
-            pending_permission: None,
-            last_error: None,
-            lsp_summary: None,
-            live_summary: Some("Live assistant summary".into()),
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        };
-
+    fn format_codex_usage_source_confidence_omits_exact_match_label() {
+        let session = codex_feature_session("sess-current");
         assert_eq!(
-            sidebar_summary_text(
-                &SessionKind::Opencode,
-                false,
-                Some("Persisted AMF summary"),
-                Some(&live),
-            ),
-            Some("Live assistant summary".into())
-        );
-    }
-
-    #[test]
-    fn summary_text_falls_back_to_feature_summary_without_live_opencode_summary() {
-        assert_eq!(
-            sidebar_summary_text(
-                &SessionKind::Opencode,
-                false,
-                Some("Persisted AMF summary that spans several words cleanly"),
-                None
-            ),
-            Some("Persisted AMF summary that\nspans several words cleanly".into())
-        );
-    }
-
-    #[test]
-    fn summary_text_prioritizes_generating_state_over_live_summary() {
-        let live = crate::app::opencode_storage::OpencodeSidebarData {
-            session_id: "ses-1".into(),
-            title: None,
-            latest_prompt: None,
-            status: None,
-            last_tool: None,
-            todo_count: None,
-            todo_preview: Vec::new(),
-            pending_permission: None,
-            last_error: None,
-            lsp_summary: None,
-            live_summary: Some("Live assistant summary".into()),
-            reasoning_tokens: None,
-            additions: None,
-            deletions: None,
-            files: None,
-        };
-
-        assert_eq!(
-            sidebar_summary_text(
-                &SessionKind::Opencode,
-                true,
-                Some("Persisted AMF summary"),
-                Some(&live),
-            ),
-            Some("Generating summary...".into())
-        );
-    }
-
-    #[test]
-    fn summary_text_is_absent_without_live_or_persisted_summary() {
-        assert_eq!(
-            sidebar_summary_text(&SessionKind::Opencode, false, None, None),
+            format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
             None
         );
     }
 
     #[test]
-    fn status_text_omits_unavailable_usage_line() {
-        assert_eq!(status_text("Ready", "Usage: unavailable", None), "Ready");
+    fn format_codex_usage_source_confidence_uses_inferred_match_label() {
+        let mut session = codex_feature_session("sess-current");
+        session.token_usage_source_match = Some(TokenUsageSourceMatch::Inferred);
+
+        assert_eq!(
+            format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
+            Some("Usage source: inferred workdir match".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_sidebar_work_text_prefers_pending_input_message() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![codex_feature_session("sess-current")],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Codex,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project.clone()],
+                session_bookmarks: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.pending_inputs.push(PendingInput {
+            session_id: "amf-feature".into(),
+            cwd: "/tmp/demo".into(),
+            message: "Need approval before applying the patch.".into(),
+            notification_type: "input-request".into(),
+            file_path: PathBuf::new(),
+            target_file_path: None,
+            relative_path: None,
+            change_id: None,
+            tool: None,
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: None,
+            project_name: Some("demo".into()),
+            feature_name: Some("feature".into()),
+            proceed_signal: None,
+            request_id: None,
+            reply_socket: None,
+        });
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "codex".into(),
+            "Codex".into(),
+            SessionKind::Codex,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        assert_eq!(
+            fallback_sidebar_work_text(&app, &project, &feature, &view).as_deref(),
+            Some("State: waiting for input\nRequest: Need approval before applying the patch.")
+        );
+    }
+
+    #[test]
+    fn build_agent_sidebar_data_still_builds_for_codex_with_plan_sources_present() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![codex_feature_session("sess-current")],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature],
+            created_at: now,
+            preferred_agent: AgentKind::Codex,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.sidebar_plan_cache
+            .insert("amf-feature".into(), "Plan\n1. Inspect\n2. Patch".into());
+        app.apply_codex_live_event(
+            "amf-feature",
+            &serde_json::json!({
+                "type": "plan",
+                "payload": { "text": "1. Inspect\n2. Patch" }
+            }),
+        );
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "codex".into(),
+            "Codex".into(),
+            SessionKind::Codex,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
+        assert_eq!(sidebar.agent_kind, SessionKind::Codex);
     }
 }

@@ -3,11 +3,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{TextSelection, ViewState};
-use crate::project::VibeMode;
+use crate::project::{SessionKind, VibeMode};
 use crate::theme::Theme;
 
 const LEADER_COMMANDS: &[(&str, &str)] = &[
@@ -35,14 +35,13 @@ const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
 const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
 
 #[derive(Debug, Clone)]
-pub(crate) struct SidebarData {
-    pub title: &'static str,
-    pub title_color: Color,
+pub(crate) struct AgentSidebarData {
+    pub agent_kind: SessionKind,
     pub status_text: String,
-    pub work_text: Option<String>,
     pub prompt_text: String,
+    pub work_text: Option<String>,
     pub todos_text: Option<String>,
-    pub summary_text: Option<String>,
+    pub summary_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,13 +58,13 @@ pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
 
 fn preferred_sidebar_width(view: &ViewState) -> u16 {
     match view.session_kind {
-        crate::project::SessionKind::Opencode => OPENCODE_SIDEBAR_WIDTH,
+        SessionKind::Opencode => OPENCODE_SIDEBAR_WIDTH,
         _ => CLAUDE_SIDEBAR_WIDTH,
     }
 }
 
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
-    if !view.has_sidebar() {
+    if view.sidebar_session_kind().is_none() {
         return None;
     }
 
@@ -134,7 +133,7 @@ pub fn draw(
     frame: &mut Frame,
     view: &ViewState,
     pane_content: &str,
-    sidebar_data: Option<&SidebarData>,
+    sidebar_data: Option<&AgentSidebarData>,
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
@@ -267,7 +266,14 @@ pub fn draw(
     frame.render_widget(header, header_area);
 
     if let Some(sidebar_area) = layout.sidebar {
-        draw_sidebar(frame, sidebar_area, sidebar_data, theme);
+        let fallback_agent_kind = view.sidebar_session_kind().unwrap_or(SessionKind::Claude);
+        draw_agent_sidebar(
+            frame,
+            sidebar_area,
+            sidebar_data,
+            fallback_agent_kind,
+            theme,
+        );
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
@@ -318,18 +324,33 @@ pub fn draw(
     }
 }
 
-fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme: &Theme) {
+fn draw_agent_sidebar(
+    frame: &mut Frame,
+    area: Rect,
+    data: Option<&AgentSidebarData>,
+    fallback_agent_kind: SessionKind,
+    theme: &Theme,
+) {
     if area.width < 16 || area.height < 8 {
         return;
     }
 
+    let (agent_kind, title, title_color) = data
+        .map(|data| {
+            let (title, color) = sidebar_title_and_color(&data.agent_kind, theme);
+            (data.agent_kind.clone(), title, color)
+        })
+        .unwrap_or_else(|| {
+            let kind = fallback_agent_kind;
+            let (title, color) = sidebar_title_and_color(&kind, theme);
+            (kind, title, color)
+        });
+
     let block = Block::default()
         .title(Span::styled(
-            data.map(|data| data.title).unwrap_or(" Sidebar "),
+            format!(" {title} "),
             Style::default()
-                .fg(data
-                    .map(|data| data.title_color)
-                    .unwrap_or(theme.primary.to_color()))
+                .fg(title_color)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
@@ -342,48 +363,64 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
         return;
     }
 
-    let fallback = SidebarData {
-        title: " Sidebar ",
-        title_color: theme.primary.to_color(),
-        status_text: "No sidebar data available.".to_string(),
+    let fallback = AgentSidebarData {
+        agent_kind,
+        status_text: String::new(),
+        prompt_text: String::new(),
         work_text: None,
-        prompt_text: "No recent prompt.\nleader+l for history.".to_string(),
         todos_text: None,
-        summary_text: None,
+        summary_text: String::new(),
     };
     let data = data.unwrap_or(&fallback);
-    let mut sections_with_content = vec![("Status", data.status_text.as_str())];
-    if let Some(work_text) = data.work_text.as_deref() {
-        sections_with_content.push(("Work", work_text));
-    }
-    sections_with_content.push(("Prompt", data.prompt_text.as_str()));
-    if let Some(todos_text) = data.todos_text.as_deref() {
-        sections_with_content.push(("Todos", todos_text));
-    }
-    if let Some(summary_text) = data.summary_text.as_deref() {
-        sections_with_content.push(("Summary", summary_text));
+    let mut constraints = Vec::new();
+    let mut sections_with_content = Vec::new();
+
+    if !data.status_text.trim().is_empty() {
+        constraints.push(Constraint::Length(sidebar_section_height(
+            &data.status_text,
+            inner.width,
+            2,
+            4,
+        )));
+        sections_with_content.push(("Status", data.status_text.as_str()));
     }
 
-    let mut constraints = Vec::with_capacity(sections_with_content.len() + 1);
-    for (title, body) in &sections_with_content {
-        let (min_lines, max_lines) = match *title {
-            "Status" => (2, 5),
-            "Work" => (2, 4),
-            "Prompt" => (2, 3),
-            "Todos" => (3, 4),
-            _ => (2, 3),
-        };
-        constraints.push(Constraint::Length(sidebar_section_height(
-            body, min_lines, max_lines,
+    let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
+
+    if let Some(work_text) = data.work_text.as_deref() {
+        constraints.push(Constraint::Min(sidebar_section_height(
+            work_text,
+            inner.width,
+            2,
+            6,
         )));
+        sections_with_content.push(("Work", work_text));
     }
-    constraints.push(Constraint::Min(0));
+    if !is_opencode && !data.summary_text.trim().is_empty() {
+        let summary_height = summary_section_height(&data.summary_text, inner.width);
+        constraints.push(Constraint::Length(summary_height));
+        sections_with_content.push(("Summary", data.summary_text.as_str()));
+    }
+    if !data.prompt_text.trim().is_empty() {
+        let prompt_height = prompt_section_height(&data.prompt_text, inner.width);
+        constraints.push(Constraint::Length(prompt_height));
+        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
+    }
+    if let Some(todos_text) = data.todos_text.as_deref() {
+        let todos_height = sidebar_section_height(todos_text, inner.width, 2, 4);
+        constraints.push(Constraint::Length(todos_height));
+        sections_with_content.push(("Todos", todos_text));
+    }
+    if is_opencode && !data.summary_text.trim().is_empty() {
+        let summary_height = summary_section_height(&data.summary_text, inner.width);
+        constraints.push(Constraint::Length(summary_height));
+        sections_with_content.push(("Summary", data.summary_text.as_str()));
+    }
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
-
     for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(title, theme);
         let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
@@ -395,28 +432,56 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, data: Option<&SidebarData>, theme
                         format!(" {} ", title),
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ))
-                    .borders(Borders::TOP)
-                    .padding(Padding::new(1, 0, 0, 0))
+                    .borders(Borders::ALL)
                     .border_style(Style::default().fg(accent)),
             );
         frame.render_widget(paragraph, *section);
     }
 }
 
+fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static str, Color) {
+    match agent_kind {
+        SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
+        SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
+        SessionKind::Opencode => ("Opencode Sidebar", theme.session_icon_opencode.to_color()),
+        _ => ("Agent Sidebar", theme.border.to_color()),
+    }
+}
+
 fn sidebar_section_color(title: &str, theme: &Theme) -> Color {
     match title {
         "Status" => theme.warning.to_color(),
-        "Work" => theme.secondary.to_color(),
         "Prompt" => theme.secondary.to_color(),
+        "Work" => theme.primary.to_color(),
         "Todos" => theme.success.to_color(),
         "Summary" => theme.info.to_color(),
         _ => theme.border.to_color(),
     }
 }
 
-fn sidebar_section_height(body: &str, min_inner_lines: u16, max_inner_lines: u16) -> u16 {
-    let inner_lines = body.lines().count() as u16;
-    inner_lines.clamp(min_inner_lines, max_inner_lines) + 1
+fn sidebar_section_height(
+    body: &str,
+    section_width: u16,
+    min_inner_lines: u16,
+    max_inner_lines: u16,
+) -> u16 {
+    let inner_width = section_width.saturating_sub(2).max(1) as usize;
+    let inner_lines = body
+        .lines()
+        .map(|line| {
+            let line_width = line.chars().count().max(1);
+            line_width.div_ceil(inner_width)
+        })
+        .sum::<usize>() as u16;
+    inner_lines.clamp(min_inner_lines, max_inner_lines) + 2
+}
+
+fn prompt_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 3)
+}
+
+fn summary_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 4)
 }
 
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
@@ -426,7 +491,9 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
                 Line::from(vec![
                     Span::styled(
                         format!("{label}: "),
-                        sidebar_label_style(title, label, theme),
+                        Style::default()
+                            .fg(sidebar_section_color(title, theme))
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         value.to_string(),
@@ -443,23 +510,6 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
         .collect()
 }
 
-fn sidebar_label_style(title: &str, label: &str, theme: &Theme) -> Style {
-    let color = match (title, label) {
-        ("Status", "In" | "Out" | "Eff" | "Cost" | "Reason" | "Changes") => {
-            theme.status_detail.to_color()
-        }
-        ("Todos", "Next" | "Then") => theme.text_muted.to_color(),
-        (_, "More") => theme.text_muted.to_color(),
-        _ => sidebar_section_color(title, theme),
-    };
-
-    let mut style = Style::default().fg(color);
-    if !matches!((title, label), ("Todos", "Next" | "Then") | (_, "More")) {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    style
-}
-
 fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> Style {
     let lower = value.to_lowercase();
     let color = if label == "State" {
@@ -469,30 +519,18 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
             "stopped" => theme.status_stopped.to_color(),
             _ => theme.text.to_color(),
         }
-    } else if label == "Error" || lower.contains("error") || lower.contains("failed") {
-        theme.danger.to_color()
-    } else if lower.contains("warning") {
-        theme.warning.to_color()
     } else if lower.contains("waiting") {
         theme.status_waiting.to_color()
     } else if lower.contains("thinking") || lower.contains("running tool") {
         theme.info.to_color()
-    } else if lower.contains("ready") || lower.contains("healthy") {
+    } else if lower.contains("ready") {
         theme.success.to_color()
-    } else if lower.contains("indexing") || lower.contains("loading") || lower.contains("syncing") {
-        theme.info.to_color()
     } else if lower.contains("generating") {
         theme.info.to_color()
-    } else if title == "Status"
-        && matches!(label, "In" | "Out" | "Eff" | "Cost" | "Reason" | "Changes")
-    {
-        theme.status_detail.to_color()
-    } else if title == "Todos" && matches!(label, "Next" | "Then") {
-        theme.text.to_color()
-    } else if label == "More" {
-        theme.text_muted.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
+    } else if title == "Todos" {
+        theme.success.to_color()
     } else if title == "Prompt" {
         theme.secondary.to_color()
     } else if title == "Summary" {
@@ -505,7 +543,6 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
 
     let mut style = Style::default().fg(color);
     if label == "State"
-        || label == "Error"
         || lower.contains("waiting")
         || lower.contains("thinking")
         || lower.contains("running tool")
@@ -716,12 +753,21 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_view(session_kind: crate::project::SessionKind) -> ViewState {
+        let (window, label) = match session_kind {
+            crate::project::SessionKind::Claude => ("claude", "Claude"),
+            crate::project::SessionKind::Codex => ("codex", "Codex"),
+            crate::project::SessionKind::Opencode => ("opencode", "Opencode"),
+            crate::project::SessionKind::Terminal => ("terminal", "Terminal"),
+            crate::project::SessionKind::Nvim => ("nvim", "Nvim"),
+            crate::project::SessionKind::Vscode => ("vscode", "VSCode"),
+            crate::project::SessionKind::Custom => ("custom", "Custom"),
+        };
         ViewState::new(
             "proj".into(),
             "feat".into(),
             "amf-feat".into(),
-            "claude".into(),
-            "Claude".into(),
+            window.into(),
+            label.into(),
             session_kind,
             VibeMode::Vibeless,
             false,
@@ -729,21 +775,57 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_width_is_reserved_when_view_is_wide_enough() {
+    fn claude_sidebar_width_is_reserved_when_view_is_wide_enough() {
         let width = viewing_main_width(&sample_view(crate::project::SessionKind::Claude), 120);
         assert_eq!(width, 88);
     }
 
     #[test]
-    fn opencode_sidebar_reserves_more_width_when_view_is_wide_enough() {
-        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Opencode), 120);
-        assert_eq!(width, 84);
+    fn codex_sidebar_width_is_reserved_when_view_is_wide_enough() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
+        assert_eq!(width, 88);
     }
 
     #[test]
-    fn sessions_without_sidebar_keep_full_width() {
-        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Codex), 120);
+    fn non_sidebar_sessions_keep_full_width() {
+        let width = viewing_main_width(&sample_view(crate::project::SessionKind::Terminal), 120);
         assert_eq!(width, 120);
+    }
+
+    #[test]
+    fn status_section_height_is_compact_for_short_status_text() {
+        assert_eq!(
+            sidebar_section_height("Activity: Ready\nInput: 1.2K tokens", 30, 2, 4),
+            4
+        );
+    }
+
+    #[test]
+    fn work_section_height_is_compact_for_short_work_text() {
+        assert_eq!(
+            sidebar_section_height("State: running tool\nTool: Bash", 30, 2, 6),
+            4
+        );
+    }
+
+    #[test]
+    fn prompt_section_height_is_compact() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30), 3);
+    }
+
+    #[test]
+    fn prompt_section_height_stays_compact_without_work() {
+        assert_eq!(prompt_section_height("Preview: Continue", 30), 3);
+    }
+
+    #[test]
+    fn summary_section_height_is_compact() {
+        assert_eq!(summary_section_height("Short summary", 30), 3);
+    }
+
+    #[test]
+    fn summary_section_height_stays_compact_without_work() {
+        assert_eq!(summary_section_height("Short summary", 30), 3);
     }
 
     #[test]
@@ -752,14 +834,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let view = sample_view(crate::project::SessionKind::Claude);
         let theme = Theme::default();
-        let sidebar = SidebarData {
-            title: " Claude Sidebar ",
-            title_color: theme.session_icon_claude.to_color(),
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
-            prompt_text: "Resume the task.".into(),
             todos_text: None,
-            summary_text: Some("Sidebar ready.".into()),
+            summary_text: "Sidebar ready.".into(),
         };
 
         terminal
@@ -784,22 +865,22 @@ mod tests {
         assert!(rendered.contains("Sidebar ready."));
         assert!(rendered.contains("Waiting for input"));
         assert!(rendered.contains("Resume the task."));
+        assert!(!rendered.contains("Session"));
     }
 
     #[test]
-    fn opencode_sidebar_shell_renders_in_view() {
-        let backend = TestBackend::new(120, 32);
+    fn codex_sidebar_shell_renders_in_view() {
+        let backend = TestBackend::new(120, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let view = sample_view(crate::project::SessionKind::Opencode);
+        let view = sample_view(crate::project::SessionKind::Codex);
         let theme = Theme::default();
-        let sidebar = SidebarData {
-            title: " Opencode Sidebar ",
-            title_color: theme.session_icon_opencode.to_color(),
-            status_text: "Activity: Ready\nChanges: 2 files · +10 / -3".into(),
-            work_text: Some("State: busy\nTool: edit".into()),
-            prompt_text: "implement the sidebar".into(),
-            todos_text: Some("Open: 3 items".into()),
-            summary_text: Some("Summary ready.".into()),
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nInput: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: None,
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
         };
 
         terminal
@@ -820,12 +901,306 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
 
-        assert!(rendered.contains("Opencode Sidebar"));
-        assert!(!rendered.contains("Session"));
+        assert!(rendered.contains("Codex Sidebar"));
+        assert!(rendered.contains("Codex sidebar ready."));
+        assert!(rendered.contains("Continue the"));
+    }
+
+    #[test]
+    fn codex_sidebar_renders_work_section_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
         assert!(rendered.contains("Work"));
-        assert!(rendered.contains("Todos"));
-        assert!(rendered.contains("Summary ready."));
-        assert!(rendered.contains("Changes: 2 files"));
-        assert!(rendered.contains("implement"));
+        assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn codex_sidebar_places_work_above_prompt_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let work_index = rendered.find("Work").unwrap();
+        let prompt_index = rendered.find("Prompt").unwrap();
+
+        assert!(work_index < prompt_index);
+    }
+    #[test]
+    fn codex_sidebar_places_summary_above_prompt_when_present() {
+        let backend = TestBackend::new(120, 34);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let summary_index = rendered.find("Summary").unwrap();
+        let prompt_index = rendered.find("Prompt").unwrap();
+
+        assert!(summary_index < prompt_index);
+    }
+
+    #[test]
+    fn codex_sidebar_lets_work_expand_and_keeps_summary_compact() {
+        let backend = TestBackend::new(120, 38);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some(
+                "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
+                    .into(),
+            ),
+            todos_text: None,
+            summary_text: "Small summary.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Queue"));
+        assert!(rendered.contains("cargo test"));
+        assert!(rendered.contains("Small summary."));
+    }
+
+    #[test]
+    fn codex_sidebar_skips_empty_status_section() {
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: String::new(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Status"));
+        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("Work"));
+    }
+
+    #[test]
+    fn codex_sidebar_skips_empty_summary_section() {
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Input: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
+            summary_text: String::new(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Summary"));
+        assert!(rendered.contains("Prompt"));
+        assert!(rendered.contains("Work"));
+    }
+
+    #[test]
+    fn codex_sidebar_skips_empty_prompt_section() {
+        let backend = TestBackend::new(120, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Input: 1.2K tokens".into(),
+            prompt_text: String::new(),
+            work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    Some(&sidebar),
+                    false,
+                    0,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(!rendered.contains("Prompt"));
+        assert!(rendered.contains("Status"));
+        assert!(rendered.contains("Work"));
+    }
+
+    #[test]
+    fn codex_sidebar_without_data_keeps_codex_title_and_skips_placeholder_sections() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Codex);
+        let theme = Theme::default();
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &view, "hello", None, false, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Codex Sidebar"));
+        assert!(!rendered.contains("Claude Sidebar"));
+        assert!(!rendered.contains("Status"));
+        assert!(!rendered.contains("Prompt"));
+        assert!(!rendered.contains("Summary"));
     }
 }

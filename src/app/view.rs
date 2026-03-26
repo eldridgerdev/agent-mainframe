@@ -2,7 +2,6 @@ use anyhow::Result;
 
 use super::*;
 use crate::tmux::TmuxManager;
-use crate::worktree::WorktreeManager;
 
 impl App {
     fn feature_workdir_for_view(&self, view: &ViewState) -> Option<PathBuf> {
@@ -29,9 +28,10 @@ impl App {
             self.selected_feature().map(|(_, feature)| feature.workdir.clone())?
         };
 
-        let repo_root = WorktreeManager::is_worktree(&workdir)
-            .then(|| WorktreeManager::primary_worktree_root(&workdir).ok())
-            .flatten()
+        let repo_root = self
+            .worktree
+            .repo_root(&workdir)
+            .ok()
             .filter(|root| root != &workdir);
 
         Some((workdir, repo_root))
@@ -93,7 +93,13 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
         self.refresh_latest_prompt_for_feature(pi, fi);
-        self.refresh_task_state_for_feature(pi, fi);
+        self.refresh_sidebar_plan_for_feature(pi, fi);
+        self.request_codex_sidebar_metadata_for_view(
+            &project_name,
+            &feature_name,
+            &session_window,
+            &session_kind,
+        );
         self.schedule_sidebar_load_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
@@ -160,11 +166,7 @@ impl App {
             }
         };
 
-        self.open_latest_prompt_for_view(view);
-    }
-
-    pub fn open_latest_prompt_for_view(&mut self, view: ViewState) {
-        let feature_data = self
+        let feature_prompt_context = self
             .store
             .projects
             .iter()
@@ -176,26 +178,39 @@ impl App {
                     .find(|feature| feature.name == view.feature_name)
             })
             .map(|feature| {
-                let preferred_opencode_session_id = feature
+                let preferred_session_id = feature
                     .sessions
                     .iter()
-                    .find(|session| {
-                        session.kind == SessionKind::Opencode && session.tmux_window == view.window
-                    })
-                    .and_then(|session| session.token_usage_source.as_ref())
-                    .filter(|source| {
-                        source.provider == crate::token_tracking::TokenUsageProvider::Opencode
-                    })
-                    .map(|source| source.id.clone());
+                    .find(|session| session.tmux_window == view.window)
+                    .and_then(|session| {
+                        session.token_usage_source.as_ref().and_then(|source| {
+                            let provider = &source.provider;
+                            match view.session_kind {
+                                SessionKind::Opencode
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Opencode =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                SessionKind::Codex
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Codex =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                _ => None,
+                            }
+                        })
+                    });
 
                 (
                     feature.workdir.clone(),
                     view.session_kind.clone(),
-                    preferred_opencode_session_id,
+                    preferred_session_id,
                 )
             });
 
-        let Some((workdir, session_kind, preferred_opencode_session_id)) = feature_data else {
+        let Some((workdir, session_kind, preferred_session_id)) = feature_prompt_context else {
             self.mode = AppMode::Viewing(view);
             self.message = Some("Error: Could not resolve feature workdir".into());
             return;
@@ -204,7 +219,7 @@ impl App {
         let prompts = crate::app::util::read_all_prompts_for_session(
             &workdir,
             Some(&session_kind),
-            preferred_opencode_session_id.as_deref(),
+            preferred_session_id.as_deref(),
         );
         self.mode = AppMode::LatestPrompt(LatestPromptState {
             prompts,
@@ -334,13 +349,7 @@ impl App {
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(
-                files[0].clone(),
-                workdir,
-                repo_root,
-                Some(view),
-                None,
-            );
+            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view, None);
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
@@ -358,45 +367,15 @@ impl App {
     pub fn open_markdown_viewer_for_command(
         &mut self,
         from_view: Option<ViewState>,
-        plan_only: bool,
+        _plan_only: bool,
     ) -> Result<()> {
-        let (workdir, repo_root) = match self.feature_markdown_context(from_view.as_ref()) {
-            Some(context) => context,
-            None => {
-                self.message = Some("No feature selected".into());
-                return Ok(());
-            }
+        let Some(view) = from_view else {
+            self.message = Some("No feature selected".into());
+            return Ok(());
         };
 
-        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
-        if files.is_empty() {
-            self.message = Some(
-                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
-                    .into(),
-            );
-            return Ok(());
-        }
-
-        if files.len() == 1 {
-            return self.open_markdown_viewer_path(
-                files[0].clone(),
-                workdir,
-                repo_root,
-                from_view,
-                None,
-            );
-        }
-
-        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
-            files,
-            selected: 0,
-            plan_only,
-            workdir,
-            repo_root,
-            from_view,
-        });
-        self.message = None;
-        Ok(())
+        self.mode = AppMode::Viewing(view);
+        self.open_markdown_viewer_from_view()
     }
 
     pub fn open_markdown_viewer_path(
@@ -404,15 +383,13 @@ impl App {
         path: PathBuf,
         workdir: PathBuf,
         repo_root: Option<PathBuf>,
-        view: Option<ViewState>,
+        view: ViewState,
         return_to_picker: Option<crate::app::MarkdownFilePickerState>,
     ) -> Result<()> {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
-                if let Some(view) = view {
-                    self.mode = AppMode::Viewing(view);
-                }
+                self.mode = AppMode::Viewing(view);
                 self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
                 return Ok(());
             }
@@ -428,7 +405,7 @@ impl App {
             rendered_width: 0,
             rendered_lines: Vec::new(),
             return_to_picker,
-            from_view: view,
+            from_view: Some(view),
         });
         self.message = None;
         Ok(())

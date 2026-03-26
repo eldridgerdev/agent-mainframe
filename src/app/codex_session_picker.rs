@@ -265,7 +265,7 @@ impl App {
         for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Codex => {
-                    session.token_usage_source = Some(TokenUsageSource {
+                    session.set_token_usage_source_exact(TokenUsageSource {
                         provider: TokenUsageProvider::Codex,
                         id: codex_session_id.to_string(),
                     });

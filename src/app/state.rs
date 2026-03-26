@@ -117,15 +117,24 @@ impl ViewState {
     }
 
     pub fn has_sidebar(&self) -> bool {
-        match self.session_kind {
-            SessionKind::Claude => self.sidebar_visible,
-            SessionKind::Opencode => self.sidebar_visible,
-            _ => false,
-        }
+        self.sidebar_session_kind().is_some()
     }
 
     pub fn has_claude_sidebar(&self) -> bool {
         self.session_kind == SessionKind::Claude && self.sidebar_visible
+    }
+
+    pub fn sidebar_session_kind(&self) -> Option<SessionKind> {
+        if !self.sidebar_visible {
+            return None;
+        }
+
+        match self.session_kind {
+            SessionKind::Claude | SessionKind::Codex | SessionKind::Opencode => {
+                Some(self.session_kind.clone())
+            }
+            _ => None,
+        }
     }
 }
 

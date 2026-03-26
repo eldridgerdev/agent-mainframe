@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
+use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -8,6 +9,10 @@ use std::sync::{
     mpsc::{self, Receiver},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+
+use crate::debug::{LogLevel, log_to_file};
 use crate::traits::TmuxOps;
 
 pub struct TmuxManager;
@@ -22,6 +27,7 @@ struct TmuxRuntime {
     binary: OsString,
     socket: Option<PathBuf>,
     path_override: Option<OsString>,
+    manages_private_socket: bool,
 }
 
 impl TmuxRuntime {
@@ -39,16 +45,16 @@ impl TmuxRuntime {
             })
             .unwrap_or_else(|| OsString::from("tmux"));
 
-        let socket = std::env::var_os("AMF_TMUX_SOCKET")
-            .map(PathBuf::from)
-            .or_else(|| tmux_env.as_deref().and_then(Self::socket_from_tmux_env))
-            .or_else(|| {
-                if using_existing_tmux {
-                    None
-                } else {
-                    Some(Self::private_socket_path())
-                }
-            });
+        let (socket, manages_private_socket) =
+            if let Some(socket) = std::env::var_os("AMF_TMUX_SOCKET").map(PathBuf::from) {
+                (Some(socket), false)
+            } else if let Some(socket) = tmux_env.as_deref().and_then(Self::socket_from_tmux_env) {
+                (Some(socket), false)
+            } else if using_existing_tmux {
+                (None, false)
+            } else {
+                (Some(Self::private_socket_path()), true)
+            };
 
         let path_override = Self::prepend_binary_dir_to_path(&binary);
 
@@ -56,6 +62,7 @@ impl TmuxRuntime {
             binary,
             socket,
             path_override,
+            manages_private_socket,
         }
     }
 
@@ -202,6 +209,107 @@ impl TmuxManager {
         }
     }
 
+    fn output_indicates_socket_startup_failure(output: &Output) -> bool {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = format!("{stderr}\n{stdout}").to_ascii_lowercase();
+
+        detail.contains("server exited unexpectedly")
+            || detail.contains("error connecting to")
+            || detail.contains("no server running")
+            || detail.contains("couldn't create socket")
+    }
+
+    fn private_socket_server_responding() -> bool {
+        Self::command()
+            .arg("list-sessions")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    fn remove_stale_socket_file(socket: &Path) -> bool {
+        let metadata = match fs::symlink_metadata(socket) {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+
+        #[cfg(unix)]
+        if !metadata.file_type().is_socket() {
+            log_to_file(
+                LogLevel::Warn,
+                "tmux",
+                &format!(
+                    "Refusing to remove AMF tmux socket path because it is not a socket: {}",
+                    socket.display()
+                ),
+            );
+            return false;
+        }
+
+        match fs::remove_file(socket) {
+            Ok(()) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "Removed stale AMF tmux socket and will retry session start: {}",
+                        socket.display()
+                    ),
+                );
+                true
+            }
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "Failed to remove stale AMF tmux socket {}: {err}",
+                        socket.display()
+                    ),
+                );
+                false
+            }
+        }
+    }
+
+    fn should_retry_after_private_socket_cleanup(args: &[&str], output: &Output) -> bool {
+        if !matches!(args.first(), Some(&"new-session")) {
+            return false;
+        }
+
+        let runtime = Self::runtime();
+        let Some(socket) = runtime.socket.as_ref() else {
+            return false;
+        };
+
+        runtime.manages_private_socket
+            && socket.exists()
+            && Self::output_indicates_socket_startup_failure(output)
+            && !Self::private_socket_server_responding()
+    }
+
+    fn run_with_private_socket_recovery(args: &[&str], context: &str, failure: &str) -> Result<()> {
+        let output = Self::output(args, context)?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        if Self::should_retry_after_private_socket_cleanup(args, &output) {
+            if let Some(socket) = Self::runtime().socket.as_ref() {
+                if Self::remove_stale_socket_file(socket) {
+                    let retry_output = Self::output(args, context)?;
+                    if retry_output.status.success() {
+                        return Ok(());
+                    }
+                    bail!("{}", Self::command_error(&retry_output, failure));
+                }
+            }
+        }
+
+        bail!("{}", Self::command_error(&output, failure));
+    }
+
     fn stream_child_output<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) {
         if let Some(reader) = reader {
             std::thread::spawn(move || {
@@ -268,7 +376,7 @@ impl TmuxManager {
         let workdir_str = workdir.to_string_lossy();
 
         // Create detached session with first window named "claude"
-        Self::run(
+        Self::run_with_private_socket_recovery(
             &[
                 "new-session",
                 "-d",
@@ -336,7 +444,7 @@ impl TmuxManager {
 
         let workdir_str = workdir.to_string_lossy();
 
-        Self::run(
+        Self::run_with_private_socket_recovery(
             &[
                 "new-session",
                 "-d",
@@ -882,5 +990,78 @@ impl TmuxOps for TmuxManager {
 
     fn kill_session(&self, session: &str) -> Result<()> {
         TmuxManager::kill_session(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TmuxManager;
+    use std::fs;
+    use std::process::{ExitStatus, Output};
+
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    fn failure_status() -> ExitStatus {
+        ExitStatus::from_raw(1)
+    }
+
+    #[cfg(windows)]
+    fn failure_status() -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(1)
+    }
+
+    fn output_with(stderr: &str, stdout: &str) -> Output {
+        Output {
+            status: failure_status(),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn detects_tmux_socket_startup_failures_from_stderr() {
+        let output = output_with("server exited unexpectedly", "");
+        assert!(TmuxManager::output_indicates_socket_startup_failure(
+            &output
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_tmux_failures() {
+        let output = output_with("can't find pane", "");
+        assert!(!TmuxManager::output_indicates_socket_startup_failure(
+            &output
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removes_stale_socket_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("tmux.sock");
+
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        drop(listener);
+
+        assert!(socket_path.exists());
+        assert!(TmuxManager::remove_stale_socket_file(&socket_path));
+        assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn does_not_remove_regular_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("tmux.sock");
+        fs::write(&socket_path, "not a socket").unwrap();
+
+        assert!(socket_path.exists());
+        assert!(!TmuxManager::remove_stale_socket_file(&socket_path));
+        assert!(socket_path.exists());
     }
 }

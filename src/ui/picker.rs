@@ -148,17 +148,16 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         .split(inner);
 
     let mut items: Vec<ListItem> = Vec::new();
-    let mut current_section = None;
-    let mut selected_item_idx = None;
+    let mut current_source = String::new();
 
     for (i, cmd) in state.commands.iter().enumerate() {
-        if current_section != Some(cmd.section) {
-            if current_section.is_some() {
+        if cmd.source != current_source {
+            if !current_source.is_empty() {
                 items.push(ListItem::new(Line::from("")));
             }
-            current_section = Some(cmd.section);
+            current_source = cmd.source.clone();
             items.push(ListItem::new(Line::from(Span::styled(
-                format!("  {}", cmd.section.title()),
+                format!("  {} Commands", cmd.source),
                 Style::default()
                     .fg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -166,29 +165,18 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         }
 
         let is_selected = i == state.selected;
-        if is_selected {
-            selected_item_idx = Some(items.len());
-        }
-
-        let prefix = match &cmd.action {
-            CommandAction::SlashCommand { .. } => "/",
-            CommandAction::Local { .. } => "amf",
+        let prefix = match cmd.action {
+            CommandAction::SlashCommand => "/",
+            CommandAction::Local { .. } => "*",
+            CommandAction::CodexLiveDemo(_) => "*",
         };
-        let prefix_style = match &cmd.action {
-            CommandAction::SlashCommand { .. } => Style::default().fg(theme.text_muted.to_color()),
-            CommandAction::Local { .. } => Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        };
-
-        let mut spans = vec![
+        let line = Line::from(vec![
             Span::styled(
-                if is_selected { "  > " } else { "    " },
-                Style::default().fg(theme.warning.to_color()),
+                format!("    {prefix}"),
+                Style::default().fg(theme.text_muted.to_color()),
             ),
-            Span::styled(format!("{prefix:>4} "), prefix_style),
             Span::styled(
-                &cmd.title,
+                &cmd.name,
                 if is_selected {
                     Style::default()
                         .fg(theme.text.to_color())
@@ -197,23 +185,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
                     Style::default().fg(theme.text.to_color())
                 },
             ),
-        ];
-
-        if let Some(description) = &cmd.description {
-            spans.push(Span::styled(
-                format!("  {description}"),
-                Style::default().fg(theme.text_muted.to_color()),
-            ));
-        }
-
-        if let Some(path) = &cmd.path {
-            spans.push(Span::styled(
-                format!("  {}", path.display()),
-                Style::default().fg(theme.text_muted.to_color()),
-            ));
-        }
-
-        let line = Line::from(spans);
+        ]);
 
         if is_selected {
             items.push(
@@ -225,9 +197,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
     }
 
     let list = List::new(items);
-    let mut list_state = ListState::default();
-    list_state.select(selected_item_idx);
-    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+    frame.render_widget(list, chunks[0]);
 
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -239,12 +209,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(
-            " execute  ",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-        Span::styled("D", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" local  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(" run  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
     ]));

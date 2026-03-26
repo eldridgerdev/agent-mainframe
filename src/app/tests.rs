@@ -3,7 +3,9 @@ use super::setup::{
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
-use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
+use super::util::{
+    latest_prompt_path, read_all_prompts, read_latest_prompt, shorten_path, slugify,
+};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
@@ -13,13 +15,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-fn prompt_entry(text: &str) -> crate::app::util::PromptEntry {
-    crate::app::util::PromptEntry {
-        text: text.to_string(),
-        timestamp: None,
-    }
+fn prompt_entry(text: &str) -> String {
+    text.to_string()
 }
-use uuid::Uuid;
 
 // ── slugify ───────────────────────────────────────────────
 
@@ -113,7 +111,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     app.sidebar_load_tx
         .send(super::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
-            latest_prompt: Some(prompt_entry("lazy prompt")),
+            latest_prompt: Some("lazy prompt".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
                 title: Some("Loaded later".to_string()),
@@ -138,7 +136,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
 
     assert_eq!(
         app.latest_prompt_for_session("amf-my-feat"),
-        Some(&prompt_entry("lazy prompt"))
+        Some("lazy prompt")
     );
     assert_eq!(
         app.opencode_sidebar_cache
@@ -147,6 +145,17 @@ fn poll_sidebar_load_results_updates_feature_caches() {
         Some("Loaded later")
     );
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
+    let workdir = TempDir::new().unwrap();
+    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
+    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
+    std::fs::write(&codex_path, "codex prompt history").unwrap();
+
+    let prompts = read_all_prompts(workdir.path());
+    assert_eq!(prompts.len(), 1);
+    assert_eq!(prompts[0].text, "codex prompt history");
 }
 
 // ── AppConfig defaults ───────────────────────────────────
@@ -393,10 +402,12 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 // ── Phase 3: App integration tests using mock trait objects ──
 
-use crate::project::{AgentKind, Feature, FeatureSession, Project, SessionKind};
+use crate::project::{
+    AgentKind, Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch,
+};
 use crate::token_tracking::{SessionTokenTracker, TokenUsageProvider, TokenUsageSource};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
-use chrono::{Duration, Utc};
+use chrono::{Duration, TimeZone, Utc};
 use tempfile::NamedTempFile;
 
 /// Build a minimal `ProjectStore` with one project and one
@@ -495,6 +506,7 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
         tmux_window: label.to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: Utc::now(),
         command: None,
         on_stop: None,
@@ -2579,15 +2591,15 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
     );
 
     let now = Utc::now();
-    let resume_id = format!("resume-{}", Uuid::new_v4());
     let sessions = vec![
         crate::project::FeatureSession {
             id: "agent-session".to_string(),
             kind: SessionKind::Claude,
             label: "Claude 1".to_string(),
             tmux_window: "claude".to_string(),
-            claude_session_id: Some(resume_id),
+            claude_session_id: Some("resume-me".to_string()),
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: now,
             command: None,
             on_stop: None,
@@ -2601,6 +2613,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             tmux_window: "terminal".to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: now,
             command: None,
             on_stop: None,
@@ -2720,6 +2733,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         tmux_window: "custom".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: Some("./start.sh".to_string()),
         on_stop: None,
@@ -2776,6 +2790,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         tmux_window: "codex".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,
@@ -2879,6 +2894,7 @@ fn sync_session_status_shows_agent_token_usage() {
             provider: TokenUsageProvider::Claude,
             id: "claude-123".to_string(),
         }),
+        token_usage_source_match: Some(TokenUsageSourceMatch::Exact),
         created_at: now,
         command: None,
         on_stop: None,
@@ -2940,6 +2956,114 @@ fn sync_session_status_shows_agent_token_usage() {
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("12 in · 4 out · 32 eff · <$0.01".to_string()),
     );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact),
+    );
+}
+
+#[test]
+fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
+    let home = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let session_dir = home
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("03")
+        .join("13");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("rollout.jsonl"),
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-1\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":100,\"cached_input_tokens\":40,\"output_tokens\":7,\"reasoning_output_tokens\":3,\"total_tokens\":110}}}}}}}}\n"
+            ),
+            workdir.path().display()
+        ),
+    )
+    .unwrap();
+
+    let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 13, 59, 30).unwrap();
+    let session = FeatureSession {
+        id: "codex-sess".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-1".to_string(),
+        }),
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Inferred),
+    );
 }
 
 #[test]
@@ -2988,90 +3112,327 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
 }
 
 #[test]
-fn drain_ipc_messages_tracks_live_claude_task_state() {
-    let repo = TempDir::new().unwrap();
+fn apply_codex_live_event_updates_feature_live_state() {
     let workdir = TempDir::new().unwrap();
-    let now = Utc::now();
-    let resume_id = format!("resume-{}", Uuid::new_v4());
-    let store = store_with_worktree_agent(
-        repo.path(),
-        workdir.path(),
-        AgentKind::Claude,
-        ProjectStatus::Idle,
-        vec![FeatureSession {
-            id: "claude-1".to_string(),
-            kind: SessionKind::Claude,
-            label: "Claude".to_string(),
-            tmux_window: "claude".to_string(),
-            claude_session_id: Some(resume_id),
-            token_usage_source: None,
-            created_at: now,
-            command: None,
-            on_stop: None,
-            pre_check: None,
-            status_text: None,
-        }],
-    );
+    let store = store_with_codex_session(workdir.path(), false);
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    let ipc_dir = TempDir::new().unwrap();
-    let socket_path = ipc_dir.path().join("amf.sock");
-    let guard = crate::ipc::start(&socket_path).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    app.ipc = Some(guard);
 
-    crate::ipc::send(
-        &socket_path,
+    let changed = app.apply_codex_live_event(
+        "amf-my-feat",
         &serde_json::json!({
-            "type": "tool-start",
-            "session_id": "amf-my-feat",
-            "cwd": workdir.path().display().to_string(),
-            "tool_name": "TaskCreate",
-            "task_subject": "Investigate sidebar task data",
-            "task_description": "Review Claude task events"
+            "type": "plan",
+            "payload": { "text": "1. Inspect\n2. Patch" }
+        }),
+    );
+
+    assert!(changed);
+    let live = app
+        .codex_live_thread("amf-my-feat")
+        .expect("expected live codex state");
+    assert_eq!(live.plan_text.as_deref(), Some("1. Inspect\n2. Patch"));
+}
+
+#[test]
+fn poll_codex_sidebar_metadata_updates_caches() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let cache_key = format!("{}::sess-current", workdir.path().display());
+    app.codex_sidebar_metadata_inflight
+        .insert(cache_key.clone());
+    app.codex_sidebar_metadata_tx
+        .send(CodexSidebarMetadataResult {
+            cache_key: cache_key.clone(),
+            title: Some("Sidebar title".into()),
+            prompt: Some("Sidebar prompt".into()),
         })
-        .to_string(),
+        .unwrap();
+
+    app.poll_codex_sidebar_metadata();
+
+    assert_eq!(
+        app.cached_codex_session_title(workdir.path(), "sess-current"),
+        Some("Sidebar title")
+    );
+    assert_eq!(
+        app.cached_codex_session_prompt(workdir.path(), "sess-current"),
+        Some("Sidebar prompt")
+    );
+    assert!(!app.codex_sidebar_metadata_inflight.contains(&cache_key));
+}
+
+#[test]
+fn ipc_input_request_updates_codex_live_work_state() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Need approval before applying the patch.",
+        "tool_name": "Bash",
+        "relative_path": "src/main.rs"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
+        )
+    );
+}
+
+#[test]
+fn ipc_prompt_submit_clears_codex_live_input_and_marks_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.apply_codex_live_event(
+        "amf-my-feat",
+        &serde_json::json!({
+            "type": "requestUserInput",
+            "payload": { "prompt": "Need approval before applying the patch." }
+        }),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Continue with the patch."
+    }));
+
+    assert!(app.ipc_thinking_sessions.contains("amf-my-feat"));
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text()),
+        None
+    );
+}
+
+#[test]
+fn ipc_prompt_submit_clears_codex_live_review_work() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.apply_codex_live_event(
+        "amf-my-feat",
+        &serde_json::json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/main.rs",
+                "status": "proposed"
+            }
+        }),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Reviewed the diff and continue."
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text()),
+        None
+    );
+}
+
+#[test]
+fn ipc_prompt_submit_refreshes_sidebar_plan_cache() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("plan.md"),
+        "# Plan\n\n1. Refresh plan cache\n2. Render update\n",
     )
     .unwrap();
-    crate::ipc::send(
-        &socket_path,
-        &serde_json::json!({
-            "type": "tool-start",
-            "session_id": "amf-my-feat",
-            "cwd": workdir.path().display().to_string(),
-            "tool_name": "TaskUpdate",
-            "task_id": "1",
-            "task_status": "in_progress",
-            "task_active_form": "Updating sidebar task section"
-        })
-        .to_string(),
-    )
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(25));
 
-    app.drain_ipc_messages();
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "prompt-submit",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "prompt": "Continue with the patch."
+    }));
 
-    let task_state = app
-        .task_state_for_session("amf-my-feat")
-        .expect("task state");
-    assert_eq!(task_state.tasks.len(), 1);
     assert_eq!(
-        task_state.current_task().map(|task| task.subject.as_str()),
-        Some("Investigate sidebar task data")
+        app.sidebar_plan_for_session("amf-my-feat"),
+        Some("Plan\n1. Refresh plan cache\n2. Render update")
     );
+}
+
+#[test]
+fn ipc_diff_review_updates_codex_live_review_state() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "message": "Review the change before continuing.",
+        "tool_name": "Edit"
+    }));
+
     assert_eq!(
-        task_state
-            .current_task()
-            .and_then(|task| task.active_form.as_deref()),
-        Some("Updating sidebar task section")
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the change before continuing."
+        )
     );
+}
+
+#[test]
+fn ipc_tool_activity_temporarily_overrides_older_review_work() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "message": "Review the change before continuing."
+    }));
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-start",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "tool_name": "Bash"
+    }));
+
     assert_eq!(
-        app.active_tool_for_session("amf-my-feat"),
-        Some("TaskUpdate")
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some("State: running tool\nTool: Bash")
     );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-stop",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "tool_name": "Bash"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the change before continuing."
+        )
+    );
+}
+
+#[test]
+fn ipc_change_reason_adds_default_request_when_message_is_missing() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "change-reason",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "file_path": "src/main.rs",
+        "tool_name": "Edit"
+    }));
+
+    assert_eq!(
+        app.codex_live_thread("amf-my-feat")
+            .and_then(|live| live.sidebar_work_text())
+            .as_deref(),
+        Some(
+            "State: waiting for change reason\nFile: src/main.rs\nTool: Edit\nRequest: Explain why this change is needed."
+        )
+    );
+}
+
+#[test]
+fn open_command_picker_prepends_codex_debug_commands() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_command_picker(None);
+
+    match &app.mode {
+        AppMode::CommandPicker(state) => {
+            assert!(!state.commands.is_empty(), "expected commands");
+            assert_eq!(state.commands[0].source, "AMF Debug");
+            assert_eq!(state.commands[0].name, "demo-plan");
+            assert_eq!(state.commands[1].name, "demo-work-change-reason");
+            assert_eq!(state.commands[2].name, "demo-work-diff-review");
+            assert!(matches!(
+                state.commands[0].action,
+                CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo)
+            ));
+        }
+        _ => panic!("expected command picker"),
+    }
 }
 
 #[test]
@@ -3089,6 +3450,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             tmux_window: "claude".to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,
@@ -3510,6 +3872,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         tmux_window: "claude".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,
@@ -3712,6 +4075,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         tmux_window: "claude".to_string(),
         claude_session_id: None,
         token_usage_source: None,
+        token_usage_source_match: None,
         created_at: now,
         command: None,
         on_stop: None,

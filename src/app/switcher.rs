@@ -108,6 +108,7 @@ impl App {
             };
 
         self.pane_content.clear();
+        self.request_codex_sidebar_metadata_for_view(&project_name, &feature_name, &window, &kind);
         self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
@@ -145,6 +146,7 @@ impl App {
             };
 
         self.pane_content.clear();
+        self.request_codex_sidebar_metadata_for_view(&project_name, &feature_name, &window, &kind);
         self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,

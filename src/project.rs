@@ -84,6 +84,8 @@ pub struct FeatureSession {
     pub claude_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage_source: Option<TokenUsageSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage_source_match: Option<TokenUsageSourceMatch>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
@@ -93,6 +95,30 @@ pub struct FeatureSession {
     pub pre_check: Option<String>,
     #[serde(skip)]
     pub status_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum TokenUsageSourceMatch {
+    Exact,
+    Inferred,
+}
+
+impl FeatureSession {
+    pub fn set_token_usage_source_exact(&mut self, source: TokenUsageSource) {
+        self.token_usage_source = Some(source);
+        self.token_usage_source_match = Some(TokenUsageSourceMatch::Exact);
+    }
+
+    pub fn set_token_usage_source_inferred(&mut self, source: TokenUsageSource) {
+        self.token_usage_source = Some(source);
+        self.token_usage_source_match = Some(TokenUsageSourceMatch::Inferred);
+    }
+
+    pub fn clear_token_usage_source(&mut self) {
+        self.token_usage_source = None;
+        self.token_usage_source_match = None;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -397,6 +423,7 @@ impl Feature {
             tmux_window: window,
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,
@@ -431,6 +458,7 @@ impl Feature {
             tmux_window: window,
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command,
             on_stop,
@@ -727,6 +755,7 @@ impl ProjectStore {
                                 tmux_window: "claude".into(),
                                 claude_session_id: f.claude_session_id,
                                 token_usage_source: None,
+                                token_usage_source_match: None,
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
@@ -740,6 +769,7 @@ impl ProjectStore {
                                 tmux_window: "terminal".into(),
                                 claude_session_id: None,
                                 token_usage_source: None,
+                                token_usage_source_match: None,
                                 created_at: f.created_at,
                                 command: None,
                                 on_stop: None,
@@ -883,6 +913,7 @@ mod tests {
             tmux_window: window.to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,

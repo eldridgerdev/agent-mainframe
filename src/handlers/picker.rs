@@ -1,7 +1,10 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
+use serde_json::json;
 
-use crate::app::{App, AppMode, CommandSection, Selection};
+use crate::app::{App, AppMode, CodexDebugCommand, CommandAction, Selection};
+use crate::project::SessionKind;
+use crate::tmux::TmuxManager;
 
 fn markdown_file_matches_plan_filter(
     state: &crate::app::MarkdownFilePickerState,
@@ -37,35 +40,6 @@ fn clamp_markdown_picker_selection(state: &mut crate::app::MarkdownFilePickerSta
     }
 }
 
-fn jump_to_next_local_command(state: &mut crate::app::CommandPickerState) {
-    let mut section_starts = Vec::new();
-    let mut last_section = None;
-
-    for (idx, entry) in state.commands.iter().enumerate() {
-        if entry.section.is_local() && last_section != Some(entry.section) {
-            section_starts.push((entry.section, idx));
-        }
-        last_section = Some(entry.section);
-    }
-
-    if section_starts.is_empty() {
-        return;
-    }
-
-    let current_section = state.commands.get(state.selected).map(|entry| entry.section);
-    let next_idx = if current_section.is_some_and(CommandSection::is_local) {
-        let current_pos = section_starts
-            .iter()
-            .position(|(section, _)| Some(*section) == current_section)
-            .unwrap_or(0);
-        section_starts[(current_pos + 1) % section_starts.len()].1
-    } else {
-        section_starts[0].1
-    };
-
-    state.selected = next_idx;
-}
-
 pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -96,27 +70,74 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
         }
-        KeyCode::Char('D') => {
-            if let AppMode::CommandPicker(ref mut state) = app.mode {
-                jump_to_next_local_command(state);
-            }
-        }
         KeyCode::Enter => {
             let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::CommandPicker(state) = old_mode {
-                let selected = state.commands.get(state.selected).cloned();
-                let from_view = state.from_view.clone();
+                let selected_command = state.commands.get(state.selected).cloned();
+                let return_view = state.from_view.clone();
 
-                if let Some(entry) = selected {
-                    let outcome = app.execute_command_entry(&entry, from_view.clone())?;
-                    if matches!(
-                        outcome,
-                        crate::app::commands::CommandExecutionOutcome::ReturnToOrigin
-                    ) && let Some(view) = from_view
-                    {
-                        app.mode = AppMode::Viewing(view);
+                if let Some(command) = selected_command {
+                    match command.action {
+                        CommandAction::Local { command } => match command {
+                            crate::app::LocalCommand::OpenDebugLog => {
+                                app.open_debug_log(return_view.clone());
+                            }
+                            crate::app::LocalCommand::RefreshNotifications => {
+                                app.refresh_status_and_notifications();
+                                if let Some(view) = return_view.clone() {
+                                    app.mode = AppMode::Viewing(view);
+                                }
+                            }
+                        },
+                        CommandAction::CodexLiveDemo(debug_command) => {
+                            if let Some(session_id) =
+                                app.command_picker_codex_target(state.from_view.as_ref())
+                            {
+                                let event = codex_debug_event(debug_command);
+                                app.apply_codex_live_event(&session_id, &event);
+                                app.message = Some(format!("Applied '{}'", command.name.as_str()));
+                            } else {
+                                app.message = Some("No Codex session selected".into());
+                            }
+                        }
+                        CommandAction::SlashCommand => {
+                            let command_text = format!("/{}", command.name);
+
+                            let tmux_info = if let Some(ref view) = state.from_view {
+                                Some((view.session.clone(), view.window.clone()))
+                            } else if let Some((_, feature)) = app.selected_feature() {
+                                let window = feature
+                                    .sessions
+                                    .iter()
+                                    .find(|s| {
+                                        matches!(
+                                            s.kind,
+                                            SessionKind::Claude
+                                                | SessionKind::Opencode
+                                                | SessionKind::Codex
+                                        )
+                                    })
+                                    .map(|s| s.tmux_window.clone())
+                                    .unwrap_or_else(|| "terminal".into());
+                                Some((feature.tmux_session.clone(), window))
+                            } else {
+                                None
+                            };
+
+                            if let Some((session, window)) = &tmux_info {
+                                let _ = TmuxManager::send_literal(session, window, &command_text);
+                                let _ = TmuxManager::send_key_name(session, window, "Enter");
+                                app.message = Some(format!("Sent '{}'", command_text));
+                            } else {
+                                app.message = Some("No active session to send to".into());
+                            }
+                        }
                     }
-                } else if let Some(view) = from_view {
+                }
+
+                if let Some(view) = return_view
+                    && matches!(app.mode, AppMode::Normal)
+                {
                     app.mode = AppMode::Viewing(view);
                 }
             }
@@ -124,6 +145,58 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn codex_debug_event(command: CodexDebugCommand) -> serde_json::Value {
+    match command {
+        CodexDebugCommand::PlanDemo => json!({
+            "type": "plan",
+            "thread_id": "thread-demo",
+            "payload": {
+                "text": "1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests"
+            }
+        }),
+        CodexDebugCommand::WorkChangeReasonDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/app/codex_live.rs",
+                "status": "needs-reason",
+                "tool": "Edit"
+            }
+        }),
+        CodexDebugCommand::WorkDiffReviewDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/ui/dashboard.rs",
+                "status": "needs-review",
+                "tool": "Edit",
+                "message": "Review the change before continuing."
+            }
+        }),
+        CodexDebugCommand::WorkCommandDemo => json!({
+            "type": "commandExecution",
+            "payload": {
+                "command": "cargo test codex_sidebar -- --nocapture",
+                "phase": "running"
+            }
+        }),
+        CodexDebugCommand::WorkFileDemo => json!({
+            "type": "fileChange",
+            "payload": {
+                "relative_path": "src/ui/dashboard.rs",
+                "status": "proposed"
+            }
+        }),
+        CodexDebugCommand::WorkInputDemo => json!({
+            "type": "requestUserInput",
+            "payload": {
+                "prompt": "Need approval before applying the patch."
+            }
+        }),
+        CodexDebugCommand::ClearInputDemo => json!({
+            "type": "inputResolved"
+        }),
+    }
 }
 
 pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
@@ -232,20 +305,20 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
             if let AppMode::MarkdownFilePicker(mut state) = old_mode {
                 clamp_markdown_picker_selection(&mut state);
                 let path = state.files.get(state.selected).cloned();
-                if let Some(path) = path {
+                if let (Some(path), Some(view)) = (path, state.from_view.clone()) {
                     let return_to_picker = Some(crate::app::MarkdownFilePickerState {
                         files: state.files,
                         selected: state.selected,
                         plan_only: state.plan_only,
                         workdir: state.workdir.clone(),
                         repo_root: state.repo_root.clone(),
-                        from_view: state.from_view.clone(),
+                        from_view: Some(view.clone()),
                     });
                     return app.open_markdown_viewer_path(
                         path,
                         state.workdir,
                         state.repo_root,
-                        state.from_view,
+                        view,
                         return_to_picker,
                     );
                 }
@@ -260,12 +333,13 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{
-        CommandAction, CommandEntry, CommandPickerState, CommandSection, LocalCommand,
-        MarkdownFilePickerState, ViewState,
+    use crate::app::{CommandEntry, CommandPickerState, MarkdownFilePickerState, ViewState};
+    use crate::project::{
+        AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind,
+        VibeMode,
     };
-    use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use chrono::Utc;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -299,6 +373,69 @@ mod tests {
             VibeMode::Vibeless,
             false,
         )
+    }
+
+    fn codex_picker_app() -> App {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "codex-1".into(),
+                kind: SessionKind::Codex,
+                label: "Codex".into(),
+                tmux_window: "codex".into(),
+                claude_session_id: None,
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "proj-1".into(),
+                name: "demo".into(),
+                repo: PathBuf::from("/tmp/demo"),
+                collapsed: false,
+                features: vec![feature],
+                created_at: now,
+                preferred_agent: AgentKind::Codex,
+                is_git: false,
+            }],
+            session_bookmarks: vec![],
+            extra: HashMap::new(),
+        };
+
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = Selection::Feature(0, 0);
+        app
     }
 
     #[test]
@@ -353,56 +490,61 @@ mod tests {
     }
 
     #[test]
-    fn command_picker_d_jumps_and_cycles_local_sections() {
-        let mut app = picker_app();
+    fn command_picker_debug_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
         app.mode = AppMode::CommandPicker(CommandPickerState {
-            commands: vec![
-                CommandEntry {
-                    id: "project:deploy".into(),
-                    title: "deploy".into(),
-                    description: None,
-                    section: CommandSection::Project,
-                    action: CommandAction::SlashCommand {
-                        name: "deploy".into(),
-                    },
-                    path: Some(PathBuf::from("/tmp/demo/.claude/commands/deploy.md")),
-                },
-                CommandEntry {
-                    id: "local:open-debug".into(),
-                    title: "Open Debug Log".into(),
-                    description: None,
-                    section: CommandSection::AmfDebug,
-                    action: CommandAction::Local {
-                        command: LocalCommand::OpenDebugLog,
-                    },
-                    path: None,
-                },
-                CommandEntry {
-                    id: "local:generate-summary".into(),
-                    title: "Generate Summary".into(),
-                    description: None,
-                    section: CommandSection::AmfDev,
-                    action: CommandAction::Local {
-                        command: LocalCommand::GenerateSummary,
-                    },
-                    path: None,
-                },
-            ],
+            commands: vec![CommandEntry {
+                name: "demo-plan".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo),
+            }],
             selected: 0,
-            from_view: Some(picker_view()),
+            from_view: None,
         });
 
-        handle_command_picker_key(&mut app, KeyCode::Char('D')).unwrap();
-        match &app.mode {
-            AppMode::CommandPicker(state) => assert_eq!(state.selected, 1),
-            _ => panic!("expected command picker to stay open"),
-        }
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
 
-        handle_command_picker_key(&mut app, KeyCode::Char('D')).unwrap();
-        match &app.mode {
-            AppMode::CommandPicker(state) => assert_eq!(state.selected, 2),
-            _ => panic!("expected command picker to stay open"),
-        }
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .unwrap()
+                .plan_text
+                .as_deref(),
+            Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
+        );
+        assert_eq!(app.message.as_deref(), Some("Applied 'demo-plan'"));
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn command_picker_change_reason_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![CommandEntry {
+                name: "demo-work-change-reason".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::WorkChangeReasonDemo),
+            }],
+            selected: 0,
+            from_view: None,
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .and_then(|live| live.sidebar_work_text())
+                .as_deref(),
+            Some(
+                "State: waiting for change reason\nFile: src/app/codex_live.rs\nTool: Edit\nRequest: Explain why this change is needed."
+            )
+        );
+        assert_eq!(
+            app.message.as_deref(),
+            Some("Applied 'demo-work-change-reason'")
+        );
+        assert!(matches!(app.mode, AppMode::Normal));
     }
 }
 

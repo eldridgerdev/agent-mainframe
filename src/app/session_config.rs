@@ -322,6 +322,7 @@ fn sync_feature_agent_sessions(feature: &mut Feature, next_agent: &AgentKind) {
             tmux_window: window_prefix.to_string(),
             claude_session_id: None,
             token_usage_source: None,
+            token_usage_source_match: None,
             created_at: Utc::now(),
             command: None,
             on_stop: None,
@@ -351,7 +352,7 @@ fn sync_feature_agent_sessions(feature: &mut Feature, next_agent: &AgentKind) {
         session.tmux_window =
             next_agent_window_name(&mut used_windows, window_prefix, &mut next_window_index);
         session.claude_session_id = None;
-        session.token_usage_source = None;
+        session.clear_token_usage_source();
         agent_index += 1;
     }
 }

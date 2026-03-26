@@ -1,3 +1,4 @@
+use crate::project::SessionKind;
 use crate::worktree::WorktreeManager;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -138,13 +139,14 @@ pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
 
 pub(crate) fn read_all_prompts_for_session(
     workdir: &Path,
-    session_kind: Option<&crate::project::SessionKind>,
+    session_kind: Option<&SessionKind>,
     preferred_session_id: Option<&str>,
 ) -> Vec<PromptEntry> {
     let mut entries = match session_kind {
-        Some(crate::project::SessionKind::Opencode) => {
+        Some(SessionKind::Opencode) => {
             read_prompts_from_opencode_storage(workdir, preferred_session_id)
         }
+        Some(SessionKind::Codex) => read_prompts_from_codex_history(workdir, preferred_session_id),
         _ => read_prompts_from_claude_sessions(workdir),
     };
 
@@ -167,6 +169,30 @@ pub(crate) fn read_all_prompts_for_session(
     }
 
     // Sort by timestamp descending (latest first), None timestamps at end
+    entries.sort_by(|a, b| match (b.timestamp, a.timestamp) {
+        (Some(bt), Some(at)) => bt.cmp(&at),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    entries
+}
+
+fn read_prompts_from_codex_history(workdir: &Path, session_id: Option<&str>) -> Vec<PromptEntry> {
+    let Some(session_id) = session_id else {
+        return Vec::new();
+    };
+
+    let mut entries = super::codex_sessions::prompt_history_for_session_id(workdir, session_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| PromptEntry {
+            text: entry.text,
+            timestamp: entry.timestamp,
+        })
+        .collect::<Vec<_>>();
+
     entries.sort_by(|a, b| match (b.timestamp, a.timestamp) {
         (Some(bt), Some(at)) => bt.cmp(&at),
         (Some(_), None) => std::cmp::Ordering::Less,

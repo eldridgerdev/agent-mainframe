@@ -10,6 +10,8 @@ use crate::project::SessionKind;
 
 const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 30;
 const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
+const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 30;
+const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
 const SIDEBAR_WORK_VALUE_CHARS: usize = 26;
 const SIDEBAR_TODO_VALUE_CHARS: usize = 24;
 
@@ -225,11 +227,10 @@ fn sidebar_summary_text(
             .and_then(|sidebar| sidebar.live_summary.as_deref())
             .filter(|summary| !summary.is_empty())
     {
-        return Some(compact_sidebar_text(summary, 80));
+        return Some(sidebar_summary_preview(summary));
     }
 
-    feature_summary
-        .map(str::to_string)
+    feature_summary.map(sidebar_summary_preview)
 }
 
 fn sidebar_title(session_kind: &SessionKind) -> &'static str {
@@ -264,6 +265,14 @@ fn sidebar_prompt_preview(text: &str) -> String {
         text,
         SIDEBAR_PROMPT_PREVIEW_COLS,
         SIDEBAR_PROMPT_PREVIEW_LINES,
+    )
+}
+
+fn sidebar_summary_preview(text: &str) -> String {
+    compact_sidebar_block(
+        text,
+        SIDEBAR_SUMMARY_PREVIEW_COLS,
+        SIDEBAR_SUMMARY_PREVIEW_LINES,
     )
 }
 
@@ -806,6 +815,16 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_summary_preview_wraps_into_three_lines() {
+        assert_eq!(
+            sidebar_summary_preview(
+                "Live assistant summary covering prompt updates todos permissions and final observations"
+            ),
+            "Live assistant summary\ncovering prompt updates todos\npermissions and final…"
+        );
+    }
+
+    #[test]
     fn opencode_status_text_includes_reasoning_tokens() {
         let status = status_text(
             "Thinking",
@@ -1004,8 +1023,13 @@ mod tests {
     #[test]
     fn summary_text_falls_back_to_feature_summary_without_live_opencode_summary() {
         assert_eq!(
-            sidebar_summary_text(&SessionKind::Opencode, false, Some("Persisted AMF summary"), None),
-            Some("Persisted AMF summary".into())
+            sidebar_summary_text(
+                &SessionKind::Opencode,
+                false,
+                Some("Persisted AMF summary that spans several words cleanly"),
+                None
+            ),
+            Some("Persisted AMF summary that\nspans several words cleanly".into())
         );
     }
 

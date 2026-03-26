@@ -167,12 +167,7 @@ fn format_codex_usage_source_confidence(
 fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&str>) -> String {
     let prompt = select_sidebar_prompt(session_prompt, fallback_prompt);
     prompt
-        .map(|prompt| {
-            format!(
-                "l latest prompt\nPreview: {}",
-                compact_sidebar_text(&prompt, 48)
-            )
-        })
+        .map(|prompt| format!("leader l\nPreview: {}", compact_sidebar_text(&prompt, 48)))
         .unwrap_or_default()
 }
 
@@ -745,7 +740,7 @@ mod tests {
     fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
         let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
-        assert!(prompt.contains("l latest prompt"));
+        assert!(prompt.contains("leader l"));
         assert!(prompt.contains("fallback prompt"));
     }
 
@@ -765,7 +760,7 @@ mod tests {
 
         assert_eq!(
             prompt,
-            "l latest prompt\nPreview: This is a much longer prompt preview that shoul…"
+            "leader l\nPreview: This is a much longer prompt preview that shoul…"
         );
     }
 

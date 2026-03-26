@@ -167,6 +167,7 @@ pub fn draw_command_picker(frame: &mut Frame, state: &CommandPickerState, theme:
         let is_selected = i == state.selected;
         let prefix = match cmd.action {
             CommandAction::SlashCommand => "/",
+            CommandAction::Local { .. } => "*",
             CommandAction::CodexLiveDemo(_) => "*",
         };
         let line = Line::from(vec![

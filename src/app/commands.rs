@@ -18,6 +18,14 @@ impl App {
     }
 
     pub fn open_command_picker(&mut self, from_view: Option<ViewState>) {
+        self.open_command_picker_with_focus(from_view, CommandPickerFocus::Default);
+    }
+
+    pub fn open_command_picker_with_focus(
+        &mut self,
+        from_view: Option<ViewState>,
+        focus: CommandPickerFocus,
+    ) {
         let (repo, workdir) = match &self.selection {
             Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => {
                 let p = self.store.projects.get(*pi);
@@ -37,6 +45,7 @@ impl App {
         } else {
             Vec::new()
         };
+        commands.splice(0..0, local_debug_commands());
 
         let mut global_cmds = Vec::new();
         if let Some(home) = dirs::home_dir() {
@@ -74,11 +83,52 @@ impl App {
         project_cmds.sort_by(|a, b| a.name.cmp(&b.name));
         commands.extend(project_cmds);
 
+        let selected = match focus {
+            CommandPickerFocus::Default => 0,
+            CommandPickerFocus::Local => commands
+                .iter()
+                .position(|entry| matches!(entry.action, CommandAction::Local { .. }))
+                .unwrap_or(0),
+        };
+
         self.mode = AppMode::CommandPicker(CommandPickerState {
             commands,
-            selected: 0,
+            selected,
             from_view,
         });
+    }
+
+    pub fn open_debug_log(&mut self, from_view: Option<ViewState>) {
+        self.mode = AppMode::DebugLog(DebugLogState {
+            scroll_offset: 0,
+            from_view,
+        });
+    }
+
+    pub fn refresh_status_and_notifications(&mut self) {
+        self.sync_statuses();
+        if self.ipc.is_some() {
+            self.drain_ipc_messages();
+        } else {
+            self.scan_notifications();
+        }
+        self.message = Some("Refreshed statuses".into());
+    }
+}
+
+fn local_debug_commands() -> Vec<CommandEntry> {
+    vec![
+        local_debug_command("open-debug-log", LocalCommand::OpenDebugLog),
+        local_debug_command("refresh-statuses", LocalCommand::RefreshNotifications),
+    ]
+}
+
+fn local_debug_command(name: &str, command: LocalCommand) -> CommandEntry {
+    CommandEntry {
+        name: name.to_string(),
+        source: "AMF Debug".to_string(),
+        path: None,
+        action: CommandAction::Local { command },
     }
 }
 

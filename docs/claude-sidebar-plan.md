@@ -21,6 +21,30 @@ What AMF does not have is an opencode-like structured Claude feed for things
 like todos, context blocks, or LSP state. The UI shell is straightforward;
 matching opencode's content is a separate instrumentation problem.
 
+## Progress
+
+- [x] Add a Claude-only sidebar layout and resize the tmux pane to the left
+  content width
+- [x] Ship a blank sidebar checkpoint for UI review before wiring in data
+- [x] Add theme-based styling for the sidebar shell
+- [x] Add prompt context with timestamp
+- [x] Add live activity detail from thinking/tool hooks
+- [x] Add waiting/input detail from pending notifications
+- [x] Polish session / feature metadata
+- [x] Investigate Claude hooks and local artifacts for richer sidebar data
+- [x] Implement current-task support from Claude task events/transcripts
+- [x] Render a real `Todos` list from Claude task state in the sidebar
+- [x] Add transcript fallback when `claude_session_id` is missing
+- [x] Improve todo styling and widen the sidebar for better readability
+- [x] Add a focused todo viewer with a visible sidebar keybind hint
+- [x] Add a show/hide sidebar keybind, defaulting to shown
+- [x] Remove the `Session` section
+- [x] Remove the `Summary` section
+- [x] Auto-scroll the todo list so the active and next unfinished items stay in
+  view
+- [x] Investigate whether `TodoWrite` can become a real source of truth
+- [x] Decide whether to add a richer current-task model beyond the task list
+
 ## Implementation Plan
 
 ### 1. Add a Claude-sidebar layout model
@@ -106,6 +130,143 @@ Investigation result so far:
   context blocks, or explicit current-task models appear to require new Claude
   instrumentation
 
+### 6. Next sidebar metadata passes
+
+Use existing AMF-managed metadata only. Do not add new Claude-specific
+instrumentation for these steps.
+
+Ordered list:
+
+1. Prompt context
+   - show only the latest prompt
+   - include a timestamp for that latest prompt
+   - keep the prompt section focused on concise context, not full history
+
+2. Live activity detail
+   - show current thinking state
+   - show current tool execution state
+   - show the active tool name when available from `tool-start` / `tool-stop`
+
+3. Waiting / input detail
+   - show what Claude is waiting on, not just a count
+   - surface the pending input/request message when available
+   - keep this focused on actionable waiting state
+
+4. Exclusions for this pass
+   - do not show diff-review status in the sidebar
+   - do not add todo lists, current-task models, or other new structured
+     Claude-side data yet
+
+5. Session / feature metadata polish
+   - improve ordering and wording of project / feature / session / mode /
+     branch metadata
+   - tune truncation and wrapping so the sidebar reads cleanly at current width
+   - keep summary and token usage readable without overloading the layout
+
+Status:
+
+- prompt context: implemented
+- live activity detail: implemented
+- waiting / input detail: implemented
+- session / feature metadata polish: implemented
+
+### 7. Next UI follow-up pass
+
+Queue these for the next working session.
+
+1. Add sidebar expansion keybinds
+   - add keybinds to open sidebar sections in a larger focused view
+   - the todo list viewer and its sidebar hint are now implemented
+   - no other sidebar section currently needs an expanded view
+   - add a keybind to show/hide the sidebar entirely
+   - keep the sidebar shown by default
+
+2. Simplify sidebar sections
+   - remove the `Session` section because that information is already visible in
+     the top bar
+   - remove the `Summary` section
+   - rebalance the remaining vertical space toward `Todos` and `Prompt`
+
+3. Improve todo list viewport behavior
+   - ensure the todo list automatically scrolls so the current
+     `in_progress` item is visible
+   - ensure the next not-yet-done item is also visible when possible
+   - keep the list centered on the most actionable items rather than the top of
+     the raw task list
+
+### 8. Later instrumentation work
+
+These are explicitly in scope for the sidebar, but should be treated as a later
+phase after the existing-metadata passes above.
+
+1. Real todo list
+   - use Claude's `tasks/<session_id>/` store as the preferred source when it
+     exists
+   - keep transcript parsing as the fallback when task-store files are missing
+   - do not depend on `todos/` or `TodoWrite` yet because current local files
+     are still empty and not proven stable
+
+2. Current task
+   - use the existing task list plus `activeForm` as the current-task model
+   - do not add a separate current-task abstraction yet
+   - revisit only if Claude exposes richer structured task context than the
+     current task store
+
+Investigation result:
+
+- AMF still does not have its own real structured todo artifact for Claude
+  sessions, but Claude Code itself now appears to have two relevant internal
+  stores under `~/.claude/`:
+  - `tasks/<session_id>/<n>.json`
+  - `todos/<session_or_agent_id>-agent-<session_or_agent_id>.json`
+- `tasks/` is the strongest lead:
+  - Claude session transcripts show real `TaskCreate` and `TaskUpdate` tool
+    calls with structured inputs such as `subject`, `description`,
+    `activeForm`, `taskId`, and `status`
+  - Claude debug logs show hook matching on `TaskUpdate`, which means these
+    task tools are hookable by name in the existing hook system
+  - task directories appear to be keyed by Claude `sessionId`, which AMF
+    already stores as `claude_session_id`
+- `todos/` exists, but the current evidence is still weak:
+  - the files are plain JSON arrays and the local samples inspected so far are
+    empty
+  - local transcripts still did not surface a concrete `TodoWrite` or
+    `TodoRead` tool event
+  - todo filenames look session/agent keyed, but the schema and lifecycle are
+    still not strong enough for AMF to depend on directly
+- existing AMF-managed artifacts remain useful, but they are not substitutes
+  for a real todo/task source:
+  - `.claude/latest-prompt.txt`
+  - `.claude/notifications/*.json`
+  - `.claude/review-notes.md`
+  - repo/worktree plan files such as `PLAN.md` / `.claude/plan.md`
+- `PLAN.md` and related plan-mode files may still provide useful context, but
+  they are not the same structured task state Claude is already using.
+
+Current decision:
+
+- AMF should prefer `~/.claude/tasks/<session_id>/` as the structured source of
+  truth for Claude task state when available
+- AMF should fall back to Claude transcripts when the task store is absent
+- AMF should not switch to `todos/` / `TodoWrite` unless future evidence shows
+  non-empty, stable files or real emitted events
+- AMF does not need a richer standalone current-task model yet; the existing
+  task list plus `activeForm` is sufficient for the current sidebar
+
+Current recommendation:
+
+1. keep the sidebar work that reuses existing metadata separate from this
+   instrumentation step
+2. implement current-task support first by reading Claude's own `tasks/`
+   store keyed by `claude_session_id`
+3. add hook handling for `TaskCreate` / `TaskUpdate` so sidebar state can
+   refresh immediately instead of waiting for transcript/file polling
+4. treat the real todo list as a second investigation:
+   - first try to validate whether `TodoWrite` can be hooked cleanly and
+     whether `~/.claude/todos/` is reliable enough to read directly
+   - if that proves unreliable, add an AMF-managed local sidecar for todos
+     rather than scraping transcripts
+
 ## Testing Plan
 
 There are already resize-oriented tests in `src/app/tests.rs`, but there are no
@@ -122,6 +283,15 @@ real ratatui render tests yet. Add:
 1. Ship the blank-sidebar checkpoint first.
 2. Review the feel in a real Claude session.
 3. Wire in existing metadata.
-4. Investigate Claude hooks and adjacent AMF features to find the best source
-   of richer sidebar data.
-5. Decide whether richer Claude-side structured data is worth building.
+4. Add latest-prompt context with timestamp.
+5. Add live activity detail from thinking/tool hooks.
+6. Add waiting/input detail from pending notifications.
+7. Polish session / feature metadata layout and wording.
+8. Add the sidebar UI follow-up pass:
+   - expandable section keybinds
+   - remove `Session`
+   - remove `Summary`
+   - improve todo auto-scroll behavior
+9. Investigate and design a real todo list.
+10. Investigate and design a current-task model.
+11. Decide whether richer Claude-side structured data is worth building later.

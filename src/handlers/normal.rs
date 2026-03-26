@@ -238,23 +238,11 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.start_rename_feature();
             }
             _ => {
-                app.sync_statuses();
-                if app.ipc.is_some() {
-                    app.drain_ipc_messages();
-                } else {
-                    app.scan_notifications();
-                }
-                app.message = Some("Refreshed statuses".into());
+                app.refresh_status_and_notifications();
             }
         },
         KeyCode::Char('R') => {
-            app.sync_statuses();
-            if app.ipc.is_some() {
-                app.drain_ipc_messages();
-            } else {
-                app.scan_notifications();
-            }
-            app.message = Some("Refreshed statuses".into());
+            app.refresh_status_and_notifications();
         }
         KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
@@ -286,10 +274,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.trigger_summary_for_selected()?;
         }
         KeyCode::Char('D') => {
-            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
-                scroll_offset: 0,
-                from_view: None,
-            });
+            app.open_debug_log(None);
         }
         _ => {}
     }
@@ -337,6 +322,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('/') => {
             app.open_command_picker(None);
         }
+        KeyCode::Char('a') => {
+            app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
+        }
         KeyCode::Char('h') => {
             app.open_bookmark_picker(None);
         }
@@ -351,13 +339,7 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             app.jump_to_bookmark(slot)?;
         }
         KeyCode::Char('r') => {
-            app.sync_statuses();
-            if app.ipc.is_some() {
-                app.drain_ipc_messages();
-            } else {
-                app.scan_notifications();
-            }
-            app.message = Some("Refreshed statuses".into());
+            app.refresh_status_and_notifications();
         }
         _ => {}
     }

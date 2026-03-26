@@ -78,6 +78,17 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
 
                 if let Some(command) = selected_command {
                     match command.action {
+                        CommandAction::Local { command } => match command {
+                            crate::app::LocalCommand::OpenDebugLog => {
+                                app.open_debug_log(return_view.clone());
+                            }
+                            crate::app::LocalCommand::RefreshNotifications => {
+                                app.refresh_status_and_notifications();
+                                if let Some(view) = return_view.clone() {
+                                    app.mode = AppMode::Viewing(view);
+                                }
+                            }
+                        },
                         CommandAction::CodexLiveDemo(debug_command) => {
                             if let Some(session_id) =
                                 app.command_picker_codex_target(state.from_view.as_ref())
@@ -124,7 +135,9 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                     }
                 }
 
-                if let Some(view) = return_view {
+                if let Some(view) = return_view
+                    && matches!(app.mode, AppMode::Normal)
+                {
                     app.mode = AppMode::Viewing(view);
                 }
             }

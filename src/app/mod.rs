@@ -75,8 +75,15 @@ pub enum CodexDebugCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalCommand {
+    OpenDebugLog,
+    RefreshNotifications,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandAction {
     SlashCommand,
+    Local { command: LocalCommand },
     CodexLiveDemo(CodexDebugCommand),
 }
 
@@ -92,6 +99,12 @@ pub struct CommandPickerState {
     pub commands: Vec<CommandEntry>,
     pub selected: usize,
     pub from_view: Option<ViewState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandPickerFocus {
+    Default,
+    Local,
 }
 
 pub struct SwitcherEntry {

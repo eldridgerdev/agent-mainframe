@@ -170,6 +170,11 @@ amf upgrade
 
 > The upgrade command fetches the latest release over HTTPS. If you
 > previously saw TLS errors on upgrade, this is fixed in v0.10.1.
+>
+> If you are upgrading from a version older than v0.11.1 and see a
+> `404` during download, reinstall once from the latest release bundle.
+> Older AMF versions expected standalone release binaries, but releases
+> now publish `.tar.gz` bundles.
 
 Check the installed version:
 
@@ -289,6 +294,7 @@ All keys are forwarded to the tmux session except:
 | `n` | Next feature (same project) |
 | `p` | Previous feature (same project) |
 | `/` | Command palette |
+| `a` | Command palette focused on AMF local actions |
 | `i` | Input requests picker |
 | `r` | Refresh statuses |
 | `x` | Stop session and exit view |
@@ -299,6 +305,22 @@ All keys are forwarded to the tmux session except:
 | `H` / `M` | Bookmark / unbookmark current session |
 | `1`-`9` | Jump to bookmark slot |
 | `?` | Show help |
+
+### Command Palette
+
+The leader command palette (`Ctrl+Space` then `/`) now mixes two kinds of entries:
+
+- slash commands discovered from global or project `.claude/commands`
+- AMF-owned local actions such as debug/dev/test helpers
+
+Inside the palette:
+
+- `Enter` executes the selected entry
+- `D` jumps between the AMF local sections
+- local actions are rendered with an `amf` badge instead of a `/` prefix
+
+Use `Ctrl+Space` then `a` to open the palette already focused on AMF local actions.
+From the debug log overlay, press `/` to jump straight into that local-actions view.
 
 ## How It Works
 

@@ -256,6 +256,19 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             };
             app.open_command_picker(Some(view_state));
         }
+        KeyCode::Char('a') => {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_command_picker_with_focus(
+                Some(view_state),
+                crate::app::CommandPickerFocus::Local,
+            );
+        }
         KeyCode::Char('?') => {
             let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
@@ -283,13 +296,16 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                     return Ok(());
                 }
             };
-            app.mode = AppMode::DebugLog(crate::app::DebugLogState {
-                scroll_offset: 0,
-                from_view: Some(view),
-            });
+            app.open_debug_log(Some(view));
         }
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
+        }
+        KeyCode::Char('b') => {
+            app.toggle_sidebar_in_view();
+        }
+        KeyCode::Char('v') => {
+            app.toggle_expanded_todos_in_view();
         }
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
@@ -310,7 +326,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tempfile::TempDir;
 
-    use crate::app::{ViewState, analyze_prompt};
+    use crate::app::{CommandAction, ViewState, analyze_prompt};
     use crate::project::{
         AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
     };
@@ -537,6 +553,72 @@ mod tests {
                 assert_eq!(state.view.session, "amf-feature");
             }
             _ => panic!("expected LatestPrompt mode"),
+        }
+    }
+
+    #[test]
+    fn leader_a_opens_command_picker_focused_on_local_actions() {
+        let repo = init_repo_with_branch_change();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('a')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::CommandPicker(state) => assert!(matches!(
+                state.commands.get(state.selected).map(|entry| &entry.action),
+                Some(CommandAction::Local { .. })
+            )),
+            _ => panic!("expected command picker"),
+        }
+    }
+
+    #[test]
+    fn leader_v_toggles_expanded_todos() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('v')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => {
+                assert!(view.todos_expanded);
+            }
+            _ => panic!("expected Viewing mode"),
+        }
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('v')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert!(!view.todos_expanded),
+            _ => panic!("expected Viewing mode"),
+        }
+    }
+
+    #[test]
+    fn leader_b_toggles_sidebar_visibility() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => {
+                assert!(!view.sidebar_visible);
+                assert!(!view.todos_expanded);
+            }
+            _ => panic!("expected Viewing mode"),
+        }
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert!(view.sidebar_visible),
+            _ => panic!("expected Viewing mode"),
         }
     }
 

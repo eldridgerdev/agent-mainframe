@@ -169,7 +169,7 @@ fn sidebar_prompt_text(session_prompt: Option<&str>, fallback_prompt: Option<&st
     prompt
         .map(|prompt| {
             format!(
-                "Ctrl+Space l\nPreview: {}",
+                "l latest prompt\nPreview: {}",
                 compact_sidebar_text(&prompt, 48)
             )
         })
@@ -745,7 +745,7 @@ mod tests {
     fn sidebar_prompt_text_falls_back_when_codex_session_prompt_is_missing() {
         let prompt = sidebar_prompt_text(None, Some("fallback prompt"));
 
-        assert!(prompt.contains("Ctrl+Space l"));
+        assert!(prompt.contains("l latest prompt"));
         assert!(prompt.contains("fallback prompt"));
     }
 
@@ -765,7 +765,7 @@ mod tests {
 
         assert_eq!(
             prompt,
-            "Ctrl+Space l\nPreview: This is a much longer prompt preview that shoul…"
+            "l latest prompt\nPreview: This is a much longer prompt preview that shoul…"
         );
     }
 

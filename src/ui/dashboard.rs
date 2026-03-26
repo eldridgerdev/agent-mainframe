@@ -8,6 +8,11 @@ use ratatui::{
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::SessionKind;
 
+const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 30;
+const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
+const SIDEBAR_WORK_VALUE_CHARS: usize = 26;
+const SIDEBAR_TODO_VALUE_CHARS: usize = 24;
+
 fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::pane::SidebarData> {
     if !view.has_sidebar() {
         return None;
@@ -146,13 +151,19 @@ fn work_text(
         .and_then(|sidebar| sidebar.lsp_summary.as_deref())
         .filter(|summary| !summary.is_empty())
     {
-        lines.push(format!("LSP: {}", compact_sidebar_text(lsp_summary, 72)));
+        lines.push(format!(
+            "LSP: {}",
+            compact_sidebar_text(lsp_summary, SIDEBAR_WORK_VALUE_CHARS)
+        ));
     }
     if let Some(error) = opencode_sidebar
         .and_then(|sidebar| sidebar.last_error.as_deref())
         .filter(|error| !error.is_empty())
     {
-        lines.push(format!("Error: {}", compact_sidebar_text(error, 72)));
+        lines.push(format!(
+            "Error: {}",
+            compact_sidebar_text(error, SIDEBAR_WORK_VALUE_CHARS)
+        ));
     }
     if lines.is_empty() {
         None
@@ -178,10 +189,16 @@ fn todos_text(
         if todo_count == 1 { "" } else { "s" }
     )];
     if let Some(first) = sidebar.todo_preview.first() {
-        lines.push(format!("Next: {}", compact_sidebar_text(first, 20)));
+        lines.push(format!(
+            "Next: {}",
+            compact_sidebar_text(first, SIDEBAR_TODO_VALUE_CHARS)
+        ));
     }
     if let Some(second) = sidebar.todo_preview.get(1) {
-        lines.push(format!("Then: {}", compact_sidebar_text(second, 20)));
+        lines.push(format!(
+            "Then: {}",
+            compact_sidebar_text(second, SIDEBAR_TODO_VALUE_CHARS)
+        ));
     }
     if todo_count > preview_count {
         let hidden_count = todo_count - preview_count;
@@ -243,7 +260,11 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 }
 
 fn sidebar_prompt_preview(text: &str) -> String {
-    compact_sidebar_block(text, 30, 2)
+    compact_sidebar_block(
+        text,
+        SIDEBAR_PROMPT_PREVIEW_COLS,
+        SIDEBAR_PROMPT_PREVIEW_LINES,
+    )
 }
 
 fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> String {
@@ -841,6 +862,34 @@ mod tests {
     }
 
     #[test]
+    fn opencode_work_text_truncates_long_error_to_sidebar_width() {
+        let work = work_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: Some("busy".into()),
+            last_tool: None,
+            todo_count: None,
+            todo_preview: Vec::new(),
+            pending_permission: None,
+            lsp_summary: None,
+            last_error: Some(
+                "patch application failed because the target hunk context no longer matched".into(),
+            ),
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        }));
+
+        assert_eq!(
+            work.as_deref(),
+            Some("State: busy\nError: patch application failed …")
+        );
+    }
+
+    #[test]
     fn opencode_todos_text_renders_count() {
         let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
             session_id: "ses-1".into(),
@@ -889,6 +938,35 @@ mod tests {
         assert_eq!(
             todos.as_deref(),
             Some("Open: 5 items\nNext: finish parser\nThen: wire UI\nMore: 3 more items")
+        );
+    }
+
+    #[test]
+    fn opencode_todos_text_truncates_preview_to_sidebar_width() {
+        let todos = todos_text(Some(&crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "ses-1".into(),
+            title: None,
+            latest_prompt: None,
+            status: None,
+            last_tool: None,
+            todo_count: Some(2),
+            todo_preview: vec![
+                "verify prompt updates are reflected immediately in the sidebar".into(),
+                "verify second long item also gets trimmed cleanly".into(),
+            ],
+            pending_permission: None,
+            last_error: None,
+            lsp_summary: None,
+            live_summary: None,
+            reasoning_tokens: None,
+            additions: None,
+            deletions: None,
+            files: None,
+        }));
+
+        assert_eq!(
+            todos.as_deref(),
+            Some("Open: 2 items\nNext: verify prompt updates a…\nThen: verify second long item…")
         );
     }
 

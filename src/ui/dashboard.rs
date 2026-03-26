@@ -67,11 +67,11 @@ fn build_sidebar_data(app: &App, view: &crate::app::ViewState) -> Option<super::
         SessionKind::Opencode => opencode_sidebar
             .and_then(|sidebar| sidebar.latest_prompt.as_deref())
             .or_else(|| app.latest_prompt_for_session(&feature.tmux_session))
-            .map(|prompt| compact_sidebar_text(prompt, 72))
+            .map(sidebar_prompt_preview)
             .unwrap_or_else(|| "No recent prompt yet.".to_string()),
         _ => app
             .latest_prompt_for_session(&feature.tmux_session)
-            .map(|prompt| compact_sidebar_text(prompt, 72))
+            .map(sidebar_prompt_preview)
             .unwrap_or_else(|| "No recent prompt.\nleader+l for history.".to_string()),
     };
     let summary_text = sidebar_summary_text(
@@ -240,6 +240,64 @@ fn compact_sidebar_text(text: &str, max_chars: usize) -> String {
 
     let truncated: String = compact.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
+}
+
+fn sidebar_prompt_preview(text: &str) -> String {
+    compact_sidebar_block(text, 30, 2)
+}
+
+fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> String {
+    if max_cols == 0 || max_lines == 0 {
+        return String::new();
+    }
+
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.is_empty() {
+        return String::new();
+    }
+
+    let words: Vec<&str> = compact.split(' ').collect();
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut index = 0;
+
+    while index < words.len() && lines.len() < max_lines {
+        let word = words[index];
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+
+        if candidate.chars().count() <= max_cols {
+            current = candidate;
+            index += 1;
+            continue;
+        }
+
+        if current.is_empty() {
+            lines.push(compact_sidebar_text(word, max_cols));
+            index += 1;
+        } else {
+            lines.push(current);
+            current = String::new();
+        }
+    }
+
+    if lines.len() < max_lines && !current.is_empty() {
+        lines.push(current);
+    }
+
+    if index < words.len() && let Some(last) = lines.pop() {
+        let remainder = if last.ends_with('…') {
+            last
+        } else {
+            compact_sidebar_text(&last, max_cols.saturating_sub(1))
+        };
+        lines.push(format!("{remainder}…"));
+    }
+
+    lines.join("\n")
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -705,6 +763,24 @@ mod tests {
         assert_eq!(
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
+        );
+    }
+
+    #[test]
+    fn sidebar_prompt_preview_wraps_into_two_lines() {
+        assert_eq!(
+            sidebar_prompt_preview(
+                "Please exercise the Opencode sidebar integration by doing these steps in order"
+            ),
+            "Please exercise the Opencode\nsidebar integration by doing…"
+        );
+    }
+
+    #[test]
+    fn sidebar_prompt_preview_compacts_whitespace() {
+        assert_eq!(
+            sidebar_prompt_preview("Please   exercise\n\n the   sidebar"),
+            "Please exercise the sidebar"
         );
     }
 

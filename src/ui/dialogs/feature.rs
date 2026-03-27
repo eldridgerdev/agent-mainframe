@@ -3,8 +3,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Wrap,
+    },
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
@@ -856,7 +860,11 @@ pub fn draw_confirm_supervibe_dialog(frame: &mut Frame, theme: &Theme) {
     frame.render_widget(hints, chunks[5]);
 }
 
-pub fn draw_steering_prompt_dialog(frame: &mut Frame, state: &SteeringPromptState, theme: &Theme) {
+pub fn draw_steering_prompt_dialog(
+    frame: &mut Frame,
+    state: &mut SteeringPromptState,
+    theme: &Theme,
+) {
     let area = centered_rect(84, 82, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -923,15 +931,36 @@ pub fn draw_steering_prompt_dialog(frame: &mut Frame, state: &SteeringPromptStat
         None => " Prompt To Inject ",
     };
 
+    let prompt_block = Block::default()
+        .title(prompt_title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let prompt_inner = prompt_block.inner(chunks[1]);
+    let visible_lines = prompt_inner.height as usize;
+    let mut wrap_width = prompt_inner.width as usize;
+    let mut total_visual_lines = count_wrapped_steering_lines(&prompt_text, wrap_width);
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines = count_wrapped_steering_lines(&prompt_text, wrap_width);
+    }
+    sync_steering_prompt_scroll(state, visible_lines, wrap_width, total_visual_lines);
+
     let prompt = Paragraph::new(prompt_text)
-        .block(
-            Block::default()
-                .title(prompt_title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.primary.to_color())),
-        )
-        .wrap(Wrap { trim: false });
+        .block(prompt_block)
+        .wrap(Wrap { trim: false })
+        .scroll((state.scroll_offset.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(prompt, chunks[1]);
+
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(state.scroll_offset)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, chunks[1], &mut scrollbar_state);
+    }
 
     let checklist = Paragraph::new(prompt_checklist_lines(&state.prompt_analysis, theme))
         .block(
@@ -1006,6 +1035,12 @@ pub fn draw_steering_prompt_dialog(frame: &mut Frame, state: &SteeringPromptStat
                 " newline  "
             },
         ),
+        Span::styled("Ctrl+J/K", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" scroll  "),
+        Span::styled("PgUp/PgDn", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" page  "),
+        Span::styled("Ctrl+L", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" clear  "),
         Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
         Span::raw(if state.editor.vim_mode().is_some() {
             " vim off  "
@@ -1064,6 +1099,73 @@ fn char_col_to_byte_idx(text: &str, char_col: usize) -> usize {
         .nth(char_col)
         .map(|(idx, _)| idx)
         .unwrap_or(text.len())
+}
+
+fn sync_steering_prompt_scroll(
+    state: &mut SteeringPromptState,
+    visible_lines: usize,
+    wrap_width: usize,
+    total_visual_lines: usize,
+) {
+    if state.sync_scroll_to_cursor && visible_lines > 0 && wrap_width > 0 {
+        let cursor_row = steering_cursor_visual_row(&state.editor, wrap_width);
+        if cursor_row < state.scroll_offset {
+            state.scroll_offset = cursor_row;
+        } else if cursor_row >= state.scroll_offset.saturating_add(visible_lines) {
+            state.scroll_offset = cursor_row + 1 - visible_lines;
+        }
+        state.sync_scroll_to_cursor = false;
+    }
+
+    let max_scroll = total_visual_lines.saturating_sub(visible_lines);
+    state.scroll_offset = state.scroll_offset.min(max_scroll);
+}
+
+fn count_wrapped_steering_lines(lines: &[Line<'static>], width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            UnicodeWidthStr::width(text.as_str()).max(1).div_ceil(width)
+        })
+        .sum()
+}
+
+fn steering_cursor_visual_row(editor: &TextEditor, width: usize) -> usize {
+    if width == 0 {
+        return 0;
+    }
+
+    let mut lines = editor
+        .text()
+        .split('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let (cursor_row, cursor_col) = editor.cursor_row_col();
+    while lines.len() <= cursor_row {
+        lines.push(String::new());
+    }
+
+    let wrapped_before_cursor = lines
+        .iter()
+        .take(cursor_row)
+        .map(|line| UnicodeWidthStr::width(line.as_str()).max(1).div_ceil(width))
+        .sum::<usize>();
+    let current_line = lines
+        .get(cursor_row)
+        .map(String::as_str)
+        .unwrap_or_default();
+    let cursor_byte = char_col_to_byte_idx(current_line, cursor_col);
+    let cursor_prefix = &current_line[..cursor_byte];
+    wrapped_before_cursor + UnicodeWidthStr::width(cursor_prefix).div_euclid(width)
 }
 
 pub fn draw_delete_feature_confirm(

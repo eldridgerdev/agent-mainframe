@@ -125,6 +125,17 @@ impl TextEditor {
         EditorOutcome::changed()
     }
 
+    pub fn clear(&mut self) -> EditorOutcome {
+        if self.text.is_empty() {
+            return EditorOutcome::default();
+        }
+
+        self.text.clear();
+        self.cursor = 0;
+        self.preferred_col = None;
+        EditorOutcome::changed()
+    }
+
     pub fn cursor_row_col(&self) -> (usize, usize) {
         let row = self.text[..self.cursor]
             .chars()

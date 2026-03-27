@@ -287,6 +287,8 @@ pub struct SteeringPromptState {
     pub workdir: PathBuf,
     pub editor: TextEditor,
     pub prompt_analysis: PromptAnalysis,
+    pub scroll_offset: usize,
+    pub sync_scroll_to_cursor: bool,
 }
 
 impl SteeringPromptState {
@@ -298,11 +300,37 @@ impl SteeringPromptState {
             workdir,
             editor,
             prompt_analysis,
+            scroll_offset: 0,
+            sync_scroll_to_cursor: true,
         }
     }
 
     pub fn refresh_prompt_analysis(&mut self) {
         self.prompt_analysis = crate::app::analyze_prompt(self.editor.text());
+    }
+
+    pub fn request_cursor_scroll(&mut self) {
+        self.sync_scroll_to_cursor = true;
+    }
+
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.sync_scroll_to_cursor = false;
+    }
+
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.sync_scroll_to_cursor = false;
+    }
+
+    pub fn clear_prompt(&mut self) -> bool {
+        let cleared = self.editor.clear().text_changed;
+        if cleared {
+            self.refresh_prompt_analysis();
+        }
+        self.scroll_offset = 0;
+        self.sync_scroll_to_cursor = false;
+        cleared
     }
 }
 

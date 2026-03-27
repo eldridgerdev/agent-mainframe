@@ -22,6 +22,8 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
+    ("b", "Show / hide sidebar"),
+    ("v", "Expand / collapse todos"),
     ("o", "Scroll mode"),
     ("r", "Refresh statuses"),
     ("x", "Stop session"),
@@ -941,6 +943,26 @@ mod tests {
 
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn leader_menu_lists_sidebar_toggle_command() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &view, "hello", None, true, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Ctrl+Space commands"));
+        assert!(rendered.contains("Show / hide sidebar"));
     }
 
     #[test]

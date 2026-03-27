@@ -193,7 +193,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
-        self.schedule_sidebar_load_for_feature(pi, fi);
+        self.refresh_sidebar_for_current_view();
         self.message = Some("Restored opencode session".into());
 
         Ok(())

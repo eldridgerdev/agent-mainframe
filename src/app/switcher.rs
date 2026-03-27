@@ -108,7 +108,6 @@ impl App {
             };
 
         self.pane_content.clear();
-        self.request_codex_sidebar_metadata_for_view(&project_name, &feature_name, &window, &kind);
         self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
@@ -119,6 +118,7 @@ impl App {
             vibe_mode,
             review,
         ));
+        self.refresh_sidebar_for_current_view();
     }
 
     pub fn cancel_session_switcher(&mut self) {
@@ -146,7 +146,6 @@ impl App {
             };
 
         self.pane_content.clear();
-        self.request_codex_sidebar_metadata_for_view(&project_name, &feature_name, &window, &kind);
         self.mode = AppMode::Viewing(ViewState::new(
             project_name,
             feature_name,
@@ -157,5 +156,6 @@ impl App {
             vibe_mode,
             review,
         ));
+        self.refresh_sidebar_for_current_view();
     }
 }

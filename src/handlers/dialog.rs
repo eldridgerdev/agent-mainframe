@@ -3,6 +3,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, AppMode, CreateProjectStep};
 
+const STEERING_PROMPT_PAGE_SCROLL: usize = 6;
+
 pub fn handle_create_project_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('b') {
         let is_path_step = matches!(
@@ -288,6 +290,36 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
+        if let AppMode::SteeringPrompt(state) = &mut app.mode {
+            state.clear_prompt();
+            app.message = Some("Steering prompt cleared".into());
+        }
+        return Ok(());
+    }
+
+    if let AppMode::SteeringPrompt(state) = &mut app.mode {
+        match key.code {
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.scroll_down(1);
+                return Ok(());
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.scroll_up(1);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                state.scroll_down(STEERING_PROMPT_PAGE_SCROLL);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                state.scroll_up(STEERING_PROMPT_PAGE_SCROLL);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     match key.code {
         KeyCode::Tab => {
             app.submit_steering_prompt()?;
@@ -301,6 +333,9 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 let outcome = state.editor.handle_key(key);
                 if outcome.text_changed {
                     state.refresh_prompt_analysis();
+                }
+                if outcome.text_changed || outcome.cursor_moved {
+                    state.request_cursor_scroll();
                 }
             }
         }
@@ -522,8 +557,7 @@ mod tests {
 
     use super::*;
     use crate::app::{
-        CommandAction, MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState,
-        ViewState,
+        CommandAction, MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState, ViewState,
     };
     use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -662,6 +696,68 @@ mod tests {
     }
 
     #[test]
+    fn steering_prompt_scroll_keys_adjust_offset() {
+        let repo = TempDir::new().unwrap();
+        let mut app = steering_app(repo.path(), "draft");
+
+        if let AppMode::SteeringPrompt(state) = &mut app.mode {
+            state.scroll_offset = 4;
+        }
+
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        handle_steering_prompt_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            .unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => assert_eq!(state.scroll_offset, 4),
+            _ => panic!("expected steering prompt to stay open"),
+        }
+    }
+
+    #[test]
+    fn steering_prompt_ctrl_l_clears_editor() {
+        let repo = TempDir::new().unwrap();
+        let mut app = steering_app(repo.path(), "draft\nwith details");
+
+        if let AppMode::SteeringPrompt(state) = &mut app.mode {
+            state.scroll_offset = 8;
+        }
+
+        handle_steering_prompt_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::SteeringPrompt(state) => {
+                assert_eq!(state.editor.text(), "");
+                assert_eq!(state.scroll_offset, 0);
+                assert_eq!(
+                    state.prompt_analysis.score,
+                    crate::app::analyze_prompt("").score
+                );
+            }
+            _ => panic!("expected steering prompt to stay open"),
+        }
+        assert_eq!(app.message.as_deref(), Some("Steering prompt cleared"));
+    }
+
+    #[test]
     fn markdown_viewer_b_returns_to_picker_when_available() {
         let mut app = markdown_app();
         let view = markdown_view();
@@ -792,7 +888,10 @@ mod tests {
         match &app.mode {
             AppMode::CommandPicker(state) => {
                 assert!(matches!(
-                    state.commands.get(state.selected).map(|entry| &entry.action),
+                    state
+                        .commands
+                        .get(state.selected)
+                        .map(|entry| &entry.action),
                     Some(CommandAction::Local { .. })
                 ));
                 assert_eq!(

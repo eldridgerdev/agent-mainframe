@@ -438,7 +438,9 @@ fn compact_sidebar_block(text: &str, max_cols: usize, max_lines: usize) -> Strin
         lines.push(current);
     }
 
-    if index < words.len() && let Some(last) = lines.pop() {
+    if index < words.len()
+        && let Some(last) = lines.pop()
+    {
         let trimmed = compact_sidebar_text(&last, max_cols.saturating_sub(1));
         lines.push(format!("{trimmed}…"));
     }
@@ -635,8 +637,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
         return;
     }
-    if let AppMode::SteeringPrompt(state) = &app.mode {
-        draw_view_pane(frame, app, &state.view, false);
+    let steering_from_view = if let AppMode::SteeringPrompt(state) = &app.mode {
+        Some(state.view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = steering_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false);
+    }
+    if let AppMode::SteeringPrompt(state) = &mut app.mode {
         super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
         return;
     }

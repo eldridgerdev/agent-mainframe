@@ -190,6 +190,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
+        self.refresh_sidebar_for_current_view();
         self.message = Some("Restored claude session".into());
 
         Ok(())

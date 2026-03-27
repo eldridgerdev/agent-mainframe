@@ -449,6 +449,57 @@ impl App {
         }
     }
 
+    pub(crate) fn has_active_sidebar(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::Viewing(view) if view.sidebar_session_kind().is_some()
+        )
+    }
+
+    pub(crate) fn refresh_sidebar_for_current_view(&mut self) {
+        let Some((project_name, feature_name, window, session_kind)) = (match &self.mode {
+            AppMode::Viewing(view) => view.sidebar_session_kind().map(|session_kind| {
+                (
+                    view.project_name.clone(),
+                    view.feature_name.clone(),
+                    view.window.clone(),
+                    session_kind,
+                )
+            }),
+            _ => None,
+        }) else {
+            return;
+        };
+
+        let Some((pi, fi)) = self
+            .store
+            .projects
+            .iter()
+            .enumerate()
+            .find(|(_, project)| project.name == project_name)
+            .and_then(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .enumerate()
+                    .find(|(_, feature)| feature.name == feature_name)
+                    .map(|(fi, _)| (pi, fi))
+            })
+        else {
+            return;
+        };
+
+        self.refresh_latest_prompt_for_feature(pi, fi);
+        self.refresh_sidebar_plan_for_feature(pi, fi);
+        self.request_codex_sidebar_metadata_for_view(
+            &project_name,
+            &feature_name,
+            &window,
+            &session_kind,
+        );
+        self.schedule_sidebar_load_for_feature(pi, fi);
+    }
+
     fn build_latest_prompt_cache(store: &ProjectStore) -> HashMap<String, String> {
         let mut cache = HashMap::new();
 
@@ -535,7 +586,8 @@ impl App {
             }
 
             if let Some(data) = result.opencode_sidebar {
-                self.opencode_sidebar_cache.insert(result.tmux_session, data);
+                self.opencode_sidebar_cache
+                    .insert(result.tmux_session, data);
             } else {
                 self.opencode_sidebar_cache.remove(&result.tmux_session);
             }

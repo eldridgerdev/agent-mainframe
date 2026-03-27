@@ -819,7 +819,10 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
     assert!(app.store.projects[0].features[0].pending_worktree_script);
-    assert_eq!(app.store.projects[0].features[0].status, ProjectStatus::Stopped);
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
 }
 
 #[test]
@@ -3170,6 +3173,60 @@ fn poll_codex_sidebar_metadata_updates_caches() {
 }
 
 #[test]
+fn sync_session_status_skips_sidebar_refresh_when_sidebar_hidden() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex".to_string(),
+        "Codex".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.sidebar_visible = false;
+    app.mode = AppMode::Viewing(view);
+
+    app.sync_session_status();
+
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn toggling_sidebar_back_on_triggers_sidebar_refresh() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex".to_string(),
+        "Codex".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.sidebar_visible = false;
+    app.mode = AppMode::Viewing(view);
+
+    app.toggle_sidebar_in_view();
+
+    assert!(app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
 fn ipc_input_request_updates_codex_live_work_state() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -3999,10 +4056,8 @@ fn status_file_cleanup_during_remove() {
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.pending_sidebar_loads
         .insert("amf-custom-cleanup-test-sess".to_string());
-    app.latest_prompt_cache.insert(
-        "amf-my-feat".to_string(),
-        prompt_entry("cached prompt"),
-    );
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
     app.opencode_sidebar_cache.insert(
         "amf-my-feat".to_string(),
         crate::app::opencode_storage::OpencodeSidebarData {

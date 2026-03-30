@@ -291,7 +291,7 @@ struct SidebarLoadResult {
 impl App {
     pub fn new(store_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
-        crate::project::migrate_from_old_path();
+        crate::project::prepare_store_path(&store_path, &crate::project::global_store_path());
         let store = ProjectStore::load(&store_path)?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);

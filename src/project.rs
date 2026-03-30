@@ -2,11 +2,13 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::token_tracking::TokenUsageSource;
+use crate::worktree::WorktreeManager;
 
 const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
@@ -894,16 +896,38 @@ pub fn amf_config_dir() -> PathBuf {
         .join("amf")
 }
 
-pub fn store_path() -> PathBuf {
+pub fn global_store_path() -> PathBuf {
     amf_config_dir().join("projects.json")
+}
+
+fn worktree_store_path_for_dir(current_dir: &Path) -> Option<PathBuf> {
+    if !WorktreeManager::is_worktree(current_dir) {
+        return None;
+    }
+
+    WorktreeManager::repo_root(current_dir)
+        .ok()
+        .map(|root| root.join(".amf").join("projects.json"))
+}
+
+fn resolve_store_path_for_dir(current_dir: &Path, global_path: &Path) -> PathBuf {
+    worktree_store_path_for_dir(current_dir).unwrap_or_else(|| global_path.to_path_buf())
+}
+
+pub fn store_path() -> PathBuf {
+    let global_path = global_store_path();
+    env::current_dir()
+        .ok()
+        .map(|current_dir| resolve_store_path_for_dir(&current_dir, &global_path))
+        .unwrap_or(global_path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::path::PathBuf;
-    use tempfile::NamedTempFile;
+    use std::process::Command;
+    use tempfile::{NamedTempFile, TempDir};
 
     fn make_feature_session(kind: SessionKind, window: &str) -> FeatureSession {
         FeatureSession {
@@ -1349,10 +1373,130 @@ mod tests {
         assert_eq!(feature.mode, VibeMode::Vibeless);
         assert!(feature.review);
     }
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo() -> TempDir {
+        let repo = TempDir::new().unwrap();
+        run_git(repo.path(), &["init", "-b", "main"]);
+        std::fs::write(repo.path().join("README.md"), "seed\n").unwrap();
+        run_git(repo.path(), &["add", "README.md"]);
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "seed",
+            ],
+        );
+        repo
+    }
+
+    #[test]
+    fn primary_checkout_uses_global_store_path() {
+        let repo = init_git_repo();
+        let global_path = repo.path().join("global-projects.json");
+
+        assert_eq!(
+            resolve_store_path_for_dir(repo.path(), &global_path),
+            global_path
+        );
+    }
+
+    #[test]
+    fn linked_worktree_uses_local_store_path() {
+        let repo = init_git_repo();
+        let worktree_path = repo.path().join(".worktrees").join("feature-a");
+        std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature-a",
+                worktree_path.to_str().unwrap(),
+            ],
+        );
+
+        let global_path = repo.path().join("global-projects.json");
+        assert_eq!(
+            resolve_store_path_for_dir(&worktree_path, &global_path),
+            worktree_path.join(".amf").join("projects.json")
+        );
+    }
+
+    #[test]
+    fn prepare_store_path_seeds_linked_worktree_from_global_store() {
+        let repo = init_git_repo();
+        let worktree_path = repo.path().join(".worktrees").join("feature-b");
+        std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        run_git(
+            repo.path(),
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature-b",
+                worktree_path.to_str().unwrap(),
+            ],
+        );
+
+        let global_path = repo.path().join("global-projects.json");
+        std::fs::write(
+            &global_path,
+            "{\n  \"version\": 5,\n  \"projects\": []\n}\n",
+        )
+        .unwrap();
+
+        let local_path = resolve_store_path_for_dir(&worktree_path, &global_path);
+        prepare_store_path(&local_path, &global_path);
+
+        assert_eq!(
+            std::fs::read_to_string(&local_path).unwrap(),
+            std::fs::read_to_string(&global_path).unwrap()
+        );
+    }
+}
+
+pub fn prepare_store_path(path: &Path, global_path: &Path) {
+    if path.exists() {
+        return;
+    }
+
+    if path != global_path && global_path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::copy(global_path, path);
+        return;
+    }
+
+    migrate_from_old_path_to(path);
 }
 
 pub fn migrate_from_old_path() {
     let new_path = store_path();
+    prepare_store_path(&new_path, &global_store_path());
+}
+
+fn migrate_from_old_path_to(new_path: &Path) {
     if new_path.exists() {
         return;
     }

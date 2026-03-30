@@ -26,7 +26,6 @@ pub struct SpawnedTmuxCommand {
 struct TmuxRuntime {
     binary: OsString,
     socket: Option<PathBuf>,
-    path_override: Option<OsString>,
     manages_private_socket: bool,
 }
 
@@ -56,12 +55,9 @@ impl TmuxRuntime {
                 (Some(Self::private_socket_path()), true)
             };
 
-        let path_override = Self::prepend_binary_dir_to_path(&binary);
-
         Self {
             binary,
             socket,
-            path_override,
             manages_private_socket,
         }
     }
@@ -93,14 +89,6 @@ impl TmuxRuntime {
             .join("tmux.sock")
     }
 
-    fn prepend_binary_dir_to_path(binary: &OsString) -> Option<OsString> {
-        let binary_path = PathBuf::from(binary);
-        let dir = binary_path.parent()?;
-        let current_path = std::env::var_os("PATH").unwrap_or_default();
-        let mut paths = vec![dir.to_path_buf()];
-        paths.extend(std::env::split_paths(&current_path));
-        std::env::join_paths(paths).ok()
-    }
 }
 
 impl TmuxManager {
@@ -122,9 +110,6 @@ impl TmuxManager {
         if let Some(socket) = &runtime.socket {
             command.env("AMF_TMUX_SOCKET", socket);
         }
-        if let Some(path) = &runtime.path_override {
-            command.env("PATH", path);
-        }
         command
     }
 
@@ -143,13 +128,6 @@ impl TmuxManager {
             parts.push(format!(
                 "AMF_TMUX_SOCKET={}",
                 Self::shell_quote(&socket.to_string_lossy())
-            ));
-        }
-
-        if let Some(path) = &runtime.path_override {
-            parts.push(format!(
-                "PATH={}",
-                Self::shell_quote(&path.to_string_lossy())
             ));
         }
 
@@ -1063,5 +1041,14 @@ mod tests {
         assert!(socket_path.exists());
         assert!(!TmuxManager::remove_stale_socket_file(&socket_path));
         assert!(socket_path.exists());
+    }
+
+    #[test]
+    fn shell_env_prefix_does_not_export_path() {
+        let prefix = TmuxManager::shell_env_prefix(&[("AMF_SESSION", "amf-test")]);
+        assert!(prefix.starts_with("env "));
+        assert!(prefix.contains("AMF_TMUX_BIN="));
+        assert!(prefix.contains("AMF_SESSION='amf-test'"));
+        assert!(!prefix.contains("PATH="));
     }
 }

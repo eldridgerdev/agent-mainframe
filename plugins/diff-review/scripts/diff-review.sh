@@ -75,11 +75,12 @@ ACTIVATION_DELAY="${DIFF_REVIEW_DELAY:-1500}"
 # ── Dependency checks ───────────────────────────────────────────
 
 check_requirements() {
+    local tmux_bin="${AMF_TMUX_BIN:-tmux}"
     if [[ -z "${TMUX:-}" ]]; then
         echo "diff-review: not running inside tmux, skipping review." >&2
         return 1
     fi
-    if ! command -v tmux &> /dev/null; then
+    if ! command -v "$tmux_bin" &> /dev/null; then
         echo "diff-review: tmux is required but not found." >&2
         echo "  Install: brew install tmux (macOS) or apt install tmux (Linux)" >&2
         return 1

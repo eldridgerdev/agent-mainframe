@@ -1,4 +1,6 @@
 use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 const SIDECAR_FRESHNESS_SECS: i64 = 300;
@@ -51,6 +53,16 @@ pub fn read_sidebar_data(
     )
 }
 
+pub(crate) fn sidebar_input_signature(workdir: &Path, preferred_session_id: Option<&str>) -> u64 {
+    let Some(storage_root) = dirs::data_dir().map(|dir| dir.join("opencode").join("storage"))
+    else {
+        return 0;
+    };
+
+    let sidecar_root = workdir.join(".amf").join("opencode-sidebar");
+    sidebar_input_signature_from_roots(&storage_root, &sidecar_root, preferred_session_id)
+}
+
 fn read_sidebar_data_from_roots(
     storage_root: &Path,
     sidecar_root: &Path,
@@ -64,6 +76,36 @@ fn read_sidebar_data_from_roots(
         preferred_session_id,
         chrono::Utc::now().timestamp(),
     )
+}
+
+fn sidebar_input_signature_from_roots(
+    storage_root: &Path,
+    sidecar_root: &Path,
+    preferred_session_id: Option<&str>,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+
+    hash_metadata(&mut hasher, sidecar_root);
+    hash_metadata(&mut hasher, storage_root.join("session"));
+
+    if let Some(session_id) = preferred_session_id {
+        hash_metadata(&mut hasher, sidecar_root.join(format!("{session_id}.json")));
+
+        let message_root = storage_root.join("message").join(session_id);
+        hash_tree_metadata(&mut hasher, &message_root);
+
+        for message_path in walk_json_files(&message_root) {
+            let Some(message_id) = message_path.file_stem().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            hash_tree_metadata(&mut hasher, &storage_root.join("part").join(message_id));
+        }
+    } else {
+        hash_metadata(&mut hasher, storage_root.join("message"));
+        hash_metadata(&mut hasher, storage_root.join("part"));
+    }
+
+    hasher.finish()
 }
 
 fn read_sidebar_data_from_roots_at_time(
@@ -295,6 +337,31 @@ fn walk_json_files(root: &Path) -> Vec<PathBuf> {
 
     files.sort();
     files
+}
+
+fn hash_tree_metadata(hasher: &mut impl Hasher, root: &Path) {
+    hash_metadata(hasher, root);
+    for path in walk_json_files(root) {
+        hash_metadata(hasher, path);
+    }
+}
+
+fn hash_metadata(hasher: &mut impl Hasher, path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    path.hash(hasher);
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            true.hash(hasher);
+            metadata.len().hash(hasher);
+            metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .hash(hasher);
+        }
+        Err(_) => false.hash(hasher),
+    }
 }
 
 fn parse_session_file(path: &Path) -> Option<OpencodeSessionRecord> {

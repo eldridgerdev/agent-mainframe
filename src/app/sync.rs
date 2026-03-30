@@ -16,6 +16,36 @@ pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
+fn opencode_sidebar_thinking_state(
+    sidebar: &crate::app::opencode_storage::OpencodeSidebarData,
+) -> Option<bool> {
+    if sidebar
+        .pending_permission
+        .as_deref()
+        .is_some_and(|permission| !permission.trim().is_empty())
+    {
+        return Some(false);
+    }
+
+    let status = sidebar.status.as_deref()?.trim().to_ascii_lowercase();
+    if status.is_empty() {
+        return None;
+    }
+
+    Some(!matches!(
+        status.as_str(),
+        "idle"
+            | "ready"
+            | "done"
+            | "completed"
+            | "closed"
+            | "cancelled"
+            | "canceled"
+            | "stopped"
+            | "waiting"
+    ))
+}
+
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
@@ -146,16 +176,23 @@ impl App {
                         }
                     }
                     AgentKind::Opencode => {
-                        let session = feature
-                            .sessions
-                            .iter()
-                            .find(|s| s.kind == SessionKind::Opencode);
-                        session
-                            .and_then(|s| {
-                                TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
-                                    .ok()
+                        self.opencode_sidebar_cache
+                            .get(&feature.tmux_session)
+                            .and_then(opencode_sidebar_thinking_state)
+                            .or_else(|| {
+                                feature
+                                    .sessions
+                                    .iter()
+                                    .find(|s| s.kind == SessionKind::Opencode)
+                                    .and_then(|s| {
+                                        TmuxManager::capture_pane(
+                                            &feature.tmux_session,
+                                            &s.tmux_window,
+                                        )
+                                        .ok()
+                                    })
+                                    .map(|content| pane_shows_thinking_hint(&content))
                             })
-                            .map(|content| pane_shows_thinking_hint(&content))
                             .unwrap_or(false)
                     }
                     AgentKind::Codex => {

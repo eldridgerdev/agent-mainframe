@@ -32,6 +32,8 @@ mod view;
 mod tests;
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -260,6 +262,7 @@ pub struct App {
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
+    sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
@@ -279,11 +282,13 @@ pub struct App {
     pub ipc: Option<crate::ipc::IpcGuard>,
     pub ipc_fallback_logged: bool,
     pub last_file_notification_count: usize,
+    pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
 }
 
 struct SidebarLoadResult {
     tmux_session: String,
+    signature: u64,
     latest_prompt: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
 }
@@ -341,6 +346,7 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
@@ -360,6 +366,7 @@ impl App {
             ipc: None,
             ipc_fallback_logged: false,
             last_file_notification_count: 0,
+            last_file_notification_fingerprint: None,
             vscode_available: std::process::Command::new("code")
                 .arg("--version")
                 .stdout(std::process::Stdio::null())
@@ -426,6 +433,7 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
@@ -445,6 +453,7 @@ impl App {
             ipc: None,
             ipc_fallback_logged: false,
             last_file_notification_count: 0,
+            last_file_notification_fingerprint: None,
             vscode_available: false,
         }
     }
@@ -543,17 +552,27 @@ impl App {
             return;
         };
 
-        if !self
-            .pending_sidebar_loads
-            .insert(feature.tmux_session.clone())
+        let request = SidebarLoadRequest::from_feature(feature);
+        let signature = request.signature();
+
+        if self
+            .sidebar_load_signatures
+            .get(&request.tmux_session)
+            .is_some_and(|cached| *cached == signature)
         {
             return;
         }
 
-        let request = SidebarLoadRequest::from_feature(feature);
+        if !self
+            .pending_sidebar_loads
+            .insert(request.tmux_session.clone())
+        {
+            return;
+        }
+
         let tx = self.sidebar_load_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(request.load());
+            let _ = tx.send(request.load(signature));
         });
     }
 
@@ -572,6 +591,8 @@ impl App {
     pub(crate) fn poll_sidebar_load_results(&mut self) {
         while let Ok(result) = self.sidebar_load_rx.try_recv() {
             self.pending_sidebar_loads.remove(&result.tmux_session);
+            self.sidebar_load_signatures
+                .insert(result.tmux_session.clone(), result.signature);
 
             if let Some(prompt) = result.latest_prompt {
                 let prompt = prompt.trim().to_string();
@@ -596,6 +617,7 @@ impl App {
 
     pub(crate) fn clear_sidebar_state_for_session(&mut self, tmux_session: &str) {
         self.pending_sidebar_loads.remove(tmux_session);
+        self.sidebar_load_signatures.remove(tmux_session);
         self.latest_prompt_cache.remove(tmux_session);
         self.sidebar_plan_cache.remove(tmux_session);
         self.codex_live_threads.remove(tmux_session);
@@ -1018,7 +1040,7 @@ struct SidebarLoadRequest {
     tmux_session: String,
     workdir: PathBuf,
     preferred_session_kind: Option<SessionKind>,
-    preferred_opencode_session_id: Option<String>,
+    preferred_session_id: Option<String>,
 }
 
 impl SidebarLoadRequest {
@@ -1028,8 +1050,13 @@ impl SidebarLoadRequest {
             AgentKind::Opencode => Some(SessionKind::Opencode),
             AgentKind::Codex => Some(SessionKind::Codex),
         };
-        let preferred_opencode_session_id = if feature.agent == AgentKind::Opencode {
-            feature
+        let preferred_session_id = match feature.agent {
+            AgentKind::Claude => feature
+                .sessions
+                .iter()
+                .find(|session| session.kind == SessionKind::Claude)
+                .and_then(|session| session.claude_session_id.clone()),
+            AgentKind::Opencode => feature
                 .sessions
                 .iter()
                 .find(|session| session.kind == SessionKind::Opencode)
@@ -1037,38 +1064,98 @@ impl SidebarLoadRequest {
                 .filter(|source| {
                     source.provider == crate::token_tracking::TokenUsageProvider::Opencode
                 })
-                .map(|source| source.id.clone())
-        } else {
-            None
+                .map(|source| source.id.clone()),
+            AgentKind::Codex => feature
+                .sessions
+                .iter()
+                .find(|session| session.kind == SessionKind::Codex)
+                .and_then(|session| session.token_usage_source.as_ref())
+                .filter(|source| {
+                    source.provider == crate::token_tracking::TokenUsageProvider::Codex
+                })
+                .map(|source| source.id.clone()),
         };
 
         Self {
             tmux_session: feature.tmux_session.clone(),
             workdir: feature.workdir.clone(),
             preferred_session_kind,
-            preferred_opencode_session_id,
+            preferred_session_id,
         }
     }
 
-    fn load(self) -> SidebarLoadResult {
+    fn signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.workdir.hash(&mut hasher);
+        self.preferred_session_id.hash(&mut hasher);
+        session_kind_signature(self.preferred_session_kind.as_ref()).hash(&mut hasher);
+        sidebar_prompt_input_signature(&self.workdir).hash(&mut hasher);
+
+        if self.preferred_session_kind == Some(SessionKind::Opencode) {
+            opencode_storage::sidebar_input_signature(
+                &self.workdir,
+                self.preferred_session_id.as_deref(),
+            )
+            .hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
+    fn load(self, signature: u64) -> SidebarLoadResult {
         let latest_prompt = crate::app::util::read_latest_prompt_for_session(
             &self.workdir,
             self.preferred_session_kind.as_ref(),
-            self.preferred_opencode_session_id.as_deref(),
+            self.preferred_session_id.as_deref(),
         );
         let opencode_sidebar = if self.preferred_session_kind == Some(SessionKind::Opencode) {
-            opencode_storage::read_sidebar_data(
-                &self.workdir,
-                self.preferred_opencode_session_id.as_deref(),
-            )
+            opencode_storage::read_sidebar_data(&self.workdir, self.preferred_session_id.as_deref())
         } else {
             None
         };
 
         SidebarLoadResult {
             tmux_session: self.tmux_session,
+            signature,
             latest_prompt,
             opencode_sidebar,
         }
+    }
+}
+
+fn session_kind_signature(session_kind: Option<&SessionKind>) -> u8 {
+    match session_kind {
+        Some(SessionKind::Claude) => 1,
+        Some(SessionKind::Opencode) => 2,
+        Some(SessionKind::Codex) => 3,
+        Some(SessionKind::Terminal) => 4,
+        Some(SessionKind::Nvim) => 5,
+        Some(SessionKind::Vscode) => 6,
+        Some(SessionKind::Custom) => 7,
+        None => 0,
+    }
+}
+
+fn sidebar_prompt_input_signature(workdir: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hash_path_metadata(&mut hasher, crate::app::util::latest_prompt_path(workdir));
+    hash_path_metadata(&mut hasher, workdir.join(".codex").join("latest-prompt.txt"));
+    hasher.finish()
+}
+
+fn hash_path_metadata(hasher: &mut impl Hasher, path: PathBuf) {
+    path.hash(hasher);
+    match std::fs::metadata(&path) {
+        Ok(metadata) => {
+            true.hash(hasher);
+            metadata.len().hash(hasher);
+            metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .hash(hasher);
+        }
+        Err(_) => false.hash(hasher),
     }
 }

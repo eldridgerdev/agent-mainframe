@@ -111,6 +111,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     app.sidebar_load_tx
         .send(super::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
+            signature: 7,
             latest_prompt: Some("lazy prompt".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
@@ -3066,6 +3067,97 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Inferred),
+    );
+}
+
+#[test]
+fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
+    let workdir = TempDir::new().unwrap();
+    let prompt_path = workdir.path().join(".claude").join("latest-prompt.txt");
+    std::fs::create_dir_all(prompt_path.parent().unwrap()).unwrap();
+    std::fs::write(&prompt_path, "first prompt").unwrap();
+
+    let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 13, 59, 30).unwrap();
+    let session = FeatureSession {
+        id: "claude-sess".to_string(),
+        kind: SessionKind::Claude,
+        label: "Claude".to_string(),
+        tmux_window: "claude".to_string(),
+        claude_session_id: Some("claude-session-1".to_string()),
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Claude,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let signature =
+        super::SidebarLoadRequest::from_feature(&app.store.projects[0].features[0]).signature();
+    app.sidebar_load_signatures
+        .insert("amf-my-feat".to_string(), signature);
+
+    let mut tracker = SessionTokenTracker::default();
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert!(
+        !app.pending_sidebar_loads.contains("amf-my-feat"),
+        "unchanged prompt inputs should not queue another sidebar load"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    std::fs::write(&prompt_path, "updated prompt").unwrap();
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert!(
+        app.pending_sidebar_loads.contains("amf-my-feat"),
+        "changed prompt inputs should queue a fresh sidebar load"
     );
 }
 

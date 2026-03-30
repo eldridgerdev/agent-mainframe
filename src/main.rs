@@ -446,43 +446,6 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
         app.viewport_cols = size.width;
         app.viewport_rows = visible_rows;
 
-        if is_viewing {
-            let content_rows = visible_rows;
-            if let app::AppMode::Viewing(ref view) = app.mode {
-                let content_cols = ui::viewing_main_width(view, size.width);
-                let current_resize = (
-                    content_cols,
-                    content_rows,
-                    view.session.clone(),
-                    view.window.clone(),
-                );
-
-                if last_resize.as_ref() != Some(&current_resize) {
-                    let _ = TmuxManager::resize_pane(
-                        &view.session,
-                        &view.window,
-                        content_cols,
-                        content_rows,
-                    );
-                    last_resize = Some(current_resize);
-                }
-            }
-
-            if let app::AppMode::Viewing(ref view) = app.mode {
-                let session = view.session.clone();
-                let window = view.window.clone();
-                let content_cols = ui::viewing_main_width(view, size.width);
-                app.pane_content =
-                    TmuxManager::capture_pane_ansi(&session, &window).unwrap_or_default();
-                // Store the rendering dimensions (content area in pane.rs),
-                // not the tmux capture dimensions, so mouse selection
-                // coordinates align correctly.
-                app.pane_content_cols = content_cols;
-                app.pane_content_rows = size.height.saturating_sub(1);
-                app.tmux_cursor = TmuxManager::cursor_position(&session, &window).ok();
-            }
-        }
-
         app.throbber_state.calc_next();
 
         if matches!(app.mode, app::AppMode::RunningHook(_))
@@ -529,17 +492,57 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             app.message = Some(alert);
         }
 
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        if app.leader_active && app.leader_timed_out() {
+            app.deactivate_leader();
+        }
+
+        let poll_duration = if is_viewing {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(250)
+        };
+        let mut handled_user_events = false;
+
+        if event::poll(poll_duration)? {
+            handled_user_events = true;
+            let mut events = vec![event::read()?];
+
+            if is_viewing {
+                while event::poll(Duration::ZERO)? {
+                    events.push(event::read()?);
+                }
+            }
+
+            for ev in events {
+                match ev {
+                    Event::Key(key) => {
+                        if let Err(e) = handlers::handle_key(app, key, visible_rows) {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Err(e) = handlers::handle_mouse(app, mouse, visible_rows) {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Paste(text) => {
+                        if let Err(e) = handlers::handle_paste(app, &text) {
+                            app.show_error(e);
+                        }
+                    }
+                    Event::Resize(_, _) => {
+                        last_resize = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         if app.should_quit || app.should_switch.is_some() {
             return Ok(());
         }
 
-        if app.leader_active && app.leader_timed_out() {
-            app.deactivate_leader();
-        }
-
-        if last_sync.elapsed() >= Duration::from_secs(5) {
+        if !handled_user_events && last_sync.elapsed() >= Duration::from_secs(5) {
             if !is_viewing {
                 app.sync_statuses();
             }
@@ -592,7 +595,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             app.drain_ipc_messages();
         }
 
-        if last_notif_scan.elapsed() >= Duration::from_millis(500) {
+        if !handled_user_events && last_notif_scan.elapsed() >= Duration::from_millis(500) {
             if app.ipc.is_none() && !app.ipc_fallback_logged {
                 app.log_warn(
                     "ipc",
@@ -607,7 +610,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             last_notif_scan = std::time::Instant::now();
         }
 
-        if last_thinking_sync.elapsed() >= Duration::from_millis(500) {
+        if !handled_user_events && last_thinking_sync.elapsed() >= Duration::from_millis(500) {
             app.sync_thinking_status();
             last_thinking_sync = std::time::Instant::now();
         }
@@ -620,44 +623,40 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             app.poll_sidebar_load_results();
         }
 
-        let poll_duration = if is_viewing {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_millis(250)
-        };
+        if let app::AppMode::Viewing(ref view) = app.mode {
+            let content_rows = visible_rows;
+            let content_cols = ui::viewing_main_width(view, size.width);
+            let current_resize = (
+                content_cols,
+                content_rows,
+                view.session.clone(),
+                view.window.clone(),
+            );
 
-        if event::poll(poll_duration)? {
-            let mut events = vec![event::read()?];
-
-            if is_viewing {
-                while event::poll(Duration::ZERO)? {
-                    events.push(event::read()?);
-                }
+            if last_resize.as_ref() != Some(&current_resize) {
+                let _ = TmuxManager::resize_pane(
+                    &view.session,
+                    &view.window,
+                    content_cols,
+                    content_rows,
+                );
+                last_resize = Some(current_resize);
             }
 
-            for ev in events {
-                match ev {
-                    Event::Key(key) => {
-                        if let Err(e) = handlers::handle_key(app, key, visible_rows) {
-                            app.show_error(e);
-                        }
-                    }
-                    Event::Mouse(mouse) => {
-                        if let Err(e) = handlers::handle_mouse(app, mouse, visible_rows) {
-                            app.show_error(e);
-                        }
-                    }
-                    Event::Paste(text) => {
-                        if let Err(e) = handlers::handle_paste(app, &text) {
-                            app.show_error(e);
-                        }
-                    }
-                    Event::Resize(_, _) => {
-                        last_resize = None;
-                    }
-                    _ => {}
-                }
-            }
+            app.pane_content =
+                TmuxManager::capture_pane_ansi(&view.session, &view.window).unwrap_or_default();
+            // Store the rendering dimensions (content area in pane.rs),
+            // not the tmux capture dimensions, so mouse selection
+            // coordinates align correctly.
+            app.pane_content_cols = content_cols;
+            app.pane_content_rows = size.height.saturating_sub(1);
+            app.tmux_cursor = TmuxManager::cursor_position(&view.session, &view.window).ok();
+        }
+
+        terminal.draw(|frame| ui::draw(frame, app))?;
+
+        if app.should_quit || app.should_switch.is_some() {
+            return Ok(());
         }
     }
 }

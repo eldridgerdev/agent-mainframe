@@ -3,6 +3,9 @@ use crate::http_client;
 use chrono::{Datelike, TimeZone};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -275,6 +278,8 @@ pub struct UsageManager {
     zai_monthly_limit: Option<u64>,
     zai_weekly_limit: Option<u64>,
     zai_five_hour_limit: Option<u64>,
+    last_claude_today_signature: Option<u64>,
+    last_codex_usage_signature: Option<u64>,
 }
 
 impl UsageManager {
@@ -299,6 +304,8 @@ impl UsageManager {
             zai_monthly_limit,
             zai_weekly_limit,
             zai_five_hour_limit,
+            last_claude_today_signature: None,
+            last_codex_usage_signature: None,
         }
     }
 
@@ -392,7 +399,7 @@ impl UsageManager {
         }
     }
 
-    fn refresh_claude_stats(&self) {
+    fn refresh_claude_stats(&mut self) {
         let Some(claude_dir) = dirs::home_dir().map(|h| h.join(".claude")) else {
             return;
         };
@@ -410,7 +417,14 @@ impl UsageManager {
 
         let today_stats = cache.daily_activity.iter().find(|d| d.date == today);
 
-        let today_tokens = calculate_claude_today_tokens(&today);
+        let today_signature = claude_today_signature(&today);
+        let today_tokens = if self.last_claude_today_signature == Some(today_signature) {
+            self.data.lock().unwrap().claude.today_tokens
+        } else {
+            let tokens = calculate_claude_today_tokens(&today);
+            self.last_claude_today_signature = Some(today_signature);
+            tokens
+        };
 
         let mut data = self.data.lock().unwrap();
         if let Some(stats) = today_stats {
@@ -425,10 +439,17 @@ impl UsageManager {
         data.claude.today_tokens = today_tokens;
     }
 
-    fn refresh_codex_stats(&self) {
+    fn refresh_codex_stats(&mut self) {
         // Compute outside the lock — file I/O can be slow and must not hold
         // the mutex (doing so freezes the draw path on every 30-second refresh).
-        let stats = calculate_codex_usage();
+        let codex_signature = codex_usage_signature();
+        let stats = if self.last_codex_usage_signature == Some(codex_signature) {
+            self.data.lock().unwrap().codex.clone()
+        } else {
+            let stats = calculate_codex_usage();
+            self.last_codex_usage_signature = Some(codex_signature);
+            stats
+        };
 
         let sessions_path = codex_sessions_root()
             .map(|p| p.display().to_string())
@@ -686,6 +707,56 @@ fn calculate_claude_today_tokens(today: &str) -> u64 {
     total
 }
 
+fn claude_today_signature(today: &str) -> u64 {
+    let Some(projects_dir) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) else {
+        return 0;
+    };
+
+    let mut hasher = DefaultHasher::new();
+    today.hash(&mut hasher);
+    projects_dir.hash(&mut hasher);
+
+    let Ok(proj_entries) = std::fs::read_dir(&projects_dir) else {
+        false.hash(&mut hasher);
+        return hasher.finish();
+    };
+    true.hash(&mut hasher);
+
+    let mut files = Vec::new();
+    for proj_entry in proj_entries.flatten() {
+        let proj_path = proj_entry.path();
+        if !proj_path.is_dir() {
+            continue;
+        }
+
+        let Ok(entries) = std::fs::read_dir(&proj_path) else {
+            continue;
+        };
+        for file_entry in entries.flatten() {
+            let file_path = file_entry.path();
+            if file_path.extension().map(|e| e != "jsonl").unwrap_or(true) {
+                continue;
+            }
+
+            let Ok(metadata) = file_entry.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            let modified_day = chrono::DateTime::<chrono::Local>::from(modified)
+                .format("%Y-%m-%d")
+                .to_string();
+            if modified_day == today {
+                files.push(file_path);
+            }
+        }
+    }
+
+    hash_metadata_for_paths(&mut hasher, files);
+    hasher.finish()
+}
+
 fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {
     let five_hours_ago = chrono::Local::now() - chrono::Duration::hours(5);
     let five_hours_ago_ts = five_hours_ago.timestamp_millis();
@@ -887,6 +958,70 @@ fn calculate_codex_usage() -> CodexUsageData {
     }
 
     stats
+}
+
+fn codex_usage_signature() -> u64 {
+    let Some(sessions_root) = codex_sessions_root() else {
+        return 0;
+    };
+
+    let now_local = chrono::Local::now();
+    let today = now_local.date_naive();
+    let yesterday = (now_local - chrono::Duration::days(1)).date_naive();
+    let candidate_dirs = [today, yesterday]
+        .into_iter()
+        .map(|day| {
+            sessions_root
+                .join(format!("{:04}", day.year()))
+                .join(format!("{:02}", day.month()))
+                .join(format!("{:02}", day.day()))
+        })
+        .collect::<Vec<_>>();
+
+    let mut hasher = DefaultHasher::new();
+    sessions_root.hash(&mut hasher);
+    hash_metadata_for_paths(&mut hasher, candidate_dirs.clone());
+
+    let mut files = Vec::new();
+    for day_dir in candidate_dirs {
+        let Ok(entries) = std::fs::read_dir(day_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                files.push(path);
+            }
+        }
+    }
+    hash_metadata_for_paths(&mut hasher, files);
+    hasher.finish()
+}
+
+fn hash_metadata_for_paths<I>(hasher: &mut impl Hasher, paths: I)
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        path.hash(hasher);
+        match std::fs::metadata(&path) {
+            Ok(metadata) => {
+                true.hash(hasher);
+                metadata.len().hash(hasher);
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .hash(hasher);
+            }
+            Err(_) => {
+                false.hash(hasher);
+            }
+        }
+    }
 }
 
 fn apply_codex_rate_limits(stats: &mut CodexUsageData, limits: &CodexRateLimits) {

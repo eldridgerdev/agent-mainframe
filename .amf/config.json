@@ -1,0 +1,23 @@
+{
+  "custom_sessions": [
+    {
+      "name": "Release",
+      "description": "Run release script to bump version and tag",
+      "command": "CURRENT=$(sed -n 's/^version = \"\\([^\"]*\\)\".*/\\1/p' Cargo.toml | head -1) && echo \"Current version: $CURRENT\" && read -p \"Release version (major|minor|patch|<ver>): \" version && bash scripts/release.sh \"$version\"",
+      "window_name": "release",
+      "working_dir": null,
+      "icon": "v",
+      "icon_nerd": "\u26a1",
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    }
+  ],
+  "lifecycle_hooks": {
+    "on_start": null,
+    "on_stop": null,
+    "on_worktree_created": null
+  },
+  "keybindings": {},
+  "feature_presets": []
+}

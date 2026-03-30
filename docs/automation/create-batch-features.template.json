@@ -1,0 +1,12 @@
+{
+  "workspace_path": "/absolute/path/to/repo/or/subdir",
+  "project_name": "name-for-the-amf-project",
+  "feature_count": 4,
+  "feature_prefix": "plan-",
+  "agent": "codex",
+  "mode": "vibe",
+  "review": false,
+  "enable_chrome": false,
+  "enable_notes": true,
+  "dry_run": false
+}

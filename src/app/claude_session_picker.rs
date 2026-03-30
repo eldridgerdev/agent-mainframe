@@ -1,8 +1,18 @@
 use super::*;
-use crate::tmux::TmuxManager;
+use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 impl App {
     pub fn pick_claude_session(&mut self) {
+        let selected = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => Some((*pi, *fi)),
+            _ => None,
+        };
+        if let Some((pi, fi)) = selected
+            && self.block_if_feature_pending_worktree_script(pi, fi)
+        {
+            return;
+        }
+
         let workdir = match &self.selection {
             Selection::Feature(pi, fi) => self
                 .store
@@ -64,7 +74,7 @@ impl App {
         };
 
         let feature_running = self.selected_feature().is_some_and(|(_, f)| {
-            f.status != ProjectStatus::Stopped && TmuxManager::session_exists(&f.tmux_session)
+            f.status != ProjectStatus::Stopped && self.tmux.session_exists(&f.tmux_session)
         });
 
         if feature_running {
@@ -125,8 +135,8 @@ impl App {
             None => return Ok(()),
         };
 
-        if TmuxManager::session_exists(&tmux_session) {
-            TmuxManager::kill_session(&tmux_session)?;
+        if self.tmux.session_exists(&tmux_session) {
+            self.tmux.kill_session(&tmux_session)?;
         }
 
         self.ensure_feature_running_with_claude_session(pi, fi, claude_session_id)?;
@@ -172,6 +182,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            SessionKind::Claude,
             vibe_mode,
             review,
         );
@@ -179,6 +190,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
+        self.refresh_sidebar_for_current_view();
         self.message = Some("Restored claude session".into());
 
         Ok(())
@@ -191,6 +203,7 @@ impl App {
         claude_session_id: &str,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let viewport = self.viewport_size();
         let feature = match self
             .store
             .projects
@@ -201,74 +214,84 @@ impl App {
             None => return Ok(()),
         };
 
-        setup::ensure_notification_hooks(&feature.workdir, &repo, &feature.mode, &feature.agent);
+        setup::ensure_notification_hooks(
+            &feature.workdir,
+            &repo,
+            &feature.mode,
+            &feature.agent,
+            feature.is_worktree,
+        );
         setup::ensure_review_claude_md(&feature.workdir, feature.review);
 
         if feature.sessions.is_empty() {
             feature.add_session(SessionKind::Claude);
             feature.add_session(SessionKind::Terminal);
-            if feature.has_notes {
-                let s = feature.add_session(SessionKind::Nvim);
-                s.label = "Memo".into();
-            }
         }
 
-        if TmuxManager::session_exists(&feature.tmux_session) {
+        if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());
         }
 
-        TmuxManager::create_session_with_window(
+        self.tmux.create_session_with_window(
             &feature.tmux_session,
             &feature.sessions[0].tmux_window,
             &feature.workdir,
         )?;
-        TmuxManager::set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
+        self.tmux
+            .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
         for session in &feature.sessions[1..] {
-            TmuxManager::create_window(
+            self.tmux.create_window(
                 &feature.tmux_session,
                 &session.tmux_window,
                 &feature.workdir,
             )?;
         }
 
-        for session in &feature.sessions {
+        let tmux_session = feature.tmux_session.clone();
+        let windows: Vec<String> = feature
+            .sessions
+            .iter()
+            .map(|session| session.tmux_window.clone())
+            .collect();
+        App::resize_session_windows_for_viewport(
+            self.tmux.as_ref(),
+            viewport,
+            &tmux_session,
+            &windows,
+        )?;
+
+        for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
+                    session.claude_session_id = Some(claude_session_id.to_string());
+                    session.set_token_usage_source_exact(TokenUsageSource {
+                        provider: TokenUsageProvider::Claude,
+                        id: claude_session_id.to_string(),
+                    });
                     let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
-                    let extra_refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-                    TmuxManager::launch_claude(
+                    self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
-                        Some(claude_session_id),
-                        &extra_refs,
+                        Some(claude_session_id.to_string()),
+                        extra_args,
                     )?;
                 }
                 SessionKind::Opencode => {
-                    TmuxManager::launch_opencode_with_session(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                        None,
-                    )?;
+                    self.tmux
+                        .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
+                }
+                SessionKind::Codex => {
+                    self.tmux
+                        .launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
                 }
                 SessionKind::Nvim => {
-                    if feature.has_notes {
-                        TmuxManager::send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim .claude/notes.md",
-                        )?;
-                    } else {
-                        TmuxManager::send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim",
-                        )?;
-                    }
+                    self.tmux
+                        .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;
                 }
                 SessionKind::Terminal => {}
                 SessionKind::Vscode => {
-                    TmuxManager::send_keys(
+                    self.tmux.send_keys(
                         &feature.tmux_session,
                         &session.tmux_window,
                         &format!("code {}", feature.workdir.display()),
@@ -276,12 +299,9 @@ impl App {
                 }
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
-                        TmuxManager::send_literal(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            cmd,
-                        )?;
-                        TmuxManager::send_key_name(
+                        self.tmux
+                            .send_literal(&feature.tmux_session, &session.tmux_window, cmd)?;
+                        self.tmux.send_key_name(
                             &feature.tmux_session,
                             &session.tmux_window,
                             "Enter",
@@ -291,7 +311,8 @@ impl App {
             }
         }
 
-        TmuxManager::select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
+        self.tmux
+            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();

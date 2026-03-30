@@ -4,5 +4,14 @@ TODO.md
 IDEAS.md
 .worktrees/
 .claude/settings.local.json
+.claude/settings.json
+.codex/
+.amf/
 
 CLAUDE.local.md
+PLAN.md
+
+# Docker screenshot tooling
+docker/
+.dockerignore
+docs/docker-screenshots.md

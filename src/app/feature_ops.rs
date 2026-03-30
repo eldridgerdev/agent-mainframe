@@ -1,57 +1,114 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use super::setup::{
+    ensure_notification_hooks, ensure_plan_mode_claude_md, ensure_review_claude_md,
+};
 use super::*;
-use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
+use crate::app::util::read_latest_prompt;
+use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
-use state::{ForkFeatureState, ForkFeatureStep};
+use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    fn drain_background_command_output(
+        output: &mut String,
+        rx: &std::sync::mpsc::Receiver<String>,
+    ) {
+        while let Ok(line) = rx.try_recv() {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+
+    fn delete_failure_is_recoverable(stage: DeleteStage, output: &str) -> bool {
+        matches!(stage, DeleteStage::RemovingWorktree)
+            && output
+                .lines()
+                .any(|line| line.contains("not a working tree"))
+    }
+
+    fn background_command_error(stage: DeleteStage, code: Option<i32>, output: &str) -> String {
+        let fallback = match stage {
+            DeleteStage::KillingTmux => "tmux kill-session failed",
+            DeleteStage::RemovingWorktree => "git worktree remove failed",
+            DeleteStage::Completed => "background command failed",
+        };
+
+        if let Some(line) = output.lines().rev().find(|line| !line.trim().is_empty()) {
+            format!("{fallback}: {}", line.trim())
+        } else if let Some(code) = code {
+            format!("{fallback} with code {code}")
+        } else {
+            fallback.to_string()
+        }
+    }
+
+    pub fn toggle_feature_ready(&mut self) -> Result<()> {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
+            _ => return Ok(()),
+        };
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        feature.ready = !feature.ready;
+        let name = feature.name.clone();
+        let ready = feature.ready;
+        self.save()?;
+        self.message = Some(if ready {
+            format!("Marked '{}' as ready", name)
+        } else {
+            format!("Marked '{}' as not ready", name)
+        });
+
+        Ok(())
+    }
+
     pub fn start_create_feature(&mut self) {
-        let (project_name, project_repo, is_first, used_workdirs) =
-            match &self.selection {
-                Selection::Project(pi)
-                | Selection::Feature(pi, _)
-                | Selection::Session(pi, _, _) => {
-                    if let Some(p) =
-                        self.store.projects.get(*pi)
-                    {
-                        let used: Vec<PathBuf> = p
-                            .features
-                            .iter()
-                            .map(|f| f.workdir.clone())
-                            .collect();
-                        (
-                            p.name.clone(),
-                            p.repo.clone(),
-                            p.features.is_empty(),
-                            used,
-                        )
-                    } else {
-                        return;
-                    }
+        let (project_name, project_repo, preferred_agent, is_first, used_workdirs) = match &self
+            .selection
+        {
+            Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
+                if let Some(p) = self.store.projects.get(*pi) {
+                    let used: Vec<PathBuf> = p.features.iter().map(|f| f.workdir.clone()).collect();
+                    (
+                        p.name.clone(),
+                        p.repo.clone(),
+                        p.preferred_agent.clone(),
+                        p.features.is_empty(),
+                        used,
+                    )
+                } else {
+                    return;
                 }
-            };
+            }
+        };
 
         let worktrees = WorktreeManager::list(&project_repo)
             .unwrap_or_default()
             .into_iter()
-            .filter(|wt| {
-                wt.path != project_repo
-                    && !used_workdirs.contains(&wt.path)
-            })
+            .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
-        self.mode = AppMode::CreatingFeature(
-            CreateFeatureState::new(
-                project_name,
-                project_repo,
-                worktrees,
-                is_first,
-            ),
-        );
+        let mut state =
+            CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
+        self.active_extension = self.extension_for_repo(&project_repo);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
+        state.agent = agent;
+        state.agent_index = agent_index;
+
+        self.mode = AppMode::CreatingFeature(state);
         self.message = None;
     }
 
@@ -60,47 +117,48 @@ impl App {
             AppMode::CreatingFeature(s) => s,
             _ => return Ok(()),
         };
-
-        let project_name = state.project_name.clone();
-        let project_repo = state.project_repo.clone();
-        let branch = state.branch.clone();
-        let mode = state.mode.clone();
-        let review = state.review;
-        let use_existing_worktree = state.source_index == 1
-            && !state.worktrees.is_empty();
+        let use_existing_worktree = state.source_index == 1 && !state.worktrees.is_empty();
         let selected_worktree = if use_existing_worktree {
             state.worktrees.get(state.worktree_index).cloned()
         } else {
             None
         };
+        let project_name = state.project_name.clone();
+        let project_repo = state.project_repo.clone();
+        let branch = state.branch.clone();
+        let mode = state.mode.clone();
+        let review = state.review;
+        let plan_mode = state.plan_mode;
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
-        let enable_notes = state.enable_notes;
+        let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
-            self.message =
-                Some("Error: Branch name cannot be empty".into());
+            self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+        if !self.allows_agent_for_repo(&project_repo, &state.agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                state.agent.display_name()
+            ));
+            return Ok(());
+        }
+        if let Err(err) = self.ensure_agent_mode_supported(&state.agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
 
         let stored_is_git = {
-            let project =
-                match self.store.find_project(&project_name) {
-                    Some(p) => p,
-                    None => {
-                        self.message = Some(format!(
-                            "Error: Project '{}' not found",
-                            project_name
-                        ));
-                        return Ok(());
-                    }
-                };
+            let project = match self.store.find_project(&project_name) {
+                Some(p) => p,
+                None => {
+                    self.message = Some(format!("Error: Project '{}' not found", project_name));
+                    return Ok(());
+                }
+            };
 
-            if project
-                .features
-                .iter()
-                .any(|f| f.name == branch)
-            {
+            if project.features.iter().any(|f| f.name == branch) {
                 self.message = Some(format!(
                     "Error: Feature '{}' already exists in '{}'",
                     branch, project_name
@@ -110,135 +168,150 @@ impl App {
 
             if !use_worktree
                 && selected_worktree.is_none()
-                && project
-                    .features
-                    .iter()
-                    .any(|f| !f.is_worktree)
+                && project.features.iter().any(|f| !f.is_worktree)
             {
-                self.message = Some(
-                    "Error: Only one non-worktree feature \
-                     allowed per project"
-                        .into(),
-                );
+                self.message =
+                    Some("Error: Only one non-worktree feature allowed per project".into());
                 return Ok(());
             }
 
             project.is_git
         };
 
-        let is_git = stored_is_git
-            || self.worktree.repo_root(&project_repo).is_ok();
+        let is_git = stored_is_git || self.worktree.repo_root(&project_repo).is_ok();
 
         if is_git && !stored_is_git {
-            if let Some(p) =
-                self.store.find_project_mut(&project_name)
-            {
+            if let Some(p) = self.store.find_project_mut(&project_name) {
                 p.is_git = true;
             }
             self.save()?;
         }
 
-        if (use_worktree || selected_worktree.is_some())
-            && !is_git
-        {
-            self.message = Some(
-                "Error: Worktrees require a git repository"
-                    .into(),
-            );
+        if (use_worktree || selected_worktree.is_some()) && !is_git {
+            self.message = Some("Error: Worktrees require a git repository".into());
             return Ok(());
         }
 
-        let (workdir, is_worktree) =
-            if let Some(wt) = &selected_worktree {
-                (wt.path.clone(), true)
-            } else if use_worktree {
-                let wt_path = self.worktree.create(
-                    &project_repo,
-                    &branch,
-                    &branch,
-                )?;
+        let (workdir, is_worktree) = if let Some(wt) = &selected_worktree {
+            (wt.path.clone(), true)
+        } else if use_worktree {
+            let wt_path = self.worktree.create(&project_repo, &branch, &branch)?;
 
-                let global_ext = load_global_extension_config();
-                let ext = merge_project_extension_config(&global_ext, &project_repo);
+            let ext = merge_project_extension_config(&self.config.extension, &project_repo);
 
-                if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
-                    if let Some(prompt) = hook_cfg.prompt() {
-                        self.start_hook_prompt(
-                            hook_cfg.script().to_string(),
-                            wt_path.clone(),
-                            prompt.title.clone(),
-                            prompt.options.clone(),
-                            HookNext::WorktreeCreated {
-                                project_name,
-                                branch,
-                                mode,
-                                review,
-                                agent: state.agent.clone(),
-                                enable_chrome,
-                                enable_notes,
-                            },
-                        );
-                    } else {
-                        self.start_worktree_hook(
-                            hook_cfg.script(),
-                            wt_path.clone(),
+            if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
+                if let Some(prompt) = hook_cfg.prompt() {
+                    self.start_hook_prompt(
+                        hook_cfg.script().to_string(),
+                        wt_path.clone(),
+                        prompt.title.clone(),
+                        prompt.options.clone(),
+                        HookNext::WorktreeCreated {
                             project_name,
                             branch,
                             mode,
                             review,
-                            state.agent.clone(),
+                            plan_mode,
+                            agent: state.agent.clone(),
                             enable_chrome,
-                            enable_notes,
-                            None,
-                        );
-                    }
-                    return Ok(());
+                            steering_enabled,
+                        },
+                    );
+                } else {
+                    self.start_worktree_hook(
+                        hook_cfg.script(),
+                        wt_path.clone(),
+                        project_name,
+                        branch,
+                        mode,
+                        review,
+                        plan_mode,
+                        state.agent.clone(),
+                        enable_chrome,
+                        steering_enabled,
+                        None,
+                    );
                 }
-
-                (wt_path, true)
-            } else {
-                (project_repo.clone(), false)
-            };
-
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
+                return Ok(());
             }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
-        }
 
-        let feature = Feature::new(
-            branch.clone(),
-            branch.clone(),
+            (wt_path, true)
+        } else {
+            (project_repo.clone(), false)
+        };
+
+        let prepared = PreparedFeatureLaunch {
+            project_name: project_name.clone(),
+            branch: branch.clone(),
             workdir,
             is_worktree,
             mode,
             review,
-            state.agent.clone(),
+            plan_mode,
+            agent: state.agent.clone(),
             enable_chrome,
-            enable_notes,
-        );
+            steering_enabled,
+            hook_succeeded: None,
+            startup_prompt: None,
+        };
 
-        self.store.add_feature(&project_name, feature);
+        self.finish_feature_launch(prepared)
+    }
+
+    pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
+        let existing_pending = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == prepared.project_name)
+            .and_then(|pi| {
+                self.store.projects[pi]
+                    .features
+                    .iter()
+                    .position(|f| f.name == prepared.branch && f.pending_worktree_script)
+                    .map(|fi| (pi, fi))
+            });
+
+        if let Some((pi, fi)) = existing_pending {
+            if let Some(feature) = self
+                .store
+                .projects
+                .get_mut(pi)
+                .and_then(|project| project.features.get_mut(fi))
+            {
+                feature.workdir = prepared.workdir.clone();
+                feature.is_worktree = prepared.is_worktree;
+                feature.mode = prepared.mode.clone();
+                feature.review = prepared.review;
+                feature.plan_mode = prepared.plan_mode;
+                feature.agent = prepared.agent.clone();
+                feature.enable_chrome = prepared.enable_chrome;
+                feature.pending_worktree_script = false;
+            }
+        } else {
+            let feature = Feature::new(
+                prepared.branch.clone(),
+                prepared.branch.clone(),
+                prepared.workdir.clone(),
+                prepared.is_worktree,
+                prepared.mode,
+                prepared.review,
+                prepared.plan_mode,
+                prepared.agent,
+                prepared.enable_chrome,
+            );
+
+            self.store.add_feature(&prepared.project_name, feature);
+        }
+
         self.save()?;
-
         if let Some(pi) = self
             .store
             .projects
             .iter()
-            .position(|p| p.name == project_name)
+            .position(|p| p.name == prepared.project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
@@ -249,31 +322,172 @@ impl App {
             .store
             .projects
             .iter()
-            .position(|p| p.name == project_name)
+            .position(|p| p.name == prepared.project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
+            if prepared.steering_enabled {
+                self.open_startup_steering_prompt(pi, fi)?;
+                return Ok(());
+            }
         }
 
-        self.message = Some(format!(
-            "Created and started feature '{}'",
-            branch
-        ));
+        match prepared.hook_succeeded {
+            Some(true) => {
+                self.message = Some(format!(
+                    "Created and started feature '{}' (hook succeeded)",
+                    prepared.branch
+                ));
+            }
+            Some(false) => {
+                self.report_logged_error(
+                    "hooks",
+                    format!(
+                        "Created and started feature '{}' but worktree hook failed",
+                        prepared.branch
+                    ),
+                );
+            }
+            None => {
+                self.message = Some(format!("Created and started feature '{}'", prepared.branch));
+            }
+        }
 
         Ok(())
     }
 
-    pub(crate) fn ensure_feature_running(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
-        let repo =
-            self.store.projects[pi].repo.clone();
+    fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
+        let claude_dir = workdir.join(".claude");
+        if let Err(err) = std::fs::create_dir_all(&claude_dir) {
+            self.log_warn(
+                "steering",
+                format!("Failed to create .claude dir for startup prompt: {err}"),
+            );
+            return;
+        }
+
+        let path = claude_dir.join("latest-prompt.txt");
+        if let Err(err) = std::fs::write(&path, prompt) {
+            self.log_warn(
+                "steering",
+                format!(
+                    "Failed to persist startup prompt at {}: {err}",
+                    path.display()
+                ),
+            );
+        }
+    }
+
+    pub fn open_startup_steering_prompt(&mut self, pi: usize, fi: usize) -> Result<()> {
+        self.selection = Selection::Feature(pi, fi);
+        self.enter_view()?;
+
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self.store.projects[pi].features[fi].workdir.clone();
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(view, workdir, String::new()));
+        self.message =
+            Some("Agent started. Write the steering prompt, then press Tab to inject.".into());
+
+        Ok(())
+    }
+
+    pub fn open_steering_prompt_from_view(&mut self) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let prompt = read_latest_prompt(&workdir).unwrap_or_default();
+        let has_existing_prompt = !prompt.is_empty();
+
+        self.mode = AppMode::SteeringPrompt(SteeringPromptState::new(view, workdir, prompt));
+        self.message = Some(if has_existing_prompt {
+            "Edit the steering prompt, then press Tab to inject.".into()
+        } else {
+            "Write the steering prompt, then press Tab to inject.".into()
+        });
+
+        Ok(())
+    }
+
+    pub fn cancel_steering_prompt(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::SteeringPrompt(state) => state.view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        self.mode = AppMode::Viewing(view);
+        self.message = Some("Steering prompt closed".into());
+    }
+
+    pub fn submit_steering_prompt(&mut self) -> Result<()> {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::SteeringPrompt(state) => state,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let prompt = state.editor.text().trim().to_string();
+        if prompt.is_empty() {
+            self.mode = AppMode::SteeringPrompt(state);
+            self.message = Some("Task prompt cannot be empty".into());
+            return Ok(());
+        }
+
+        self.persist_startup_prompt(&state.workdir, &prompt);
+        self.tmux
+            .paste_text(&state.view.session, &state.view.window, &prompt)?;
+        self.tmux
+            .send_key_name(&state.view.session, &state.view.window, "Enter")?;
+
+        self.mode = AppMode::Viewing(state.view);
+        self.message = Some("Injected steering prompt".into());
+        Ok(())
+    }
+
+    pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
+        let repo = self.store.projects[pi].repo.clone();
+        let viewport = self.viewport_size();
+        let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
+            Some(feature) => (feature.agent.clone(), feature.mode.clone()),
+            None => return Ok(()),
+        };
+        self.ensure_agent_mode_supported(&agent, &mode)?;
         let feature = match self
             .store
             .projects
@@ -289,20 +503,19 @@ impl App {
             &repo,
             &feature.mode,
             &feature.agent,
+            feature.is_worktree,
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
+        ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
         if feature.sessions.is_empty() {
             let session_kind = match feature.agent {
                 AgentKind::Claude => SessionKind::Claude,
                 AgentKind::Opencode => SessionKind::Opencode,
+                AgentKind::Codex => SessionKind::Codex,
             };
             feature.add_session(session_kind);
             feature.add_session(SessionKind::Terminal);
-            if feature.has_notes {
-                let s = feature.add_session(SessionKind::Nvim);
-                s.label = "Memo".into();
-            }
         }
 
         if self.tmux.session_exists(&feature.tmux_session) {
@@ -314,11 +527,8 @@ impl App {
             &feature.sessions[0].tmux_window,
             &feature.workdir,
         )?;
-        self.tmux.set_session_env(
-            &feature.tmux_session,
-            "AMF_SESSION",
-            &feature.tmux_session,
-        )?;
+        self.tmux
+            .set_session_env(&feature.tmux_session, "AMF_SESSION", &feature.tmux_session)?;
 
         for session in &feature.sessions[1..] {
             self.tmux.create_window(
@@ -328,8 +538,20 @@ impl App {
             )?;
         }
 
-        let extra_args: Vec<String> =
-            feature.mode.cli_flags(feature.enable_chrome);
+        let tmux_session = feature.tmux_session.clone();
+        let windows: Vec<String> = feature
+            .sessions
+            .iter()
+            .map(|session| session.tmux_window.clone())
+            .collect();
+        App::resize_session_windows_for_viewport(
+            self.tmux.as_ref(),
+            viewport,
+            &tmux_session,
+            &windows,
+        )?;
+
+        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         for session in &feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
@@ -341,25 +563,44 @@ impl App {
                     )?;
                 }
                 SessionKind::Opencode => {
-                    self.tmux.launch_opencode(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                    )?;
+                    self.tmux
+                        .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
                 }
-                SessionKind::Nvim => {
-                    if feature.has_notes {
-                        self.tmux.send_keys(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            "nvim .claude/notes.md",
-                        )?;
+                SessionKind::Codex => {
+                    // In vibeless mode, launch a diff-review watcher alongside
+                    // Codex so each file change can be approved/rejected via
+                    // the AMF popup.
+                    let watcher_path =
+                        crate::project::amf_config_dir().join("codex-diff-review.sh");
+                    if matches!(feature.mode, crate::project::VibeMode::Vibeless)
+                        && watcher_path.exists()
+                    {
+                        let cmd = format!(
+                            "{} {} {} & {} codex",
+                            TmuxManager::shell_env_prefix(&[(
+                                "AMF_SESSION",
+                                &feature.tmux_session
+                            )]),
+                            watcher_path.display(),
+                            feature.workdir.display(),
+                            TmuxManager::shell_env_prefix(&[(
+                                "AMF_SESSION",
+                                &feature.tmux_session
+                            )]),
+                        );
+                        self.tmux
+                            .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
                     } else {
-                        self.tmux.send_keys(
+                        self.tmux.launch_codex(
                             &feature.tmux_session,
                             &session.tmux_window,
-                            "nvim",
+                            None,
                         )?;
                     }
+                }
+                SessionKind::Nvim => {
+                    self.tmux
+                        .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;
                 }
                 SessionKind::Terminal => {}
                 SessionKind::Vscode => {
@@ -388,26 +629,18 @@ impl App {
                             }
                         }
                     }
-                    let status_dir = feature
-                        .workdir
-                        .join(".amf")
-                        .join("session-status");
-                    let _ = std::fs::create_dir_all(
-                        &status_dir,
-                    );
-                    let env_prefix = format!(
-                        "AMF_SESSION_ID='{}' AMF_STATUS_DIR='{}'",
-                        session.id,
-                        status_dir.display(),
-                    );
+                    let status_dir = feature.workdir.join(".amf").join("session-status");
+                    let _ = std::fs::create_dir_all(&status_dir);
+                    let session_id = session.id.clone();
+                    let status_dir_str = status_dir.to_string_lossy().into_owned();
+                    let env_prefix = TmuxManager::shell_env_prefix(&[
+                        ("AMF_SESSION_ID", &session_id),
+                        ("AMF_STATUS_DIR", &status_dir_str),
+                    ]);
                     let shell_cmd = if let Some(ref cmd) = session.command {
-                        format!(
-                            "env {} bash -c '{}'",
-                            env_prefix,
-                            cmd.replace('\'', "'\\''"),
-                        )
+                        format!("{} bash -c '{}'", env_prefix, cmd.replace('\'', "'\\''"),)
                     } else {
-                        format!("env {}", env_prefix)
+                        env_prefix
                     };
                     self.tmux.send_literal(
                         &feature.tmux_session,
@@ -423,10 +656,8 @@ impl App {
             }
         }
 
-        self.tmux.select_window(
-            &feature.tmux_session,
-            &feature.sessions[0].tmux_window,
-        )?;
+        self.tmux
+            .select_window(&feature.tmux_session, &feature.sessions[0].tmux_window)?;
 
         feature.status = ProjectStatus::Idle;
         feature.touch();
@@ -436,10 +667,13 @@ impl App {
 
     pub fn start_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
+
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
 
         let status = self
             .store
@@ -456,17 +690,13 @@ impl App {
                 .and_then(|p| p.features.get(fi))
                 .map(|f| f.name.clone())
             {
-                self.message = Some(format!(
-                    "Error: '{}' is already running",
-                    name
-                ));
+                self.message = Some(format!("Error: '{}' is already running", name));
             }
             return Ok(());
         }
 
         // If on_start has a prompt, show the picker first.
-        let on_start =
-            self.active_extension.lifecycle_hooks.on_start.clone();
+        let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
         if let Some(ref cfg) = on_start {
             if let Some(prompt) = cfg.prompt() {
                 let workdir = self
@@ -501,9 +731,7 @@ impl App {
             self.run_lifecycle_hook(cfg.script(), &workdir, None);
         }
 
-        let name = self.store.projects[pi].features[fi]
-            .name
-            .clone();
+        let name = self.store.projects[pi].features[fi].name.clone();
         self.save()?;
         self.message = Some(format!("Started '{}'", name));
 
@@ -511,11 +739,7 @@ impl App {
     }
 
     /// Inner start logic called after a hook prompt is confirmed.
-    pub fn do_start_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub fn do_start_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         self.ensure_feature_running(pi, fi)?;
         let name = self
             .store
@@ -531,10 +755,13 @@ impl App {
 
     pub fn stop_feature(&mut self) -> Result<()> {
         let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi)
-            | Selection::Session(pi, fi, _) => (*pi, *fi),
+            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
             _ => return Ok(()),
         };
+
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
 
         let feature = match self
             .store
@@ -547,17 +774,13 @@ impl App {
         };
 
         if feature.status == ProjectStatus::Stopped {
-            self.message = Some(format!(
-                "Error: '{}' is already stopped",
-                feature.name
-            ));
+            self.message = Some(format!("Error: '{}' is already stopped", feature.name));
             return Ok(());
         }
 
         // Fire on_stop lifecycle hook before killing session.
         // Clone hook and workdir data before mutable borrow.
-        let on_stop_hook =
-            self.active_extension.lifecycle_hooks.on_stop.clone();
+        let on_stop_hook = self.active_extension.lifecycle_hooks.on_stop.clone();
         let workdir_for_hook = feature.workdir.clone();
 
         // If on_stop has a prompt, show the picker first.
@@ -575,11 +798,7 @@ impl App {
         }
 
         if let Some(ref cfg) = on_stop_hook {
-            self.run_lifecycle_hook(
-                cfg.script(),
-                &workdir_for_hook,
-                None,
-            );
+            self.run_lifecycle_hook(cfg.script(), &workdir_for_hook, None);
         }
 
         self.do_stop_feature(pi, fi)?;
@@ -588,27 +807,13 @@ impl App {
     }
 
     /// Inner stop logic called after a hook prompt is confirmed.
-    pub fn do_stop_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub fn do_stop_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // Run on_stop for custom sessions before killing tmux.
-        if let Some(feature) = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Self::run_custom_session_on_stop(feature);
         }
 
-        let tmux_session = match self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-        {
+        let tmux_session = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(f) => f.tmux_session.clone(),
             None => return Ok(()),
         };
@@ -626,6 +831,7 @@ impl App {
         };
         feature.status = ProjectStatus::Stopped;
         let name = feature.name.clone();
+        self.clear_sidebar_state_for_session(&tmux_session);
         self.save()?;
         self.message = Some(format!("Stopped '{}'", name));
 
@@ -637,10 +843,7 @@ impl App {
     fn run_custom_session_on_stop(feature: &Feature) {
         use crate::project::SessionKind;
 
-        let status_dir = feature
-            .workdir
-            .join(".amf")
-            .join("session-status");
+        let status_dir = feature.workdir.join(".amf").join("session-status");
 
         for session in &feature.sessions {
             if session.kind != SessionKind::Custom {
@@ -657,41 +860,37 @@ impl App {
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
-            let _ = std::fs::remove_file(
-                status_dir.join(format!("{}.txt", session.id)),
-            );
+            let _ = std::fs::remove_file(status_dir.join(format!("{}.txt", session.id)));
         }
     }
 
     pub fn delete_feature(&mut self) -> Result<()> {
         let (project_name, feature_name) = match &self.mode {
-            AppMode::DeletingFeature(pn, fn_) => {
-                (pn.clone(), fn_.clone())
-            }
+            AppMode::DeletingFeature(pn, fn_) => (pn.clone(), fn_.clone()),
             _ => return Ok(()),
         };
 
-        let (tmux_session, is_worktree, repo, workdir) =
-            if let Some(project) =
-                self.store.find_project(&project_name)
-                && let Some(feature) = project
-                    .features
-                    .iter()
-                    .find(|f| f.name == feature_name)
-            {
-                // Run on_stop for custom sessions before killing.
-                Self::run_custom_session_on_stop(feature);
-                (
-                    feature.tmux_session.clone(),
-                    feature.is_worktree,
-                    project.repo.clone(),
-                    feature.workdir.clone(),
-                )
-            } else {
-                return Ok(());
-            };
+        let (tmux_session, is_worktree, repo, workdir) = if let Some(project) =
+            self.store.find_project(&project_name)
+            && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
+        {
+            // Run on_stop for custom sessions before killing.
+            Self::run_custom_session_on_stop(feature);
+            (
+                feature.tmux_session.clone(),
+                feature.is_worktree,
+                project.repo.clone(),
+                feature.workdir.clone(),
+            )
+        } else {
+            return Ok(());
+        };
 
-        let child = TmuxManager::spawn_kill_session(&tmux_session)?;
+        let spawned = TmuxManager::spawn_kill_session(&tmux_session)?;
+        let (child, output_rx) = match spawned {
+            Some(spawned) => (Some(spawned.child), Some(spawned.output_rx)),
+            None => (None, None),
+        };
 
         self.mode = AppMode::DeletingFeatureInProgress(DeletingFeatureState {
             project_name,
@@ -702,6 +901,8 @@ impl App {
             workdir,
             stage: DeleteStage::KillingTmux,
             child,
+            output: String::new(),
+            output_rx,
             error: None,
         });
 
@@ -714,34 +915,45 @@ impl App {
             _ => return Ok(()),
         };
 
+        if let Some(ref rx) = state.output_rx {
+            Self::drain_background_command_output(&mut state.output, rx);
+        }
+
         if let Some(ref mut child) = state.child {
+            let stage = state.stage;
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    if !status.success() {
-                        state.error = Some(format!(
-                            "Command failed with code: {:?}",
-                            status.code()
+                    if !status.success()
+                        && !Self::delete_failure_is_recoverable(stage, &state.output)
+                    {
+                        state.error = Some(Self::background_command_error(
+                            stage,
+                            status.code(),
+                            &state.output,
                         ));
                     }
                     state.child = None;
+                    state.output_rx = None;
                 }
                 Ok(None) => return Ok(()),
                 Err(e) => {
                     state.error = Some(e.to_string());
                     state.child = None;
+                    state.output_rx = None;
                 }
             }
         }
 
         match state.stage {
             DeleteStage::KillingTmux => {
-                if state.is_worktree {
-                    match WorktreeManager::spawn_remove(
-                        &state.repo,
-                        &state.workdir,
-                    ) {
-                        Ok(child) => {
-                            state.child = Some(child);
+                if state.error.is_some() {
+                    state.stage = DeleteStage::Completed;
+                } else if state.is_worktree {
+                    match WorktreeManager::spawn_remove(&state.repo, &state.workdir) {
+                        Ok(spawned) => {
+                            state.child = Some(spawned.child);
+                            state.output.clear();
+                            state.output_rx = Some(spawned.output_rx);
                             state.stage = DeleteStage::RemovingWorktree;
                         }
                         Err(e) => {
@@ -762,11 +974,12 @@ impl App {
     }
 
     pub fn complete_deleting_feature(&mut self) -> Result<()> {
-        let (project_name, feature_name, had_error, error_msg) = {
+        let (project_name, feature_name, tmux_session, had_error, error_msg) = {
             match &self.mode {
                 AppMode::DeletingFeatureInProgress(s) => (
                     s.project_name.clone(),
                     s.feature_name.clone(),
+                    s.tmux_session.clone(),
                     s.error.is_some(),
                     s.error.clone(),
                 ),
@@ -776,16 +989,19 @@ impl App {
 
         if had_error {
             self.mode = AppMode::Normal;
-            self.message = Some(format!(
-                "Error deleting feature '{}': {}",
-                feature_name,
-                error_msg.unwrap_or_else(|| "Unknown error".to_string())
-            ));
+            self.report_logged_error(
+                "feature_delete",
+                format!(
+                    "Error deleting feature '{}': {}",
+                    feature_name,
+                    error_msg.unwrap_or_else(|| "Unknown error".to_string())
+                ),
+            );
             return Ok(());
         }
 
-        self.store
-            .remove_feature(&project_name, &feature_name);
+        self.clear_sidebar_state_for_session(&tmux_session);
+        self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 
         if let Some(pi) = self
@@ -798,15 +1014,122 @@ impl App {
         }
 
         self.mode = AppMode::Normal;
-        self.message = Some(format!(
-            "Deleted feature '{}'",
-            feature_name
-        ));
+        self.message = Some(format!("Deleted feature '{}'", feature_name));
         Ok(())
     }
 
     pub fn cancel_deleting_feature(&mut self) {
         self.mode = AppMode::Normal;
+    }
+
+    pub fn hide_deleting_feature(&mut self) {
+        if let AppMode::DeletingFeatureInProgress(state) =
+            std::mem::replace(&mut self.mode, AppMode::Normal)
+        {
+            let key = state.key();
+            let bg = BackgroundDeletion::from_deleting_state(state);
+            self.background_deletions.insert(key, bg);
+            self.message = Some("Deletion moved to background".to_string());
+        }
+    }
+
+    pub fn is_feature_being_deleted(&self, project_name: &str, feature_name: &str) -> bool {
+        let key = format!("{}/{}", project_name, feature_name);
+        self.background_deletions.contains_key(&key)
+    }
+
+    pub fn poll_background_deletions(&mut self) -> Result<()> {
+        let mut completed = Vec::new();
+
+        for (key, deletion) in self.background_deletions.iter_mut() {
+            if let Some(ref rx) = deletion.output_rx {
+                Self::drain_background_command_output(&mut deletion.output, rx);
+            }
+
+            if let Some(ref mut child) = deletion.child {
+                let stage = deletion.stage;
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        if !status.success()
+                            && !Self::delete_failure_is_recoverable(stage, &deletion.output)
+                        {
+                            deletion.error = Some(Self::background_command_error(
+                                stage,
+                                status.code(),
+                                &deletion.output,
+                            ));
+                        }
+                        deletion.child = None;
+                        deletion.output_rx = None;
+                    }
+                    Ok(None) => continue,
+                    Err(e) => {
+                        deletion.error = Some(e.to_string());
+                        deletion.child = None;
+                        deletion.output_rx = None;
+                    }
+                }
+            }
+
+            match deletion.stage {
+                DeleteStage::KillingTmux => {
+                    if deletion.child.is_none() {
+                        if deletion.error.is_some() {
+                            deletion.stage = DeleteStage::Completed;
+                        } else if deletion.is_worktree {
+                            match WorktreeManager::spawn_remove(&deletion.repo, &deletion.workdir) {
+                                Ok(spawned) => {
+                                    deletion.child = Some(spawned.child);
+                                    deletion.output.clear();
+                                    deletion.output_rx = Some(spawned.output_rx);
+                                    deletion.stage = DeleteStage::RemovingWorktree;
+                                }
+                                Err(e) => {
+                                    deletion.error = Some(e.to_string());
+                                }
+                            }
+                        } else {
+                            deletion.stage = DeleteStage::Completed;
+                        }
+                    }
+                }
+                DeleteStage::RemovingWorktree => {
+                    if deletion.child.is_none() {
+                        deletion.stage = DeleteStage::Completed;
+                    }
+                }
+                DeleteStage::Completed => {}
+            }
+
+            if deletion.stage == DeleteStage::Completed && deletion.child.is_none() {
+                completed.push(key.clone());
+            }
+        }
+
+        for key in completed {
+            if let Some(deletion) = self.background_deletions.remove(&key) {
+                if deletion.error.is_some() {
+                    self.report_logged_error(
+                        "feature_delete",
+                        format!(
+                            "Error deleting feature '{}': {}",
+                            deletion.feature_name,
+                            deletion
+                                .error
+                                .unwrap_or_else(|| "Unknown error".to_string())
+                        ),
+                    );
+                } else {
+                    self.clear_sidebar_state_for_session(&deletion.tmux_session);
+                    self.store
+                        .remove_feature(&deletion.project_name, &deletion.feature_name);
+                    let _ = self.save();
+                    self.message = Some(format!("Deleted feature '{}'", deletion.feature_name));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn start_fork_feature(&mut self) {
@@ -816,23 +1139,16 @@ impl App {
             _ => return,
         };
 
-        let (project_name, project_repo, feature) =
-            match self.store.projects.get(pi) {
-                Some(p) => match p.features.get(fi) {
-                    Some(f) => (
-                        p.name.clone(),
-                        p.repo.clone(),
-                        f,
-                    ),
-                    None => return,
-                },
+        let (project_name, project_repo, feature) = match self.store.projects.get(pi) {
+            Some(p) => match p.features.get(fi) {
+                Some(f) => (p.name.clone(), p.repo.clone(), f),
                 None => return,
-            };
+            },
+            None => return,
+        };
 
-        let agent_index = AgentKind::ALL
-            .iter()
-            .position(|a| *a == feature.agent)
-            .unwrap_or(0);
+        let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &feature.agent);
+        self.active_extension = self.extension_for_repo(&project_repo);
 
         let state = ForkFeatureState {
             source_pi: pi,
@@ -842,12 +1158,11 @@ impl App {
             source_branch: feature.branch.clone(),
             new_branch: format!("{}-fork", feature.branch),
             step: ForkFeatureStep::Branch,
-            agent: feature.agent.clone(),
+            agent,
             agent_index,
             mode: feature.mode.clone(),
             review: feature.review,
             enable_chrome: feature.enable_chrome,
-            enable_notes: feature.has_notes,
             include_context: true,
         };
 
@@ -869,7 +1184,6 @@ impl App {
         let review = state.review;
         let agent = state.agent.clone();
         let enable_chrome = state.enable_chrome;
-        let enable_notes = state.enable_notes;
         let include_context = state.include_context;
         let source_workdir = self
             .store
@@ -879,68 +1193,59 @@ impl App {
             .map(|f| f.workdir.clone());
 
         if new_branch.is_empty() {
-            self.message =
-                Some("Error: Branch name cannot be empty".into());
+            self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+
+        if !self.allows_agent_for_repo(&project_repo, &agent) {
+            self.message = Some(format!(
+                "Error: Agent '{}' is not allowed for this workspace",
+                agent.display_name()
+            ));
+            return Ok(());
+        }
+        if let Err(err) = self.ensure_agent_mode_supported(&agent, &mode) {
+            self.message = Some(format!("Error: {}", err));
             return Ok(());
         }
 
         // Check for duplicate feature name
-        if let Some(project) =
-            self.store.find_project(&project_name)
-        {
-            if project
-                .features
-                .iter()
-                .any(|f| f.name == new_branch)
-            {
-                self.message = Some(format!(
-                    "Error: Feature '{}' already exists",
-                    new_branch
-                ));
+        if let Some(project) = self.store.find_project(&project_name) {
+            if project.features.iter().any(|f| f.name == new_branch) {
+                self.message = Some(format!("Error: Feature '{}' already exists", new_branch));
                 return Ok(());
             }
         } else {
-            self.message = Some(format!(
-                "Error: Project '{}' not found",
-                project_name
-            ));
+            self.message = Some(format!("Error: Project '{}' not found", project_name));
             return Ok(());
         }
 
         // Create worktree from source branch
-        let workdir = self.worktree.create_from(
-            &project_repo,
-            &new_branch,
-            &new_branch,
-            &source_branch,
-        )?;
+        let workdir =
+            self.worktree
+                .create_from(&project_repo, &new_branch, &new_branch, &source_branch)?;
+
+        // Copy uncommitted changes from source worktree
+        if let Some(ref src_wd) = source_workdir {
+            let _ = WorktreeManager::copy_uncommitted_changes(src_wd, &workdir);
+        }
 
         // Export transcript context from source session
         if include_context
             && let Some(ref src_wd) = source_workdir
-            && let Some(jsonl) =
-                crate::transcript::find_latest_transcript(src_wd)
-            && let Ok(md) =
-                crate::transcript::export_transcript_markdown(&jsonl)
+            && let Some(jsonl) = crate::transcript::find_latest_transcript(src_wd)
+            && let Ok(md) = crate::transcript::export_transcript_markdown(&jsonl)
         {
             let claude_dir = workdir.join(".claude");
             let _ = std::fs::create_dir_all(&claude_dir);
-            let _ = std::fs::write(
-                claude_dir.join("context.md"),
-                md,
-            );
+            let _ = std::fs::write(claude_dir.join("context.md"), md);
         }
 
         // Check for lifecycle hooks
         let global_ext = load_global_extension_config();
-        let ext = merge_project_extension_config(
-            &global_ext,
-            &project_repo,
-        );
+        let ext = merge_project_extension_config(&global_ext, &project_repo);
 
-        if let Some(ref hook_cfg) =
-            ext.lifecycle_hooks.on_worktree_created
-        {
+        if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
             if let Some(prompt) = hook_cfg.prompt() {
                 self.start_hook_prompt(
                     hook_cfg.script().to_string(),
@@ -952,9 +1257,10 @@ impl App {
                         branch: new_branch,
                         mode,
                         review,
+                        plan_mode: false,
                         agent,
                         enable_chrome,
-                        enable_notes,
+                        steering_enabled: false,
                     },
                 );
                 return Ok(());
@@ -967,26 +1273,13 @@ impl App {
                 new_branch.clone(),
                 mode.clone(),
                 review,
+                false,
                 agent.clone(),
                 enable_chrome,
-                enable_notes,
+                false,
                 None,
             );
             return Ok(());
-        }
-
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
         }
 
         let feature = Feature::new(
@@ -996,9 +1289,9 @@ impl App {
             true,
             mode,
             review,
+            false,
             agent,
             enable_chrome,
-            enable_notes,
         );
 
         self.store.add_feature(&project_name, feature);
@@ -1010,10 +1303,7 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.store.projects[pi].collapsed = false;
             self.selection = Selection::Feature(pi, fi);
         }
@@ -1026,19 +1316,136 @@ impl App {
             .iter()
             .position(|p| p.name == project_name)
         {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
+            let fi = self.store.projects[pi].features.len().saturating_sub(1);
             self.ensure_feature_running(pi, fi)?;
             self.save()?;
         }
 
-        self.message = Some(format!(
-            "Forked '{}' -> '{}'",
-            source_branch, new_branch
-        ));
+        self.message = Some(format!("Forked '{}' -> '{}'", source_branch, new_branch));
 
         Ok(())
+    }
+
+    pub fn start_rename_feature(&mut self) {
+        let (pi, fi) = match &self.selection {
+            Selection::Feature(pi, fi) => (*pi, *fi),
+            _ => return,
+        };
+
+        let current_nickname = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
+            Some(f) => f.nickname.clone().unwrap_or_default(),
+            None => return,
+        };
+
+        self.mode = AppMode::RenamingFeature(state::RenameFeatureState {
+            project_idx: pi,
+            feature_idx: fi,
+            input: current_nickname,
+        });
+    }
+
+    pub fn apply_rename_feature(&mut self) -> Result<()> {
+        let (pi, fi, input) = match &self.mode {
+            AppMode::RenamingFeature(state) => {
+                (state.project_idx, state.feature_idx, state.input.clone())
+            }
+            _ => return Ok(()),
+        };
+
+        if let Some(feature) = self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            if input.is_empty() {
+                feature.nickname = None;
+            } else {
+                feature.nickname = Some(input.clone());
+            }
+        }
+
+        self.save()?;
+        self.mode = AppMode::Normal;
+
+        self.message = if input.is_empty() {
+            Some("Nickname cleared".into())
+        } else {
+            Some(format!("Renamed to '{}'", input))
+        };
+
+        Ok(())
+    }
+
+    pub fn cancel_rename_feature(&mut self) {
+        self.mode = AppMode::Normal;
+    }
+
+    pub fn create_batch_features(&mut self) -> Result<()> {
+        let state = match &self.mode {
+            AppMode::CreatingBatchFeatures(s) => s.clone(),
+            _ => return Ok(()),
+        };
+
+        let request = CreateBatchFeaturesRequest {
+            workspace_path: PathBuf::from(&state.workspace_path),
+            project_name: state.project_name.clone(),
+            feature_count: state.feature_count,
+            feature_prefix: state.feature_prefix.clone(),
+            agent: state.agent.clone(),
+            mode: state.mode.clone(),
+            review: state.review,
+            enable_chrome: state.enable_chrome,
+            dry_run: false,
+        };
+
+        let response = match self.create_batch_features_from_request(&request) {
+            Ok(response) => response,
+            Err(err) => {
+                self.message = Some(format!("Error: {err}"));
+                return Ok(());
+            }
+        };
+        if let Some(pi) = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == response.project_name)
+        {
+            self.selection = Selection::Project(pi);
+        }
+        self.mode = AppMode::Normal;
+        self.message = Some(response.message);
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconciles_missing_worktree_remove_failure() {
+        assert!(App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: '/tmp/missing-worktree' is not a working tree",
+        ));
+    }
+
+    #[test]
+    fn preserves_real_worktree_remove_failures() {
+        assert!(!App::delete_failure_is_recoverable(
+            DeleteStage::RemovingWorktree,
+            "fatal: '/tmp/worktree' contains modified or untracked files, use --force to delete it",
+        ));
+    }
+
+    #[test]
+    fn does_not_reconcile_non_worktree_delete_failures() {
+        assert!(!App::delete_failure_is_recoverable(
+            DeleteStage::KillingTmux,
+            "can't find session",
+        ));
     }
 }

@@ -86,7 +86,10 @@
       "dark": "#565f89",
       "light": "#565f89"
     },
-    "background": "none",
+    "background": {
+      "dark": "bg",
+      "light": "bg"
+    },
     "backgroundPanel": {
       "dark": "bg_dark",
       "light": "bg"

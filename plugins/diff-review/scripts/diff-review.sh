@@ -13,6 +13,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+tmux() {
+    local tmux_bin="${AMF_TMUX_BIN:-tmux}"
+    if [[ -n "${AMF_TMUX_SOCKET:-}" ]]; then
+        "$tmux_bin" -S "$AMF_TMUX_SOCKET" "$@"
+    else
+        "$tmux_bin" "$@"
+    fi
+}
+
 # ── Parse hook input ────────────────────────────────────────────
 
 HOOK_INPUT=$(cat)
@@ -307,6 +316,28 @@ show_explanation() {
 
 # ── Notification for TUI ───────────────────────────────────────
 
+send_notification_wait() {
+    if ! command -v amf >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local payload
+    payload=$(jq -nc \
+        --arg sid "$SESSION_ID" \
+        --arg cwd "$CWD" \
+        --arg msg "Review: $DISPLAY_PATH" \
+        '{type:"diff-review",session_id:$sid,cwd:$cwd,message:$msg}')
+
+    local response
+    if ! response=$(echo "$payload" | amf notify-wait --timeout-ms 120000 2>/dev/null); then
+        return 1
+    fi
+
+    local decision
+    decision=$(echo "$response" | jq -r '.decision // empty' 2>/dev/null)
+    [[ "$decision" == "proceed" ]]
+}
+
 write_notification() {
     mkdir -p "$NOTIFY_DIR"
     cat > "$NOTIFICATION_FILE" << NOTIF_EOF
@@ -410,12 +441,13 @@ main() {
 
     trap cleanup EXIT
 
-    # When managed by the TUI, write the notification immediately so
-    # the TUI always shows the pending review. Wait for the user to
-    # open this feature, then acquire the lock to serialize popups.
+    # When managed by the TUI, prefer request/response over IPC.
+    # If unavailable, fall back to notification file + proceed signal.
     if [[ "$AMF_MANAGED" == "true" ]]; then
-        write_notification
-        wait_for_proceed
+        if ! send_notification_wait; then
+            write_notification
+            wait_for_proceed
+        fi
     fi
 
     acquire_lock

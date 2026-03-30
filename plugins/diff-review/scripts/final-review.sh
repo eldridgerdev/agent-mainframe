@@ -4,8 +4,8 @@
 #
 # Usage: final-review.sh <workdir> [base-ref]
 #
-# Goes through every file changed since base-ref (default: master or
-# main), shows vimdiff + developer notes, and prompts for approval or
+# Goes through every file changed since base-ref (default: main or
+# master), shows vimdiff + developer notes, and prompts for approval or
 # rejection with feedback.
 #
 # Keys (after activation delay):
@@ -22,6 +22,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKDIR="${1:?Usage: final-review.sh <workdir> [base-ref]}"
 BASE_REF="${2:-}"
+
+tmux() {
+    local tmux_bin="${AMF_TMUX_BIN:-tmux}"
+    if [[ -n "${AMF_TMUX_SOCKET:-}" ]]; then
+        "$tmux_bin" -S "$AMF_TMUX_SOCKET" "$@"
+    else
+        "$tmux_bin" "$@"
+    fi
+}
 
 ACTIVATION_DELAY=800
 INVOCATION_ID=$$
@@ -48,10 +57,10 @@ determine_base() {
         echo "$BASE_REF"
         return
     fi
-    if git rev-parse --verify master &>/dev/null 2>&1; then
-        echo "master"
-    elif git rev-parse --verify main &>/dev/null 2>&1; then
+    if git rev-parse --verify main &>/dev/null 2>&1; then
         echo "main"
+    elif git rev-parse --verify master &>/dev/null 2>&1; then
+        echo "master"
     else
         echo "HEAD~1"
     fi

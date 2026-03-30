@@ -50,14 +50,21 @@
       "light": "nord10"
     },
     "text": {
-      "dark": "nord4",
-      "light": "nord0"
+      "dark": "#D8DEE9",
+      "light": "#2E3440"
     },
     "textMuted": {
-      "dark": "nord3",
-      "light": "nord1"
+      "dark": "#4C566A",
+      "light": "#3B4252"
     },
-    "background": "none",
+    "textMuted": {
+      "dark": "#4C566A",
+      "light": "#3B4252"
+    },
+    "background": {
+      "dark": "nord0",
+      "light": "nord6"
+    },
     "backgroundPanel": {
       "dark": "nord1",
       "light": "nord5"
@@ -127,8 +134,8 @@
       "light": "diff_delete"
     },
     "markdownText": {
-      "dark": "nord4",
-      "light": "nord0"
+      "dark": "#D8DEE9",
+      "light": "#2E3440"
     },
     "markdownHeading": {
       "dark": "nord8",
@@ -215,8 +222,8 @@
       "light": "nord9"
     },
     "syntaxPunctuation": {
-      "dark": "nord4",
-      "light": "nord0"
+      "dark": "#D8DEE9",
+      "light": "#2E3440"
     }
   }
 }

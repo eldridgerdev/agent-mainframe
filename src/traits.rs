@@ -17,18 +17,8 @@ pub trait TmuxOps: Send + Sync {
         first_window: &str,
         workdir: &Path,
     ) -> Result<()>;
-    fn set_session_env(
-        &self,
-        session: &str,
-        key: &str,
-        value: &str,
-    ) -> Result<()>;
-    fn create_window(
-        &self,
-        session: &str,
-        window: &str,
-        workdir: &Path,
-    ) -> Result<()>;
+    fn set_session_env(&self, session: &str, key: &str, value: &str) -> Result<()>;
+    fn create_window(&self, session: &str, window: &str, workdir: &Path) -> Result<()>;
     fn launch_claude(
         &self,
         session: &str,
@@ -36,34 +26,20 @@ pub trait TmuxOps: Send + Sync {
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()>;
-    fn launch_opencode(
+    fn launch_opencode(&self, session: &str, window: &str) -> Result<()>;
+    fn launch_opencode_with_session(
         &self,
         session: &str,
         window: &str,
+        resume_id: Option<String>,
     ) -> Result<()>;
-    fn send_keys(
-        &self,
-        session: &str,
-        window: &str,
-        keys: &str,
-    ) -> Result<()>;
-    fn send_literal(
-        &self,
-        session: &str,
-        window: &str,
-        text: &str,
-    ) -> Result<()>;
-    fn send_key_name(
-        &self,
-        session: &str,
-        window: &str,
-        key_name: &str,
-    ) -> Result<()>;
-    fn select_window(
-        &self,
-        session: &str,
-        window: &str,
-    ) -> Result<()>;
+    fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()>;
+    fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
+    fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
+    fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()>;
+    fn send_key_name(&self, session: &str, window: &str, key_name: &str) -> Result<()>;
+    fn resize_pane(&self, session: &str, window: &str, cols: u16, rows: u16) -> Result<()>;
+    fn select_window(&self, session: &str, window: &str) -> Result<()>;
     fn kill_session(&self, session: &str) -> Result<()>;
 }
 
@@ -71,12 +47,7 @@ pub trait TmuxOps: Send + Sync {
 #[cfg_attr(test, mockall::automock)]
 pub trait WorktreeOps: Send + Sync {
     fn repo_root(&self, path: &Path) -> Result<PathBuf>;
-    fn create(
-        &self,
-        repo: &Path,
-        name: &str,
-        branch: &str,
-    ) -> Result<PathBuf>;
+    fn create(&self, repo: &Path, name: &str, branch: &str) -> Result<PathBuf>;
     fn create_from(
         &self,
         repo: &Path,

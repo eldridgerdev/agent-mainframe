@@ -4,14 +4,50 @@ use super::*;
 use crate::tmux::TmuxManager;
 
 impl App {
+    fn feature_workdir_for_view(&self, view: &ViewState) -> Option<PathBuf> {
+        self.store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone())
+    }
+
+    fn feature_markdown_context(
+        &self,
+        from_view: Option<&ViewState>,
+    ) -> Option<(PathBuf, Option<PathBuf>)> {
+        let workdir = if let Some(view) = from_view {
+            self.feature_workdir_for_view(view)?
+        } else {
+            self.selected_feature()
+                .map(|(_, feature)| feature.workdir.clone())?
+        };
+
+        let repo_root = self
+            .worktree
+            .repo_root(&workdir)
+            .ok()
+            .filter(|root| root != &workdir);
+
+        Some((workdir, repo_root))
+    }
+
     pub fn enter_view(&mut self) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
-            Selection::Session(pi, fi, si) => {
-                (*pi, *fi, Some(*si))
-            }
+            Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
             Selection::Feature(pi, fi) => (*pi, *fi, None),
             _ => return Ok(()),
         };
+
+        if self.block_if_feature_pending_worktree_script(pi, fi) {
+            return Ok(());
+        }
 
         self.ensure_feature_running(pi, fi)?;
 
@@ -21,6 +57,7 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         ) = {
@@ -32,7 +69,10 @@ impl App {
                     .sessions
                     .iter()
                     .position(|s| {
-                        s.kind == SessionKind::Claude
+                        matches!(
+                            s.kind,
+                            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                        )
                     })
                     .unwrap_or(0)
             });
@@ -44,40 +84,38 @@ impl App {
                 feature.tmux_session.clone(),
                 session.tmux_window.clone(),
                 session.label.clone(),
+                session.kind.clone(),
                 feature.mode.clone(),
                 feature.review,
             )
         };
 
-        let feature = self.store.projects[pi]
-            .features
-            .get_mut(fi)
-            .unwrap();
+        let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
-            if input.project_name.as_deref()
-                == Some(&project_name)
-                && input.feature_name.as_deref()
-                    == Some(&feature_name)
+            if input.project_name.as_deref() == Some(&project_name)
+                && input.feature_name.as_deref() == Some(&feature_name)
                 && input.notification_type != "diff-review"
             {
-                let _ =
-                    std::fs::remove_file(&input.file_path);
+                let _ = std::fs::remove_file(&input.file_path);
                 false
             } else {
                 true
             }
         });
 
+        let pending_project_name = project_name.clone();
+        let pending_feature_name = feature_name.clone();
         let view = ViewState::new(
             project_name,
             feature_name,
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         );
@@ -86,6 +124,21 @@ impl App {
         self.pane_content.clear();
 
         self.mode = AppMode::Viewing(view);
+        self.refresh_sidebar_for_current_view();
+
+        if self.use_custom_diff_review_viewer()
+            && let Some(idx) = self.pending_inputs.iter().position(|input| {
+                let is_structured_diff_review = input.notification_type == "change-reason"
+                    || input.notification_type == "diff-review";
+                is_structured_diff_review
+                    && input.project_name.as_deref() == Some(&pending_project_name)
+                    && input.feature_name.as_deref() == Some(&pending_feature_name)
+            })
+        {
+            let input = self.pending_inputs.remove(idx);
+            self.open_diff_review_prompt(&input);
+            let _ = std::fs::remove_file(&input.file_path);
+        }
 
         Ok(())
     }
@@ -95,6 +148,272 @@ impl App {
         self.pane_content.clear();
         self.tmux_cursor = None;
         self.message = Some("Returned to dashboard".into());
+    }
+
+    pub fn open_latest_prompt_from_view(&mut self) {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let feature_prompt_context = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| {
+                let preferred_session_id = feature
+                    .sessions
+                    .iter()
+                    .find(|session| session.tmux_window == view.window)
+                    .and_then(|session| {
+                        session.token_usage_source.as_ref().and_then(|source| {
+                            let provider = &source.provider;
+                            match view.session_kind {
+                                SessionKind::Opencode
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Opencode =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                SessionKind::Codex
+                                    if *provider
+                                        == crate::token_tracking::TokenUsageProvider::Codex =>
+                                {
+                                    Some(source.id.clone())
+                                }
+                                _ => None,
+                            }
+                        })
+                    });
+
+                (
+                    feature.workdir.clone(),
+                    view.session_kind.clone(),
+                    preferred_session_id,
+                )
+            });
+
+        let Some((workdir, session_kind, preferred_session_id)) = feature_prompt_context else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return;
+        };
+
+        let prompts = crate::app::util::read_all_prompts_for_session(
+            &workdir,
+            Some(&session_kind),
+            preferred_session_id.as_deref(),
+        );
+        self.mode = AppMode::LatestPrompt(LatestPromptState {
+            prompts,
+            selected: 0,
+            view,
+        });
+        self.message = None;
+    }
+
+    pub fn toggle_expanded_todos_in_view(&mut self) {
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.todos_expanded = !view.todos_expanded;
+            self.message = Some(if view.todos_expanded {
+                "Expanded todos".into()
+            } else {
+                "Collapsed todos".into()
+            });
+        }
+    }
+
+    pub fn toggle_sidebar_in_view(&mut self) {
+        let mut sidebar_shown = false;
+        if let AppMode::Viewing(view) = &mut self.mode {
+            view.sidebar_visible = !view.sidebar_visible;
+            if !view.sidebar_visible {
+                view.todos_expanded = false;
+            } else {
+                sidebar_shown = true;
+            }
+            self.message = Some(if view.sidebar_visible {
+                "Showed sidebar".into()
+            } else {
+                "Hid sidebar".into()
+            });
+        }
+        if sidebar_shown {
+            self.refresh_sidebar_for_current_view();
+        }
+    }
+
+    pub fn inject_latest_prompt(&mut self) -> Result<()> {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::LatestPrompt(state) => state,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let prompt = state
+            .prompts
+            .get(state.selected)
+            .map(|e| e.text.trim().to_string())
+            .filter(|p| !p.is_empty());
+
+        let Some(prompt) = prompt else {
+            self.mode = AppMode::LatestPrompt(state);
+            self.message = Some("No saved prompt to inject".into());
+            return Ok(());
+        };
+
+        self.tmux
+            .paste_text(&state.view.session, &state.view.window, &prompt)?;
+        self.tmux
+            .send_key_name(&state.view.session, &state.view.window, "Enter")?;
+
+        self.mode = AppMode::Viewing(state.view);
+        self.message = Some("Injected prompt".into());
+        Ok(())
+    }
+
+    pub fn copy_selected_prompt_to_clipboard(&mut self) -> Result<()> {
+        let text = match &self.mode {
+            AppMode::LatestPrompt(state) => state
+                .prompts
+                .get(state.selected)
+                .map(|e| e.text.clone())
+                .filter(|t| !t.trim().is_empty()),
+            _ => return Ok(()),
+        };
+
+        let Some(text) = text else {
+            self.message = Some("No prompt to copy".into());
+            return Ok(());
+        };
+
+        match crate::app::util::copy_to_clipboard(&text) {
+            Ok(()) => self.message = Some("Copied to clipboard".into()),
+            Err(e) => self.message = Some(format!("Clipboard error: {e}")),
+        }
+        Ok(())
+    }
+
+    pub fn latest_prompt_select_next(&mut self) {
+        if let AppMode::LatestPrompt(state) = &mut self.mode {
+            if !state.prompts.is_empty() && state.selected + 1 < state.prompts.len() {
+                state.selected += 1;
+            }
+        }
+    }
+
+    pub fn latest_prompt_select_prev(&mut self) {
+        if let AppMode::LatestPrompt(state) = &mut self.mode {
+            if state.selected > 0 {
+                state.selected -= 1;
+            }
+        }
+    }
+
+    pub fn open_markdown_viewer_from_view(&mut self) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return Ok(());
+        }
+
+        if files.len() == 1 {
+            return self.open_markdown_viewer_path(
+                files[0].clone(),
+                workdir,
+                repo_root,
+                view,
+                None,
+            );
+        }
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected: 0,
+            plan_only: true,
+            workdir,
+            repo_root,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    pub fn open_markdown_viewer_for_command(
+        &mut self,
+        from_view: Option<ViewState>,
+        _plan_only: bool,
+    ) -> Result<()> {
+        let Some(view) = from_view else {
+            self.message = Some("No feature selected".into());
+            return Ok(());
+        };
+
+        self.mode = AppMode::Viewing(view);
+        self.open_markdown_viewer_from_view()
+    }
+
+    pub fn open_markdown_viewer_path(
+        &mut self,
+        path: PathBuf,
+        workdir: PathBuf,
+        repo_root: Option<PathBuf>,
+        view: ViewState,
+        return_to_picker: Option<crate::app::MarkdownFilePickerState>,
+    ) -> Result<()> {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                self.mode = AppMode::Viewing(view);
+                self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
+                return Ok(());
+            }
+        };
+
+        let title = crate::markdown::markdown_view_label(&path, &workdir, repo_root.as_deref());
+
+        self.mode = AppMode::MarkdownViewer(crate::app::MarkdownViewerState {
+            title,
+            source_path: path,
+            content,
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
     }
 
     pub fn activate_leader(&mut self) {
@@ -108,11 +427,9 @@ impl App {
     }
 
     pub fn leader_timed_out(&self) -> bool {
+        let timeout_secs = self.config.leader_timeout_seconds.max(1);
         self.leader_activated_at
-            .map(|t| {
-                t.elapsed()
-                    >= std::time::Duration::from_secs(2)
-            })
+            .map(|t| t.elapsed() >= std::time::Duration::from_secs(timeout_secs))
             .unwrap_or(false)
     }
 
@@ -124,12 +441,9 @@ impl App {
                 view.scroll_passthrough = is_alternate;
 
                 if !is_alternate {
-                    let (content, lines) = TmuxManager::capture_pane_with_history(
-                        &view.session,
-                        &view.window,
-                        10000,
-                    )
-                    .unwrap_or((String::new(), 0));
+                    let (content, lines) =
+                        TmuxManager::capture_pane_with_history(&view.session, &view.window, 10000)
+                            .unwrap_or((String::new(), 0));
                     view.scroll_content = content;
                     view.scroll_total_lines = lines;
                     let max_offset = lines.saturating_sub(visible_rows as usize);
@@ -160,7 +474,9 @@ impl App {
             && view.scroll_mode
             && !view.scroll_passthrough
         {
-            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            let max_offset = view
+                .scroll_total_lines
+                .saturating_sub(visible_rows as usize);
             view.scroll_offset = (view.scroll_offset + amount).min(max_offset);
         }
     }
@@ -179,7 +495,9 @@ impl App {
             && view.scroll_mode
             && !view.scroll_passthrough
         {
-            let max_offset = view.scroll_total_lines.saturating_sub(visible_rows as usize);
+            let max_offset = view
+                .scroll_total_lines
+                .saturating_sub(visible_rows as usize);
             view.scroll_offset = max_offset;
         }
     }
@@ -191,9 +509,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return Ok(()),
@@ -201,9 +517,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return Ok(()),
@@ -235,9 +549,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return Ok(()),
@@ -245,9 +557,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return Ok(()),
@@ -272,11 +582,7 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn switch_view_to_feature(
-        &mut self,
-        pi: usize,
-        fi: usize,
-    ) -> Result<()> {
+    pub(crate) fn switch_view_to_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         self.ensure_feature_running(pi, fi)?;
 
         let project = &self.store.projects[pi];
@@ -290,19 +596,25 @@ impl App {
         let si = feature
             .sessions
             .iter()
-            .position(|s| s.kind == SessionKind::Claude)
+            .position(|s| {
+                matches!(
+                    s.kind,
+                    SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                )
+            })
             .unwrap_or(0);
-        let (session_window, session_label) =
+        let (session_window, session_label, session_kind) =
             if let Some(s) = feature.sessions.get(si) {
-                (s.tmux_window.clone(), s.label.clone())
+                (s.tmux_window.clone(), s.label.clone(), s.kind.clone())
             } else {
-                ("claude".into(), "Claude 1".into())
+                (
+                    "terminal".into(),
+                    "Terminal 1".into(),
+                    SessionKind::Terminal,
+                )
             };
 
-        let feature = self.store.projects[pi]
-            .features
-            .get_mut(fi)
-            .unwrap();
+        let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
 
@@ -314,9 +626,11 @@ impl App {
             tmux_session,
             session_window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
         ));
+        self.refresh_sidebar_for_current_view();
         self.save()?;
 
         Ok(())
@@ -329,9 +643,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return,
@@ -339,9 +651,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return,
@@ -361,15 +671,16 @@ impl App {
             .iter()
             .position(|s| s.tmux_window == current_window)
             .unwrap_or(0);
-        let next_si =
-            (current_si + 1) % feature.sessions.len();
+        let next_si = (current_si + 1) % feature.sessions.len();
         let next = &feature.sessions[next_si];
 
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.window = next.tmux_window.clone();
             view.session_label = next.label.clone();
+            view.session_kind = next.kind.clone();
         }
         self.pane_content.clear();
+        self.refresh_sidebar_for_current_view();
     }
 
     pub fn view_prev_session(&mut self) {
@@ -379,9 +690,7 @@ impl App {
                     .store
                     .projects
                     .iter()
-                    .position(|p| {
-                        p.name == view.project_name
-                    });
+                    .position(|p| p.name == view.project_name);
                 let pi = match pi {
                     Some(pi) => pi,
                     None => return,
@@ -389,9 +698,7 @@ impl App {
                 let fi = self.store.projects[pi]
                     .features
                     .iter()
-                    .position(|f| {
-                        f.name == view.feature_name
-                    });
+                    .position(|f| f.name == view.feature_name);
                 let fi = match fi {
                     Some(fi) => fi,
                     None => return,
@@ -421,8 +728,9 @@ impl App {
         if let AppMode::Viewing(ref mut view) = self.mode {
             view.window = prev.tmux_window.clone();
             view.session_label = prev.label.clone();
+            view.session_kind = prev.kind.clone();
         }
         self.pane_content.clear();
+        self.refresh_sidebar_for_current_view();
     }
-
 }

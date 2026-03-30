@@ -61,7 +61,10 @@
       "dark": "#4C566A",
       "light": "#3B4252"
     },
-    "background": "none",
+    "background": {
+      "dark": "nord0",
+      "light": "nord6"
+    },
     "backgroundPanel": {
       "dark": "nord1",
       "light": "nord5"

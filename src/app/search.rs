@@ -1,5 +1,5 @@
-use super::*;
 use super::util::shorten_path;
+use super::*;
 
 impl App {
     pub fn start_search(&mut self) {
@@ -59,9 +59,7 @@ impl App {
 
     pub fn jump_to_search_match(&mut self) {
         let match_item = match &self.mode {
-            AppMode::Searching(state) => {
-                state.matches.get(state.selected_match).cloned()
-            }
+            AppMode::Searching(state) => state.matches.get(state.selected_match).cloned(),
             _ => return,
         };
 

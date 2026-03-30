@@ -1,9 +1,12 @@
 use ratatui_explorer::FileExplorer;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Child;
 
+use super::PromptAnalysis;
+use crate::editor::TextEditor;
 use crate::extension::CustomSessionConfig;
-use crate::project::{AgentKind, VibeMode};
+use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,7 +28,6 @@ pub struct ForkFeatureState {
     pub mode: VibeMode,
     pub review: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
     pub include_context: bool,
 }
 
@@ -36,6 +38,33 @@ pub enum Selection {
     Session(usize, usize, usize),
 }
 
+#[derive(Clone, Default)]
+pub struct TextSelection {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+    pub is_selecting: bool,
+    pub has_selection: bool,
+}
+
+impl TextSelection {
+    pub fn clear(&mut self) {
+        self.has_selection = false;
+        self.is_selecting = false;
+    }
+
+    pub fn normalized(&self) -> (u16, u16, u16, u16) {
+        if self.start_row < self.end_row
+            || (self.start_row == self.end_row && self.start_col <= self.end_col)
+        {
+            (self.start_row, self.start_col, self.end_row, self.end_col)
+        } else {
+            (self.end_row, self.end_col, self.start_row, self.start_col)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ViewState {
     pub project_name: String,
@@ -43,6 +72,7 @@ pub struct ViewState {
     pub session: String,
     pub window: String,
     pub session_label: String,
+    pub session_kind: SessionKind,
     pub vibe_mode: VibeMode,
     pub review: bool,
     pub scroll_offset: usize,
@@ -50,6 +80,9 @@ pub struct ViewState {
     pub scroll_mode: bool,
     pub scroll_total_lines: usize,
     pub scroll_passthrough: bool,
+    pub selection: TextSelection,
+    pub sidebar_visible: bool,
+    pub todos_expanded: bool,
 }
 
 impl ViewState {
@@ -59,6 +92,7 @@ impl ViewState {
         session: String,
         window: String,
         session_label: String,
+        session_kind: SessionKind,
         vibe_mode: VibeMode,
         review: bool,
     ) -> Self {
@@ -68,6 +102,7 @@ impl ViewState {
             session,
             window,
             session_label,
+            session_kind,
             vibe_mode,
             review,
             scroll_offset: 0,
@@ -75,6 +110,30 @@ impl ViewState {
             scroll_mode: false,
             scroll_total_lines: 0,
             scroll_passthrough: false,
+            selection: TextSelection::default(),
+            sidebar_visible: true,
+            todos_expanded: false,
+        }
+    }
+
+    pub fn has_sidebar(&self) -> bool {
+        self.sidebar_session_kind().is_some()
+    }
+
+    pub fn has_claude_sidebar(&self) -> bool {
+        self.session_kind == SessionKind::Claude && self.sidebar_visible
+    }
+
+    pub fn sidebar_session_kind(&self) -> Option<SessionKind> {
+        if !self.sidebar_visible {
+            return None;
+        }
+
+        match self.session_kind {
+            SessionKind::Claude | SessionKind::Codex | SessionKind::Opencode => {
+                Some(self.session_kind.clone())
+            }
+            _ => None,
         }
     }
 }
@@ -86,9 +145,22 @@ pub struct PendingInput {
     pub message: String,
     pub notification_type: String,
     pub file_path: PathBuf,
+    pub target_file_path: Option<String>,
+    pub relative_path: Option<String>,
+    pub change_id: Option<String>,
+    pub tool: Option<String>,
+    pub old_snippet: Option<String>,
+    pub new_snippet: Option<String>,
+    pub original_file: Option<String>,
+    pub proposed_file: Option<String>,
+    pub is_new_file: Option<bool>,
+    pub reason: Option<String>,
+    pub response_file: Option<String>,
     pub project_name: Option<String>,
     pub feature_name: Option<String>,
     pub proceed_signal: Option<String>,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
 }
 
 pub enum RenameReturnTo {
@@ -102,6 +174,31 @@ pub struct RenameSessionState {
     pub session_idx: usize,
     pub input: String,
     pub return_to: RenameReturnTo,
+}
+
+#[derive(Debug, Clone)]
+pub struct RenameFeatureState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub input: String,
+}
+
+pub struct SessionConfigState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub project_name: String,
+    pub feature_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
+}
+
+pub struct ProjectAgentConfigState {
+    pub project_idx: usize,
+    pub project_name: String,
+    pub current_agent: AgentKind,
+    pub allowed_agents: Vec<AgentKind>,
+    pub selected_agent: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +222,125 @@ pub struct ClaudeSessionPickerState {
     pub workdir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct CodexSessionPickerState {
+    pub sessions: Vec<super::codex_sessions::CodexSessionInfo>,
+    pub selected: usize,
+    pub workdir: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct BookmarkPickerState {
+    pub selected: usize,
+    pub from_view: Option<ViewState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffViewerFocus {
+    FileList,
+    Patch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffViewerLayout {
+    Unified,
+    SideBySide,
+}
+
+#[derive(Clone)]
+pub struct DiffViewerState {
+    pub from_view: ViewState,
+    pub workdir: PathBuf,
+    pub branch: String,
+    pub base_ref: String,
+    pub base_commit: String,
+    pub files: Vec<crate::diff::DiffFile>,
+    pub selected_file: usize,
+    pub patch_scroll: usize,
+    pub focus: DiffViewerFocus,
+    pub layout: DiffViewerLayout,
+    pub error: Option<String>,
+}
+
+impl DiffViewerState {
+    pub fn new(from_view: ViewState, workdir: PathBuf) -> Self {
+        Self {
+            from_view,
+            workdir,
+            branch: String::new(),
+            base_ref: String::new(),
+            base_commit: String::new(),
+            files: Vec::new(),
+            selected_file: 0,
+            patch_scroll: 0,
+            focus: DiffViewerFocus::FileList,
+            layout: DiffViewerLayout::Unified,
+            error: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SteeringPromptState {
+    pub view: ViewState,
+    pub workdir: PathBuf,
+    pub editor: TextEditor,
+    pub prompt_analysis: PromptAnalysis,
+    pub scroll_offset: usize,
+    pub sync_scroll_to_cursor: bool,
+}
+
+impl SteeringPromptState {
+    pub fn new(view: ViewState, workdir: PathBuf, prompt: String) -> Self {
+        let editor = TextEditor::with_vim(prompt);
+        let prompt_analysis = crate::app::analyze_prompt(editor.text());
+        Self {
+            view,
+            workdir,
+            editor,
+            prompt_analysis,
+            scroll_offset: 0,
+            sync_scroll_to_cursor: true,
+        }
+    }
+
+    pub fn refresh_prompt_analysis(&mut self) {
+        self.prompt_analysis = crate::app::analyze_prompt(self.editor.text());
+    }
+
+    pub fn request_cursor_scroll(&mut self) {
+        self.sync_scroll_to_cursor = true;
+    }
+
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+        self.sync_scroll_to_cursor = false;
+    }
+
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+        self.sync_scroll_to_cursor = false;
+    }
+
+    pub fn clear_prompt(&mut self) -> bool {
+        let cleared = self.editor.clear().text_changed;
+        if cleared {
+            self.refresh_prompt_analysis();
+        }
+        self.scroll_offset = 0;
+        self.sync_scroll_to_cursor = false;
+        cleared
+    }
+}
+
+#[derive(Clone)]
+pub struct LatestPromptState {
+    pub view: ViewState,
+    pub prompts: Vec<crate::app::util::PromptEntry>,
+    pub selected: usize,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -137,6 +353,9 @@ pub enum AppMode {
     NotificationPicker(usize, Option<ViewState>),
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),
+    RenamingFeature(RenameFeatureState),
+    SessionConfig(SessionConfigState),
+    ProjectAgentConfig(ProjectAgentConfigState),
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
@@ -150,18 +369,115 @@ pub enum AppMode {
         session_id: String,
         workdir: PathBuf,
     },
+    CodexSessionPicker(CodexSessionPickerState),
+    ConfirmingCodexSession {
+        session_id: String,
+        workdir: PathBuf,
+    },
+    BookmarkPicker(BookmarkPickerState),
+    DiffViewer(DiffViewerState),
+    SteeringPrompt(SteeringPromptState),
     SessionPicker(SessionPickerState),
-    ChangeReasonPrompt(ChangeReasonState),
+    DiffReviewPrompt(DiffReviewState),
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
-    LatestPrompt(String, ViewState),
+    LatestPrompt(LatestPromptState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
+    SyntaxLanguagePicker(SyntaxLanguagePickerState),
+    DebugLog(DebugLogState),
+    MarkdownViewer(MarkdownViewerState),
+    MarkdownFilePicker(MarkdownFilePickerState),
+    CreatingBatchFeatures(CreateBatchFeaturesState),
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingSummary {
+    pub tmux_session: String,
+    pub workdir: PathBuf,
+    pub agent: crate::project::AgentKind,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SummaryState {
+    pub pending: Vec<PendingSummary>,
+    pub last_status: std::collections::HashMap<String, crate::project::ProjectStatus>,
+    pub generating: std::collections::HashSet<String>,
+}
+
+impl SummaryState {
+    pub fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+            last_status: std::collections::HashMap::new(),
+            generating: std::collections::HashSet::new(),
+        }
+    }
 }
 
 pub struct ThemePickerState {
     pub selected: usize,
     pub themes: Vec<crate::theme::ThemeName>,
+    pub original_theme: crate::theme::ThemeName,
+}
+
+pub struct SyntaxLanguageRow {
+    pub language: crate::highlight::HighlightLanguage,
+    pub status: crate::highlight::HighlightInstallState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxOperationAction {
+    Install,
+    Uninstall,
+}
+
+pub enum SyntaxOperationEvent {
+    Output(String),
+    Finished(Result<String, String>),
+}
+
+pub struct SyntaxOperationState {
+    pub language: crate::highlight::HighlightLanguage,
+    pub action: SyntaxOperationAction,
+    pub last_output: Option<String>,
+    pub started_at: std::time::Instant,
+    pub output_rx: std::sync::mpsc::Receiver<SyntaxOperationEvent>,
+}
+
+pub struct SyntaxLanguagePickerState {
+    pub languages: Vec<SyntaxLanguageRow>,
+    pub selected: usize,
+    pub notice: Option<String>,
+    pub operation: Option<SyntaxOperationState>,
+    pub return_to: Option<Box<AppMode>>,
+    pub auto_return_on_success: bool,
+    pub return_language: Option<crate::highlight::HighlightLanguage>,
+}
+
+pub struct DebugLogState {
+    pub scroll_offset: usize,
+    pub from_view: Option<ViewState>,
+}
+
+pub struct MarkdownViewerState {
+    pub title: String,
+    pub source_path: PathBuf,
+    pub content: String,
+    pub scroll_offset: usize,
+    pub rendered_width: u16,
+    pub rendered_lines: Vec<ratatui::text::Line<'static>>,
+    pub return_to_picker: Option<MarkdownFilePickerState>,
+    pub from_view: Option<ViewState>,
+}
+
+pub struct MarkdownFilePickerState {
+    pub files: Vec<PathBuf>,
+    pub selected: usize,
+    pub plan_only: bool,
+    pub workdir: PathBuf,
+    pub repo_root: Option<PathBuf>,
+    pub from_view: Option<ViewState>,
 }
 
 #[derive(Clone)]
@@ -181,17 +497,28 @@ pub struct BuiltinSessionOption {
     pub disabled: Option<String>,
 }
 
-pub struct ChangeReasonState {
+pub struct DiffReviewState {
     pub session_id: String,
+    pub workdir: PathBuf,
     pub file_path: String,
     pub relative_path: String,
     pub change_id: String,
     pub tool: String,
     pub old_snippet: String,
     pub new_snippet: String,
+    pub diff_file: Option<crate::diff::DiffFile>,
+    pub diff_error: Option<String>,
+    pub patch_scroll: usize,
     pub reason: String,
+    pub editing_feedback: bool,
+    pub layout: DiffViewerLayout,
+    pub explanation: Option<String>,
+    pub explanation_child: Option<Child>,
     pub response_file: PathBuf,
     pub proceed_signal: PathBuf,
+    pub request_id: Option<String>,
+    pub reply_socket: Option<String>,
+    pub return_to_view: Option<ViewState>,
 }
 
 pub enum HookNext {
@@ -200,9 +527,10 @@ pub enum HookNext {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
+        steering_enabled: bool,
     },
     StartFeature {
         pi: usize,
@@ -230,13 +558,20 @@ pub struct RunningHookState {
     pub branch: String,
     pub mode: VibeMode,
     pub review: bool,
+    pub plan_mode: bool,
     pub agent: AgentKind,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
+    pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
     pub success: Option<bool>,
     pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+impl RunningHookState {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.workdir.display(), self.script)
+    }
 }
 
 pub struct DeletingFeatureState {
@@ -248,7 +583,93 @@ pub struct DeletingFeatureState {
     pub workdir: PathBuf,
     pub stage: DeleteStage,
     pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
     pub error: Option<String>,
+}
+
+impl DeletingFeatureState {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.project_name, self.feature_name)
+    }
+}
+
+pub struct BackgroundDeletion {
+    pub project_name: String,
+    pub feature_name: String,
+    pub tmux_session: String,
+    pub is_worktree: bool,
+    pub repo: PathBuf,
+    pub workdir: PathBuf,
+    pub stage: DeleteStage,
+    pub child: Option<Child>,
+    pub output: String,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
+    pub error: Option<String>,
+}
+
+impl BackgroundDeletion {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.project_name, self.feature_name)
+    }
+
+    pub fn from_deleting_state(state: DeletingFeatureState) -> Self {
+        Self {
+            project_name: state.project_name,
+            feature_name: state.feature_name,
+            tmux_session: state.tmux_session,
+            is_worktree: state.is_worktree,
+            repo: state.repo,
+            workdir: state.workdir,
+            stage: state.stage,
+            child: state.child,
+            output: state.output,
+            output_rx: state.output_rx,
+            error: state.error,
+        }
+    }
+}
+
+pub struct BackgroundHook {
+    pub script: String,
+    pub workdir: PathBuf,
+    pub project_name: String,
+    pub branch: String,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub plan_mode: bool,
+    pub agent: AgentKind,
+    pub enable_chrome: bool,
+    pub steering_enabled: bool,
+    pub child: Option<Child>,
+    pub output: String,
+    pub success: Option<bool>,
+    pub output_rx: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+impl BackgroundHook {
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.workdir.display(), self.script)
+    }
+
+    pub fn from_running_state(state: RunningHookState) -> Self {
+        Self {
+            script: state.script,
+            workdir: state.workdir,
+            project_name: state.project_name,
+            branch: state.branch,
+            mode: state.mode,
+            review: state.review,
+            plan_mode: state.plan_mode,
+            agent: state.agent,
+            enable_chrome: state.enable_chrome,
+            steering_enabled: state.steering_enabled,
+            child: state.child,
+            output: state.output,
+            success: state.success,
+            output_rx: state.output_rx,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -270,12 +691,15 @@ pub struct CreateProjectState {
     pub step: CreateProjectStep,
     pub name: String,
     pub path: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
 }
 
 #[derive(Clone, PartialEq)]
 pub enum CreateProjectStep {
     Name,
     Path,
+    Agent,
 }
 
 impl CreateProjectState {
@@ -289,6 +713,8 @@ impl CreateProjectState {
             step: CreateProjectStep::Name,
             name: String::new(),
             path: repo_path,
+            agent: AgentKind::default(),
+            agent_index: 0,
         }
     }
 }
@@ -301,7 +727,17 @@ pub enum CreateFeatureStep {
     Branch,
     Worktree,
     Mode,
+    TaskPrompt,
     ConfirmSuperVibe,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateBatchFeaturesStep {
+    WorkspacePath,
+    ProjectName,
+    FeatureCount,
+    FeatureBaseName,
+    FeatureSettings,
 }
 
 pub struct CreateFeatureState {
@@ -315,13 +751,17 @@ pub struct CreateFeatureState {
     pub mode_index: usize,
     pub mode_focus: usize,
     pub review: bool,
+    pub plan_mode: bool,
     pub source_index: usize,
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
     pub use_worktree: bool,
     pub enable_chrome: bool,
-    pub enable_notes: bool,
+    pub steering_enabled: bool,
     pub preset_index: usize,
+    pub task_prompt: String,
+    pub prompt_analysis: PromptAnalysis,
+    pub prepared_launch: Option<PreparedFeatureLaunch>,
 }
 
 impl CreateFeatureState {
@@ -353,13 +793,91 @@ impl CreateFeatureState {
             mode_index: 0,
             mode_focus: 0,
             review: false,
+            plan_mode: false,
             source_index: 0,
             worktrees,
             worktree_index: 0,
             use_worktree: !is_first_feature,
             enable_chrome: false,
-            enable_notes: false,
+            steering_enabled: true,
             preset_index: 0,
+            task_prompt: String::new(),
+            prompt_analysis: crate::app::analyze_prompt(""),
+            prepared_launch: None,
+        }
+    }
+
+    pub fn refresh_prompt_analysis(&mut self) {
+        self.prompt_analysis = crate::app::analyze_prompt(&self.task_prompt);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedFeatureLaunch {
+    pub project_name: String,
+    pub branch: String,
+    pub workdir: PathBuf,
+    pub is_worktree: bool,
+    pub mode: VibeMode,
+    pub review: bool,
+    pub plan_mode: bool,
+    pub agent: AgentKind,
+    pub enable_chrome: bool,
+    pub steering_enabled: bool,
+    pub hook_succeeded: Option<bool>,
+    pub startup_prompt: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct CreateBatchFeaturesState {
+    pub workspace_path: String,
+    pub project_name: String,
+    pub feature_count: usize,
+    pub feature_prefix: String,
+    pub agent: AgentKind,
+    pub agent_index: usize,
+    pub mode: VibeMode,
+    pub mode_index: usize,
+    pub mode_focus: usize,
+    pub review: bool,
+    pub enable_chrome: bool,
+    pub step: CreateBatchFeaturesStep,
+}
+
+impl CreateBatchFeaturesState {
+    pub fn new() -> Self {
+        Self::with_workspace(None)
+    }
+
+    pub fn with_workspace(workspace_path: Option<String>) -> Self {
+        let repo_path = if let Some(ws) = workspace_path {
+            ws
+        } else {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            crate::worktree::WorktreeManager::repo_root(&cwd)
+                .unwrap_or(cwd)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let workspace_name = std::path::Path::new(&repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+
+        Self {
+            workspace_path: repo_path,
+            project_name: workspace_name,
+            feature_count: 3,
+            feature_prefix: "feature".to_string(),
+            agent: AgentKind::default(),
+            agent_index: 0,
+            mode: VibeMode::default(),
+            mode_index: 0,
+            mode_focus: 0,
+            review: false,
+            enable_chrome: false,
+            step: CreateBatchFeaturesStep::WorkspacePath,
         }
     }
 }
@@ -370,10 +888,10 @@ pub enum SessionFilter {
     All,
     Claude,
     Opencode,
+    Codex,
     Terminal,
     Nvim,
     Vscode,
-    Memo,
 }
 
 impl SessionFilter {
@@ -381,10 +899,10 @@ impl SessionFilter {
         SessionFilter::All,
         SessionFilter::Claude,
         SessionFilter::Opencode,
+        SessionFilter::Codex,
         SessionFilter::Terminal,
         SessionFilter::Nvim,
         SessionFilter::Vscode,
-        SessionFilter::Memo,
     ];
 
     pub fn display_name(&self) -> &str {
@@ -392,10 +910,10 @@ impl SessionFilter {
             SessionFilter::All => "all",
             SessionFilter::Claude => "claude",
             SessionFilter::Opencode => "opencode",
+            SessionFilter::Codex => "codex",
             SessionFilter::Terminal => "terminal",
             SessionFilter::Nvim => "nvim",
             SessionFilter::Vscode => "vscode",
-            SessionFilter::Memo => "memo",
         }
     }
 

@@ -1,12 +1,32 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 
 use crate::traits::WorktreeOps;
 
 pub struct WorktreeManager;
 
+pub struct SpawnedWorktreeCommand {
+    pub child: Child,
+    pub output_rx: Receiver<String>,
+}
+
 impl WorktreeManager {
+    fn stream_child_output<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) {
+        if let Some(reader) = reader {
+            std::thread::spawn(move || {
+                for line in BufReader::new(reader)
+                    .lines()
+                    .map_while(std::result::Result::ok)
+                {
+                    let _ = tx.send(line);
+                }
+            });
+        }
+    }
+
     /// Check if a path is inside a git repository and return the repo root
     pub fn repo_root(path: &Path) -> Result<PathBuf> {
         let output = Command::new("git")
@@ -21,6 +41,23 @@ impl WorktreeManager {
 
         let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok(PathBuf::from(root))
+    }
+
+    /// Return the primary worktree path for a repository.
+    pub fn primary_worktree_root(path: &Path) -> Result<PathBuf> {
+        let output = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(path)
+            .output()
+            .context("Failed to list git worktrees")?;
+
+        if !output.status.success() {
+            bail!("git worktree list failed");
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        parse_primary_worktree_root(&stdout)
+            .context("Failed to determine primary worktree root from git worktree list")
     }
 
     /// Check if a path is a git worktree (not the main working tree)
@@ -137,22 +174,14 @@ impl WorktreeManager {
 
     /// Create a new worktree branched off a specific base branch/commit.
     /// Runs `git worktree add -b {new_branch} {path} {base}`.
-    pub fn create_from(
-        repo: &Path,
-        name: &str,
-        new_branch: &str,
-        base: &str,
-    ) -> Result<PathBuf> {
+    pub fn create_from(repo: &Path, name: &str, new_branch: &str, base: &str) -> Result<PathBuf> {
         let worktree_dir = repo.join(".worktrees");
         std::fs::create_dir_all(&worktree_dir)?;
 
         let worktree_path = worktree_dir.join(name);
 
         if worktree_path.exists() {
-            bail!(
-                "Worktree path already exists: {}",
-                worktree_path.display()
-            );
+            bail!("Worktree path already exists: {}", worktree_path.display());
         }
 
         let output = Command::new("git")
@@ -169,51 +198,35 @@ impl WorktreeManager {
             .context("Failed to create worktree from base")?;
 
         if !output.status.success() {
-            let stderr =
-                String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             bail!("git worktree add failed: {}", stderr.trim());
         }
 
         // Merge .claude/settings.local.json into new worktree
-        let src_settings =
-            repo.join(".claude").join("settings.local.json");
+        let src_settings = repo.join(".claude").join("settings.local.json");
         if src_settings.exists() {
             let dest_dir = worktree_path.join(".claude");
-            let dest_settings =
-                dest_dir.join("settings.local.json");
+            let dest_settings = dest_dir.join("settings.local.json");
             std::fs::create_dir_all(&dest_dir)?;
 
-            let src: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(&src_settings)?,
-            )?;
+            let src: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&src_settings)?)?;
 
-            let mut dest: serde_json::Value =
-                if dest_settings.exists() {
-                    std::fs::read_to_string(&dest_settings)
-                        .ok()
-                        .and_then(|s| {
-                            serde_json::from_str(&s).ok()
-                        })
-                        .unwrap_or_else(|| {
-                            serde_json::json!({})
-                        })
-                } else {
-                    serde_json::json!({})
-                };
+            let mut dest: serde_json::Value = if dest_settings.exists() {
+                std::fs::read_to_string(&dest_settings)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_else(|| serde_json::json!({}))
+            } else {
+                serde_json::json!({})
+            };
 
-            if let (Some(src_obj), Some(dest_obj)) =
-                (src.as_object(), dest.as_object_mut())
-            {
+            if let (Some(src_obj), Some(dest_obj)) = (src.as_object(), dest.as_object_mut()) {
                 for (key, src_val) in src_obj {
                     let entry = dest_obj
                         .entry(key.clone())
-                        .or_insert_with(|| {
-                            serde_json::json!({})
-                        });
-                    if let (Some(sv), Some(ev)) = (
-                        src_val.as_object(),
-                        entry.as_object_mut(),
-                    ) {
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let (Some(sv), Some(ev)) = (src_val.as_object(), entry.as_object_mut()) {
                         for (k, v) in sv {
                             ev.insert(k.clone(), v.clone());
                         }
@@ -223,13 +236,59 @@ impl WorktreeManager {
                 }
             }
 
-            std::fs::write(
-                &dest_settings,
-                serde_json::to_string_pretty(&dest)? + "\n",
-            )?;
+            std::fs::write(&dest_settings, serde_json::to_string_pretty(&dest)? + "\n")?;
         }
 
         Ok(worktree_path)
+    }
+
+    /// Copy uncommitted changes from source worktree to destination worktree
+    pub fn copy_uncommitted_changes(source: &Path, dest: &Path) -> Result<()> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain", "-uall"])
+            .current_dir(source)
+            .output()
+            .context("Failed to get git status")?;
+
+        if !output.status.success() {
+            return Ok(());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.is_empty() {
+                continue;
+            }
+
+            let status_code = &line[..2];
+            let file_path = line[3..].trim();
+
+            if file_path.is_empty() {
+                continue;
+            }
+
+            let source_file = source.join(file_path);
+            let dest_file = dest.join(file_path);
+
+            let first_char = status_code.chars().next().unwrap_or(' ');
+            let second_char = status_code.chars().nth(1).unwrap_or(' ');
+
+            match (first_char, second_char) {
+                (_, 'D') | ('D', _) => {
+                    let _ = std::fs::remove_file(&dest_file);
+                }
+                _ => {
+                    if source_file.exists() {
+                        if let Some(parent) = dest_file.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::copy(&source_file, &dest_file);
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Remove a worktree
@@ -257,8 +316,8 @@ impl WorktreeManager {
         Ok(())
     }
 
-    pub fn spawn_remove(repo: &Path, worktree_path: &Path) -> Result<Child> {
-        let child = Command::new("git")
+    pub fn spawn_remove(repo: &Path, worktree_path: &Path) -> Result<SpawnedWorktreeCommand> {
+        let mut child = Command::new("git")
             .args([
                 "worktree",
                 "remove",
@@ -266,10 +325,19 @@ impl WorktreeManager {
                 &worktree_path.to_string_lossy(),
             ])
             .current_dir(repo)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .context("Failed to spawn git worktree remove")?;
 
-        Ok(child)
+        let (tx, rx) = mpsc::channel();
+        Self::stream_child_output(child.stdout.take(), tx.clone());
+        Self::stream_child_output(child.stderr.take(), tx);
+
+        Ok(SpawnedWorktreeCommand {
+            child,
+            output_rx: rx,
+        })
     }
 
     /// List worktrees for a repo
@@ -334,6 +402,13 @@ impl WorktreeManager {
     }
 }
 
+fn parse_primary_worktree_root(stdout: &str) -> Result<PathBuf> {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("worktree ").map(PathBuf::from))
+        .context("No worktree entries found")
+}
+
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
     pub path: PathBuf,
@@ -347,12 +422,7 @@ impl WorktreeOps for WorktreeManager {
         WorktreeManager::repo_root(path)
     }
 
-    fn create(
-        &self,
-        repo: &Path,
-        name: &str,
-        branch: &str,
-    ) -> Result<PathBuf> {
+    fn create(&self, repo: &Path, name: &str, branch: &str) -> Result<PathBuf> {
         WorktreeManager::create(repo, name, branch)
     }
 
@@ -363,8 +433,29 @@ impl WorktreeOps for WorktreeManager {
         new_branch: &str,
         base: &str,
     ) -> Result<PathBuf> {
-        WorktreeManager::create_from(
-            repo, name, new_branch, base,
-        )
+        WorktreeManager::create_from(repo, name, new_branch, base)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_primary_worktree_root_returns_first_worktree_entry() {
+        let stdout = "\
+worktree /repo/main
+HEAD abcdef
+branch refs/heads/main
+
+worktree /repo/.worktrees/feature
+HEAD 123456
+branch refs/heads/feature
+";
+
+        assert_eq!(
+            parse_primary_worktree_root(stdout).unwrap(),
+            PathBuf::from("/repo/main")
+        );
     }
 }

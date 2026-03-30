@@ -74,26 +74,16 @@ fn extract_session_title(jsonl_path: &Path) -> Option<String> {
 
         if entry["type"] == "user" {
             if let Some(content) = entry["message"]["content"].as_str() {
-                let title = content.lines().next().unwrap_or("");
-                let title = if title.len() > 60 {
-                    format!("{}...", &title[..57])
-                } else {
-                    title.to_string()
-                };
-                return Some(title);
+                let title = content.lines().next().unwrap_or("").trim();
+                return Some(title.to_string());
             }
 
             if let Some(blocks) = entry["message"]["content"].as_array() {
                 for block in blocks {
                     if block["type"] == "text" {
                         if let Some(text) = block["text"].as_str() {
-                            let title = text.lines().next().unwrap_or("");
-                            let title = if title.len() > 60 {
-                                format!("{}...", &title[..57])
-                            } else {
-                                title.to_string()
-                            };
-                            return Some(title);
+                            let title = text.lines().next().unwrap_or("").trim();
+                            return Some(title.to_string());
                         }
                     }
                 }

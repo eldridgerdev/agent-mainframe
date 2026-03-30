@@ -2,38 +2,255 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use crate::debug::{LogLevel, log_to_file};
 
 impl App {
+    pub(crate) fn feature_is_pending_worktree_script(&self, pi: usize, fi: usize) -> bool {
+        self.store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+            .map(|feature| feature.pending_worktree_script)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn block_if_feature_pending_worktree_script(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> bool {
+        let Some(feature) = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|project| project.features.get(fi))
+        else {
+            return false;
+        };
+
+        if !feature.pending_worktree_script {
+            return false;
+        }
+
+        self.message = Some(format!(
+            "'{}' is still running its worktree script",
+            feature.name
+        ));
+        true
+    }
+
+    fn upsert_pending_worktree_feature(
+        &mut self,
+        project_name: &str,
+        branch: &str,
+        workdir: &Path,
+        mode: &VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: &AgentKind,
+        enable_chrome: bool,
+    ) -> Option<(usize, usize)> {
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|project| project.name == project_name)?;
+        let mut reused_tmux_session = None;
+        let fi = {
+            let project = self.store.projects.get_mut(pi)?;
+            project.collapsed = false;
+
+            let fi = if let Some(fi) = project
+                .features
+                .iter()
+                .position(|feature| feature.name == branch)
+            {
+                fi
+            } else {
+                let mut feature = Feature::new(
+                    branch.to_string(),
+                    branch.to_string(),
+                    workdir.to_path_buf(),
+                    true,
+                    mode.clone(),
+                    review,
+                    plan_mode,
+                    agent.clone(),
+                    enable_chrome,
+                );
+                feature.pending_worktree_script = true;
+                project.features.push(feature);
+                project.features.len().saturating_sub(1)
+            };
+
+            if let Some(feature) = project.features.get_mut(fi) {
+                if feature.status != ProjectStatus::Stopped {
+                    reused_tmux_session = Some(feature.tmux_session.clone());
+                }
+                feature.workdir = workdir.to_path_buf();
+                feature.is_worktree = true;
+                feature.mode = mode.clone();
+                feature.review = review;
+                feature.plan_mode = plan_mode;
+                feature.agent = agent.clone();
+                feature.enable_chrome = enable_chrome;
+                feature.pending_worktree_script = true;
+                feature.status = ProjectStatus::Stopped;
+            }
+            fi
+        };
+
+        if let Some(tmux_session) = reused_tmux_session {
+            self.clear_sidebar_state_for_session(&tmux_session);
+        }
+
+        Some((pi, fi))
+    }
+
+    fn finalize_worktree_hook_feature(
+        &mut self,
+        workdir: PathBuf,
+        project_name: String,
+        branch: String,
+        mode: VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+        steering_enabled: bool,
+        focus_feature: bool,
+    ) -> Result<()> {
+        let Some((pi, fi)) = self.upsert_pending_worktree_feature(
+            &project_name,
+            &branch,
+            &workdir,
+            &mode,
+            review,
+            plan_mode,
+            &agent,
+            enable_chrome,
+        ) else {
+            return Ok(());
+        };
+
+        if focus_feature {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        let is_worktree = workdir
+            != self
+                .store
+                .find_project(&project_name)
+                .map(|p| p.repo.clone())
+                .unwrap_or_default();
+
+        let prepared = PreparedFeatureLaunch {
+            project_name,
+            branch,
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            steering_enabled,
+            hook_succeeded: None,
+            startup_prompt: None,
+        };
+
+        self.finish_feature_launch(prepared)
+    }
+
+    fn hook_failure_detail(output: &str) -> String {
+        output
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| format!("Hook failed: {}", line.trim()))
+            .unwrap_or_else(|| "Hook failed".to_string())
+    }
+
     /// Run a lifecycle hook script non-blocking.
     /// Expands leading `~/` to the home directory.
     /// If `choice` is provided it is set as `AMF_HOOK_CHOICE`
     /// in the child environment.
-    pub fn run_lifecycle_hook(
-        &self,
-        script: &str,
-        workdir: &Path,
-        choice: Option<&str>,
-    ) {
+    pub fn run_lifecycle_hook(&self, script: &str, workdir: &Path, choice: Option<&str>) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
-                .map(|h| {
-                    format!(
-                        "{}/{}",
-                        h.display(),
-                        &script[2..]
-                    )
-                })
+                .map(|h| format!("{}/{}", h.display(), &script[2..]))
                 .unwrap_or_else(|| script.to_string())
         } else {
             script.to_string()
         };
 
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg(&expanded).current_dir(workdir);
+        cmd.arg("-c")
+            .arg(&expanded)
+            .current_dir(workdir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
         if let Some(c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-        let _ = cmd.spawn();
+        let workdir = workdir.to_path_buf();
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let hook = expanded.clone();
+                std::thread::spawn(move || {
+                    if let Some(stderr) = child.stderr.take() {
+                        use std::io::BufRead;
+                        for line in std::io::BufReader::new(stderr)
+                            .lines()
+                            .map_while(std::result::Result::ok)
+                        {
+                            if !line.trim().is_empty() {
+                                log_to_file(
+                                    LogLevel::Error,
+                                    "hooks",
+                                    &format!("lifecycle hook `{hook}`: {line}"),
+                                );
+                            }
+                        }
+                    }
+
+                    match child.wait() {
+                        Ok(status) if !status.success() => {
+                            log_to_file(
+                                LogLevel::Error,
+                                "hooks",
+                                &format!(
+                                    "lifecycle hook `{hook}` failed in {} with code {:?}",
+                                    workdir.display(),
+                                    status.code()
+                                ),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            log_to_file(
+                                LogLevel::Error,
+                                "hooks",
+                                &format!(
+                                    "failed waiting on lifecycle hook `{hook}` in {}: {err}",
+                                    workdir.display()
+                                ),
+                            );
+                        }
+                    }
+                });
+            }
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Error,
+                    "hooks",
+                    &format!(
+                        "failed to spawn lifecycle hook `{expanded}` in {}: {err}",
+                        workdir.display()
+                    ),
+                );
+            }
+        }
     }
 
     /// Enter `HookPrompt` mode when the hook config has a
@@ -60,10 +277,7 @@ impl App {
 
     /// Called when the user presses Enter in `HookPrompt` mode.
     pub fn confirm_hook_prompt(&mut self) -> Result<()> {
-        let state = match std::mem::replace(
-            &mut self.mode,
-            AppMode::Normal,
-        ) {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::HookPrompt(s) => s,
             other => {
                 self.mode = other;
@@ -83,9 +297,10 @@ impl App {
                 branch,
                 mode,
                 review,
+                plan_mode,
                 agent,
                 enable_chrome,
-                enable_notes,
+                steering_enabled,
             } => {
                 self.start_worktree_hook(
                     &state.script,
@@ -94,26 +309,19 @@ impl App {
                     branch,
                     mode,
                     review,
+                    plan_mode,
                     agent,
                     enable_chrome,
-                    enable_notes,
+                    steering_enabled,
                     Some(choice),
                 );
             }
             HookNext::StartFeature { pi, fi } => {
-                self.run_lifecycle_hook(
-                    &state.script,
-                    &state.workdir,
-                    Some(&choice),
-                );
+                self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));
                 self.do_start_feature(pi, fi)?;
             }
             HookNext::StopFeature { pi, fi } => {
-                self.run_lifecycle_hook(
-                    &state.script,
-                    &state.workdir,
-                    Some(&choice),
-                );
+                self.run_lifecycle_hook(&state.script, &state.workdir, Some(&choice));
                 self.do_stop_feature(pi, fi)?;
             }
         }
@@ -128,20 +336,15 @@ impl App {
         branch: String,
         mode: VibeMode,
         review: bool,
+        plan_mode: bool,
         agent: AgentKind,
         enable_chrome: bool,
-        enable_notes: bool,
+        steering_enabled: bool,
         choice: Option<String>,
     ) {
         let expanded = if script.starts_with("~/") {
             dirs::home_dir()
-                .map(|h| {
-                    format!(
-                        "{}/{}",
-                        h.display(),
-                        &script[2..]
-                    )
-                })
+                .map(|h| format!("{}/{}", h.display(), &script[2..]))
                 .unwrap_or_else(|| script.to_string())
         } else {
             script.to_string()
@@ -156,8 +359,21 @@ impl App {
         if let Some(ref c) = choice {
             cmd.env("AMF_HOOK_CHOICE", c);
         }
-        let (tx, rx) =
-            std::sync::mpsc::channel::<String>();
+
+        if let Some((pi, fi)) = self.upsert_pending_worktree_feature(
+            &project_name,
+            &branch,
+            &workdir,
+            &mode,
+            review,
+            plan_mode,
+            &agent,
+            enable_chrome,
+        ) {
+            self.selection = Selection::Feature(pi, fi);
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
         let mut child = cmd.spawn().ok();
 
         if let Some(ref mut c) = child {
@@ -165,9 +381,7 @@ impl App {
                 let tx2 = tx.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in
-                        std::io::BufReader::new(stdout).lines()
-                    {
+                    for line in std::io::BufReader::new(stdout).lines() {
                         if let Ok(l) = line {
                             let _ = tx2.send(l);
                         }
@@ -177,9 +391,7 @@ impl App {
             if let Some(stderr) = c.stderr.take() {
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in
-                        std::io::BufReader::new(stderr).lines()
-                    {
+                    for line in std::io::BufReader::new(stderr).lines() {
                         if let Ok(l) = line {
                             let _ = tx.send(l);
                         }
@@ -195,9 +407,10 @@ impl App {
             branch,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
+            steering_enabled,
             child,
             output: String::new(),
             success: None,
@@ -224,19 +437,16 @@ impl App {
                 Ok(Some(status)) => {
                     state.success = Some(status.success());
                     if let Some(code) = status.code() {
-                        state.output.push_str(&format!(
-                            "\nProcess exited with code: {}",
-                            code
-                        ));
+                        state
+                            .output
+                            .push_str(&format!("\nProcess exited with code: {}", code));
                     }
                     state.child = None;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     state.success = Some(false);
-                    state
-                        .output
-                        .push_str(&format!("\nError: {}", e));
+                    state.output.push_str(&format!("\nError: {}", e));
                     state.child = None;
                 }
             }
@@ -246,7 +456,18 @@ impl App {
     }
 
     pub fn complete_running_hook(&mut self) -> Result<()> {
-        let (workdir, project_name, branch, mode, review, agent, enable_chrome, enable_notes, success) = {
+        let (
+            workdir,
+            project_name,
+            branch,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            steering_enabled,
+            success,
+        ) = {
             match &self.mode {
                 AppMode::RunningHook(s) => (
                     s.workdir.clone(),
@@ -254,90 +475,134 @@ impl App {
                     s.branch.clone(),
                     s.mode.clone(),
                     s.review,
+                    s.plan_mode,
                     s.agent.clone(),
                     s.enable_chrome,
-                    s.enable_notes,
+                    s.steering_enabled,
                     s.success,
                 ),
                 _ => return Ok(()),
             }
         };
 
-        let is_worktree = workdir != self.store.find_project(&project_name)
-            .map(|p| p.repo.clone())
-            .unwrap_or_default();
-
-        if enable_notes {
-            let claude_dir = workdir.join(".claude");
-            if !claude_dir.exists() {
-                let _ = std::fs::create_dir_all(&claude_dir);
-            }
-            let notes_path = claude_dir.join("notes.md");
-            if !notes_path.exists() {
-                let _ = std::fs::write(
-                    &notes_path,
-                    "# Notes\n\nWrite instructions for Claude here.\n",
-                );
-            }
-        }
-
-        let feature = Feature::new(
+        self.mode = AppMode::Normal;
+        self.finalize_worktree_hook_feature(
+            workdir,
+            project_name.clone(),
             branch.clone(),
-            branch.clone(),
-            workdir.clone(),
-            is_worktree,
             mode,
             review,
+            plan_mode,
             agent,
             enable_chrome,
-            enable_notes,
-        );
+            steering_enabled,
+            true,
+        )?;
 
-        self.store.add_feature(&project_name, feature);
-        self.save()?;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
-            self.store.projects[pi].collapsed = false;
-            self.selection = Selection::Feature(pi, fi);
-        }
-
-        self.mode = AppMode::Normal;
-
-        if let Some(pi) = self
-            .store
-            .projects
-            .iter()
-            .position(|p| p.name == project_name)
-        {
-            let fi = self.store.projects[pi]
-                .features
-                .len()
-                .saturating_sub(1);
-            self.ensure_feature_running(pi, fi)?;
-            self.save()?;
-        }
-
-        if success.unwrap_or(false) {
-            self.message = Some(format!(
-                "Created and started feature '{}' (hook succeeded)",
-                branch
-            ));
-        } else {
-            self.message = Some(format!(
-                "Created and started feature '{}' (hook failed)",
-                branch
-            ));
+        match success {
+            Some(true) => {
+                self.message = Some(format!(
+                    "Created and started feature '{}' (hook succeeded)",
+                    branch
+                ));
+            }
+            Some(false) => {
+                self.report_logged_error(
+                    "hooks",
+                    format!(
+                        "Created and started feature '{}' but worktree hook failed",
+                        branch
+                    ),
+                );
+            }
+            None => {}
         }
 
         Ok(())
+    }
+
+    pub fn hide_running_hook(&mut self) {
+        if let AppMode::RunningHook(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
+            let key = state.key();
+            let bg = BackgroundHook::from_running_state(state);
+            self.background_hooks.insert(key, bg);
+            self.message = Some("Hook moved to background".to_string());
+        }
+    }
+
+    pub fn poll_background_hooks(&mut self) -> Result<()> {
+        let mut completed = Vec::new();
+
+        for (key, hook) in self.background_hooks.iter_mut() {
+            if let Some(ref rx) = hook.output_rx {
+                while let Ok(line) = rx.try_recv() {
+                    hook.output.push_str(&line);
+                    hook.output.push('\n');
+                }
+            }
+
+            if let Some(ref mut child) = hook.child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        hook.success = Some(status.success());
+                        hook.child = None;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        hook.success = Some(false);
+                        hook.output.push_str(&format!("\nError: {}", e));
+                        hook.child = None;
+                    }
+                }
+            }
+
+            if hook.child.is_none() {
+                completed.push(key.clone());
+            }
+        }
+
+        for key in completed {
+            if let Some(hook) = self.background_hooks.remove(&key) {
+                if let Err(err) = self.finalize_worktree_hook_feature(
+                    hook.workdir.clone(),
+                    hook.project_name.clone(),
+                    hook.branch.clone(),
+                    hook.mode.clone(),
+                    hook.review,
+                    hook.plan_mode,
+                    hook.agent.clone(),
+                    hook.enable_chrome,
+                    hook.steering_enabled,
+                    false,
+                ) {
+                    self.report_logged_error(
+                        "hooks",
+                        format!("Failed to finalize '{}': {}", hook.branch, err),
+                    );
+                } else if hook.success.unwrap_or(false) {
+                    self.message = Some(format!(
+                        "Created and started feature '{}' (hook succeeded)",
+                        hook.branch
+                    ));
+                } else {
+                    self.report_logged_error(
+                        "hooks",
+                        format!(
+                            "Created and started feature '{}' but {}",
+                            hook.branch,
+                            Self::hook_failure_detail(&hook.output).to_lowercase()
+                        ),
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn is_hook_running(&self, workdir: &PathBuf) -> bool {
+        self.background_hooks
+            .values()
+            .any(|hook| &hook.workdir == workdir)
     }
 }

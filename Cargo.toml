@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.1.1"
+version = "0.12.0"
 edition = "2024"
 
 [[bin]]
@@ -20,11 +20,16 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 vt100 = "0.15"
 ratatui-explorer = "0.2"
-ureq = "3"
+ureq = { version = "3", default-features = false, features = ["gzip", "platform-verifier", "rustls"] }
 unicode-width = "0.1"
 regex = "1"
+toml = "0.8"
+tree-sitter = "0.26"
+tree-sitter-language = "0.1"
+tree-sitter-highlight = "0.26"
+pulldown-cmark = "0.13"
+tempfile = "3"
 
 [dev-dependencies]
 mockall = "0.13"
-tempfile = "3"
 pretty_assertions = "1"

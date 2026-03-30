@@ -19,14 +19,23 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                     CreateProjectStep::Path => {
                         state.path.push_str(text);
                     }
+                    CreateProjectStep::Agent => {}
                 }
             }
+            app.refresh_create_project_agent_selection();
         }
         AppMode::CreatingFeature(_) => {
-            if let AppMode::CreatingFeature(state) = &mut app.mode
-                && matches!(state.step, CreateFeatureStep::Branch)
-            {
-                state.branch.push_str(text);
+            if let AppMode::CreatingFeature(state) = &mut app.mode {
+                match state.step {
+                    CreateFeatureStep::Branch => {
+                        state.branch.push_str(text);
+                    }
+                    CreateFeatureStep::TaskPrompt => {
+                        state.task_prompt.push_str(text);
+                        state.refresh_prompt_analysis();
+                    }
+                    _ => {}
+                }
             }
         }
         AppMode::RenamingSession(_) => {
@@ -34,10 +43,23 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 state.input.push_str(text);
             }
         }
+        AppMode::RenamingFeature(_) => {
+            if let AppMode::RenamingFeature(state) = &mut app.mode {
+                state.input.push_str(text);
+            }
+        }
         AppMode::Searching(_) => {
             if let AppMode::Searching(state) = &mut app.mode {
                 state.query.push_str(text);
                 app.perform_search();
+            }
+        }
+        AppMode::SteeringPrompt(_) => {
+            if let AppMode::SteeringPrompt(state) = &mut app.mode {
+                let outcome = state.editor.insert_str(text);
+                if outcome.text_changed {
+                    state.refresh_prompt_analysis();
+                }
             }
         }
         _ => {}

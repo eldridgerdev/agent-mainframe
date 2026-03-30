@@ -204,6 +204,7 @@ pub struct ProjectAgentConfigState {
 #[derive(Debug, Clone)]
 pub struct OpencodeSessionInfo {
     pub id: String,
+    pub slug: Option<String>,
     pub title: String,
     pub updated: i64,
 }

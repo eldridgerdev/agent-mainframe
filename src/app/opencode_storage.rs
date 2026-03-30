@@ -318,7 +318,11 @@ fn read_sidecar(
     sidecar_root: &Path,
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSidebarData> {
-    read_sidecar_at_time(sidecar_root, preferred_session_id, chrono::Utc::now().timestamp())
+    read_sidecar_at_time(
+        sidecar_root,
+        preferred_session_id,
+        chrono::Utc::now().timestamp(),
+    )
 }
 
 fn read_sidecar_at_time(

@@ -566,7 +566,10 @@ mod tests {
 
         match &app.mode {
             AppMode::CommandPicker(state) => assert!(matches!(
-                state.commands.get(state.selected).map(|entry| &entry.action),
+                state
+                    .commands
+                    .get(state.selected)
+                    .map(|entry| &entry.action),
                 Some(CommandAction::Local { .. })
             )),
             _ => panic!("expected command picker"),

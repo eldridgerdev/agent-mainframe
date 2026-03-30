@@ -1,7 +1,8 @@
+use chrono::{Local, TimeZone};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
@@ -908,44 +909,29 @@ pub fn draw_opencode_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
-    let title_width = inner.width.saturating_sub(4) as usize;
+    let row_width = inner.width as usize;
 
     let items: Vec<ListItem> = state
         .sessions
         .iter()
         .enumerate()
         .map(|(i, session)| {
-            let is_selected = i == state.selected;
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.text.to_color())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text.to_color())
-            };
-            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
-                .into_iter()
-                .enumerate()
-                .map(|(line_idx, chunk)| {
-                    Line::from(vec![
-                        Span::styled(
-                            if line_idx == 0 {
-                                if is_selected { "  > " } else { "    " }
-                            } else {
-                                "    "
-                            },
-                            Style::default().fg(theme.primary.to_color()),
-                        ),
-                        Span::styled(chunk, title_style),
-                    ])
-                })
-                .collect();
-
-            if is_selected {
-                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
-            } else {
-                ListItem::new(lines)
-            }
+            let identifier = session
+                .slug
+                .as_deref()
+                .filter(|slug| !slug.trim().is_empty())
+                .map(|slug| truncate_text(slug, 12))
+                .unwrap_or_else(|| short_session_id(&session.id));
+            session_picker_item(
+                theme,
+                theme.primary.to_color(),
+                row_width,
+                i == state.selected,
+                session.updated,
+                &identifier,
+                &session.title,
+                theme.info.to_color(),
+            )
         })
         .collect();
 
@@ -1003,44 +989,23 @@ pub fn draw_claude_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
-    let title_width = inner.width.saturating_sub(4) as usize;
+    let row_width = inner.width as usize;
 
     let items: Vec<ListItem> = state
         .sessions
         .iter()
         .enumerate()
         .map(|(i, session)| {
-            let is_selected = i == state.selected;
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.text.to_color())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text.to_color())
-            };
-            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
-                .into_iter()
-                .enumerate()
-                .map(|(line_idx, chunk)| {
-                    Line::from(vec![
-                        Span::styled(
-                            if line_idx == 0 {
-                                if is_selected { "  > " } else { "    " }
-                            } else {
-                                "    "
-                            },
-                            Style::default().fg(theme.success.to_color()),
-                        ),
-                        Span::styled(chunk, title_style),
-                    ])
-                })
-                .collect();
-
-            if is_selected {
-                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
-            } else {
-                ListItem::new(lines)
-            }
+            session_picker_item(
+                theme,
+                theme.success.to_color(),
+                row_width,
+                i == state.selected,
+                session.updated,
+                &short_session_id(&session.id),
+                &session.title,
+                theme.info.to_color(),
+            )
         })
         .collect();
 
@@ -1098,44 +1063,23 @@ pub fn draw_codex_session_picker(
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(2)])
         .split(inner);
-    let title_width = inner.width.saturating_sub(4) as usize;
+    let row_width = inner.width as usize;
 
     let items: Vec<ListItem> = state
         .sessions
         .iter()
         .enumerate()
         .map(|(i, session)| {
-            let is_selected = i == state.selected;
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.text.to_color())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text.to_color())
-            };
-            let lines: Vec<Line> = wrap_text_to_width(&session.title, title_width)
-                .into_iter()
-                .enumerate()
-                .map(|(line_idx, chunk)| {
-                    Line::from(vec![
-                        Span::styled(
-                            if line_idx == 0 {
-                                if is_selected { "  > " } else { "    " }
-                            } else {
-                                "    "
-                            },
-                            Style::default().fg(theme.session_icon_codex.to_color()),
-                        ),
-                        Span::styled(chunk, title_style),
-                    ])
-                })
-                .collect();
-
-            if is_selected {
-                ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
-            } else {
-                ListItem::new(lines)
-            }
+            session_picker_item(
+                theme,
+                theme.session_icon_codex.to_color(),
+                row_width,
+                i == state.selected,
+                session.updated,
+                &short_session_id(&session.id),
+                &session.title,
+                theme.info.to_color(),
+            )
         })
         .collect();
 
@@ -1206,6 +1150,136 @@ fn draw_session_restore_confirm(frame: &mut Frame, theme: &Theme, agent_name: &s
     .wrap(Wrap { trim: false });
 
     frame.render_widget(text, area);
+}
+
+fn session_picker_item(
+    theme: &Theme,
+    accent: Color,
+    row_width: usize,
+    is_selected: bool,
+    updated: i64,
+    identifier: &str,
+    title: &str,
+    timestamp_color: Color,
+) -> ListItem<'static> {
+    let marker = if is_selected { "  > " } else { "    " };
+    let age = format_session_age(updated);
+    let ident = truncate_text(identifier, 12);
+    let age_str = format!("{age:>6}");
+    let ident_str = format!("  {ident:<12}  ");
+    let meta_chars = age_str.chars().count() + ident_str.chars().count();
+    let title_width = row_width.saturating_sub(marker.chars().count() + meta_chars);
+    let title_style = if is_selected {
+        Style::default()
+            .fg(theme.text.to_color())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text.to_color())
+    };
+    let continuation_prefix = format!(
+        "{}{}",
+        " ".repeat(marker.chars().count()),
+        " ".repeat(meta_chars)
+    );
+    let continuation_width = row_width.saturating_sub(continuation_prefix.chars().count());
+
+    let mut wrapped = wrap_text_to_width(title, title_width.max(1));
+    if wrapped.len() > 2 {
+        let overflow = wrapped.split_off(1);
+        let joined = overflow.join(" ");
+        let second_width = continuation_width.max(1);
+        wrapped.push(truncate_text(&joined, second_width));
+    }
+    if wrapped.len() == 2 {
+        let second_width = continuation_width.max(1);
+        wrapped[1] = truncate_text(&wrapped[1], second_width);
+    }
+
+    let first_line = Line::from(vec![
+        Span::styled(marker.to_string(), Style::default().fg(accent)),
+        Span::styled(age_str, Style::default().fg(timestamp_color)),
+        Span::styled(ident_str, Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            wrapped
+                .first()
+                .cloned()
+                .unwrap_or_else(|| truncate_text(title, title_width.max(1))),
+            title_style,
+        ),
+    ]);
+
+    let mut lines = vec![first_line];
+    if let Some(second_line) = wrapped.get(1) {
+        lines.push(Line::from(vec![
+            Span::raw(continuation_prefix),
+            Span::styled(second_line.clone(), title_style),
+        ]));
+    }
+
+    if is_selected {
+        ListItem::new(lines).style(Style::default().bg(theme.effective_selection_bg()))
+    } else {
+        ListItem::new(lines)
+    }
+}
+
+fn format_session_age(updated: i64) -> String {
+    let Some(updated) = normalize_timestamp(updated) else {
+        return "--".to_string();
+    };
+    let Some(updated_at) = Local.timestamp_opt(updated, 0).single() else {
+        return "--".to_string();
+    };
+
+    let delta = Local::now().signed_duration_since(updated_at);
+    if delta.num_minutes() < 1 {
+        "now".to_string()
+    } else if delta.num_hours() < 1 {
+        format!("{}m", delta.num_minutes())
+    } else if delta.num_days() < 1 {
+        format!("{}h", delta.num_hours())
+    } else if delta.num_days() < 7 {
+        format!("{}d", delta.num_days())
+    } else {
+        updated_at.format("%b %-d").to_string()
+    }
+}
+
+fn normalize_timestamp(updated: i64) -> Option<i64> {
+    if updated <= 0 {
+        None
+    } else if updated > 1_000_000_000_000 {
+        Some(updated / 1000)
+    } else {
+        Some(updated)
+    }
+}
+
+fn short_session_id(id: &str) -> String {
+    let base = id
+        .rsplit('-')
+        .next()
+        .filter(|part| part.len() >= 6)
+        .unwrap_or(id);
+    if base.chars().count() <= 10 {
+        base.to_string()
+    } else {
+        base.chars().take(10).collect()
+    }
+}
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+
+    let mut truncated = text.chars().take(max_chars - 1).collect::<String>();
+    truncated.push('…');
+    truncated
 }
 
 fn wrap_text_to_width(text: &str, max_chars: usize) -> Vec<String> {

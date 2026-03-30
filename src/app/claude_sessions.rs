@@ -1,5 +1,9 @@
 use anyhow::Result;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+use super::session_titles::clean_title_from_text;
 
 #[derive(Debug, Clone)]
 pub struct ClaudeSessionInfo {
@@ -62,9 +66,11 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
 }
 
 fn extract_session_title(jsonl_path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(jsonl_path).ok()?;
+    let file = File::open(jsonl_path).ok()?;
+    let reader = BufReader::new(file);
 
-    for line in content.lines() {
+    for line in reader.lines() {
+        let line = line.ok()?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -74,16 +80,18 @@ fn extract_session_title(jsonl_path: &Path) -> Option<String> {
 
         if entry["type"] == "user" {
             if let Some(content) = entry["message"]["content"].as_str() {
-                let title = content.lines().next().unwrap_or("").trim();
-                return Some(title.to_string());
+                if let Some(title) = clean_title_from_text(content) {
+                    return Some(title);
+                }
             }
 
             if let Some(blocks) = entry["message"]["content"].as_array() {
                 for block in blocks {
                     if block["type"] == "text" {
                         if let Some(text) = block["text"].as_str() {
-                            let title = text.lines().next().unwrap_or("").trim();
-                            return Some(title.to_string());
+                            if let Some(title) = clean_title_from_text(text) {
+                                return Some(title);
+                            }
                         }
                     }
                 }
@@ -99,4 +107,28 @@ fn encode_path(path: &Path) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn extract_session_title_skips_agents_boilerplate() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"content\":\"# AGENTS.md instructions for /tmp/repo\\n<INSTRUCTIONS>\\nkeep\\n</INSTRUCTIONS>\\n<environment_context>\\n  <cwd>/tmp/repo</cwd>\\n</environment_context>\\nactual request\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_session_title(&path).as_deref(),
+            Some("actual request")
+        );
+    }
 }

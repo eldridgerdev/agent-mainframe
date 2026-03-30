@@ -60,8 +60,6 @@ fn shorten_path(path: &Path) -> String {
 
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible_height = area.height.saturating_sub(2) as usize;
-    app.ensure_selection_visible(visible_height);
-
     let theme = app.theme.clone();
 
     if app.store.projects.is_empty() {
@@ -97,6 +95,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let visible = app.visible_items();
+    app.ensure_selection_visible_for_items(&visible, visible_height);
 
     let start = if visible.is_empty() {
         0

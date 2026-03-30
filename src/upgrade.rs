@@ -316,9 +316,10 @@ mod tests {
     fn x86_64_macos_requires_apple_silicon_host() {
         let err = platform_for("x86_64", "macos", Some(false)).unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("publish only Apple Silicon macOS bundles"));
+        assert!(
+            err.to_string()
+                .contains("publish only Apple Silicon macOS bundles")
+        );
     }
 
     #[test]

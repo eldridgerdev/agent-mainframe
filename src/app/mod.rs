@@ -19,6 +19,7 @@ mod review;
 mod search;
 mod session_config;
 mod session_ops;
+mod session_titles;
 pub mod setup;
 mod state;
 mod steering;

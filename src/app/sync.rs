@@ -147,6 +147,8 @@ impl App {
 
         if self.has_active_sidebar() {
             self.refresh_sidebar_for_current_view();
+        } else if !matches!(self.mode, AppMode::Viewing(_)) {
+            self.schedule_sidebar_loads_for_all_features();
         }
 
         if discovered_sources && let Err(err) = self.save() {

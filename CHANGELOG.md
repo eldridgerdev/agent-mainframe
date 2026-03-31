@@ -12,6 +12,14 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.13.1] - 2026-03-31
+
+### Fixed
+
+- `amf upgrade` now replaces bundled release directories recursively,
+  preventing partial installs that could leave the tmux wrapper present
+  without its neighboring `tmux-real` binary or bundled support files.
+
 ## [v0.13.0] - 2026-03-26
 
 ### Added

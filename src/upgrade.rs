@@ -206,16 +206,56 @@ fn install_bundle_asset(asset: &ReleaseAsset, exe_dir: &Path) -> Result<()> {
     for entry in fs::read_dir(&extracted_dir).context("Failed to read extracted bundle")? {
         let entry = entry?;
         let dest = exe_dir.join(entry.file_name());
-        fs::copy(entry.path(), &dest).with_context(|| {
-            format!(
-                "Failed to copy {} to {}",
-                entry.path().display(),
-                dest.display()
-            )
-        })?;
-        let mut perms = fs::metadata(&dest)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        fs::set_permissions(&dest, perms)?;
+        replace_path_recursive(&entry.path(), &dest)?;
+    }
+
+    Ok(())
+}
+
+fn replace_path_recursive(src: &Path, dest: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(src)
+        .with_context(|| format!("Failed to read metadata for {}", src.display()))?;
+
+    if metadata.is_dir() {
+        if dest.exists() {
+            remove_existing_path(dest)?;
+        }
+        fs::create_dir_all(dest)
+            .with_context(|| format!("Failed to create directory {}", dest.display()))?;
+
+        for entry in fs::read_dir(src)
+            .with_context(|| format!("Failed to read directory {}", src.display()))?
+        {
+            let entry = entry?;
+            replace_path_recursive(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+
+        fs::set_permissions(dest, metadata.permissions())
+            .with_context(|| format!("Failed to set permissions on {}", dest.display()))?;
+        return Ok(());
+    }
+
+    if dest.exists() {
+        remove_existing_path(dest)?;
+    }
+
+    fs::copy(src, dest)
+        .with_context(|| format!("Failed to copy {} to {}", src.display(), dest.display()))?;
+    fs::set_permissions(dest, metadata.permissions())
+        .with_context(|| format!("Failed to set permissions on {}", dest.display()))?;
+    Ok(())
+}
+
+fn remove_existing_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
+
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("Failed to remove directory {}", path.display()))?;
+    } else {
+        fs::remove_file(path)
+            .with_context(|| format!("Failed to remove file {}", path.display()))?;
     }
 
     Ok(())
@@ -269,6 +309,7 @@ fn macos_host_is_apple_silicon() -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     fn sample_release(assets: &[&str]) -> ReleaseInfo {
         ReleaseInfo {
@@ -328,5 +369,45 @@ mod tests {
 
         assert_eq!(platform.asset_stem, "amf-aarch64-apple-darwin");
         assert!(platform.pretty_name.contains("Rosetta 2"));
+    }
+
+    #[test]
+    fn replace_path_recursive_copies_nested_bundle_entries() {
+        let src = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+
+        let bundle_dir = src.path().join("tmux-root").join("usr").join("share");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        fs::write(src.path().join("tmux"), "#!/bin/sh\n").unwrap();
+        fs::write(src.path().join("tmux-real"), "binary").unwrap();
+        fs::write(bundle_dir.join("terminfo"), "db").unwrap();
+
+        let existing = dest.path().join("tmux-root");
+        fs::create_dir_all(&existing).unwrap();
+        fs::write(existing.join("stale"), "old").unwrap();
+
+        replace_path_recursive(&src.path().join("tmux"), &dest.path().join("tmux")).unwrap();
+        replace_path_recursive(
+            &src.path().join("tmux-real"),
+            &dest.path().join("tmux-real"),
+        )
+        .unwrap();
+        replace_path_recursive(&src.path().join("tmux-root"), &dest.path().join("tmux-root"))
+            .unwrap();
+
+        assert_eq!(fs::read_to_string(dest.path().join("tmux")).unwrap(), "#!/bin/sh\n");
+        assert_eq!(fs::read_to_string(dest.path().join("tmux-real")).unwrap(), "binary");
+        assert_eq!(
+            fs::read_to_string(
+                dest.path()
+                    .join("tmux-root")
+                    .join("usr")
+                    .join("share")
+                    .join("terminfo")
+            )
+            .unwrap(),
+            "db"
+        );
+        assert!(!dest.path().join("tmux-root").join("stale").exists());
     }
 }

@@ -10,8 +10,46 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.13.0] - 2026-03-26
+
+### Added
+
+- Opencode sidebar with work section, todos list, and sidecar state
+  tracking — shows task activity, todo items, and LSP metadata
+  alongside other session details.
+- Per-session Codex prompt history and preview in sidebar — prompts are
+  now session-specific rather than shared across features.
+- Codex sidebar session metadata display including thread information,
+  usage source confidence, and reasoning token counts.
+- Local command actions in command picker — focused access to AMF-level
+  actions without mixing in session-specific commands.
+- Claude session resume picker on `S` now works for Claude sessions as
+  well as Opencode, with session titles pulled from the first user
+  prompt in each saved conversation.
+- The steering prompt coach now supports scrolling for longer prompts
+  without leaving the feature-creation flow.
+
+### Changed
+
+- Sidebar layout refinements across Codex and Opencode sessions for
+  improved visual hierarchy and compactness.
+- Codex sidebar summary and prompt sections reorganized to prioritize
+  active work and plan context.
+- Session pickers now show cleaner titles and relative ages for saved
+  Claude, Codex, and Opencode sessions.
+- Sidebar background refresh work now pauses while the sidebar is
+  hidden, reducing unnecessary polling and improving view responsiveness.
+- Sidebar, token usage, and usage refresh paths were reworked for lower
+  overhead background updates.
+
 ### Fixed
 
+- Stale worktree delete failures are now handled gracefully without
+  blocking feature deletion.
+- tmux session launches no longer leak AMF-managed `PATH` overrides into
+  child sessions.
 - `amf upgrade` now resolves the actual release asset from GitHub's
   release metadata instead of hardcoding a guessed download URL, so
   future packaging changes do not regress into `404` download failures.
@@ -19,6 +57,10 @@ are tagged.
   bundle when AMF is running under Rosetta on Apple Silicon. Native
   Intel Macs now get a clear unsupported-platform error instead of a
   misleading architecture mapping.
+
+### Migration
+
+- No store migration is required.
 
 ## [v0.12.0] - 2026-03-24
 

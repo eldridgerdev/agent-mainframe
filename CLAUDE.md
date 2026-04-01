@@ -45,7 +45,9 @@ ProjectStatus: Active | Idle | Stopped
 ```
 
 State persisted as JSON at
-`~/.config/amf/projects.json`.
+`~/.config/amf/projects.json` for the primary checkout. Linked git
+worktrees use a private `.amf/projects.json` inside that worktree so
+branch-local store changes do not affect other checkouts.
 Tmux sessions are prefixed `amf-` (e.g., `amf-mybranch`).
 
 ### App State & Modes (app/)

@@ -16,6 +16,36 @@ pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
+fn opencode_sidebar_thinking_state(
+    sidebar: &crate::app::opencode_storage::OpencodeSidebarData,
+) -> Option<bool> {
+    if sidebar
+        .pending_permission
+        .as_deref()
+        .is_some_and(|permission| !permission.trim().is_empty())
+    {
+        return Some(false);
+    }
+
+    let status = sidebar.status.as_deref()?.trim().to_ascii_lowercase();
+    if status.is_empty() {
+        return None;
+    }
+
+    Some(!matches!(
+        status.as_str(),
+        "idle"
+            | "ready"
+            | "done"
+            | "completed"
+            | "closed"
+            | "cancelled"
+            | "canceled"
+            | "stopped"
+            | "waiting"
+    ))
+}
+
 impl App {
     pub fn sync_statuses(&mut self) {
         let live_sessions = self.tmux.list_sessions().unwrap_or_default();
@@ -48,16 +78,9 @@ impl App {
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
         let pricing = self.config.token_pricing.clone();
         let mut discovered_sources = false;
-        let mut sidebar_refresh_targets = Vec::new();
 
-        for (pi, project) in self.store.projects.iter_mut().enumerate() {
-            for (fi, feature) in project.features.iter_mut().enumerate() {
-                let refresh_sidebar = feature.sessions.iter().any(|session| {
-                    matches!(
-                        session.kind,
-                        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
-                    )
-                });
+        for project in &mut self.store.projects {
+            for feature in &mut project.features {
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
                         let status_path = feature
@@ -119,15 +142,13 @@ impl App {
                         .and_then(|source| tracker.read_usage(source, &feature.workdir))
                         .map(|usage| format_token_usage(&usage, &pricing));
                 }
-
-                if refresh_sidebar {
-                    sidebar_refresh_targets.push((pi, fi));
-                }
             }
         }
 
-        for (pi, fi) in sidebar_refresh_targets {
-            self.schedule_sidebar_load_for_feature(pi, fi);
+        if self.has_active_sidebar() {
+            self.refresh_sidebar_for_current_view();
+        } else if !matches!(self.mode, AppMode::Viewing(_)) {
+            self.schedule_sidebar_loads_for_all_features();
         }
 
         if discovered_sources && let Err(err) = self.save() {
@@ -157,16 +178,23 @@ impl App {
                         }
                     }
                     AgentKind::Opencode => {
-                        let session = feature
-                            .sessions
-                            .iter()
-                            .find(|s| s.kind == SessionKind::Opencode);
-                        session
-                            .and_then(|s| {
-                                TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
-                                    .ok()
+                        self.opencode_sidebar_cache
+                            .get(&feature.tmux_session)
+                            .and_then(opencode_sidebar_thinking_state)
+                            .or_else(|| {
+                                feature
+                                    .sessions
+                                    .iter()
+                                    .find(|s| s.kind == SessionKind::Opencode)
+                                    .and_then(|s| {
+                                        TmuxManager::capture_pane(
+                                            &feature.tmux_session,
+                                            &s.tmux_window,
+                                        )
+                                        .ok()
+                                    })
+                                    .map(|content| pane_shows_thinking_hint(&content))
                             })
-                            .map(|content| pane_shows_thinking_hint(&content))
                             .unwrap_or(false)
                     }
                     AgentKind::Codex => {

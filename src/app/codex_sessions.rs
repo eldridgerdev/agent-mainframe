@@ -1,8 +1,14 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use super::session_titles::clean_title_from_text;
 
 #[derive(Debug, Clone)]
 pub struct CodexSessionInfo {
@@ -30,6 +36,10 @@ struct ParsedCodexSession {
 }
 
 pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
+    if let Some(sessions) = fetch_codex_sessions_from_index(workdir)? {
+        return Ok(sessions);
+    }
+
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(Vec::new());
     };
@@ -112,6 +122,63 @@ fn session_info_for_workdir_from_root(
     }
 
     Ok(None)
+}
+
+#[derive(Deserialize)]
+struct CodexThreadRow {
+    id: String,
+    title: String,
+    updated_at: i64,
+    first_user_message: String,
+}
+
+fn fetch_codex_sessions_from_index(workdir: &Path) -> Result<Option<Vec<CodexSessionInfo>>> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(None);
+    };
+    let db_path = home.join(".codex/state_5.sqlite");
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let sql = format!(
+        concat!(
+            "select id, title, updated_at, first_user_message ",
+            "from threads ",
+            "where cwd = '{}' and archived = 0 ",
+            "order by updated_at desc;"
+        ),
+        sql_quote(workdir)
+    );
+
+    let output = match Command::new("sqlite3")
+        .arg(&db_path)
+        .arg("-json")
+        .arg(sql)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let rows: Vec<CodexThreadRow> = serde_json::from_slice(&output.stdout)?;
+    let sessions = rows
+        .into_iter()
+        .map(|row| CodexSessionInfo {
+            id: row.id,
+            title: clean_title_from_text(&row.title)
+                .or_else(|| clean_title_from_text(&row.first_user_message))
+                .unwrap_or_else(|| "Untitled".to_string()),
+            updated: row.updated_at,
+        })
+        .collect();
+
+    Ok(Some(sessions))
 }
 
 pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
@@ -330,13 +397,15 @@ fn prompt_history_from_file(
     workdir: &Path,
     session_id: &str,
 ) -> Option<Vec<CodexPromptEntry>> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
 
     let mut file_session_id: Option<String> = None;
     let mut file_cwd: Option<PathBuf> = None;
     let mut prompts = Vec::new();
 
-    for line in contents.lines() {
+    for line in reader.lines() {
+        let line = line.ok()?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -390,7 +459,8 @@ fn prompt_history_from_file(
 }
 
 fn parse_codex_session_file_details(path: &Path, workdir: &Path) -> Option<ParsedCodexSession> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
 
     let mut session_id: Option<String> = None;
     let mut session_cwd: Option<PathBuf> = None;
@@ -399,7 +469,8 @@ fn parse_codex_session_file_details(path: &Path, workdir: &Path) -> Option<Parse
     let mut latest_prompt: Option<String> = None;
     let mut latest_prompt_updated = 0_i64;
 
-    for line in contents.lines() {
+    for line in reader.lines() {
+        let line = line.ok()?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -519,12 +590,7 @@ fn extract_prompt_from_response_item(value: &Value) -> Option<String> {
 }
 
 fn title_from_text(text: &str) -> Option<String> {
-    Some(
-        text.lines()
-            .find(|line| !line.trim().is_empty())?
-            .trim()
-            .to_string(),
-    )
+    clean_title_from_text(text)
 }
 
 fn parse_timestamp(timestamp: &str) -> Option<i64> {
@@ -556,6 +622,10 @@ fn codex_sessions_root() -> Option<PathBuf> {
     }
 
     from_dirs.or(from_env).or(from_user_home)
+}
+
+fn sql_quote(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
 }
 
 #[cfg(test)]

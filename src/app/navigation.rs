@@ -112,6 +112,17 @@ impl App {
         items
     }
 
+    pub(crate) fn selection_index_in_items(&self, items: &[VisibleItem]) -> Option<usize> {
+        items.iter().position(|item| match (&self.selection, item) {
+            (Selection::Project(a), VisibleItem::Project(b)) => a == b,
+            (Selection::Feature(a1, a2), VisibleItem::Feature(b1, b2)) => a1 == b1 && a2 == b2,
+            (Selection::Session(a1, a2, a3), VisibleItem::Session(b1, b2, b3)) => {
+                a1 == b1 && a2 == b2 && a3 == b3
+            }
+            _ => false,
+        })
+    }
+
     fn session_matches_filter(&self, session: &FeatureSession) -> bool {
         use crate::project::SessionKind;
         match &self.session_filter {
@@ -127,14 +138,7 @@ impl App {
 
     pub(crate) fn selection_index(&self) -> Option<usize> {
         let items = self.visible_items();
-        items.iter().position(|item| match (&self.selection, item) {
-            (Selection::Project(a), VisibleItem::Project(b)) => a == b,
-            (Selection::Feature(a1, a2), VisibleItem::Feature(b1, b2)) => a1 == b1 && a2 == b2,
-            (Selection::Session(a1, a2, a3), VisibleItem::Session(b1, b2, b3)) => {
-                a1 == b1 && a2 == b2 && a3 == b3
-            }
-            _ => false,
-        })
+        self.selection_index_in_items(&items)
     }
 
     pub fn select_next(&mut self) {
@@ -173,20 +177,28 @@ impl App {
 
     pub fn ensure_selection_visible(&mut self, visible_height: usize) {
         let items = self.visible_items();
+        self.ensure_selection_visible_for_items(&items, visible_height);
+    }
+
+    pub(crate) fn ensure_selection_visible_for_items(
+        &mut self,
+        items: &[VisibleItem],
+        visible_height: usize,
+    ) {
         if items.is_empty() || visible_height == 0 {
             self.scroll_offset = 0;
             return;
         }
 
-        self.scroll_offset = self.visible_window_start(&items);
+        self.scroll_offset = self.visible_window_start(items);
 
-        let current = self.selection_index().unwrap_or(0);
+        let current = self.selection_index_in_items(items).unwrap_or(0);
         if current < self.scroll_offset {
             self.scroll_offset = current;
             return;
         }
 
-        while current >= self.visible_window_end_for_items(&items, visible_height) {
+        while current >= self.visible_window_end_for_items(items, visible_height) {
             self.scroll_offset += 1;
         }
     }

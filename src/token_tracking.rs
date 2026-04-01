@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -33,12 +35,19 @@ pub struct SessionTokenUsage {
 }
 
 #[derive(Debug, Clone)]
+struct UsageCacheEntry {
+    refreshed_at: Instant,
+    signature: Option<u64>,
+    usage: Option<SessionTokenUsage>,
+}
+
+#[derive(Debug, Clone)]
 pub struct SessionTokenTracker {
     home_dir: Option<PathBuf>,
     data_dir: Option<PathBuf>,
     codex_sessions: Option<(Instant, Vec<CodexSessionRecord>)>,
     opencode_sessions: Option<(Instant, Vec<OpencodeSessionMeta>)>,
-    usage_cache: HashMap<TokenUsageSource, (Instant, Option<SessionTokenUsage>)>,
+    usage_cache: HashMap<TokenUsageSource, UsageCacheEntry>,
 }
 
 impl Default for SessionTokenTracker {
@@ -82,10 +91,19 @@ impl SessionTokenTracker {
         source: &TokenUsageSource,
         workdir: &Path,
     ) -> Option<SessionTokenUsage> {
-        if let Some((refreshed_at, cached)) = self.usage_cache.get(source)
-            && refreshed_at.elapsed().as_secs() < 30
+        if let Some(entry) = self.usage_cache.get(source)
+            && entry.refreshed_at.elapsed().as_secs() < 30
         {
-            return cached.clone();
+            return entry.usage.clone();
+        }
+
+        let current_signature = self.current_usage_signature(source, workdir);
+        if let Some(entry) = self.usage_cache.get_mut(source)
+            && current_signature.is_some()
+            && entry.signature == current_signature
+        {
+            entry.refreshed_at = Instant::now();
+            return entry.usage.clone();
         }
 
         let usage = match source.provider {
@@ -93,9 +111,23 @@ impl SessionTokenTracker {
             TokenUsageProvider::Opencode => self.read_opencode_usage(&source.id),
             TokenUsageProvider::Codex => self.read_codex_usage(&source.id),
         };
-        self.usage_cache
-            .insert(source.clone(), (Instant::now(), usage.clone()));
+        self.usage_cache.insert(
+            source.clone(),
+            UsageCacheEntry {
+                refreshed_at: Instant::now(),
+                signature: current_signature,
+                usage: usage.clone(),
+            },
+        );
         usage
+    }
+
+    fn current_usage_signature(&mut self, source: &TokenUsageSource, workdir: &Path) -> Option<u64> {
+        match source.provider {
+            TokenUsageProvider::Claude => self.claude_usage_signature(workdir, &source.id),
+            TokenUsageProvider::Opencode => self.opencode_usage_signature(&source.id),
+            TokenUsageProvider::Codex => self.codex_usage_signature(&source.id),
+        }
     }
 
     fn discover_claude_source(
@@ -220,6 +252,24 @@ impl SessionTokenTracker {
         })
     }
 
+    fn claude_usage_signature(&self, workdir: &Path, session_id: &str) -> Option<u64> {
+        let paths = self.claude_usage_paths(workdir, session_id)?;
+        metadata_signature_for_paths(paths)
+    }
+
+    fn claude_usage_paths(&self, workdir: &Path, session_id: &str) -> Option<Vec<PathBuf>> {
+        let projects_dir = self.claude_projects_dir(workdir)?;
+        let root = projects_dir.join(format!("{session_id}.jsonl"));
+        if !root.exists() {
+            return None;
+        }
+
+        let mut paths = vec![root];
+        let subagents_dir = projects_dir.join(session_id).join("subagents");
+        collect_jsonl_files(&subagents_dir, &mut paths);
+        Some(paths)
+    }
+
     fn discover_codex_source(
         &mut self,
         workdir: &Path,
@@ -256,18 +306,7 @@ impl SessionTokenTracker {
     }
 
     fn read_codex_usage(&mut self, session_id: &str) -> Option<SessionTokenUsage> {
-        let session_path = self
-            .codex_sessions()
-            .iter()
-            .find(|record| record.id == session_id)
-            .map(|record| record.path.clone())
-            .or_else(|| {
-                self.refresh_codex_sessions();
-                self.codex_sessions()
-                    .iter()
-                    .find(|record| record.id == session_id)
-                    .map(|record| record.path.clone())
-            })?;
+        let session_path = self.codex_session_path(session_id)?;
         let contents = std::fs::read_to_string(session_path).ok()?;
 
         let mut latest_total: Option<CodexUsageSnapshot> = None;
@@ -315,6 +354,24 @@ impl SessionTokenTracker {
             reasoning_tokens: snapshot.reasoning_tokens,
             total_tokens: snapshot.total_tokens,
         })
+    }
+
+    fn codex_usage_signature(&mut self, session_id: &str) -> Option<u64> {
+        metadata_signature_for_paths(vec![self.codex_session_path(session_id)?])
+    }
+
+    fn codex_session_path(&mut self, session_id: &str) -> Option<PathBuf> {
+        self.codex_sessions()
+            .iter()
+            .find(|record| record.id == session_id)
+            .map(|record| record.path.clone())
+            .or_else(|| {
+                self.refresh_codex_sessions();
+                self.codex_sessions()
+                    .iter()
+                    .find(|record| record.id == session_id)
+                    .map(|record| record.path.clone())
+            })
     }
 
     fn discover_opencode_source(
@@ -415,6 +472,39 @@ impl SessionTokenTracker {
                 .saturating_add(cache_write_tokens)
                 .saturating_add(reasoning_tokens),
         })
+    }
+
+    fn opencode_usage_signature(&self, session_id: &str) -> Option<u64> {
+        let paths = self.opencode_usage_paths(session_id)?;
+        metadata_signature_for_paths(paths)
+    }
+
+    fn opencode_usage_paths(&self, session_id: &str) -> Option<Vec<PathBuf>> {
+        let storage_root = self.opencode_storage_root()?;
+        let message_root = storage_root.join("message").join(session_id);
+        let part_root = storage_root.join("part");
+        if !message_root.is_dir() {
+            return None;
+        }
+
+        let mut paths = walk_files_with_extension(&message_root, "json");
+        if paths.is_empty() {
+            return Some(paths);
+        }
+
+        let message_ids = paths
+            .iter()
+            .filter_map(|path| path.file_stem().and_then(|name| name.to_str()))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        for message_id in message_ids {
+            let parts_dir = part_root.join(message_id);
+            if parts_dir.is_dir() {
+                paths.extend(walk_files_with_extension(&parts_dir, "json"));
+            }
+        }
+
+        Some(paths)
     }
 
     fn claude_projects_dir(&self, workdir: &Path) -> Option<PathBuf> {
@@ -641,6 +731,31 @@ fn walk_files_with_extension(root: &Path, extension: &str) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+fn metadata_signature_for_paths<I>(paths: I) -> Option<u64>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let mut paths = paths.into_iter().collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Some(0);
+    }
+
+    paths.sort();
+    let mut hasher = DefaultHasher::new();
+    for path in paths {
+        path.hash(&mut hasher);
+        let metadata = std::fs::metadata(&path).ok()?;
+        metadata.len().hash(&mut hasher);
+        metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .hash(&mut hasher);
+    }
+    Some(hasher.finish())
 }
 
 fn file_modified_millis(path: &Path) -> Option<i64> {

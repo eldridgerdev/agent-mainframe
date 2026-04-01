@@ -111,6 +111,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     app.sidebar_load_tx
         .send(super::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
+            signature: 7,
             latest_prompt: Some("lazy prompt".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
@@ -819,7 +820,10 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
     assert!(app.store.projects[0].features[0].pending_worktree_script);
-    assert_eq!(app.store.projects[0].features[0].status, ProjectStatus::Stopped);
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
 }
 
 #[test]
@@ -3067,6 +3071,97 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
 }
 
 #[test]
+fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
+    let workdir = TempDir::new().unwrap();
+    let prompt_path = workdir.path().join(".claude").join("latest-prompt.txt");
+    std::fs::create_dir_all(prompt_path.parent().unwrap()).unwrap();
+    std::fs::write(&prompt_path, "first prompt").unwrap();
+
+    let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 13, 59, 30).unwrap();
+    let session = FeatureSession {
+        id: "claude-sess".to_string(),
+        kind: SessionKind::Claude,
+        label: "Claude".to_string(),
+        tmux_window: "claude".to_string(),
+        claude_session_id: Some("claude-session-1".to_string()),
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Claude,
+        enable_chrome: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Claude,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        extra: HashMap::new(),
+    };
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let signature =
+        super::SidebarLoadRequest::from_feature(&app.store.projects[0].features[0]).signature();
+    app.sidebar_load_signatures
+        .insert("amf-my-feat".to_string(), signature);
+
+    let mut tracker = SessionTokenTracker::default();
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert!(
+        !app.pending_sidebar_loads.contains("amf-my-feat"),
+        "unchanged prompt inputs should not queue another sidebar load"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    std::fs::write(&prompt_path, "updated prompt").unwrap();
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    assert!(
+        app.pending_sidebar_loads.contains("amf-my-feat"),
+        "changed prompt inputs should queue a fresh sidebar load"
+    );
+}
+
+#[test]
 fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -3167,6 +3262,60 @@ fn poll_codex_sidebar_metadata_updates_caches() {
         Some("Sidebar prompt")
     );
     assert!(!app.codex_sidebar_metadata_inflight.contains(&cache_key));
+}
+
+#[test]
+fn sync_session_status_skips_sidebar_refresh_when_sidebar_hidden() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex".to_string(),
+        "Codex".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.sidebar_visible = false;
+    app.mode = AppMode::Viewing(view);
+
+    app.sync_session_status();
+
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn toggling_sidebar_back_on_triggers_sidebar_refresh() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex".to_string(),
+        "Codex".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.sidebar_visible = false;
+    app.mode = AppMode::Viewing(view);
+
+    app.toggle_sidebar_in_view();
+
+    assert!(app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]
@@ -3999,10 +4148,8 @@ fn status_file_cleanup_during_remove() {
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.pending_sidebar_loads
         .insert("amf-custom-cleanup-test-sess".to_string());
-    app.latest_prompt_cache.insert(
-        "amf-my-feat".to_string(),
-        prompt_entry("cached prompt"),
-    );
+    app.latest_prompt_cache
+        .insert("amf-my-feat".to_string(), prompt_entry("cached prompt"));
     app.opencode_sidebar_cache.insert(
         "amf-my-feat".to_string(),
         crate::app::opencode_storage::OpencodeSidebarData {

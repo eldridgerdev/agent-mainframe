@@ -518,7 +518,11 @@ fn read_claude_task_state_from_task_store(session_id: &str) -> Option<ClaudeTask
 fn parse_claude_task_state_from_jsonl(content: &str) -> Option<ClaudeTaskState> {
     let mut state = ClaudeTaskState::default();
 
-    for line in content.lines().map(str::trim).filter(|line| !line.is_empty()) {
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
         let value: serde_json::Value = match serde_json::from_str(line) {
             Ok(value) => value,
             Err(_) => continue,

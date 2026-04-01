@@ -22,6 +22,8 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
+    ("b", "Show / hide sidebar"),
+    ("v", "Expand / collapse todos"),
     ("o", "Scroll mode"),
     ("r", "Refresh statuses"),
     ("x", "Stop session"),
@@ -48,6 +50,13 @@ pub(crate) struct AgentSidebarData {
 struct ContentLayout {
     main: Rect,
     sidebar: Option<Rect>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SidebarSection<'a> {
+    title: &'static str,
+    body: &'a str,
+    constraint: Constraint,
 }
 
 pub(crate) fn viewing_main_width(view: &ViewState, total_width: u16) -> u16 {
@@ -372,64 +381,29 @@ fn draw_agent_sidebar(
         summary_text: String::new(),
     };
     let data = data.unwrap_or(&fallback);
-    let mut constraints = Vec::new();
-    let mut sections_with_content = Vec::new();
-
-    if !data.status_text.trim().is_empty() {
-        constraints.push(Constraint::Length(sidebar_section_height(
-            &data.status_text,
-            inner.width,
-            2,
-            4,
-        )));
-        sections_with_content.push(("Status", data.status_text.as_str()));
-    }
-
-    let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
-
-    if let Some(work_text) = data.work_text.as_deref() {
-        constraints.push(Constraint::Min(sidebar_section_height(
-            work_text,
-            inner.width,
-            2,
-            6,
-        )));
-        sections_with_content.push(("Work", work_text));
-    }
-    if !is_opencode && !data.summary_text.trim().is_empty() {
-        let summary_height = summary_section_height(&data.summary_text, inner.width);
-        constraints.push(Constraint::Length(summary_height));
-        sections_with_content.push(("Summary", data.summary_text.as_str()));
-    }
-    if !data.prompt_text.trim().is_empty() {
-        let prompt_height = prompt_section_height(&data.prompt_text, inner.width);
-        constraints.push(Constraint::Length(prompt_height));
-        sections_with_content.push(("Prompt", data.prompt_text.as_str()));
-    }
-    if let Some(todos_text) = data.todos_text.as_deref() {
-        let todos_height = sidebar_section_height(todos_text, inner.width, 2, 4);
-        constraints.push(Constraint::Length(todos_height));
-        sections_with_content.push(("Todos", todos_text));
-    }
-    if is_opencode && !data.summary_text.trim().is_empty() {
-        let summary_height = summary_section_height(&data.summary_text, inner.width);
-        constraints.push(Constraint::Length(summary_height));
-        sections_with_content.push(("Summary", data.summary_text.as_str()));
-    }
+    let sections_with_content = sidebar_sections(data, inner.width);
+    let constraints = sections_with_content
+        .iter()
+        .map(|section| section.constraint)
+        .collect::<Vec<_>>();
 
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
-    for ((title, body), section) in sections_with_content.iter().zip(sections.iter()) {
-        let accent = sidebar_section_color(title, theme);
-        let paragraph = Paragraph::new(styled_sidebar_lines(title, body, theme))
+    for (sidebar_section, section) in sections_with_content.iter().zip(sections.iter()) {
+        let accent = sidebar_section_color(sidebar_section.title, theme);
+        let paragraph = Paragraph::new(styled_sidebar_lines(
+            sidebar_section.title,
+            sidebar_section.body,
+            theme,
+        ))
             .wrap(Wrap { trim: false })
             .style(Style::default().bg(theme.effective_bg()))
             .block(
                 Block::default()
                     .title(Span::styled(
-                        format!(" {} ", title),
+                        format!(" {} ", sidebar_section.title),
                         Style::default().fg(accent).add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
@@ -437,6 +411,68 @@ fn draw_agent_sidebar(
             );
         frame.render_widget(paragraph, *section);
     }
+}
+
+fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<SidebarSection<'a>> {
+    let mut sections = Vec::new();
+
+    if !data.status_text.trim().is_empty() {
+        sections.push(SidebarSection {
+            title: "Status",
+            body: data.status_text.as_str(),
+            constraint: Constraint::Length(sidebar_section_height(
+                &data.status_text,
+                section_width,
+                2,
+                4,
+            )),
+        });
+    }
+
+    let is_opencode = matches!(data.agent_kind, SessionKind::Opencode);
+
+    if let Some(work_text) = data.work_text.as_deref() {
+        sections.push(SidebarSection {
+            title: "Work",
+            body: work_text,
+            constraint: Constraint::Length(sidebar_section_height(work_text, section_width, 2, 6)),
+        });
+    }
+    if !is_opencode && !data.summary_text.trim().is_empty() {
+        sections.push(SidebarSection {
+            title: "Summary",
+            body: data.summary_text.as_str(),
+            constraint: Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+        });
+    }
+    if !data.prompt_text.trim().is_empty() {
+        sections.push(SidebarSection {
+            title: "Prompt",
+            body: data.prompt_text.as_str(),
+            constraint: Constraint::Length(prompt_section_height(&data.prompt_text, section_width)),
+        });
+    }
+    if let Some(todos_text) = data.todos_text.as_deref() {
+        sections.push(SidebarSection {
+            title: "Todos",
+            body: todos_text,
+            constraint: Constraint::Length(sidebar_section_height(
+                todos_text,
+                section_width,
+                2,
+                4,
+            )),
+        });
+    }
+    if is_opencode && !data.summary_text.trim().is_empty() {
+        sections.push(SidebarSection {
+            title: "Summary",
+            body: data.summary_text.as_str(),
+            constraint: Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+        });
+    }
+
+    sections
 }
 
 fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static str, Color) {
@@ -809,6 +845,43 @@ mod tests {
     }
 
     #[test]
+    fn work_section_uses_measured_height_in_sidebar_layout() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some("State: running tool\nTool: cargo test".into()),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        let sections = sidebar_sections(&sidebar, 30);
+        let work = sections.iter().find(|section| section.title == "Work").unwrap();
+
+        assert!(matches!(work.constraint, Constraint::Length(4)));
+    }
+
+    #[test]
+    fn work_section_height_grows_with_more_visible_lines() {
+        let sidebar = AgentSidebarData {
+            agent_kind: crate::project::SessionKind::Codex,
+            status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            prompt_text: "Preview: Continue the refactor.".into(),
+            work_text: Some(
+                "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
+                    .into(),
+            ),
+            todos_text: None,
+            summary_text: "Codex sidebar ready.".into(),
+        };
+
+        let sections = sidebar_sections(&sidebar, 30);
+        let work = sections.iter().find(|section| section.title == "Work").unwrap();
+
+        assert!(matches!(work.constraint, Constraint::Length(height) if height > 4));
+    }
+
+    #[test]
     fn prompt_section_height_is_compact() {
         assert_eq!(prompt_section_height("Preview: Continue", 30), 3);
     }
@@ -941,6 +1014,26 @@ mod tests {
 
         assert!(rendered.contains("Work"));
         assert!(rendered.contains("cargo test"));
+    }
+
+    #[test]
+    fn leader_menu_lists_sidebar_toggle_command() {
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let view = sample_view(crate::project::SessionKind::Claude);
+        let theme = Theme::default();
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &view, "hello", None, true, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+
+        assert!(rendered.contains("Ctrl+Space commands"));
+        assert!(rendered.contains("Show / hide sidebar"));
     }
 
     #[test]

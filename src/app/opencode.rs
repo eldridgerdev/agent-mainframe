@@ -1,5 +1,9 @@
 use anyhow::Result;
+use serde::Deserialize;
+use std::path::Path;
+use std::process::Command;
 
+use super::session_titles::clean_title_from_text;
 use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::*;
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
@@ -193,7 +197,7 @@ impl App {
         self.save()?;
         self.pane_content.clear();
         self.mode = AppMode::Viewing(view);
-        self.schedule_sidebar_load_for_feature(pi, fi);
+        self.refresh_sidebar_for_current_view();
         self.message = Some("Restored opencode session".into());
 
         Ok(())
@@ -327,7 +331,9 @@ impl App {
 }
 
 pub fn fetch_opencode_sessions(workdir: &std::path::Path) -> Result<Vec<OpencodeSessionInfo>> {
-    use std::process::Command;
+    if let Some(sessions) = fetch_opencode_sessions_from_db(workdir)? {
+        return Ok(sessions);
+    }
 
     let output = Command::new("opencode")
         .args(["session", "list", "--format", "json"])
@@ -354,15 +360,79 @@ pub fn fetch_opencode_sessions(workdir: &std::path::Path) -> Result<Vec<Opencode
         })
         .filter_map(|s| {
             let id = s.get("id")?.as_str()?.to_string();
+            let slug = s
+                .get("slug")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
             let title = s
                 .get("title")
                 .and_then(|t| t.as_str())
-                .unwrap_or("Untitled")
-                .to_string();
+                .and_then(clean_title_from_text)
+                .unwrap_or_else(|| "Untitled".to_string());
             let updated = s.get("updated").and_then(|t| t.as_i64()).unwrap_or(0);
-            Some(OpencodeSessionInfo { id, title, updated })
+            Some(OpencodeSessionInfo {
+                id,
+                slug,
+                title,
+                updated,
+            })
         })
         .collect();
 
     Ok(filtered)
+}
+
+#[derive(Deserialize)]
+struct OpencodeSessionRow {
+    id: String,
+    slug: String,
+    title: String,
+    time_updated: i64,
+}
+
+fn fetch_opencode_sessions_from_db(workdir: &Path) -> Result<Option<Vec<OpencodeSessionInfo>>> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(None);
+    };
+    let db_path = home.join(".local/share/opencode/opencode.db");
+    if !db_path.is_file() {
+        return Ok(None);
+    }
+
+    let sql = format!(
+        "select id, slug, title, time_updated from session where directory = '{}' and time_archived is null order by time_updated desc;",
+        sql_quote(workdir)
+    );
+
+    let output = match Command::new("sqlite3")
+        .arg(&db_path)
+        .arg("-json")
+        .arg(sql)
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let rows: Vec<OpencodeSessionRow> = serde_json::from_slice(&output.stdout)?;
+    let sessions = rows
+        .into_iter()
+        .map(|row| OpencodeSessionInfo {
+            id: row.id,
+            slug: Some(row.slug),
+            title: clean_title_from_text(&row.title).unwrap_or_else(|| "Untitled".to_string()),
+            updated: row.time_updated,
+        })
+        .collect();
+
+    Ok(Some(sessions))
+}
+
+fn sql_quote(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
 }

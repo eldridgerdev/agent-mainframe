@@ -26,7 +26,6 @@ pub struct SpawnedTmuxCommand {
 struct TmuxRuntime {
     binary: OsString,
     socket: Option<PathBuf>,
-    path_override: Option<OsString>,
     manages_private_socket: bool,
 }
 
@@ -56,12 +55,9 @@ impl TmuxRuntime {
                 (Some(Self::private_socket_path()), true)
             };
 
-        let path_override = Self::prepend_binary_dir_to_path(&binary);
-
         Self {
             binary,
             socket,
-            path_override,
             manages_private_socket,
         }
     }
@@ -93,11 +89,35 @@ impl TmuxRuntime {
             .join("tmux.sock")
     }
 
+    fn launch_path_override(&self) -> Option<OsString> {
+        Self::prepend_binary_dir_to_path(&self.binary)
+    }
+
     fn prepend_binary_dir_to_path(binary: &OsString) -> Option<OsString> {
         let binary_path = PathBuf::from(binary);
         let dir = binary_path.parent()?;
         let current_path = std::env::var_os("PATH").unwrap_or_default();
         let mut paths = vec![dir.to_path_buf()];
+
+        // Add mise install directories
+        if let Some(home) = dirs::home_dir() {
+            let mise_base = home.join(".local/share/mise/installs");
+            // Add codex and node (dynamically find versions in case they change)
+            if let Ok(entries) = std::fs::read_dir(&mise_base) {
+                for entry in entries.flatten() {
+                    let tool_dir = entry.path();
+                    if let Ok(versions) = std::fs::read_dir(&tool_dir) {
+                        for version in versions.flatten() {
+                            let bin_dir = version.path().join("bin");
+                            if bin_dir.exists() {
+                                paths.push(bin_dir);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         paths.extend(std::env::split_paths(&current_path));
         std::env::join_paths(paths).ok()
     }
@@ -122,9 +142,6 @@ impl TmuxManager {
         if let Some(socket) = &runtime.socket {
             command.env("AMF_TMUX_SOCKET", socket);
         }
-        if let Some(path) = &runtime.path_override {
-            command.env("PATH", path);
-        }
         command
     }
 
@@ -132,7 +149,7 @@ impl TmuxManager {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
 
-    fn shell_env_parts() -> Vec<String> {
+    fn shell_env_parts(include_path: bool) -> Vec<String> {
         let runtime = Self::runtime();
         let mut parts = vec![format!(
             "AMF_TMUX_BIN={}",
@@ -146,18 +163,25 @@ impl TmuxManager {
             ));
         }
 
-        if let Some(path) = &runtime.path_override {
-            parts.push(format!(
-                "PATH={}",
-                Self::shell_quote(&path.to_string_lossy())
-            ));
+        if include_path
+            && let Some(path) = runtime.launch_path_override()
+        {
+            parts.push(format!("PATH={}", Self::shell_quote(&path.to_string_lossy())));
         }
 
         parts
     }
 
     fn shell_env_with(extra: &[(&str, &str)]) -> String {
-        let mut parts = Self::shell_env_parts();
+        let mut parts = Self::shell_env_parts(false);
+        for (key, value) in extra {
+            parts.push(format!("{key}={}", Self::shell_quote(value)));
+        }
+        format!("env {}", parts.join(" "))
+    }
+
+    fn shell_launch_env_with(extra: &[(&str, &str)]) -> String {
+        let mut parts = Self::shell_env_parts(true);
         for (key, value) in extra {
             parts.push(format!("{key}={}", Self::shell_quote(value)));
         }
@@ -548,7 +572,7 @@ impl TmuxManager {
         // all shells including fish (unlike `VAR=val cmd`).
         let mut cmd_str = format!(
             "{} claude",
-            Self::shell_env_with(&[("AMF_SESSION", session)])
+            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
         );
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", sid));
@@ -578,8 +602,8 @@ impl TmuxManager {
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
-            Some(id) => format!("{} opencode -s {}", Self::shell_env_with(&[]), id),
-            None => format!("{} opencode", Self::shell_env_with(&[])),
+            Some(id) => format!("{} opencode -s {}", Self::shell_launch_env_with(&[]), id),
+            None => format!("{} opencode", Self::shell_launch_env_with(&[])),
         };
 
         Self::run(
@@ -599,12 +623,12 @@ impl TmuxManager {
         let cmd = match resume_session_id {
             Some(id) => format!(
                 "{} codex resume {}",
-                Self::shell_env_with(&[("AMF_SESSION", session)]),
+                Self::shell_launch_env_with(&[("AMF_SESSION", session)]),
                 id
             ),
             None => format!(
                 "{} codex",
-                Self::shell_env_with(&[("AMF_SESSION", session)])
+                Self::shell_launch_env_with(&[("AMF_SESSION", session)])
             ),
         };
 
@@ -1063,5 +1087,14 @@ mod tests {
         assert!(socket_path.exists());
         assert!(!TmuxManager::remove_stale_socket_file(&socket_path));
         assert!(socket_path.exists());
+    }
+
+    #[test]
+    fn shell_env_prefix_does_not_export_path() {
+        let prefix = TmuxManager::shell_env_prefix(&[("AMF_SESSION", "amf-test")]);
+        assert!(prefix.starts_with("env "));
+        assert!(prefix.contains("AMF_TMUX_BIN="));
+        assert!(prefix.contains("AMF_SESSION='amf-test'"));
+        assert!(!prefix.contains("PATH="));
     }
 }

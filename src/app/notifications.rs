@@ -1,6 +1,8 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::Deserialize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use super::*;
@@ -40,6 +42,43 @@ struct IpcMsg {
 }
 
 impl App {
+    fn notification_dirs_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        for project in &self.store.projects {
+            for feature in &project.features {
+                Self::hash_notification_dir_state(
+                    &mut hasher,
+                    &feature.workdir.join(".claude").join("notifications"),
+                );
+            }
+        }
+
+        Self::hash_notification_dir_state(
+            &mut hasher,
+            &crate::project::amf_config_dir().join("notifications"),
+        );
+        hasher.finish()
+    }
+
+    fn hash_notification_dir_state(hasher: &mut impl Hasher, path: &Path) {
+        path.hash(hasher);
+        match std::fs::metadata(path) {
+            Ok(metadata) => {
+                true.hash(hasher);
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos())
+                    .hash(hasher);
+            }
+            Err(_) => {
+                false.hash(hasher);
+            }
+        }
+    }
+
     fn touch_feature_for_session(&mut self, session_id: &str) {
         for project in &mut self.store.projects {
             for feature in &mut project.features {
@@ -743,6 +782,11 @@ impl App {
     }
 
     pub fn scan_notifications(&mut self) {
+        let fingerprint = self.notification_dirs_fingerprint();
+        if self.last_file_notification_fingerprint == Some(fingerprint) {
+            return;
+        }
+
         #[derive(Deserialize)]
         struct NotificationJson {
             session_id: Option<String>,
@@ -961,6 +1005,7 @@ impl App {
         }
 
         self.pending_inputs = inputs;
+        self.last_file_notification_fingerprint = Some(fingerprint);
         let file_count = self
             .pending_inputs
             .iter()

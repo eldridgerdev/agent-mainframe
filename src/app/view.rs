@@ -25,7 +25,8 @@ impl App {
         let workdir = if let Some(view) = from_view {
             self.feature_workdir_for_view(view)?
         } else {
-            self.selected_feature().map(|(_, feature)| feature.workdir.clone())?
+            self.selected_feature()
+                .map(|(_, feature)| feature.workdir.clone())?
         };
 
         let repo_root = self
@@ -92,15 +93,6 @@ impl App {
         let feature = self.store.projects[pi].features.get_mut(fi).unwrap();
         feature.touch();
         feature.status = ProjectStatus::Active;
-        self.refresh_latest_prompt_for_feature(pi, fi);
-        self.refresh_sidebar_plan_for_feature(pi, fi);
-        self.request_codex_sidebar_metadata_for_view(
-            &project_name,
-            &feature_name,
-            &session_window,
-            &session_kind,
-        );
-        self.schedule_sidebar_load_for_feature(pi, fi);
 
         // Clear pending input notifications for this feature
         self.pending_inputs.retain(|input| {
@@ -132,6 +124,7 @@ impl App {
         self.pane_content.clear();
 
         self.mode = AppMode::Viewing(view);
+        self.refresh_sidebar_for_current_view();
 
         if self.use_custom_diff_review_viewer()
             && let Some(idx) = self.pending_inputs.iter().position(|input| {
@@ -241,16 +234,22 @@ impl App {
     }
 
     pub fn toggle_sidebar_in_view(&mut self) {
+        let mut sidebar_shown = false;
         if let AppMode::Viewing(view) = &mut self.mode {
             view.sidebar_visible = !view.sidebar_visible;
             if !view.sidebar_visible {
                 view.todos_expanded = false;
+            } else {
+                sidebar_shown = true;
             }
             self.message = Some(if view.sidebar_visible {
                 "Showed sidebar".into()
             } else {
                 "Hid sidebar".into()
             });
+        }
+        if sidebar_shown {
+            self.refresh_sidebar_for_current_view();
         }
     }
 
@@ -349,7 +348,13 @@ impl App {
         }
 
         if files.len() == 1 {
-            return self.open_markdown_viewer_path(files[0].clone(), workdir, repo_root, view, None);
+            return self.open_markdown_viewer_path(
+                files[0].clone(),
+                workdir,
+                repo_root,
+                view,
+                None,
+            );
         }
 
         self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
@@ -625,6 +630,7 @@ impl App {
             vibe_mode,
             review,
         ));
+        self.refresh_sidebar_for_current_view();
         self.save()?;
 
         Ok(())
@@ -674,6 +680,7 @@ impl App {
             view.session_kind = next.kind.clone();
         }
         self.pane_content.clear();
+        self.refresh_sidebar_for_current_view();
     }
 
     pub fn view_prev_session(&mut self) {
@@ -724,5 +731,6 @@ impl App {
             view.session_kind = prev.kind.clone();
         }
         self.pane_content.clear();
+        self.refresh_sidebar_for_current_view();
     }
 }

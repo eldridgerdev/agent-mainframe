@@ -1,10 +1,13 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::time::Instant;
 
 use crate::app::App;
 use crate::app::AppMode;
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
+
+const VIEW_INPUT_BATCH_MAX_LEN: usize = 64;
 
 enum TmuxKey {
     Literal(String),
@@ -45,17 +48,73 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 }
 
+fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Result<()> {
+    let started_at = Instant::now();
+    let result = app.tmux.send_literal(session, window, text);
+    app.perf.record_duration("view.send_literal", started_at.elapsed());
+    if result.is_ok() {
+        app.request_view_snapshot_burst();
+    }
+    result
+}
+
+fn send_key_name(app: &mut App, session: &str, window: &str, key_name: &str) -> Result<()> {
+    let started_at = Instant::now();
+    let result = app.tmux.send_key_name(session, window, key_name);
+    app.perf.record_duration("view.send_key_name", started_at.elapsed());
+    if result.is_ok() {
+        app.request_view_snapshot_burst();
+    }
+    result
+}
+
+fn flush_view_input_batch(app: &mut App) -> Result<()> {
+    let _ = app.flush_view_input_batch()?;
+    Ok(())
+}
+
+fn forward_tmux_key(app: &mut App, key: &KeyEvent, session: &str, window: &str) -> Result<bool> {
+    let Some(tmux_key) = crossterm_key_to_tmux(key) else {
+        return Ok(false);
+    };
+
+    match tmux_key {
+        TmuxKey::Literal(text) => {
+            if !app.pending_view_input_targets(session, window) {
+                flush_view_input_batch(app)?;
+            }
+            app.queue_view_literal_input(session, window, &text);
+            if app.pending_view_input_len() >= VIEW_INPUT_BATCH_MAX_LEN {
+                flush_view_input_batch(app)?;
+            }
+            Ok(false)
+        }
+        TmuxKey::Named(name) => {
+            flush_view_input_batch(app)?;
+            send_key_name(app, session, window, &name)?;
+            Ok(
+                key.code == KeyCode::Enter
+                    && !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT),
+            )
+        }
+    }
+}
+
 pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     if app.leader_active {
+        flush_view_input_batch(app)?;
         return handle_leader_key(app, key, visible_rows);
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        flush_view_input_batch(app)?;
         app.exit_view();
         return Ok(());
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(' ') {
+        flush_view_input_batch(app)?;
         app.activate_leader();
         return Ok(());
     }
@@ -74,28 +133,20 @@ pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Resul
         _ => return Ok(()),
     };
 
-    if let Some(tmux_key) = crossterm_key_to_tmux(&key) {
-        let result = match tmux_key {
-            TmuxKey::Literal(text) => TmuxManager::send_literal(&session, &window, &text),
-            TmuxKey::Named(name) => TmuxManager::send_key_name(&session, &window, &name),
-        };
-        if let Err(e) = result {
-            app.show_error(e);
-        } else if key.code == KeyCode::Enter
-            && !key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT)
-        {
-            let is_codex_window = app
-                .store
-                .projects
-                .iter()
-                .flat_map(|p| p.features.iter())
-                .filter(|f| f.tmux_session == session)
-                .flat_map(|f| f.sessions.iter())
-                .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
-            if is_codex_window {
-                app.note_codex_prompt_submit(&session, &window);
-            }
+    let result = forward_tmux_key(app, &key, &session, &window);
+    if let Err(e) = result {
+        app.show_error(e);
+    } else if result.unwrap_or(false) {
+        let is_codex_window = app
+            .store
+            .projects
+            .iter()
+            .flat_map(|p| p.features.iter())
+            .filter(|f| f.tmux_session == session)
+            .flat_map(|f| f.sessions.iter())
+            .any(|s| s.kind == SessionKind::Codex && s.tmux_window == window);
+        if is_codex_window {
+            app.note_codex_prompt_submit(&session, &window);
         }
     }
 
@@ -114,56 +165,60 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
+            flush_view_input_batch(app)?;
             app.toggle_scroll_mode(visible_rows);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "PPage")?;
+                send_key_name(app, &session, &window, "PPage")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_up(1);
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "NPage")?;
+                send_key_name(app, &session, &window, "NPage")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_down(1, visible_rows);
             }
         }
         KeyCode::PageUp => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "PPage")?;
+                send_key_name(app, &session, &window, "PPage")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_up(visible_rows as usize);
             }
         }
         KeyCode::PageDown => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "NPage")?;
+                send_key_name(app, &session, &window, "NPage")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_down(visible_rows as usize, visible_rows);
             }
         }
         KeyCode::Home => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "Home")?;
+                send_key_name(app, &session, &window, "Home")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_to_top();
             }
         }
         KeyCode::End => {
             if passthrough {
-                TmuxManager::send_key_name(&session, &window, "End")?;
+                send_key_name(app, &session, &window, "End")?;
             } else {
+                flush_view_input_batch(app)?;
                 app.scroll_to_bottom(visible_rows);
             }
         }
         _ => {
-            if passthrough && let Some(tmux_key) = crossterm_key_to_tmux(&key) {
-                let _ = match tmux_key {
-                    TmuxKey::Literal(text) => TmuxManager::send_literal(&session, &window, &text),
-                    TmuxKey::Named(name) => TmuxManager::send_key_name(&session, &window, &name),
-                };
+            if passthrough {
+                let _ = forward_tmux_key(app, &key, &session, &window);
             }
         }
     }
@@ -324,6 +379,7 @@ mod tests {
 
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use mockall::Sequence;
     use tempfile::TempDir;
 
     use crate::app::{CommandAction, ViewState, analyze_prompt};
@@ -623,6 +679,62 @@ mod tests {
             AppMode::Viewing(view) => assert!(view.sidebar_visible),
             _ => panic!("expected Viewing mode"),
         }
+    }
+
+    #[test]
+    fn literal_keys_are_buffered_until_flush() {
+        let repo = TempDir::new().unwrap();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_send_literal()
+            .withf(|session, window, text| {
+                session == "amf-feature" && window == "claude" && text == "abc"
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let mut app = app_for_viewing_repo(repo.path());
+        app.tmux = Box::new(tmux);
+
+        handle_view_key(&mut app, key(KeyCode::Char('a')), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Char('c')), 20).unwrap();
+
+        assert_eq!(app.pending_view_input_len(), 3);
+        assert!(app.has_pending_view_input());
+
+        app.flush_view_input_batch().unwrap();
+
+        assert!(!app.has_pending_view_input());
+    }
+
+    #[test]
+    fn named_key_flushes_buffered_literals_before_forwarding() {
+        let repo = TempDir::new().unwrap();
+        let mut seq = Sequence::new();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_send_literal()
+            .withf(|session, window, text| {
+                session == "amf-feature" && window == "claude" && text == "ab"
+            })
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_, _, _| Ok(()));
+        tmux.expect_send_key_name()
+            .withf(|session, window, key| {
+                session == "amf-feature" && window == "claude" && key == "Enter"
+            })
+            .times(1)
+            .in_sequence(&mut seq)
+            .returning(|_, _, _| Ok(()));
+
+        let mut app = app_for_viewing_repo(repo.path());
+        app.tmux = Box::new(tmux);
+
+        handle_view_key(&mut app, key(KeyCode::Char('a')), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
+        handle_view_key(&mut app, key(KeyCode::Enter), 20).unwrap();
+
+        assert!(!app.has_pending_view_input());
     }
 
     fn init_repo_with_branch_change() -> TempDir {

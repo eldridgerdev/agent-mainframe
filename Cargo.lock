@@ -17,6 +17,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "libc",
  "mockall",
  "pretty_assertions",
  "pulldown-cmark",

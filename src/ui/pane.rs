@@ -148,6 +148,30 @@ pub fn draw(
     tmux_cursor: Option<(u16, u16)>,
     theme: &Theme,
 ) {
+    draw_with_lines(
+        frame,
+        view,
+        pane_content,
+        &[],
+        sidebar_data,
+        leader_active,
+        pending_count,
+        tmux_cursor,
+        theme,
+    );
+}
+
+pub(crate) fn draw_with_lines(
+    frame: &mut Frame,
+    view: &ViewState,
+    pane_content: &str,
+    pane_lines: &[Line<'static>],
+    sidebar_data: Option<&AgentSidebarData>,
+    leader_active: bool,
+    pending_count: usize,
+    tmux_cursor: Option<(u16, u16)>,
+    theme: &Theme,
+) {
     let area = frame.area();
     let header_area = Rect::new(area.x, area.y, area.width, 1);
     let content_area = Rect::new(
@@ -298,13 +322,17 @@ pub fn draw(
         );
         frame.render_widget(paragraph, main_content_area);
     } else {
-        let text = ansi_to_ratatui_text_with_selection(
-            pane_content,
-            main_content_area.width,
-            main_content_area.height,
-            &view.selection,
-            theme,
-        );
+        let text = if view.selection.has_selection || pane_lines.is_empty() {
+            ansi_to_ratatui_text_with_selection(
+                pane_content,
+                main_content_area.width,
+                main_content_area.height,
+                &view.selection,
+                theme,
+            )
+        } else {
+            pane_lines.to_vec()
+        };
         let paragraph = Paragraph::new(text).style(
             Style::default()
                 .fg(theme.text.to_color())
@@ -673,6 +701,44 @@ fn strip_ansi_codes(s: &str) -> String {
         }
     }
     result
+}
+
+pub(crate) fn render_ansi_lines(raw: &str, cols: u16, rows: u16) -> Vec<Line<'static>> {
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let normalized = raw.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    let screen = parser.screen();
+
+    let mut lines = Vec::with_capacity(rows as usize);
+    for row in 0..rows {
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut current_text = String::new();
+        let mut current_style = Style::default();
+
+        for col in 0..cols {
+            let Some(cell) = screen.cell(row, col) else {
+                continue;
+            };
+
+            let style = vt100_cell_to_style(cell);
+            if style != current_style && !current_text.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut current_text),
+                    current_style,
+                ));
+            }
+            current_style = style;
+            current_text.push_str(&cell.contents());
+        }
+
+        if !current_text.is_empty() {
+            spans.push(Span::styled(current_text, current_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines
 }
 
 fn ansi_to_ratatui_text_with_selection<'a>(

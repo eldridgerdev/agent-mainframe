@@ -159,8 +159,9 @@ impl App {
         }
     }
 
-    pub fn sync_thinking_status(&mut self) {
+    pub fn sync_thinking_status(&mut self) -> bool {
         let old_thinking = self.thinking_features.clone();
+        let old_pending_inputs = self.pending_inputs.clone();
         self.thinking_features.clear();
         let ipc_mode = self.ipc.is_some();
         for project in &self.store.projects {
@@ -302,6 +303,8 @@ impl App {
                 }
             }
         }
+
+        old_thinking != self.thinking_features || old_pending_inputs != self.pending_inputs
     }
 
     fn is_session_marked_thinking(tmux_session: &str) -> bool {

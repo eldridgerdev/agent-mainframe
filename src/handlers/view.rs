@@ -51,7 +51,8 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
 fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Result<()> {
     let started_at = Instant::now();
     let result = app.tmux.send_literal(session, window, text);
-    app.perf.record_duration("view.send_literal", started_at.elapsed());
+    app.perf
+        .record_duration("view.send_literal", started_at.elapsed());
     if result.is_ok() {
         app.request_view_snapshot_burst();
     }
@@ -61,7 +62,8 @@ fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Resul
 fn send_key_name(app: &mut App, session: &str, window: &str, key_name: &str) -> Result<()> {
     let started_at = Instant::now();
     let result = app.tmux.send_key_name(session, window, key_name);
-    app.perf.record_duration("view.send_key_name", started_at.elapsed());
+    app.perf
+        .record_duration("view.send_key_name", started_at.elapsed());
     if result.is_ok() {
         app.request_view_snapshot_burst();
     }
@@ -92,11 +94,9 @@ fn forward_tmux_key(app: &mut App, key: &KeyEvent, session: &str, window: &str) 
         TmuxKey::Named(name) => {
             flush_view_input_batch(app)?;
             send_key_name(app, session, window, &name)?;
-            Ok(
-                key.code == KeyCode::Enter
-                    && !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT),
-            )
+            Ok(key.code == KeyCode::Enter
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT))
         }
     }
 }
@@ -247,6 +247,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('r') => {
             app.sync_statuses();
             app.message = Some("Refreshed statuses".into());
+        }
+        KeyCode::Char('R') => {
+            app.refresh_view_sizing()?;
         }
         KeyCode::Char('x') => {
             let session = match &app.mode {
@@ -735,6 +738,28 @@ mod tests {
         handle_view_key(&mut app, key(KeyCode::Enter), 20).unwrap();
 
         assert!(!app.has_pending_view_input());
+    }
+
+    #[test]
+    fn leader_shift_r_refreshes_view_sizing() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_resize_pane()
+            .times(1)
+            .withf(|session, window, cols, rows| {
+                session == "amf-feature" && window == "claude" && *cols == 88 && *rows == 24
+            })
+            .returning(|_, _, _, _| Ok(()));
+        app.tmux = Box::new(tmux);
+        app.viewport_cols = 120;
+        app.viewport_rows = 24;
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('R')), 24).unwrap();
+
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.message.as_deref(), Some("Refreshed pane sizing"));
     }
 
     fn init_repo_with_branch_change() -> TempDir {

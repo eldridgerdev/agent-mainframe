@@ -253,6 +253,27 @@ impl App {
         }
     }
 
+    pub fn refresh_view_sizing(&mut self) -> Result<()> {
+        let Some((viewport_cols, viewport_rows)) = self.viewport_size() else {
+            self.message = Some("Sizing unavailable".into());
+            return Ok(());
+        };
+
+        let (session, window, content_cols) = match &self.mode {
+            AppMode::Viewing(view) => (
+                view.session.clone(),
+                view.window.clone(),
+                crate::ui::viewing_main_width(view, viewport_cols),
+            ),
+            _ => return Ok(()),
+        };
+
+        self.tmux
+            .resize_pane(&session, &window, content_cols, viewport_rows)?;
+        self.message = Some("Refreshed pane sizing".into());
+        Ok(())
+    }
+
     pub fn inject_latest_prompt(&mut self) -> Result<()> {
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::LatestPrompt(state) => state,

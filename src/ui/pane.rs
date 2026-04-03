@@ -26,6 +26,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("v", "Expand / collapse todos"),
     ("o", "Scroll mode"),
     ("r", "Refresh statuses"),
+    ("R", "Refresh pane sizing"),
     ("x", "Stop session"),
     ("f", "Final review"),
     ("D", "Debug log"),
@@ -426,17 +427,17 @@ fn draw_agent_sidebar(
             sidebar_section.body,
             theme,
         ))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme.effective_bg()))
-            .block(
-                Block::default()
-                    .title(Span::styled(
-                        format!(" {} ", sidebar_section.title),
-                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(accent)),
-            );
+        .wrap(Wrap { trim: false })
+        .style(Style::default().bg(theme.effective_bg()))
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    format!(" {} ", sidebar_section.title),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent)),
+        );
         frame.render_widget(paragraph, *section);
     }
 }
@@ -470,7 +471,10 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Summary",
             body: data.summary_text.as_str(),
-            constraint: Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+            constraint: Constraint::Length(summary_section_height(
+                &data.summary_text,
+                section_width,
+            )),
         });
     }
     if !data.prompt_text.trim().is_empty() {
@@ -484,19 +488,17 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Todos",
             body: todos_text,
-            constraint: Constraint::Length(sidebar_section_height(
-                todos_text,
-                section_width,
-                2,
-                4,
-            )),
+            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 4)),
         });
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
         sections.push(SidebarSection {
             title: "Summary",
             body: data.summary_text.as_str(),
-            constraint: Constraint::Length(summary_section_height(&data.summary_text, section_width)),
+            constraint: Constraint::Length(summary_section_height(
+                &data.summary_text,
+                section_width,
+            )),
         });
     }
 
@@ -922,7 +924,10 @@ mod tests {
         };
 
         let sections = sidebar_sections(&sidebar, 30);
-        let work = sections.iter().find(|section| section.title == "Work").unwrap();
+        let work = sections
+            .iter()
+            .find(|section| section.title == "Work")
+            .unwrap();
 
         assert!(matches!(work.constraint, Constraint::Length(4)));
     }
@@ -942,7 +947,10 @@ mod tests {
         };
 
         let sections = sidebar_sections(&sidebar, 30);
-        let work = sections.iter().find(|section| section.title == "Work").unwrap();
+        let work = sections
+            .iter()
+            .find(|section| section.title == "Work")
+            .unwrap();
 
         assert!(matches!(work.constraint, Constraint::Length(height) if height > 4));
     }

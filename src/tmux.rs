@@ -1,11 +1,12 @@
 use anyhow::{Context, Result, bail};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::{
-    OnceLock,
+    Mutex, OnceLock,
     mpsc::{self, Receiver},
 };
 
@@ -20,6 +21,22 @@ pub struct TmuxManager;
 pub struct SpawnedTmuxCommand {
     pub child: Child,
     pub output_rx: Receiver<String>,
+}
+
+struct PersistentTmuxInputClient {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+impl PersistentTmuxInputClient {
+    fn send_command(&mut self, command: &str) -> Result<()> {
+        self.stdin
+            .write_all(command.as_bytes())
+            .context("Failed to write tmux input command")?;
+        self.stdin
+            .flush()
+            .context("Failed to flush tmux input command")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -347,6 +364,12 @@ impl TmuxManager {
         }
     }
 
+    fn drain_child_output<R: Read + Send + 'static>(reader: Option<R>) {
+        if let Some(reader) = reader {
+            std::thread::spawn(move || for _ in BufReader::new(reader).lines() {});
+        }
+    }
+
     fn spawn(args: &[&str], context: &str) -> Result<SpawnedTmuxCommand> {
         let mut child = Self::command()
             .args(args)
@@ -363,6 +386,87 @@ impl TmuxManager {
             child,
             output_rx: rx,
         })
+    }
+
+    fn tmux_command_quote(value: &str) -> String {
+        let mut quoted = String::with_capacity(value.len() + 2);
+        quoted.push('"');
+        for ch in value.chars() {
+            match ch {
+                '\\' => quoted.push_str("\\\\"),
+                '"' => quoted.push_str("\\\""),
+                '\n' => quoted.push_str("\\n"),
+                '\r' => quoted.push_str("\\r"),
+                '\t' => quoted.push_str("\\t"),
+                _ => quoted.push(ch),
+            }
+        }
+        quoted.push('"');
+        quoted
+    }
+
+    fn input_clients() -> &'static Mutex<HashMap<String, PersistentTmuxInputClient>> {
+        static INPUT_CLIENTS: OnceLock<Mutex<HashMap<String, PersistentTmuxInputClient>>> =
+            OnceLock::new();
+        INPUT_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn spawn_input_client(session: &str) -> Result<PersistentTmuxInputClient> {
+        let mut child = Self::command()
+            .args(["-C", "attach-session", "-t", session])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("Failed to spawn tmux input client for {session}"))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .context("Failed to open tmux input stdin")?;
+
+        Self::drain_child_output(child.stdout.take());
+        Self::drain_child_output(child.stderr.take());
+
+        Ok(PersistentTmuxInputClient { child, stdin })
+    }
+
+    fn remove_input_client(session: &str) {
+        if let Ok(mut clients) = Self::input_clients().lock()
+            && let Some(mut client) = clients.remove(session)
+        {
+            let _ = client.child.kill();
+        }
+    }
+
+    fn send_via_input_client<F>(session: &str, mut send: F) -> Result<()>
+    where
+        F: FnMut(&mut PersistentTmuxInputClient) -> Result<()>,
+    {
+        {
+            let mut clients = Self::input_clients()
+                .lock()
+                .expect("tmux input client mutex poisoned");
+            let client = match clients.entry(session.to_string()) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Self::spawn_input_client(session)?)
+                }
+            };
+            if send(client).is_ok() {
+                return Ok(());
+            }
+        }
+
+        Self::remove_input_client(session);
+
+        let mut clients = Self::input_clients()
+            .lock()
+            .expect("tmux input client mutex poisoned");
+        let client = clients
+            .entry(session.to_string())
+            .or_insert(Self::spawn_input_client(session)?);
+        send(client)
     }
 
     /// Check if tmux is available
@@ -705,6 +809,7 @@ impl TmuxManager {
             return Ok(());
         }
 
+        Self::remove_input_client(session);
         Self::run(
             &["kill-session", "-t", session],
             "Failed to kill tmux session",
@@ -842,6 +947,28 @@ impl TmuxManager {
         }
     }
 
+    /// Start piping pane output to a FIFO path.
+    /// Returns Ok(()) if the pipe-pane command succeeds.
+    pub fn start_pipe_pane(session: &str, window: &str, fifo_path: &Path) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        let cmd = format!("cat > {}", Self::shell_quote(&fifo_path.to_string_lossy()));
+        Self::run(
+            &["pipe-pane", "-t", &target, &cmd],
+            "Failed to start pipe-pane",
+            "tmux pipe-pane failed",
+        )
+    }
+
+    /// Stop piping pane output (pass empty command to cancel).
+    pub fn stop_pipe_pane(session: &str, window: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Self::run(
+            &["pipe-pane", "-t", &target],
+            "Failed to stop pipe-pane",
+            "tmux pipe-pane cancel failed",
+        )
+    }
+
     /// Resize a tmux pane to match the TUI rendering area
     pub fn resize_pane(session: &str, window: &str, cols: u16, rows: u16) -> Result<()> {
         let target = format!("{}:{}", session, window);
@@ -863,11 +990,14 @@ impl TmuxManager {
     /// Send literal text to a tmux pane (no key name interpretation)
     pub fn send_literal(session: &str, window: &str, text: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
-        Self::run(
-            &["send-keys", "-t", &target, "-l", text],
-            "Failed to send literal text to tmux",
-            "tmux send-keys failed",
-        )
+        let quoted_target = Self::tmux_command_quote(&target);
+        let quoted_text = Self::tmux_command_quote(text);
+        Self::send_via_input_client(session, |client| {
+            client.send_command(&format!(
+                "send-keys -t {quoted_target} -l {quoted_text}\n"
+            ))
+        })
+        .with_context(|| format!("Failed to send literal text to tmux target {target}"))
     }
 
     /// Paste text into a tmux pane using bracketed paste mode.
@@ -894,21 +1024,22 @@ impl TmuxManager {
     /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
     pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
-        Self::run(
-            &["send-keys", "-t", &target, key_name],
-            "Failed to send key to tmux",
-            "tmux send-keys failed",
-        )
+        let quoted_target = Self::tmux_command_quote(&target);
+        Self::send_via_input_client(session, |client| {
+            client.send_command(&format!("send-keys -t {quoted_target} {key_name}\n"))
+        })
+        .with_context(|| format!("Failed to send key to tmux target {target}"))
     }
 
     /// Send keys to a specific window in a session
     pub fn send_keys(session: &str, window: &str, keys: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
-        Self::run(
-            &["send-keys", "-t", &target, keys, "Enter"],
-            "Failed to send keys to tmux",
-            "tmux send-keys failed",
-        )
+        let quoted_target = Self::tmux_command_quote(&target);
+        let quoted_keys = Self::tmux_command_quote(keys);
+        Self::send_via_input_client(session, |client| {
+            client.send_command(&format!("send-keys -t {quoted_target} {quoted_keys} Enter\n"))
+        })
+        .with_context(|| format!("Failed to send keys to tmux target {target}"))
     }
 
     /// Enter tmux copy mode for a pane

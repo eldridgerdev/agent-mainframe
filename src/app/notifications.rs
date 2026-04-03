@@ -781,10 +781,10 @@ impl App {
         });
     }
 
-    pub fn scan_notifications(&mut self) {
+    pub fn scan_notifications(&mut self) -> bool {
         let fingerprint = self.notification_dirs_fingerprint();
         if self.last_file_notification_fingerprint == Some(fingerprint) {
-            return;
+            return false;
         }
 
         #[derive(Deserialize)]
@@ -871,7 +871,7 @@ impl App {
                         };
                         self.open_diff_review_prompt(&input);
                         let _ = std::fs::remove_file(&path);
-                        return;
+                        return true;
                     }
 
                     inputs.push(PendingInput {
@@ -959,7 +959,7 @@ impl App {
                     };
                     self.open_diff_review_prompt(&input);
                     let _ = std::fs::remove_file(&path);
-                    return;
+                    return true;
                 }
 
                 let (project_name, feature_name, _, _) = self.project_feature_for_cwd(&cwd_path);
@@ -1054,6 +1054,8 @@ impl App {
                 });
             }
         }
+
+        true
     }
 
     pub fn handle_notification_select(&mut self) -> Result<()> {

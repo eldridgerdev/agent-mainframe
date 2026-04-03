@@ -536,10 +536,11 @@ fn format_sidebar_usage(status: &str) -> String {
 
 fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
     let sidebar_data = build_agent_sidebar_data(app, view);
-    super::pane::draw(
+    super::pane::draw_with_lines(
         frame,
         view,
         &app.pane_content,
+        &app.pane_lines,
         sidebar_data.as_ref(),
         leader_active,
         app.pending_inputs.len(),

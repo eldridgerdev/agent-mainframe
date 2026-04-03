@@ -13,6 +13,7 @@ mod highlight;
 mod http_client;
 mod ipc;
 mod markdown;
+mod perf;
 mod project;
 mod summary;
 mod theme;
@@ -41,6 +42,7 @@ use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use app::App;
 use tmux::TmuxManager;
@@ -180,16 +182,6 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
-    let refreshed_claude = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
-    app.log_info(
-        "setup",
-        format!("Refreshed Claude hooks for {refreshed_claude} feature(s)"),
-    );
-    let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
-    app.log_info(
-        "setup",
-        format!("Refreshed opencode plugins for {refreshed} feature(s)"),
-    );
 
     // Start IPC socket server for push-based hook notifications.
     let socket = ipc::socket_path();
@@ -208,13 +200,6 @@ fn main() -> Result<()> {
             );
         }
     }
-
-    app.sync_statuses();
-    app.sync_session_status();
-    // One-time file scan on startup to pick up any notifications
-    // written while AMF was not running.
-    app.scan_notifications();
-    app.usage.refresh();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -437,8 +422,19 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
     // Only used when no IPC socket is available (fallback).
     let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> = None;
+    let mut force_redraw = true;
+    let startup_grace_until = Instant::now() + Duration::from_secs(3);
+    let mut startup_task_spacing_until = Instant::now();
+    let mut startup_sync_statuses_pending = true;
+    let mut startup_session_status_pending = true;
+    let mut startup_notifications_pending = true;
+    let mut startup_usage_pending = true;
+    let mut startup_claude_hooks_pending = true;
+    let mut startup_opencode_plugins_pending = true;
+    let mut startup_sidebar_warm_pending = true;
 
     loop {
+        let loop_state_signature = app.redraw_signature();
         let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
 
         let size = terminal.size()?;
@@ -490,14 +486,16 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         if let Some(alert) = debug::take_user_alert() {
             app.message = Some(alert);
+            force_redraw = true;
         }
 
         if app.leader_active && app.leader_timed_out() {
             app.deactivate_leader();
+            force_redraw = true;
         }
 
         let poll_duration = if is_viewing {
-            Duration::from_millis(50)
+            Duration::from_millis(5)
         } else {
             Duration::from_millis(250)
         };
@@ -516,22 +514,43 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             for ev in events {
                 match ev {
                     Event::Key(key) => {
+                        if is_viewing {
+                            app.note_view_activity();
+                        }
+                        app.perf.increment_counter("event.key");
+                        app.perf.note_input_for_next_draw();
+                        let started_at = Instant::now();
                         if let Err(e) = handlers::handle_key(app, key, visible_rows) {
                             app.show_error(e);
                         }
+                        app.perf.record_duration("main.handle_key", started_at.elapsed());
                     }
                     Event::Mouse(mouse) => {
+                        if is_viewing {
+                            app.note_view_activity();
+                        }
+                        app.perf.increment_counter("event.mouse");
+                        let started_at = Instant::now();
                         if let Err(e) = handlers::handle_mouse(app, mouse, visible_rows) {
                             app.show_error(e);
                         }
+                        app.perf.record_duration("main.handle_mouse", started_at.elapsed());
                     }
                     Event::Paste(text) => {
+                        if is_viewing {
+                            app.note_view_activity();
+                        }
+                        app.perf.increment_counter("event.paste");
+                        app.perf.note_input_for_next_draw();
+                        let started_at = Instant::now();
                         if let Err(e) = handlers::handle_paste(app, &text) {
                             app.show_error(e);
                         }
+                        app.perf.record_duration("main.handle_paste", started_at.elapsed());
                     }
                     Event::Resize(_, _) => {
                         last_resize = None;
+                        force_redraw = true;
                     }
                     _ => {}
                 }
@@ -542,12 +561,37 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             return Ok(());
         }
 
-        if !handled_user_events && last_sync.elapsed() >= Duration::from_secs(5) {
-            if !is_viewing {
-                app.sync_statuses();
+        if app.has_pending_view_input() {
+            if let Err(e) = app.flush_view_input_batch() {
+                app.show_error(e);
             }
+        }
+
+        let startup_tasks_pending = startup_sync_statuses_pending
+            || startup_session_status_pending
+            || startup_notifications_pending
+            || startup_usage_pending
+            || startup_claude_hooks_pending
+            || startup_opencode_plugins_pending
+            || startup_sidebar_warm_pending;
+        let defer_background_sync = app.should_defer_view_background_sync();
+
+        if !handled_user_events
+            && last_sync.elapsed() >= Duration::from_secs(5)
+            && !defer_background_sync
+            && !startup_tasks_pending
+        {
+            if !is_viewing {
+                let started_at = Instant::now();
+                app.sync_statuses();
+                app.perf.record_duration("sync.statuses", started_at.elapsed());
+            }
+            let session_status_started_at = Instant::now();
             app.sync_session_status();
+            app.perf.record_duration("sync.session_status", session_status_started_at.elapsed());
+            let usage_refresh_started_at = Instant::now();
             app.usage.refresh();
+            app.perf.record_duration("usage.refresh", usage_refresh_started_at.elapsed());
             let usage = app.usage.get_data();
             let key = (
                 usage.codex.five_hour_usage_pct.map(|v| v.round() as i64),
@@ -588,6 +632,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
                 last_claude_usage_debug = Some(claude_summary);
             }
             last_sync = std::time::Instant::now();
+            force_redraw = true;
         }
 
         if app.ipc.is_some() {
@@ -606,21 +651,93 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             // Always scan file notifications as compatibility fallback.
             // Some producers (for example plugin runtimes) may not be
             // able to call `amf notify` even while IPC is available.
-            app.scan_notifications();
+            let started_at = Instant::now();
+            let notifications_changed = app.scan_notifications();
+            app.perf.record_duration("scan.notifications", started_at.elapsed());
             last_notif_scan = std::time::Instant::now();
+            force_redraw |= notifications_changed;
         }
 
         if !handled_user_events && last_thinking_sync.elapsed() >= Duration::from_millis(500) {
-            app.sync_thinking_status();
+            let started_at = Instant::now();
+            let thinking_changed = app.sync_thinking_status();
+            app.perf.record_duration("sync.thinking_status", started_at.elapsed());
             last_thinking_sync = std::time::Instant::now();
+            force_redraw |= thinking_changed;
         }
 
+        let summary_poll_started_at = Instant::now();
         if let Err(e) = app.poll_summary_result() {
             app.show_error(e);
         }
+        app.perf
+            .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
 
         if app.has_active_sidebar() {
             app.poll_sidebar_load_results();
+        }
+        let startup_grace_active = is_viewing && Instant::now() < startup_grace_until;
+        let can_run_startup_task = startup_tasks_pending
+            && !handled_user_events
+            && !defer_background_sync
+            && !startup_grace_active
+            && Instant::now() >= startup_task_spacing_until;
+
+        if can_run_startup_task {
+            if startup_sync_statuses_pending {
+                let started_at = Instant::now();
+                app.sync_statuses();
+                app.perf.record_duration("startup.sync_statuses", started_at.elapsed());
+                startup_sync_statuses_pending = false;
+                force_redraw = true;
+            } else if startup_session_status_pending {
+                let started_at = Instant::now();
+                app.sync_session_status();
+                app.perf
+                    .record_duration("startup.sync_session_status", started_at.elapsed());
+                startup_session_status_pending = false;
+                force_redraw = true;
+            } else if startup_notifications_pending {
+                let started_at = Instant::now();
+                let notifications_changed = app.scan_notifications();
+                app.perf
+                    .record_duration("startup.scan_notifications", started_at.elapsed());
+                startup_notifications_pending = false;
+                force_redraw |= notifications_changed;
+            } else if startup_usage_pending {
+                let started_at = Instant::now();
+                app.usage.refresh();
+                app.perf.record_duration("startup.usage_refresh", started_at.elapsed());
+                startup_usage_pending = false;
+                force_redraw = true;
+            } else if startup_claude_hooks_pending {
+                let started_at = Instant::now();
+                let refreshed = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
+                app.perf
+                    .record_duration("startup.refresh_claude_hooks", started_at.elapsed());
+                app.log_info("setup", format!("Refreshed Claude hooks for {refreshed} feature(s)"));
+                startup_claude_hooks_pending = false;
+            } else if startup_opencode_plugins_pending {
+                let started_at = Instant::now();
+                let refreshed = app::setup::refresh_opencode_plugins_for_store(&app.store);
+                app.perf.record_duration(
+                    "startup.refresh_opencode_plugins",
+                    started_at.elapsed(),
+                );
+                app.log_info(
+                    "setup",
+                    format!("Refreshed opencode plugins for {refreshed} feature(s)"),
+                );
+                startup_opencode_plugins_pending = false;
+            } else if startup_sidebar_warm_pending {
+                let started_at = Instant::now();
+                app.schedule_sidebar_loads_for_all_features();
+                app.perf
+                    .record_duration("startup.schedule_sidebar_warm", started_at.elapsed());
+                startup_sidebar_warm_pending = false;
+            }
+
+            startup_task_spacing_until = Instant::now() + Duration::from_millis(250);
         }
 
         if let app::AppMode::Viewing(ref view) = app.mode {
@@ -641,19 +758,33 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
                     content_rows,
                 );
                 last_resize = Some(current_resize);
+                app.request_view_snapshot_refresh();
+                force_redraw = true;
             }
-
-            app.pane_content =
-                TmuxManager::capture_pane_ansi(&view.session, &view.window).unwrap_or_default();
             // Store the rendering dimensions (content area in pane.rs),
             // not the tmux capture dimensions, so mouse selection
             // coordinates align correctly.
             app.pane_content_cols = content_cols;
             app.pane_content_rows = size.height.saturating_sub(1);
-            app.tmux_cursor = TmuxManager::cursor_position(&view.session, &view.window).ok();
+        }
+        app.ensure_view_snapshot_worker();
+        let (pane_refreshed, cursor_refreshed) = app.drain_view_snapshots();
+
+        let state_changed = app.redraw_signature() != loop_state_signature;
+        let needs_redraw =
+            force_redraw || handled_user_events && !is_viewing || pane_refreshed || cursor_refreshed || state_changed;
+
+        if needs_redraw {
+            let draw_started_at = Instant::now();
+            terminal.draw(|frame| ui::draw(frame, app))?;
+            app.perf.record_duration("ui.draw", draw_started_at.elapsed());
+            app.perf.note_draw_completed();
+            force_redraw = false;
         }
 
-        terminal.draw(|frame| ui::draw(frame, app))?;
+        for line in app.perf.take_due_summary_lines() {
+            app.log_debug("perf", line);
+        }
 
         if app.should_quit || app.should_switch.is_some() {
             return Ok(());

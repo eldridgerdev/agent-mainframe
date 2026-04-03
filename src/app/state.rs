@@ -138,7 +138,7 @@ impl ViewState {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingInput {
     pub session_id: String,
     pub cwd: String,

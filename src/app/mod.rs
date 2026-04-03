@@ -35,23 +35,29 @@ mod tests;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
 
 use anyhow::Result;
+use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{Duration, Instant};
 
 use crate::debug::DebugLog;
 use crate::extension::{
     ExtensionConfig, FeaturePreset, load_global_extension_config, merge_project_extension_config,
 };
+use crate::perf::PerfCollector;
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
 };
 use crate::tmux::TmuxManager;
 use crate::token_tracking::{SessionTokenTracker, TokenPricingConfig};
 use crate::traits::{TmuxOps, WorktreeOps};
+use crate::ui::render_ansi_lines;
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
@@ -61,11 +67,38 @@ pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadat
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
 
+pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
+pub const VIEW_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
+pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
+pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
+pub const VIEW_STARTUP_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(350);
+pub const VIEW_BURST_DURATION: Duration = Duration::from_millis(175);
+pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(30);
+pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
+pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
+
+const VIEW_SNAPSHOT_REFRESH_NONE: u8 = 0;
+const VIEW_SNAPSHOT_REFRESH_NORMAL: u8 = 1;
+const VIEW_SNAPSHOT_REFRESH_BURST: u8 = 2;
+
 #[derive(Debug, Clone)]
 pub struct CodexSidebarMetadataResult {
     pub cache_key: String,
     pub title: Option<String>,
     pub prompt: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ViewSnapshot {
+    pub session: String,
+    pub window: String,
+    pub pane_content: Option<String>,
+    pub rendered_lines: Option<Vec<Line<'static>>>,
+    pub cursor: Option<Option<(u16, u16)>>,
+    pub capture_duration: Option<Duration>,
+    pub render_duration: Option<Duration>,
+    pub cursor_duration: Option<Duration>,
+    pub pipe_read_duration: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +277,7 @@ pub struct App {
     pub should_quit: bool,
     pub should_switch: Option<String>,
     pub pane_content: String,
+    pub pane_lines: Vec<Line<'static>>,
     pub pane_content_cols: u16,
     pub pane_content_rows: u16,
     pub viewport_cols: u16,
@@ -251,6 +285,8 @@ pub struct App {
     pub tmux_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
+    pub last_view_activity_at: Option<Instant>,
+    pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
@@ -278,6 +314,7 @@ pub struct App {
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
     pub debug_log: DebugLog,
+    pub perf: PerfCollector,
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
     pub ipc: Option<crate::ipc::IpcGuard>,
@@ -285,6 +322,12 @@ pub struct App {
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
+    view_snapshot_tx: Sender<ViewSnapshot>,
+    view_snapshot_rx: Receiver<ViewSnapshot>,
+    view_snapshot_stop: Option<Arc<AtomicBool>>,
+    view_snapshot_refresh: Option<Arc<AtomicU8>>,
+    view_snapshot_condvar: Option<Arc<(StdMutex<()>, StdCondvar)>>,
+    view_snapshot_target: Option<(String, String, u16, u16)>,
 }
 
 struct SidebarLoadResult {
@@ -294,7 +337,582 @@ struct SidebarLoadResult {
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
 }
 
+pub struct ViewInputBatch {
+    pub session: String,
+    pub window: String,
+    pub text: String,
+}
+
 impl App {
+    pub fn note_view_activity(&mut self) {
+        self.last_view_activity_at = Some(Instant::now());
+    }
+
+    pub fn should_defer_view_background_sync(&self) -> bool {
+        matches!(self.mode, AppMode::Viewing(_))
+            && self
+                .last_view_activity_at
+                .is_some_and(|instant| instant.elapsed() < VIEW_BACKGROUND_SYNC_DEFER_INTERVAL)
+    }
+
+    pub fn redraw_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        std::mem::discriminant(&self.mode).hash(&mut hasher);
+        std::mem::discriminant(&self.selection).hash(&mut hasher);
+        self.should_quit.hash(&mut hasher);
+        self.should_switch.hash(&mut hasher);
+        self.leader_active.hash(&mut hasher);
+        self.message.hash(&mut hasher);
+        self.pending_inputs.len().hash(&mut hasher);
+        self.tmux_cursor.hash(&mut hasher);
+
+        match &self.selection {
+            Selection::Project(pi) => {
+                0usize.hash(&mut hasher);
+                pi.hash(&mut hasher);
+            }
+            Selection::Feature(pi, fi) => {
+                1usize.hash(&mut hasher);
+                pi.hash(&mut hasher);
+                fi.hash(&mut hasher);
+            }
+            Selection::Session(pi, fi, si) => {
+                2usize.hash(&mut hasher);
+                pi.hash(&mut hasher);
+                fi.hash(&mut hasher);
+                si.hash(&mut hasher);
+            }
+        }
+
+        if let AppMode::Viewing(view) = &self.mode {
+            view.project_name.hash(&mut hasher);
+            view.feature_name.hash(&mut hasher);
+            view.session.hash(&mut hasher);
+            view.window.hash(&mut hasher);
+            view.session_label.hash(&mut hasher);
+            std::mem::discriminant(&view.session_kind).hash(&mut hasher);
+            std::mem::discriminant(&view.vibe_mode).hash(&mut hasher);
+            view.review.hash(&mut hasher);
+            view.scroll_offset.hash(&mut hasher);
+            view.scroll_mode.hash(&mut hasher);
+            view.scroll_total_lines.hash(&mut hasher);
+            view.scroll_passthrough.hash(&mut hasher);
+            view.sidebar_visible.hash(&mut hasher);
+            view.todos_expanded.hash(&mut hasher);
+        }
+
+        hasher.finish()
+    }
+
+    pub fn has_pending_view_input(&self) -> bool {
+        self.view_input_batch.is_some()
+    }
+
+    pub fn pending_view_input_len(&self) -> usize {
+        self.view_input_batch
+            .as_ref()
+            .map(|batch| batch.text.len())
+            .unwrap_or(0)
+    }
+
+    pub fn pending_view_input_targets(&self, session: &str, window: &str) -> bool {
+        self.view_input_batch
+            .as_ref()
+            .is_some_and(|batch| batch.session == session && batch.window == window)
+    }
+
+    pub fn queue_view_literal_input(&mut self, session: &str, window: &str, text: &str) {
+        match &mut self.view_input_batch {
+            Some(batch) if batch.session == session && batch.window == window => {
+                batch.text.push_str(text);
+            }
+            _ => {
+                self.view_input_batch = Some(ViewInputBatch {
+                    session: session.to_string(),
+                    window: window.to_string(),
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+
+    pub fn flush_view_input_batch(&mut self) -> Result<bool> {
+        let Some(batch) = self.view_input_batch.take() else {
+            return Ok(false);
+        };
+
+        let started_at = Instant::now();
+        let result = self
+            .tmux
+            .send_literal(&batch.session, &batch.window, &batch.text);
+        self.perf
+            .record_duration("view.send_literal", started_at.elapsed());
+        if result.is_ok() {
+            self.request_view_snapshot_burst();
+        }
+        result.map(|_| true)
+    }
+
+    fn current_view_snapshot_target(&self) -> Option<(String, String, u16, u16)> {
+        match &self.mode {
+            AppMode::Viewing(view) if self.pane_content_cols > 0 && self.pane_content_rows > 0 => {
+                Some((
+                    view.session.clone(),
+                    view.window.clone(),
+                    self.pane_content_cols,
+                    self.pane_content_rows,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn stop_view_snapshot_worker(&mut self) {
+        if let Some(stop) = self.view_snapshot_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+        // Wake the worker so it notices the stop flag immediately.
+        if let Some(cv) = &self.view_snapshot_condvar {
+            cv.1.notify_one();
+        }
+        self.view_snapshot_refresh = None;
+        self.view_snapshot_condvar = None;
+        self.view_snapshot_target = None;
+    }
+
+    pub fn request_view_snapshot_refresh(&self) {
+        self.request_view_snapshot_refresh_kind(VIEW_SNAPSHOT_REFRESH_NORMAL);
+    }
+
+    pub fn request_view_snapshot_burst(&self) {
+        self.request_view_snapshot_refresh_kind(VIEW_SNAPSHOT_REFRESH_BURST);
+    }
+
+    fn request_view_snapshot_refresh_kind(&self, kind: u8) {
+        if let Some(refresh) = &self.view_snapshot_refresh {
+            let mut current = refresh.load(Ordering::Relaxed);
+            while current < kind {
+                match refresh.compare_exchange_weak(
+                    current,
+                    kind,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(observed) => current = observed,
+                }
+            }
+        }
+        if let Some(cv) = &self.view_snapshot_condvar {
+            cv.1.notify_one();
+        }
+    }
+
+    /// Fallback worker: polls capture-pane at regular intervals.
+    fn run_capture_pane_worker(
+        session: &str,
+        window: &str,
+        cols: u16,
+        rows: u16,
+        stop: &AtomicBool,
+        refresh: &AtomicU8,
+        condvar: &(StdMutex<()>, StdCondvar),
+        tx: &Sender<ViewSnapshot>,
+    ) {
+        let mut next_pane_refresh = Instant::now() - VIEW_PANE_REFRESH_INTERVAL;
+        let mut next_cursor_refresh = Instant::now() - VIEW_CURSOR_REFRESH_INTERVAL;
+        let mut burst_until = Instant::now();
+        let worker_started_at = Instant::now();
+
+        while !stop.load(Ordering::Relaxed) {
+            let now = Instant::now();
+            let refresh_kind = refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed);
+            let refresh_requested = refresh_kind != VIEW_SNAPSHOT_REFRESH_NONE;
+            if refresh_kind == VIEW_SNAPSHOT_REFRESH_BURST {
+                burst_until = now + VIEW_BURST_DURATION;
+            }
+            let burst_active = now < burst_until;
+            let startup_active = now.duration_since(worker_started_at) < VIEW_STARTUP_WARM_DURATION;
+            let pane_interval = if burst_active {
+                VIEW_BURST_PANE_REFRESH_INTERVAL
+            } else if startup_active {
+                VIEW_STARTUP_PANE_REFRESH_INTERVAL
+            } else {
+                VIEW_PANE_REFRESH_INTERVAL
+            };
+            let cursor_interval = if burst_active {
+                VIEW_BURST_CURSOR_REFRESH_INTERVAL
+            } else if startup_active {
+                VIEW_STARTUP_CURSOR_REFRESH_INTERVAL
+            } else {
+                VIEW_CURSOR_REFRESH_INTERVAL
+            };
+            let pane_due = refresh_requested
+                || now.duration_since(next_pane_refresh) >= pane_interval;
+            let cursor_due = refresh_requested
+                || now.duration_since(next_cursor_refresh) >= cursor_interval;
+
+            if pane_due || cursor_due {
+                let mut pane_content = None;
+                let mut rendered_lines = None;
+                let mut capture_duration = None;
+                let mut render_duration = None;
+                let mut cursor = None;
+                let mut cursor_duration = None;
+
+                if pane_due {
+                    let started_at = Instant::now();
+                    let captured =
+                        TmuxManager::capture_pane_ansi(session, window)
+                            .unwrap_or_default();
+                    capture_duration = Some(started_at.elapsed());
+                    let render_started_at = Instant::now();
+                    rendered_lines = Some(render_ansi_lines(&captured, cols, rows));
+                    render_duration = Some(render_started_at.elapsed());
+                    pane_content = Some(captured);
+                    next_pane_refresh = Instant::now();
+                }
+
+                if cursor_due {
+                    let cursor_started_at = Instant::now();
+                    cursor = Some(
+                        TmuxManager::cursor_position(session, window).ok(),
+                    );
+                    cursor_duration = Some(cursor_started_at.elapsed());
+                    next_cursor_refresh = Instant::now();
+                }
+
+                let _ = tx.send(ViewSnapshot {
+                    session: session.to_string(),
+                    window: window.to_string(),
+                    pane_content,
+                    rendered_lines,
+                    cursor,
+                    capture_duration,
+                    render_duration,
+                    cursor_duration,
+                    pipe_read_duration: None,
+                });
+                continue;
+            }
+
+            let guard = condvar.0.lock().unwrap();
+            let _ = condvar.1.wait_timeout(guard, Duration::from_millis(10));
+        }
+    }
+
+    /// Primary worker: uses pipe-pane to stream output and a persistent
+    /// vt100 parser for incremental screen updates. No capture-pane
+    /// subprocess is spawned after the initial seed.
+    /// Primary worker: uses pipe-pane as a change-notification mechanism.
+    /// When data arrives on the pipe, we know the pane has new output and
+    /// run capture-pane to get the current screen state. When nothing
+    /// arrives, we skip capture-pane entirely (zero subprocess overhead
+    /// while idle). This avoids the persistent-parser state-mismatch
+    /// problems while still eliminating polling when the pane is quiet.
+    #[allow(clippy::too_many_arguments)]
+    fn run_pipe_pane_worker(
+        session: &str,
+        window: &str,
+        cols: u16,
+        rows: u16,
+        stop: &AtomicBool,
+        refresh: &AtomicU8,
+        condvar: &(StdMutex<()>, StdCondvar),
+        tx: &Sender<ViewSnapshot>,
+    ) -> anyhow::Result<()> {
+        use std::fs;
+        use std::io::Read as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Slug the session name for a safe FIFO path.
+        let slug: String = session
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .collect();
+        let fifo_dir = std::path::PathBuf::from("/tmp/amf-pipes");
+        fs::create_dir_all(&fifo_dir)?;
+        let fifo_path = fifo_dir.join(format!("{slug}-{window}.pipe"));
+
+        // Clean up any stale FIFO, then create a fresh one.
+        let _ = fs::remove_file(&fifo_path);
+        let c_path = std::ffi::CString::new(fifo_path.to_string_lossy().as_bytes())?;
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        if rc != 0 {
+            anyhow::bail!(
+                "mkfifo failed for {}: {}",
+                fifo_path.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+
+        // Start pipe-pane: tmux streams pane output into our FIFO.
+        TmuxManager::start_pipe_pane(session, window, &fifo_path)?;
+
+        // Open FIFO with O_RDWR | O_NONBLOCK. O_RDWR keeps the FIFO open
+        // (no EOF) even before the pipe-pane writer connects, because
+        // we act as both reader and writer. O_NONBLOCK makes reads
+        // return WouldBlock instead of blocking when no data is ready.
+        let fifo_fd = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo_path)?;
+        let mut fifo = std::io::BufReader::with_capacity(64 * 1024, fifo_fd);
+
+        let mut read_buf = [0u8; 16384];
+        let mut next_cursor_refresh = Instant::now() - VIEW_CURSOR_REFRESH_INTERVAL;
+        let mut last_capture = Instant::now() - VIEW_PANE_REFRESH_INTERVAL;
+        let mut pane_has_new_output = true; // Capture immediately on start.
+        let mut burst_until = Instant::now();
+
+        crate::debug::log_to_file(
+            crate::debug::LogLevel::Info,
+            "perf",
+            &format!("pipe-pane worker started for {session}:{window}"),
+        );
+
+        while !stop.load(Ordering::Relaxed) {
+            let read_started = Instant::now();
+
+            // Drain all available data from the FIFO (non-blocking).
+            // We don't parse it — we only care that *something* changed.
+            loop {
+                match fifo.read(&mut read_buf) {
+                    Ok(0) => {
+                        // With O_RDWR this shouldn't happen, but handle it.
+                        break;
+                    }
+                    Ok(_) => {
+                        pane_has_new_output = true;
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = TmuxManager::stop_pipe_pane(session, window);
+                        let _ = fs::remove_file(&fifo_path);
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            let pipe_read_duration = if pane_has_new_output {
+                Some(read_started.elapsed())
+            } else {
+                None
+            };
+
+            let now = Instant::now();
+            let refresh_kind = refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed);
+            let refresh_requested = refresh_kind != VIEW_SNAPSHOT_REFRESH_NONE;
+            if refresh_requested {
+                pane_has_new_output = true;
+            }
+            if refresh_kind == VIEW_SNAPSHOT_REFRESH_BURST {
+                burst_until = now + VIEW_BURST_DURATION;
+            }
+            let burst_active = now < burst_until;
+
+            // Throttle captures: use burst interval after input,
+            // normal interval otherwise.
+            let pane_interval = if burst_active {
+                VIEW_BURST_PANE_REFRESH_INTERVAL
+            } else {
+                VIEW_PANE_REFRESH_INTERVAL
+            };
+            let pane_due = pane_has_new_output
+                && now.duration_since(last_capture) >= pane_interval;
+
+            let cursor_interval = if burst_active {
+                VIEW_BURST_CURSOR_REFRESH_INTERVAL
+            } else {
+                VIEW_CURSOR_REFRESH_INTERVAL
+            };
+            let cursor_due = refresh_requested
+                || now.duration_since(next_cursor_refresh) >= cursor_interval;
+
+            if pane_due || cursor_due {
+                let mut pane_content = None;
+                let mut rendered_lines = None;
+                let mut capture_duration = None;
+                let mut render_duration = None;
+                let mut cursor = None;
+                let mut cursor_duration = None;
+
+                if pane_due {
+                    pane_has_new_output = false;
+                    let started_at = Instant::now();
+                    let captured = TmuxManager::capture_pane_ansi(session, window)
+                        .unwrap_or_default();
+                    capture_duration = Some(started_at.elapsed());
+                    let render_started = Instant::now();
+                    rendered_lines = Some(render_ansi_lines(&captured, cols, rows));
+                    render_duration = Some(render_started.elapsed());
+                    pane_content = Some(captured);
+                    last_capture = Instant::now();
+                }
+
+                if cursor_due {
+                    let cursor_started = Instant::now();
+                    cursor = Some(
+                        TmuxManager::cursor_position(session, window).ok(),
+                    );
+                    cursor_duration = Some(cursor_started.elapsed());
+                    next_cursor_refresh = Instant::now();
+                }
+
+                let _ = tx.send(ViewSnapshot {
+                    session: session.to_string(),
+                    window: window.to_string(),
+                    pane_content,
+                    rendered_lines,
+                    cursor,
+                    capture_duration,
+                    render_duration,
+                    cursor_duration,
+                    pipe_read_duration,
+                });
+                continue;
+            }
+
+            // No work to do — wait for wake or timeout.
+            let guard = condvar.0.lock().unwrap();
+            let _ = condvar.1.wait_timeout(guard, Duration::from_millis(10));
+        }
+
+        // Cleanup.
+        let _ = TmuxManager::stop_pipe_pane(session, window);
+        let _ = fs::remove_file(&fifo_path);
+        Ok(())
+    }
+
+    pub fn ensure_view_snapshot_worker(&mut self) {
+        let Some((session, window, cols, rows)) = self.current_view_snapshot_target() else {
+            self.stop_view_snapshot_worker();
+            return;
+        };
+
+        if self.view_snapshot_target.as_ref() == Some(&(session.clone(), window.clone(), cols, rows))
+        {
+            return;
+        }
+
+        self.stop_view_snapshot_worker();
+        self.drain_view_snapshots();
+        self.pane_lines.clear();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let refresh = Arc::new(AtomicU8::new(VIEW_SNAPSHOT_REFRESH_NORMAL));
+        let condvar = Arc::new((StdMutex::new(()), StdCondvar::new()));
+        let tx = self.view_snapshot_tx.clone();
+        let worker_session = session.clone();
+        let worker_window = window.clone();
+        let worker_cols = cols;
+        let worker_rows = rows;
+        let worker_stop = stop.clone();
+        let worker_refresh = refresh.clone();
+        let worker_condvar = condvar.clone();
+
+        std::thread::spawn(move || {
+            // Try pipe-pane approach first, fall back to polling capture-pane.
+            let pipe_result = Self::run_pipe_pane_worker(
+                &worker_session,
+                &worker_window,
+                worker_cols,
+                worker_rows,
+                &worker_stop,
+                &worker_refresh,
+                &worker_condvar,
+                &tx,
+            );
+
+            if let Err(e) = &pipe_result {
+                crate::debug::log_to_file(
+                    crate::debug::LogLevel::Warn,
+                    "perf",
+                    &format!("pipe-pane failed ({e}), falling back to capture-pane polling"),
+                );
+            }
+
+            // Fallback: original polling approach if pipe-pane failed
+            // or if it exited early (e.g. FIFO issue).
+            if pipe_result.is_err() && !worker_stop.load(Ordering::Relaxed) {
+                Self::run_capture_pane_worker(
+                    &worker_session,
+                    &worker_window,
+                    worker_cols,
+                    worker_rows,
+                    &worker_stop,
+                    &worker_refresh,
+                    &worker_condvar,
+                    &tx,
+                );
+            }
+        });
+
+        self.view_snapshot_stop = Some(stop);
+        self.view_snapshot_refresh = Some(refresh);
+        self.view_snapshot_condvar = Some(condvar);
+        self.view_snapshot_target = Some((session, window, cols, rows));
+    }
+
+    pub fn drain_view_snapshots(&mut self) -> (bool, bool) {
+        let current_target = self.current_view_snapshot_target();
+        let mut pane_changed = false;
+        let mut cursor_changed = false;
+
+        while let Ok(snapshot) = self.view_snapshot_rx.try_recv() {
+            if current_target.as_ref()
+                != Some(&(
+                    snapshot.session.clone(),
+                    snapshot.window.clone(),
+                    self.pane_content_cols,
+                    self.pane_content_rows,
+                ))
+            {
+                continue;
+            }
+
+            if let Some(duration) = snapshot.capture_duration {
+                self.perf.record_duration("view.capture_pane_ansi", duration);
+            }
+            if let Some(duration) = snapshot.render_duration {
+                self.perf.record_duration("view.render_snapshot_lines", duration);
+            }
+            if let Some(duration) = snapshot.cursor_duration {
+                self.perf.record_duration("view.cursor_position", duration);
+            }
+            if let Some(duration) = snapshot.pipe_read_duration {
+                self.perf.record_duration("view.pipe_read", duration);
+            }
+
+            if let Some(pane_content) = snapshot.pane_content
+                && self.pane_content != pane_content
+            {
+                self.pane_content = pane_content;
+                pane_changed = true;
+            }
+
+            if let Some(rendered_lines) = snapshot.rendered_lines
+                && (pane_changed || self.pane_lines.is_empty())
+            {
+                self.pane_lines = rendered_lines;
+                pane_changed = true;
+            }
+
+            if let Some(cursor) = snapshot.cursor
+                && self.tmux_cursor != cursor
+            {
+                self.tmux_cursor = cursor;
+                cursor_changed = true;
+            }
+        }
+
+        (pane_changed, cursor_changed)
+    }
+
     pub fn new(store_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
         crate::project::prepare_store_path(&store_path, &crate::project::global_store_path());
@@ -314,6 +932,7 @@ impl App {
             .unwrap_or(global_ext);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
+        let (view_snapshot_tx, view_snapshot_rx) = channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
         Ok(Self {
@@ -328,6 +947,7 @@ impl App {
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),
+            pane_lines: Vec::new(),
             pane_content_cols: 0,
             pane_content_rows: 0,
             viewport_cols: 0,
@@ -335,6 +955,8 @@ impl App {
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
+            last_view_activity_at: None,
+            view_input_batch: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
             sidebar_plan_cache,
@@ -362,6 +984,7 @@ impl App {
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
             debug_log: DebugLog::default(),
+            perf: PerfCollector::new(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
@@ -374,6 +997,12 @@ impl App {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .is_ok(),
+            view_snapshot_tx,
+            view_snapshot_rx,
+            view_snapshot_stop: None,
+            view_snapshot_refresh: None,
+            view_snapshot_condvar: None,
+            view_snapshot_target: None,
         })
     }
 
@@ -403,6 +1032,7 @@ impl App {
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
+        let (view_snapshot_tx, view_snapshot_rx) = channel();
         Self {
             store,
             store_path: PathBuf::new(),
@@ -415,6 +1045,7 @@ impl App {
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),
+            pane_lines: Vec::new(),
             pane_content_cols: 0,
             pane_content_rows: 0,
             viewport_cols: 0,
@@ -422,6 +1053,8 @@ impl App {
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
+            last_view_activity_at: None,
+            view_input_batch: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
             sidebar_plan_cache,
@@ -449,6 +1082,7 @@ impl App {
             tmux,
             worktree,
             debug_log: DebugLog::default(),
+            perf: PerfCollector::new(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
@@ -456,6 +1090,12 @@ impl App {
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             vscode_available: false,
+            view_snapshot_tx,
+            view_snapshot_rx,
+            view_snapshot_stop: None,
+            view_snapshot_refresh: None,
+            view_snapshot_condvar: None,
+            view_snapshot_target: None,
         }
     }
 

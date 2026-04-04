@@ -12,6 +12,31 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.14.0] - 2026-04-03
+
+### Added
+
+- Embedded view now supports `Ctrl+Space` then `R` to refresh tmux pane
+  sizing on demand after terminal or layout changes.
+
+### Changed
+
+- Linked git worktrees now keep branch-local AMF state in
+  `.amf/projects.json`, seeded from the primary checkout on first
+  launch, so project and feature changes in one checkout no longer leak
+  into another.
+- Embedded tmux view refresh was reworked for better responsiveness,
+  reducing idle overhead and making pane updates feel faster while you
+  type, submit prompts, and interact with sessions.
+
+### Migration
+
+- No manual migration is required.
+- The primary checkout still uses `~/.config/amf/projects.json`.
+- The first AMF launch inside a linked worktree creates a local
+  `.amf/projects.json`, initialized from the primary store when one
+  exists.
+
 ## [v0.13.1] - 2026-03-31
 
 ### Fixed

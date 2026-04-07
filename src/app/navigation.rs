@@ -146,7 +146,7 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let current = self.selection_index().unwrap_or(0);
+        let current = self.selection_index_in_items(&items).unwrap_or(0);
         let next = (current + 1) % items.len();
         self.selection = match items[next] {
             VisibleItem::Project(pi) => Selection::Project(pi),
@@ -161,7 +161,7 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let current = self.selection_index().unwrap_or(0);
+        let current = self.selection_index_in_items(&items).unwrap_or(0);
         let prev = if current == 0 {
             items.len() - 1
         } else {
@@ -208,7 +208,7 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let current = self.selection_index().unwrap_or(0);
+        let current = self.selection_index_in_items(&items).unwrap_or(0);
         for offset in 1..=items.len() {
             let idx = (current + offset) % items.len();
             if matches!(items[idx], VisibleItem::Feature(..)) {
@@ -227,7 +227,7 @@ impl App {
         if items.is_empty() {
             return;
         }
-        let current = self.selection_index().unwrap_or(0);
+        let current = self.selection_index_in_items(&items).unwrap_or(0);
         for offset in 1..=items.len() {
             let idx = if current >= offset {
                 current - offset

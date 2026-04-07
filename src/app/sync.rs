@@ -8,6 +8,7 @@ use crate::token_tracking::{
 };
 
 use chrono::Utc;
+use std::collections::HashSet;
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
     let lower = content.to_lowercase();
@@ -48,11 +49,16 @@ fn opencode_sidebar_thinking_state(
 
 impl App {
     pub fn sync_statuses(&mut self) {
-        let live_sessions = self.tmux.list_sessions().unwrap_or_default();
+        let live_sessions: HashSet<String> = self
+            .tmux
+            .list_sessions()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let mut stopped_sessions = Vec::new();
         for project in &mut self.store.projects {
             for feature in &mut project.features {
-                if live_sessions.contains(&feature.tmux_session) {
+                if live_sessions.contains(feature.tmux_session.as_str()) {
                     if feature.status == ProjectStatus::Stopped {
                         feature.status = ProjectStatus::Idle;
                     }
@@ -160,6 +166,12 @@ impl App {
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {
+        // Background sidebar loads warm Opencode status/prompt data for the
+        // dashboard. Drain them here too, not just when a sidebar is open, so
+        // thinking sync can use cached state instead of falling back to
+        // `tmux capture-pane` across many features.
+        self.poll_sidebar_load_results();
+
         let old_thinking = self.thinking_features.clone();
         let old_pending_inputs = self.pending_inputs.clone();
         self.thinking_features.clear();
@@ -178,26 +190,22 @@ impl App {
                             Self::is_session_marked_thinking(&feature.tmux_session)
                         }
                     }
-                    AgentKind::Opencode => {
-                        self.opencode_sidebar_cache
-                            .get(&feature.tmux_session)
-                            .and_then(opencode_sidebar_thinking_state)
-                            .or_else(|| {
-                                feature
-                                    .sessions
-                                    .iter()
-                                    .find(|s| s.kind == SessionKind::Opencode)
-                                    .and_then(|s| {
-                                        TmuxManager::capture_pane(
-                                            &feature.tmux_session,
-                                            &s.tmux_window,
-                                        )
+                    AgentKind::Opencode => self
+                        .opencode_sidebar_cache
+                        .get(&feature.tmux_session)
+                        .and_then(opencode_sidebar_thinking_state)
+                        .or_else(|| {
+                            feature
+                                .sessions
+                                .iter()
+                                .find(|s| s.kind == SessionKind::Opencode)
+                                .and_then(|s| {
+                                    TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
                                         .ok()
-                                    })
-                                    .map(|content| pane_shows_thinking_hint(&content))
-                            })
-                            .unwrap_or(false)
-                    }
+                                })
+                                .map(|content| pane_shows_thinking_hint(&content))
+                        })
+                        .unwrap_or(false),
                     AgentKind::Codex => {
                         if ipc_mode {
                             self.ipc_thinking_sessions.contains(&feature.tmux_session)

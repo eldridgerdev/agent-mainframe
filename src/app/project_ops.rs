@@ -301,7 +301,7 @@ impl App {
         if items.is_empty() {
             self.selection = Selection::Project(0);
         } else {
-            let idx = self.selection_index().unwrap_or(0);
+            let idx = self.selection_index_in_items(&items).unwrap_or(0);
             if idx >= items.len() {
                 let last = &items[items.len() - 1];
                 self.selection = match last {

@@ -12,6 +12,21 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.14.1] - 2026-04-07
+
+### Changed
+
+- Dashboard status syncing now scales better with large project lists by
+  using cached sidebar state for Opencode thinking detection and by
+  reducing repeated visible-item and tmux-session scans.
+
+### Fixed
+
+- Embedded dashboard performance no longer degrades as sharply on
+  machines with many projects, features, and open tmux panes due to
+  repeated background `tmux capture-pane` fallbacks and redundant
+  session-list work.
+
 ## [v0.14.0] - 2026-04-03
 
 ### Added

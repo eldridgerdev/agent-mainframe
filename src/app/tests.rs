@@ -597,6 +597,59 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
 }
 
 #[test]
+fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
+    store.projects[0].features[0].agent = AgentKind::Opencode;
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.pending_sidebar_loads.insert("amf-my-feat".to_string());
+    app.sidebar_load_tx
+        .send(super::SidebarLoadResult {
+            tmux_session: "amf-my-feat".to_string(),
+            signature: 9,
+            latest_prompt: Some("warm prompt".to_string()),
+            opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
+                session_id: "ses-1".to_string(),
+                title: Some("Warm cache".to_string()),
+                latest_prompt: Some("warm prompt".to_string()),
+                status: Some("busy".to_string()),
+                last_tool: Some("edit".to_string()),
+                todo_count: Some(1),
+                todo_preview: vec!["finish parser".to_string()],
+                pending_permission: None,
+                last_error: None,
+                lsp_summary: None,
+                live_summary: None,
+                reasoning_tokens: None,
+                additions: None,
+                deletions: None,
+                files: None,
+            }),
+        })
+        .unwrap();
+
+    assert!(app.sync_thinking_status());
+    assert_eq!(
+        app.latest_prompt_for_session("amf-my-feat"),
+        Some("warm prompt")
+    );
+    assert_eq!(
+        app.opencode_sidebar_cache
+            .get("amf-my-feat")
+            .and_then(|data| data.title.as_deref()),
+        Some("Warm cache")
+    );
+    assert!(app.is_feature_thinking("amf-my-feat"));
+    assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
 fn visible_items_prioritizes_non_worktree_features() {
     let now = Utc::now();
     let project = Project {

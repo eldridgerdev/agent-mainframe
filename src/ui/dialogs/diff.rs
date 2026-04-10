@@ -1509,4 +1509,73 @@ mod tests {
         assert!(line_text(&lines[0]).contains("Esc close"));
         assert!(line_text(&lines[1]).contains("layout:unified (new file)"));
     }
+
+    #[test]
+    fn new_file_patch_lines_preserve_syntax_coloring_for_indented_javascript() {
+        if highlight::HighlightLanguage::JavaScript.install_state()
+            != highlight::HighlightInstallState::Installed
+        {
+            return;
+        }
+
+        crate::highlight::reload_runtime_state();
+
+        let theme = Theme::default();
+        let file = DiffFile {
+            old_path: None,
+            path: "syntax-test.js".to_string(),
+            status: DiffFileStatus::Added,
+            additions: 3,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: Some("const palette = {\n  primary: \"#0f172a\",\n};\n".to_string()),
+            patch: "\
+diff --git a/syntax-test.js b/syntax-test.js
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/syntax-test.js
+@@ -0,0 +1,3 @@
++const palette = {
++  primary: \"#0f172a\",
++};
+"
+            .to_string(),
+            hunks: vec![crate::diff::DiffHunk {
+                header: "@@ -0,0 +1,3 @@".to_string(),
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: 3,
+                lines: vec![
+                    crate::diff::DiffLine {
+                        kind: crate::diff::DiffLineKind::Added,
+                        text: "+const palette = {".to_string(),
+                    },
+                    crate::diff::DiffLine {
+                        kind: crate::diff::DiffLineKind::Added,
+                        text: "+  primary: \"#0f172a\",".to_string(),
+                    },
+                    crate::diff::DiffLine {
+                        kind: crate::diff::DiffLineKind::Added,
+                        text: "+};".to_string(),
+                    },
+                ],
+            }],
+        };
+
+        let lines = patch_lines(&file, 100, &theme, false, true);
+        let indented_code_line = &lines[2];
+        let default_added_fg = new_file_added_row_style(&theme).fg;
+        let has_syntax_colored_token = indented_code_line.spans.iter().any(|span| {
+            !span.content.trim().is_empty() && span.content.contains("primary")
+                && span.style.fg != default_added_fg
+        });
+
+        assert!(
+            has_syntax_colored_token,
+            "expected indented JavaScript property to keep syntax coloring in new-file diff rows"
+        );
+    }
 }

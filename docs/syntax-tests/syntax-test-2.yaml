@@ -1,0 +1,10 @@
+name: syntax-fixture
+enabled: true
+count: 5
+tags:
+  - diff
+  - highlight
+  - yaml
+window:
+  width: 100
+  height: 32

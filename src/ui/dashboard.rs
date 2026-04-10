@@ -469,7 +469,7 @@ fn fallback_sidebar_work_text(
         let mut text = format!(
             "State: waiting for input\nRequest: {}",
             if message.is_empty() {
-                "Agent is waiting for input"
+                "Harness is waiting for input"
             } else {
                 message
             }
@@ -745,7 +745,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
                 let presets = app.active_extension.allowed_feature_presets();
-                let allowed_agents = app.active_extension.allowed_agents();
+                let allowed_agents =
+                    app.allowed_agents_for_repo(&state.project_repo);
                 super::dialogs::draw_create_feature_dialog(
                     frame,
                     state,
@@ -878,6 +879,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::DebugLog(state) = &app.mode {
         super::dialogs::draw_debug_log(frame, &app.debug_log, state.scroll_offset, &app.theme);
+    }
+
+    if let AppMode::HarnessSetup(state) = &app.mode {
+        super::dialogs::draw_harness_setup_dialog(
+            frame,
+            state,
+            &app.throbber_state,
+            &app.theme,
+        );
     }
 }
 
@@ -1132,6 +1142,7 @@ mod tests {
                 version: 5,
                 projects: vec![project.clone()],
                 session_bookmarks: vec![],
+                available_harnesses: vec![],
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1219,6 +1230,7 @@ mod tests {
                 version: 5,
                 projects: vec![project],
                 session_bookmarks: vec![],
+                available_harnesses: vec![],
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),

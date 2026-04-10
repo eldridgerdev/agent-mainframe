@@ -167,7 +167,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("Enter", key_style()),
                     Span::raw(" expand  "),
                     Span::styled("u", key_style()),
-                    Span::raw(" preferred agent  "),
+                    Span::raw(" preferred harness  "),
                     Span::styled("f", key_style()),
                     Span::raw(" filter  "),
                     Span::styled("d", key_style()),
@@ -464,6 +464,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::HarnessSetup(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" toggle  "),
+            Span::styled("c", key_style()),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {
@@ -526,6 +536,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     SessionKind::Claude => "claude",
                     SessionKind::Opencode => "opencode",
                     SessionKind::Codex => "codex",
+                    SessionKind::Pi => "pi",
                     SessionKind::Terminal => "terminal",
                     SessionKind::Nvim => "nvim",
                     SessionKind::Vscode => "vscode",

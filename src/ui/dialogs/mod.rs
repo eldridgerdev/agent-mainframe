@@ -3,6 +3,7 @@ mod browse;
 mod debug;
 mod diff;
 mod feature;
+mod harness;
 mod help;
 mod hooks;
 mod markdown;
@@ -13,6 +14,7 @@ mod theme;
 
 pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
+pub use harness::draw_harness_setup_dialog;
 pub use debug::draw_debug_log;
 pub use diff::draw_diff_viewer;
 pub use feature::{

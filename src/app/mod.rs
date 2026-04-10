@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -328,6 +328,13 @@ pub struct App {
     view_snapshot_refresh: Option<Arc<AtomicU8>>,
     view_snapshot_condvar: Option<Arc<(StdMutex<()>, StdCondvar)>>,
     view_snapshot_target: Option<(String, String, u16, u16)>,
+    pub harness_check_tx: Sender<HarnessCheckResult>,
+    harness_check_rx: Receiver<HarnessCheckResult>,
+}
+
+pub(crate) struct HarnessCheckResult {
+    pub kind: AgentKind,
+    pub result: Result<()>,
 }
 
 struct SidebarLoadResult {
@@ -362,6 +369,10 @@ impl App {
             AppMode::DeletingFeatureInProgress(state) => state.child.is_some(),
             AppMode::SyntaxLanguagePicker(state) => state.operation.is_some(),
             AppMode::DiffReviewPrompt(state) => state.explanation_child.is_some(),
+            AppMode::HarnessSetup(state) => state
+                .harnesses
+                .iter()
+                .any(|h| h.status == HarnessCheckStatus::Checking),
             _ => false,
         }
     }
@@ -951,6 +962,7 @@ impl App {
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         let (view_snapshot_tx, view_snapshot_rx) = channel();
+        let (harness_check_tx, harness_check_rx) = channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
         Ok(Self {
@@ -1021,6 +1033,8 @@ impl App {
             view_snapshot_refresh: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
+            harness_check_tx,
+            harness_check_rx,
         })
     }
 
@@ -1051,6 +1065,7 @@ impl App {
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         let (view_snapshot_tx, view_snapshot_rx) = channel();
+        let (harness_check_tx, harness_check_rx) = channel();
         Self {
             store,
             store_path: PathBuf::new(),
@@ -1114,6 +1129,8 @@ impl App {
             view_snapshot_refresh: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
+            harness_check_tx,
+            harness_check_rx,
         }
     }
 
@@ -1503,7 +1520,15 @@ impl App {
     }
 
     pub(crate) fn allowed_agents_for_repo(&self, repo: &Path) -> Vec<AgentKind> {
-        self.extension_for_repo(repo).allowed_agents()
+        let ext_allowed = self.extension_for_repo(repo).allowed_agents();
+        if self.store.available_harnesses.is_empty() {
+            ext_allowed
+        } else {
+            ext_allowed
+                .into_iter()
+                .filter(|a| self.store.available_harnesses.contains(a))
+                .collect()
+        }
     }
 
     pub(crate) fn repo_for_project_path(&self, path: &Path) -> PathBuf {
@@ -1518,7 +1543,8 @@ impl App {
     }
 
     pub(crate) fn allows_agent_for_repo(&self, repo: &Path, agent: &AgentKind) -> bool {
-        self.extension_for_repo(repo).allows_agent(agent)
+        let allowed = self.allowed_agents_for_repo(repo);
+        allowed.contains(agent)
     }
 
     pub(crate) fn allowed_feature_presets_for_repo(&self, repo: &Path) -> Vec<FeaturePreset> {
@@ -1547,6 +1573,61 @@ impl App {
     ) -> (AgentKind, usize) {
         let repo = self.repo_for_project_path(path);
         self.normalize_agent_for_repo(&repo, preferred)
+    }
+
+    pub(crate) fn poll_harness_checks(&mut self) {
+        while let Ok(result) = self.harness_check_rx.try_recv() {
+            if let AppMode::HarnessSetup(state) = &mut self.mode {
+                if let Some(harness) = state.harnesses.iter_mut().find(|h| h.kind == result.kind) {
+                    match result.result {
+                        Ok(()) => {
+                            harness.status = HarnessCheckStatus::Installed;
+                            harness.enabled = true;
+                        }
+                        Err(_) => {
+                            let hint = Self::harness_install_hint(&result.kind);
+                            harness.status = HarnessCheckStatus::NotFound(hint.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn open_harness_setup(&mut self, is_startup: bool) {
+        let state = crate::app::state::HarnessSetupState::new(
+            is_startup,
+            &self.store.available_harnesses,
+        );
+        self.mode = AppMode::HarnessSetup(state);
+        self.message = None;
+    }
+
+    pub(crate) fn check_harness_available(kind: &AgentKind) -> Result<()> {
+        match kind {
+            AgentKind::Claude => crate::claude::ClaudeLauncher::check_available(),
+            AgentKind::Codex => crate::codex::CodexLauncher::check_available(),
+            AgentKind::Opencode => {
+                let output = std::process::Command::new("opencode")
+                    .arg("--version")
+                    .output()
+                    .context("opencode CLI not found - is Opencode installed?")?;
+                if !output.status.success() {
+                    anyhow::bail!("opencode CLI returned an error");
+                }
+                Ok(())
+            }
+            AgentKind::Pi => crate::pi::PiLauncher::check_available(),
+        }
+    }
+
+    pub(crate) fn harness_install_hint(kind: &AgentKind) -> &'static str {
+        match kind {
+            AgentKind::Claude => "Install Claude Code: https://claude.ai/code",
+            AgentKind::Codex => "Install Codex: npm install -g @openai/codex",
+            AgentKind::Opencode => "Install Opencode: go install github.com/opencode-ai/opencode@latest",
+            AgentKind::Pi => "Install Pi: check your provider's documentation",
+        }
     }
 
     pub(crate) fn refresh_create_project_agent_selection(&mut self) {
@@ -1674,6 +1755,7 @@ fn latest_prompt_text_for_feature(feature: &Feature) -> Option<String> {
         AgentKind::Claude => Some(SessionKind::Claude),
         AgentKind::Opencode => Some(SessionKind::Opencode),
         AgentKind::Codex => Some(SessionKind::Codex),
+        AgentKind::Pi => Some(SessionKind::Pi),
     };
 
     let preferred_opencode_session_id = if feature.agent == AgentKind::Opencode {
@@ -1708,6 +1790,7 @@ impl SidebarLoadRequest {
             AgentKind::Claude => Some(SessionKind::Claude),
             AgentKind::Opencode => Some(SessionKind::Opencode),
             AgentKind::Codex => Some(SessionKind::Codex),
+            AgentKind::Pi => Some(SessionKind::Pi),
         };
         let preferred_session_id = match feature.agent {
             AgentKind::Claude => feature
@@ -1733,6 +1816,7 @@ impl SidebarLoadRequest {
                     source.provider == crate::token_tracking::TokenUsageProvider::Codex
                 })
                 .map(|source| source.id.clone()),
+            AgentKind::Pi => None,
         };
 
         Self {
@@ -1787,10 +1871,11 @@ fn session_kind_signature(session_kind: Option<&SessionKind>) -> u8 {
         Some(SessionKind::Claude) => 1,
         Some(SessionKind::Opencode) => 2,
         Some(SessionKind::Codex) => 3,
-        Some(SessionKind::Terminal) => 4,
-        Some(SessionKind::Nvim) => 5,
-        Some(SessionKind::Vscode) => 6,
-        Some(SessionKind::Custom) => 7,
+        Some(SessionKind::Pi) => 4,
+        Some(SessionKind::Terminal) => 5,
+        Some(SessionKind::Nvim) => 6,
+        Some(SessionKind::Vscode) => 7,
+        Some(SessionKind::Custom) => 8,
         None => 0,
     }
 }

@@ -46,7 +46,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
         ("r", "Rename session"),
-        ("u", "Project preferred agent / worktree agent config"),
+        ("u", "Project preferred harness / worktree harness config"),
         ("F", "Fork feature (new branch)"),
         ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
@@ -113,7 +113,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled(
-            "Leader key (then: q s t T w h / a n p i b l v m r R x f d D ? H M 1-9)",
+            "Leader key (then: q s t T w h / a A n p i b l v m r R x f d D ? H M 1-9)",
             Style::default().fg(theme.text.to_color()),
         ),
     ]));
@@ -289,6 +289,19 @@ fn draw_help_at(frame: &mut Frame, area: Rect, theme: &Theme) {
         ),
         Span::raw("  "),
         Span::styled("Debug log", Style::default().fg(theme.text.to_color())),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:>12}", "A"),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            "Manage agent harnesses",
+            Style::default().fg(theme.text.to_color()),
+        ),
     ]));
 
     let help = Paragraph::new(lines).block(

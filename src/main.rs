@@ -14,6 +14,7 @@ mod http_client;
 mod ipc;
 mod markdown;
 mod perf;
+mod pi;
 mod project;
 mod summary;
 mod theme;
@@ -182,6 +183,10 @@ fn main() -> Result<()> {
     let store_path = project::store_path();
     let mut app = App::new(store_path)?;
     app.log_startup();
+
+    if !app.store.has_any_harnesses() {
+        app.open_harness_setup(true);
+    }
 
     // Start IPC socket server for push-based hook notifications.
     let socket = ipc::socket_path();
@@ -468,6 +473,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             && let Err(e) = app.poll_syntax_language_picker()
         {
             app.show_error(e);
+        }
+
+        if matches!(app.mode, app::AppMode::HarnessSetup(_)) {
+            app.poll_harness_checks();
         }
 
         if !app.background_deletions.is_empty()

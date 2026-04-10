@@ -70,7 +70,7 @@ pub fn draw_create_project_dialog(
 
     let agent_active = matches!(state.step, CreateProjectStep::Agent);
     let mut agent_lines = vec![Line::from(Span::styled(
-        " Preferred agent:",
+        " Preferred harness:",
         if agent_active {
             Style::default().fg(theme.primary.to_color())
         } else {

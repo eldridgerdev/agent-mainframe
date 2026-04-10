@@ -712,6 +712,7 @@ pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
         AgentKind::Claude => cleanup_claude_notification_hooks(workdir),
         AgentKind::Opencode => cleanup_opencode_plugins(workdir),
         AgentKind::Codex => cleanup_codex_notify_hook(workdir),
+        AgentKind::Pi => {}
     }
 }
 

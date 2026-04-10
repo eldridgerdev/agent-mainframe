@@ -289,6 +289,10 @@ impl App {
                     self.tmux
                         .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
                 }
+                SessionKind::Pi => {
+                    self.tmux
+                        .launch_pi(&feature.tmux_session, &session.tmux_window)?;
+                }
                 SessionKind::Nvim => {
                     self.tmux
                         .send_keys(&feature.tmux_session, &session.tmux_window, "nvim")?;

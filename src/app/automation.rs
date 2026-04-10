@@ -185,7 +185,7 @@ impl App {
 
         if !self.allows_agent_for_repo(&project_repo, &request.agent) {
             bail!(
-                "Agent '{}' is not allowed for this workspace",
+                "Harness '{}' is not allowed for this workspace",
                 request.agent.display_name()
             );
         }
@@ -393,7 +393,7 @@ impl App {
 
         if !self.allows_agent_for_repo(&project_repo, &request.agent) {
             bail!(
-                "Agent '{}' is not allowed for this workspace",
+                "Harness '{}' is not allowed for this workspace",
                 request.agent.display_name()
             );
         }

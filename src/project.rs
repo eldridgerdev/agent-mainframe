@@ -36,6 +36,7 @@ pub enum SessionKind {
     Claude,
     Opencode,
     Codex,
+    Pi,
     Terminal,
     Nvim,
     Vscode,
@@ -49,6 +50,7 @@ pub enum AgentKind {
     Claude,
     Opencode,
     Codex,
+    Pi,
 }
 
 impl AgentKind {
@@ -57,10 +59,16 @@ impl AgentKind {
             AgentKind::Claude => "Claude",
             AgentKind::Opencode => "Opencode",
             AgentKind::Codex => "Codex",
+            AgentKind::Pi => "Pi",
         }
     }
 
-    pub const ALL: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Opencode, AgentKind::Codex];
+    pub const ALL: [AgentKind; 4] = [
+        AgentKind::Claude,
+        AgentKind::Opencode,
+        AgentKind::Codex,
+        AgentKind::Pi,
+    ];
 
     pub fn allowed_list(configured: Option<&[AgentKind]>) -> Vec<AgentKind> {
         Self::ALL
@@ -372,6 +380,9 @@ impl Feature {
             SessionKind::Codex => {
                 format!("Codex {}", count + 1)
             }
+            SessionKind::Pi => {
+                format!("Pi {}", count + 1)
+            }
             SessionKind::Terminal => {
                 format!("Terminal {}", count + 1)
             }
@@ -394,6 +405,7 @@ impl Feature {
             SessionKind::Claude => "claude",
             SessionKind::Opencode => "opencode",
             SessionKind::Codex => "codex",
+            SessionKind::Pi => "pi",
             SessionKind::Terminal => "terminal",
             SessionKind::Nvim => "nvim",
             SessionKind::Vscode => "vscode",
@@ -518,8 +530,26 @@ pub struct ProjectStore {
     pub projects: Vec<Project>,
     #[serde(default = "default_session_bookmarks")]
     pub session_bookmarks: Vec<SessionBookmark>,
+    #[serde(default)]
+    pub available_harnesses: Vec<AgentKind>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl ProjectStore {
+    pub fn has_any_harnesses(&self) -> bool {
+        !self.available_harnesses.is_empty()
+    }
+
+    pub fn add_harness(&mut self, kind: AgentKind) {
+        if !self.available_harnesses.contains(&kind) {
+            self.available_harnesses.push(kind);
+        }
+    }
+
+    pub fn remove_harness(&mut self, kind: &AgentKind) {
+        self.available_harnesses.retain(|k| k != kind);
+    }
 }
 
 // --- V1 types for migration ---
@@ -585,6 +615,7 @@ impl ProjectStore {
                 version: CURRENT_PROJECT_STORE_VERSION,
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
+                available_harnesses: Vec::new(),
                 extra: HashMap::new(),
             });
         }
@@ -669,6 +700,7 @@ impl ProjectStore {
             version: 3,
             projects: v2.projects,
             session_bookmarks: default_session_bookmarks(),
+            available_harnesses: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -679,6 +711,7 @@ impl ProjectStore {
             version: CURRENT_PROJECT_STORE_VERSION,
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
+            available_harnesses: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -821,6 +854,7 @@ impl ProjectStore {
             version: 2,
             projects,
             session_bookmarks: default_session_bookmarks(),
+            available_harnesses: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -989,6 +1023,7 @@ mod tests {
                 is_git: true,
             }],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();
@@ -1086,6 +1121,7 @@ mod tests {
                 is_git: true,
             }],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();

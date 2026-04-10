@@ -743,6 +743,21 @@ impl TmuxManager {
         )
     }
 
+    /// Launch pi in a specific window of a session
+    pub fn launch_pi(session: &str, window: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        let cmd = format!(
+            "{} pi",
+            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
+        );
+
+        Self::run(
+            &["send-keys", "-t", &target, &cmd, "Enter"],
+            "Failed to send pi command to tmux",
+            "tmux send-keys failed",
+        )
+    }
+
     /// Check if we're currently running inside a tmux session
     pub fn is_inside_tmux() -> bool {
         std::env::var("TMUX").is_ok()
@@ -1117,6 +1132,10 @@ impl TmuxOps for TmuxManager {
 
     fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()> {
         TmuxManager::launch_codex(session, window, resume_id.as_deref())
+    }
+
+    fn launch_pi(&self, session: &str, window: &str) -> Result<()> {
+        TmuxManager::launch_pi(session, window)
     }
 
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()> {

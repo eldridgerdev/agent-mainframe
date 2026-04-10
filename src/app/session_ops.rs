@@ -10,6 +10,7 @@ fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
         AgentKind::Claude => SessionKind::Claude,
         AgentKind::Opencode => SessionKind::Opencode,
         AgentKind::Codex => SessionKind::Codex,
+        AgentKind::Pi => SessionKind::Pi,
     }
 }
 
@@ -18,6 +19,7 @@ fn label_for_agent(agent: &AgentKind) -> String {
         AgentKind::Claude => "Claude".to_string(),
         AgentKind::Opencode => "Opencode".to_string(),
         AgentKind::Codex => "Codex".to_string(),
+        AgentKind::Pi => "Pi".to_string(),
     }
 }
 
@@ -26,6 +28,7 @@ fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
         SessionKind::Claude => Some(AgentKind::Claude),
         SessionKind::Opencode => Some(AgentKind::Opencode),
         SessionKind::Codex => Some(AgentKind::Codex),
+        SessionKind::Pi => Some(AgentKind::Pi),
         _ => None,
     }
 }
@@ -81,7 +84,7 @@ impl App {
 
         let vscode_available = self.vscode_available;
 
-        let allowed_agents = self.active_extension.allowed_agents();
+        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
         let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
             .iter()
             .map(|agent| BuiltinSessionOption {
@@ -178,7 +181,7 @@ impl App {
 
         let vscode_available = self.vscode_available;
 
-        let allowed_agents = self.active_extension.allowed_agents();
+        let allowed_agents = self.allowed_agents_for_repo(&project.repo);
         let mut builtin_sessions: Vec<BuiltinSessionOption> = allowed_agents
             .iter()
             .map(|agent| BuiltinSessionOption {
@@ -467,6 +470,9 @@ impl App {
             }
             AgentKind::Codex => {
                 TmuxManager::launch_codex(&tmux_session, &window, None)?;
+            }
+            AgentKind::Pi => {
+                TmuxManager::launch_pi(&tmux_session, &window)?;
             }
         }
 

@@ -245,6 +245,7 @@ fn default_project_preferred_agent_comes_from_config() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -452,6 +453,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -495,6 +497,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -740,6 +743,7 @@ fn visible_items_prioritizes_non_worktree_features() {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -815,6 +819,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
             is_git: true,
         }],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: std::collections::HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -961,6 +966,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
             is_git: true,
         }],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: std::collections::HashMap::new(),
     };
 
@@ -1210,6 +1216,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -1256,6 +1263,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: std::collections::HashMap::new(),
     };
 
@@ -1297,6 +1305,11 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
                     session == "amf-coached" && window == "codex" && resume.is_none()
                 })
                 .returning(|_, _, _| Ok(()));
+        }
+        AgentKind::Pi => {
+            tmux.expect_launch_pi()
+                .times(1)
+                .returning(|_, _| Ok(()));
         }
     }
     tmux.expect_select_window()
@@ -1413,6 +1426,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
             is_git: true,
         }],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -1775,6 +1789,7 @@ fn create_project_persists_selected_preferred_agent() {
         version: 4,
         projects: vec![],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let repo_path = repo.path().to_path_buf();
@@ -1816,6 +1831,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -1889,6 +1905,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -1966,6 +1983,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -2657,6 +2675,7 @@ fn store_with_worktree_agent(
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -2775,6 +2794,7 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -2861,6 +2881,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -2918,6 +2939,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -3022,6 +3044,7 @@ fn sync_session_status_shows_agent_token_usage() {
         version: 5,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -3123,6 +3146,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         version: 5,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -3209,6 +3233,7 @@ fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
         version: 5,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -3867,6 +3892,7 @@ fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
             version: 5,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -3940,6 +3966,7 @@ fn contextual_syntax_install_returns_to_diff_review_prompt() {
             version: 5,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4007,6 +4034,7 @@ fn contextual_syntax_install_stays_open_for_non_matching_language() {
             version: 5,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4145,6 +4173,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         version: 2,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     };
 
@@ -4346,6 +4375,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -4405,6 +4435,7 @@ fn store_with_empty_project(repo: PathBuf, is_git: bool) -> ProjectStore {
         version: 4,
         projects: vec![project],
         session_bookmarks: vec![],
+        available_harnesses: vec![],
         extra: HashMap::new(),
     }
 }
@@ -4427,6 +4458,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4468,6 +4500,7 @@ fn create_project_automation_creates_project() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4695,6 +4728,7 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4744,6 +4778,7 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -4829,6 +4864,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
             version: 4,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         },
         Box::new(tmux),

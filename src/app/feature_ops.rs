@@ -101,9 +101,18 @@ impl App {
             .filter(|wt| wt.path != project_repo && !used_workdirs.contains(&wt.path))
             .collect();
 
+        self.active_extension = self.extension_for_repo(&project_repo);
+        let available = self.allowed_agents_for_repo(&project_repo);
+        if available.is_empty() {
+            self.open_harness_setup(false);
+            self.message = Some(
+                "No harnesses configured. Enable at least one to create a feature.".into(),
+            );
+            return;
+        }
+
         let mut state =
             CreateFeatureState::new(project_name, project_repo.clone(), worktrees, is_first);
-        self.active_extension = self.extension_for_repo(&project_repo);
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.agent = agent;
         state.agent_index = agent_index;
@@ -139,7 +148,7 @@ impl App {
         }
         if !self.allows_agent_for_repo(&project_repo, &state.agent) {
             self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
+                "Error: Harness '{}' is not allowed for this workspace",
                 state.agent.display_name()
             ));
             return Ok(());
@@ -513,6 +522,7 @@ impl App {
                 AgentKind::Claude => SessionKind::Claude,
                 AgentKind::Opencode => SessionKind::Opencode,
                 AgentKind::Codex => SessionKind::Codex,
+                AgentKind::Pi => SessionKind::Pi,
             };
             feature.add_session(session_kind);
             feature.add_session(SessionKind::Terminal);
@@ -597,6 +607,10 @@ impl App {
                             None,
                         )?;
                     }
+                }
+                SessionKind::Pi => {
+                    self.tmux
+                        .launch_pi(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Nvim => {
                     self.tmux
@@ -1199,7 +1213,7 @@ impl App {
 
         if !self.allows_agent_for_repo(&project_repo, &agent) {
             self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
+                "Error: Harness '{}' is not allowed for this workspace",
                 agent.display_name()
             ));
             return Ok(());

@@ -225,10 +225,7 @@ impl App {
         );
         setup::ensure_review_claude_md(&feature.workdir, feature.review);
 
-        if feature.sessions.is_empty() {
-            feature.add_session(SessionKind::Codex);
-            feature.add_session(SessionKind::Terminal);
-        }
+        App::initialize_feature_sessions(feature, false);
 
         if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());

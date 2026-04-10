@@ -213,9 +213,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        6
                     } else {
-                        3
+                        5
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -232,9 +232,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        4
+                        6
                     } else {
-                        3
+                        5
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -267,13 +267,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.plan_mode = !state.plan_mode;
                         }
                         4 => {
+                            state.create_terminal = !state.create_terminal;
+                        }
+                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        6 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
@@ -307,13 +310,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.plan_mode = !state.plan_mode;
                         }
                         4 => {
+                            state.create_terminal = !state.create_terminal;
+                        }
+                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        6 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}

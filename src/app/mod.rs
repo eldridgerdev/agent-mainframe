@@ -348,6 +348,24 @@ impl App {
         self.last_view_activity_at = Some(Instant::now());
     }
 
+    fn has_dashboard_animation(&self) -> bool {
+        !self.thinking_features.is_empty()
+            || !self.background_hooks.is_empty()
+            || !self.background_deletions.is_empty()
+            || !self.summary_state.generating.is_empty()
+    }
+
+    pub(crate) fn has_visible_animation(&self) -> bool {
+        match &self.mode {
+            AppMode::Normal => self.has_dashboard_animation(),
+            AppMode::RunningHook(state) => state.child.is_some(),
+            AppMode::DeletingFeatureInProgress(state) => state.child.is_some(),
+            AppMode::SyntaxLanguagePicker(state) => state.operation.is_some(),
+            AppMode::DiffReviewPrompt(state) => state.explanation_child.is_some(),
+            _ => false,
+        }
+    }
+
     pub fn should_defer_view_background_sync(&self) -> bool {
         matches!(self.mode, AppMode::Viewing(_))
             && self

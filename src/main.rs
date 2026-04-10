@@ -432,10 +432,12 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
     let mut startup_claude_hooks_pending = true;
     let mut startup_opencode_plugins_pending = true;
     let mut startup_sidebar_warm_pending = true;
+    const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
 
     loop {
         let loop_state_signature = app.redraw_signature();
         let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
+        let animating = app.has_visible_animation();
 
         let size = terminal.size()?;
         let visible_rows = size.height.saturating_sub(3);
@@ -496,6 +498,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         let poll_duration = if is_viewing {
             Duration::from_millis(5)
+        } else if animating {
+            ANIMATED_REDRAW_INTERVAL
         } else {
             Duration::from_millis(250)
         };
@@ -772,7 +776,12 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         let state_changed = app.redraw_signature() != loop_state_signature;
         let needs_redraw =
-            force_redraw || handled_user_events && !is_viewing || pane_refreshed || cursor_refreshed || state_changed;
+            force_redraw
+                || handled_user_events && !is_viewing
+                || pane_refreshed
+                || cursor_refreshed
+                || state_changed
+                || animating && !handled_user_events;
 
         if needs_redraw {
             let draw_started_at = Instant::now();

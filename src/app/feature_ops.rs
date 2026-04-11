@@ -138,6 +138,7 @@ impl App {
         let mode = state.mode.clone();
         let review = state.review;
         let plan_mode = state.plan_mode;
+        let create_terminal = state.create_terminal;
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
         let steering_enabled = state.steering_enabled;
@@ -222,6 +223,7 @@ impl App {
                             review,
                             plan_mode,
                             agent: state.agent.clone(),
+                            create_terminal,
                             enable_chrome,
                             steering_enabled,
                         },
@@ -236,6 +238,7 @@ impl App {
                         review,
                         plan_mode,
                         state.agent.clone(),
+                        create_terminal,
                         enable_chrome,
                         steering_enabled,
                         None,
@@ -258,6 +261,7 @@ impl App {
             review,
             plan_mode,
             agent: state.agent.clone(),
+            create_terminal,
             enable_chrome,
             steering_enabled,
             hook_succeeded: None,
@@ -310,6 +314,8 @@ impl App {
                 prepared.enable_chrome,
             );
 
+            let mut feature = feature;
+            Self::initialize_feature_sessions(&mut feature, prepared.create_terminal);
             self.store.add_feature(&prepared.project_name, feature);
         }
 
@@ -364,6 +370,23 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn initialize_feature_sessions(feature: &mut Feature, create_terminal: bool) {
+        if !feature.sessions.is_empty() {
+            return;
+        }
+
+        let session_kind = match feature.agent {
+            AgentKind::Claude => SessionKind::Claude,
+            AgentKind::Opencode => SessionKind::Opencode,
+            AgentKind::Codex => SessionKind::Codex,
+            AgentKind::Pi => SessionKind::Pi,
+        };
+        feature.add_session(session_kind);
+        if create_terminal {
+            feature.add_session(SessionKind::Terminal);
+        }
     }
 
     fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
@@ -517,16 +540,7 @@ impl App {
         ensure_review_claude_md(&feature.workdir, feature.review);
         ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
-        if feature.sessions.is_empty() {
-            let session_kind = match feature.agent {
-                AgentKind::Claude => SessionKind::Claude,
-                AgentKind::Opencode => SessionKind::Opencode,
-                AgentKind::Codex => SessionKind::Codex,
-                AgentKind::Pi => SessionKind::Pi,
-            };
-            feature.add_session(session_kind);
-            feature.add_session(SessionKind::Terminal);
-        }
+        Self::initialize_feature_sessions(feature, false);
 
         if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());
@@ -1273,6 +1287,7 @@ impl App {
                         review,
                         plan_mode: false,
                         agent,
+                        create_terminal: false,
                         enable_chrome,
                         steering_enabled: false,
                     },
@@ -1289,6 +1304,7 @@ impl App {
                 review,
                 false,
                 agent.clone(),
+                false,
                 enable_chrome,
                 false,
                 None,

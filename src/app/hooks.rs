@@ -48,6 +48,7 @@ impl App {
         review: bool,
         plan_mode: bool,
         agent: &AgentKind,
+        create_terminal: bool,
         enable_chrome: bool,
     ) -> Option<(usize, usize)> {
         let pi = self
@@ -96,6 +97,7 @@ impl App {
                 feature.enable_chrome = enable_chrome;
                 feature.pending_worktree_script = true;
                 feature.status = ProjectStatus::Stopped;
+                App::initialize_feature_sessions(feature, create_terminal);
             }
             fi
         };
@@ -116,6 +118,7 @@ impl App {
         review: bool,
         plan_mode: bool,
         agent: AgentKind,
+        create_terminal: bool,
         enable_chrome: bool,
         steering_enabled: bool,
         focus_feature: bool,
@@ -128,6 +131,7 @@ impl App {
             review,
             plan_mode,
             &agent,
+            create_terminal,
             enable_chrome,
         ) else {
             return Ok(());
@@ -153,6 +157,7 @@ impl App {
             review,
             plan_mode,
             agent,
+            create_terminal,
             enable_chrome,
             steering_enabled,
             hook_succeeded: None,
@@ -299,6 +304,7 @@ impl App {
                 review,
                 plan_mode,
                 agent,
+                create_terminal,
                 enable_chrome,
                 steering_enabled,
             } => {
@@ -311,6 +317,7 @@ impl App {
                     review,
                     plan_mode,
                     agent,
+                    create_terminal,
                     enable_chrome,
                     steering_enabled,
                     Some(choice),
@@ -338,6 +345,7 @@ impl App {
         review: bool,
         plan_mode: bool,
         agent: AgentKind,
+        create_terminal: bool,
         enable_chrome: bool,
         steering_enabled: bool,
         choice: Option<String>,
@@ -368,6 +376,7 @@ impl App {
             review,
             plan_mode,
             &agent,
+            create_terminal,
             enable_chrome,
         ) {
             self.selection = Selection::Feature(pi, fi);
@@ -409,6 +418,7 @@ impl App {
             review,
             plan_mode,
             agent,
+            create_terminal,
             enable_chrome,
             steering_enabled,
             child,
@@ -464,6 +474,7 @@ impl App {
             review,
             plan_mode,
             agent,
+            create_terminal,
             enable_chrome,
             steering_enabled,
             success,
@@ -477,6 +488,7 @@ impl App {
                     s.review,
                     s.plan_mode,
                     s.agent.clone(),
+                    s.create_terminal,
                     s.enable_chrome,
                     s.steering_enabled,
                     s.success,
@@ -494,6 +506,7 @@ impl App {
             review,
             plan_mode,
             agent,
+            create_terminal,
             enable_chrome,
             steering_enabled,
             true,
@@ -571,6 +584,7 @@ impl App {
                     hook.review,
                     hook.plan_mode,
                     hook.agent.clone(),
+                    hook.create_terminal,
                     hook.enable_chrome,
                     hook.steering_enabled,
                     false,

@@ -839,6 +839,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
         AgentKind::Claude,
         false,
         false,
+        false,
         None,
     );
 
@@ -896,6 +897,7 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
         false,
         false,
         AgentKind::Claude,
+        false,
         false,
         false,
         None,
@@ -994,7 +996,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         .withf(move |session, window, workdir| {
             session == "amf-new-feature" && window == "terminal" && workdir == expected_workdir
         })
-        .times(1)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .withf(|session, window, resume_id, extra_args| {
@@ -1023,6 +1025,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         review: false,
         plan_mode: false,
         agent: AgentKind::Claude,
+        create_terminal: false,
         enable_chrome: false,
         steering_enabled: false,
         child: None,
@@ -1038,7 +1041,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
     let feature = &app.store.projects[0].features[0];
     assert!(!feature.pending_worktree_script);
     assert_eq!(feature.status, ProjectStatus::Idle);
-    assert_eq!(feature.sessions.len(), 2);
+    assert_eq!(feature.sessions.len(), 1);
     assert!(
         app.message
             .as_deref()
@@ -1072,6 +1075,7 @@ fn app_in_creating_feature_mode(
         mode_focus: 0,
         review: false,
         plan_mode: false,
+        create_terminal: true,
         source_index: 0,
         worktrees: vec![],
         worktree_index: 0,
@@ -1232,7 +1236,8 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         AppMode::CreatingFeature(state) => {
             assert_eq!(state.agent, AgentKind::Codex);
             assert_eq!(state.agent_index, 0);
-            assert!(state.steering_enabled);
+            assert!(!state.create_terminal);
+            assert!(!state.steering_enabled);
         }
         _ => panic!("expected CreatingFeature mode"),
     }
@@ -1331,6 +1336,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         mode_focus: 0,
         review: false,
         plan_mode: false,
+        create_terminal: false,
         source_index: 0,
         worktrees: vec![],
         worktree_index: 0,
@@ -1352,6 +1358,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         review: false,
         plan_mode: false,
         agent,
+        create_terminal: true,
         enable_chrome: false,
         steering_enabled: true,
         hook_succeeded: None,
@@ -1445,13 +1452,13 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(1)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_resize_pane()
-        .times(2)
+        .times(1)
         .withf(|session, window, cols, rows| {
             session == "amf-restore-me"
-                && (window == "claude" || window == "terminal")
+                && window == "claude"
                 && *cols == 120
                 && *rows == 40
         })
@@ -1533,6 +1540,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         review: false,
         plan_mode: false,
         agent: AgentKind::Claude,
+        create_terminal: false,
         enable_chrome: false,
         steering_enabled: false,
         hook_succeeded: None,
@@ -1568,7 +1576,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(1)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_opencode()
         .times(1)
@@ -1590,6 +1598,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         review: false,
         plan_mode: false,
         agent: AgentKind::Opencode,
+        create_terminal: false,
         enable_chrome: false,
         steering_enabled: false,
         hook_succeeded: None,
@@ -1847,7 +1856,29 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
         AppMode::CreatingFeature(state) => {
             assert_eq!(state.agent, AgentKind::Codex);
             assert_eq!(state.agent_index, 2);
+            assert!(!state.steering_enabled);
         }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn create_feature_mode_allows_toggling_steering_for_claude() {
+    use crossterm::event::KeyCode;
+
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::Mode;
+        state.agent = AgentKind::Claude;
+        state.mode_focus = 6;
+        state.steering_enabled = false;
+    }
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Char('j')).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => assert!(state.steering_enabled),
         _ => panic!("expected CreatingFeature mode"),
     }
 }
@@ -4544,6 +4575,7 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
         mode: VibeMode::Vibe,
         review: false,
         plan_mode: false,
+        create_terminal: false,
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
@@ -4594,6 +4626,7 @@ fn create_feature_automation_dry_run_surfaces_hook_prompt_options() {
         mode: VibeMode::Vibe,
         review: false,
         plan_mode: false,
+        create_terminal: false,
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
@@ -4626,6 +4659,7 @@ fn create_feature_automation_rejects_codex_vibeless_mode() {
         mode: VibeMode::Vibeless,
         review: true,
         plan_mode: false,
+        create_terminal: false,
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
@@ -4668,7 +4702,7 @@ fn create_feature_automation_creates_and_starts_feature() {
         .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(1)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
@@ -4692,6 +4726,7 @@ fn create_feature_automation_creates_and_starts_feature() {
         mode: VibeMode::Vibe,
         review: true,
         plan_mode: false,
+        create_terminal: false,
         use_worktree: Some(true),
         enable_chrome: false,
         hook_choice: None,
@@ -4707,7 +4742,7 @@ fn create_feature_automation_creates_and_starts_feature() {
     assert_eq!(app.store.projects[0].features[0].branch, "feature-1");
     assert!(app.store.projects[0].features[0].is_worktree);
     assert!(app.store.projects[0].features[0].review);
-    assert_eq!(app.store.projects[0].features[0].sessions.len(), 2);
+    assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
 }
 
 #[test]
@@ -4850,7 +4885,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .times(2)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(2)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(2)
@@ -4898,6 +4933,6 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         app.store.projects[0]
             .features
             .iter()
-            .all(|feature| feature.sessions.len() == 2)
+            .all(|feature| feature.sessions.len() == 1)
     );
 }

@@ -3,6 +3,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::env;
 use std::fs;
+use std::fs::File;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -277,13 +279,16 @@ fn download_asset(url: &str, dest: &Path) -> Result<()> {
         .call()
         .with_context(|| format!("Failed to download from {}", url))?;
 
-    let buffer = response
-        .body_mut()
-        .read_to_vec()
-        .context("Failed to read binary data")?;
+    stream_body_to_path(response.body_mut().as_reader(), dest)?;
 
-    fs::write(dest, buffer).with_context(|| format!("Failed to write file {}", dest.display()))?;
+    Ok(())
+}
 
+fn stream_body_to_path(mut reader: impl io::Read, dest: &Path) -> Result<()> {
+    let mut file =
+        File::create(dest).with_context(|| format!("Failed to create file {}", dest.display()))?;
+    io::copy(&mut reader, &mut file)
+        .with_context(|| format!("Failed to write file {}", dest.display()))?;
     Ok(())
 }
 
@@ -409,5 +414,19 @@ mod tests {
             "db"
         );
         assert!(!dest.path().join("tmux-root").join("stale").exists());
+    }
+
+    #[test]
+    fn stream_body_to_path_supports_large_payloads() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dest = temp_dir.path().join("large.bin");
+        let payload = vec![b'x'; 11 * 1024 * 1024];
+
+        stream_body_to_path(std::io::Cursor::new(&payload), &dest).unwrap();
+
+        let written = fs::read(&dest).unwrap();
+        assert_eq!(written.len(), payload.len());
+        assert_eq!(written[0], b'x');
+        assert_eq!(written[written.len() - 1], b'x');
     }
 }

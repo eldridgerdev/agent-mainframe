@@ -1,0 +1,11 @@
+title = "syntax fixture"
+enabled = true
+
+[tool.amf]
+theme = "tokyonight"
+count = 2
+tags = ["diff", "highlight", "fixture"]
+
+[tool.amf.window]
+width = 96
+height = 28

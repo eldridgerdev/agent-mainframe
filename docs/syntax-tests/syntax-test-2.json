@@ -1,0 +1,10 @@
+{
+  "name": "syntax-fixture",
+  "enabled": true,
+  "count": 3,
+  "tags": ["diff", "highlight", "json"],
+  "meta": {
+    "owner": "amf",
+    "version": 2
+  }
+}

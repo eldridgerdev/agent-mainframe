@@ -425,6 +425,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             "* ",
                             Style::default().fg(theme.session_icon_codex.to_color()),
                         ),
+                        SessionKind::Pi => Span::styled(
+                            "* ",
+                            Style::default().fg(theme.session_icon_codex.to_color()),
+                        ),
                         SessionKind::Terminal => Span::styled(
                             "> ",
                             Style::default().fg(theme.session_icon_terminal.to_color()),

@@ -126,7 +126,7 @@ impl App {
 
         if !self.allows_agent_for_repo(&project.repo, &next_agent) {
             self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
+                "Error: Harness '{}' is not allowed for this workspace",
                 next_agent.display_name()
             ));
             self.mode = AppMode::Normal;
@@ -151,7 +151,7 @@ impl App {
         self.mode = AppMode::Normal;
         self.save()?;
         self.message = Some(format!(
-            "Updated '{}' preferred agent to {}",
+            "Updated '{}' preferred harness to {}",
             project_name,
             next_agent.display_name()
         ));
@@ -180,7 +180,7 @@ impl App {
 
         if !self.allows_agent_for_repo(&project.repo, &next_agent) {
             self.message = Some(format!(
-                "Error: Agent '{}' is not allowed for this workspace",
+                "Error: Harness '{}' is not allowed for this workspace",
                 next_agent.display_name()
             ));
             self.mode = AppMode::Normal;
@@ -257,7 +257,7 @@ impl App {
 fn is_agent_session(kind: &SessionKind) -> bool {
     matches!(
         kind,
-        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+        SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi
     )
 }
 
@@ -266,6 +266,7 @@ fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
         AgentKind::Claude => SessionKind::Claude,
         AgentKind::Opencode => SessionKind::Opencode,
         AgentKind::Codex => SessionKind::Codex,
+        AgentKind::Pi => SessionKind::Pi,
     }
 }
 
@@ -274,6 +275,7 @@ fn session_label_base(agent: &AgentKind) -> &'static str {
         AgentKind::Claude => "Claude",
         AgentKind::Opencode => "Opencode",
         AgentKind::Codex => "Codex",
+        AgentKind::Pi => "Pi",
     }
 }
 
@@ -282,6 +284,7 @@ fn session_window_prefix(agent: &AgentKind) -> &'static str {
         AgentKind::Claude => "claude",
         AgentKind::Opencode => "opencode",
         AgentKind::Codex => "codex",
+        AgentKind::Pi => "pi",
     }
 }
 

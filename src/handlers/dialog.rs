@@ -568,6 +568,7 @@ mod tests {
             version: 5,
             projects: vec![],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
         let mut app = App::new_for_test(
@@ -615,6 +616,7 @@ mod tests {
                 AgentKind::Claude,
             )],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
         App::new_for_test(

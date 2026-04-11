@@ -210,9 +210,11 @@ impl App {
                         if ipc_mode {
                             self.ipc_thinking_sessions.contains(&feature.tmux_session)
                         } else {
-                            // Fallback when IPC is unavailable.
                             Self::is_session_marked_thinking(&feature.tmux_session)
                         }
+                    }
+                    AgentKind::Pi => {
+                        Self::is_session_marked_thinking(&feature.tmux_session)
                     }
                 };
                 if thinking {
@@ -521,6 +523,7 @@ impl App {
             AgentKind::Claude => SessionKind::Claude,
             AgentKind::Opencode => SessionKind::Opencode,
             AgentKind::Codex => SessionKind::Codex,
+            AgentKind::Pi => SessionKind::Pi,
         };
         feature
             .sessions

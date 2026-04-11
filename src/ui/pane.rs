@@ -510,7 +510,7 @@ fn sidebar_title_and_color(agent_kind: &SessionKind, theme: &Theme) -> (&'static
         SessionKind::Claude => ("Claude Sidebar", theme.session_icon_claude.to_color()),
         SessionKind::Codex => ("Codex Sidebar", theme.session_icon_codex.to_color()),
         SessionKind::Opencode => ("Opencode Sidebar", theme.session_icon_opencode.to_color()),
-        _ => ("Agent Sidebar", theme.border.to_color()),
+        _ => ("Harness Sidebar", theme.border.to_color()),
     }
 }
 
@@ -864,6 +864,7 @@ mod tests {
             crate::project::SessionKind::Terminal => ("terminal", "Terminal"),
             crate::project::SessionKind::Nvim => ("nvim", "Nvim"),
             crate::project::SessionKind::Vscode => ("vscode", "VSCode"),
+            crate::project::SessionKind::Pi => ("pi", "Pi"),
             crate::project::SessionKind::Custom => ("custom", "Custom"),
         };
         ViewState::new(

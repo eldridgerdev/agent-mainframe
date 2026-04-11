@@ -5,6 +5,7 @@ mod diff;
 mod diff_review;
 mod feature_creation;
 mod fork;
+mod harness;
 mod hooks;
 mod input;
 mod mouse;
@@ -30,6 +31,7 @@ pub use diff::handle_diff_viewer_key;
 pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
+pub use harness::handle_harness_setup_key;
 pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_running_hook_key};
 pub use input::handle_paste;
 pub use mouse::handle_mouse;
@@ -89,5 +91,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::SyntaxLanguagePicker(_) => handle_syntax_language_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),
         AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key),
+        AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
     }
 }

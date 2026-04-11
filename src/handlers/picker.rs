@@ -353,6 +353,7 @@ mod tests {
                 AgentKind::Claude,
             )],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
         App::new_for_test(
@@ -426,6 +427,7 @@ mod tests {
                 is_git: false,
             }],
             session_bookmarks: vec![],
+            available_harnesses: vec![],
             extra: HashMap::new(),
         };
 

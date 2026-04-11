@@ -390,6 +390,62 @@ pub enum AppMode {
     MarkdownViewer(MarkdownViewerState),
     MarkdownFilePicker(MarkdownFilePickerState),
     CreatingBatchFeatures(CreateBatchFeaturesState),
+    HarnessSetup(HarnessSetupState),
+}
+
+#[derive(Debug, Clone)]
+pub struct HarnessOption {
+    pub kind: AgentKind,
+    pub status: HarnessCheckStatus,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum HarnessCheckStatus {
+    Unchecked,
+    Checking,
+    Installed,
+    NotFound(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct HarnessSetupState {
+    pub selected: usize,
+    pub harnesses: Vec<HarnessOption>,
+    pub is_startup: bool,
+}
+
+impl HarnessSetupState {
+    pub fn new(is_startup: bool, existing: &[AgentKind]) -> Self {
+        let harnesses = AgentKind::ALL
+            .iter()
+            .map(|kind| {
+                let already_enabled = existing.contains(kind);
+                HarnessOption {
+                    kind: kind.clone(),
+                    status: if already_enabled {
+                        HarnessCheckStatus::Installed
+                    } else {
+                        HarnessCheckStatus::Unchecked
+                    },
+                    enabled: already_enabled,
+                }
+            })
+            .collect();
+        Self {
+            selected: 0,
+            harnesses,
+            is_startup,
+        }
+    }
+
+    pub fn enabled_harnesses(&self) -> Vec<AgentKind> {
+        self.harnesses
+            .iter()
+            .filter(|h| h.enabled)
+            .map(|h| h.kind.clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]

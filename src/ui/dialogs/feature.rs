@@ -409,7 +409,7 @@ fn draw_create_feature_branch_mode(
         Style::default().fg(theme.text_muted.to_color())
     };
 
-    let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
+    let mut agent_lines = vec![Line::from(Span::styled(" Harness:", agent_label_style))];
 
     for (i, agent) in allowed_agents.iter().enumerate() {
         let is_selected = i == state.agent_index;
@@ -1461,7 +1461,7 @@ pub fn draw_fork_feature_dialog(
         Style::default().fg(theme.text_muted.to_color())
     };
 
-    let mut agent_lines = vec![Line::from(Span::styled(" Agent:", agent_label_style))];
+    let mut agent_lines = vec![Line::from(Span::styled(" Harness:", agent_label_style))];
 
     for (i, agent) in allowed_agents.iter().enumerate() {
         let is_selected = i == state.agent_index;

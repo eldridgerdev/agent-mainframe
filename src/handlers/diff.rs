@@ -97,6 +97,7 @@ mod tests {
                 version: 5,
                 projects: vec![],
                 session_bookmarks: vec![],
+                available_harnesses: vec![],
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),

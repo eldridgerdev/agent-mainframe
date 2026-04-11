@@ -787,6 +787,10 @@ pub fn draw_session_switcher(
                     "  * ",
                     Style::default().fg(theme.session_icon_codex.to_color()),
                 ),
+                SessionKind::Pi => Span::styled(
+                    "  * ",
+                    Style::default().fg(theme.session_icon_codex.to_color()),
+                ),
                 SessionKind::Terminal => Span::styled(
                     "  > ",
                     Style::default().fg(theme.session_icon_terminal.to_color()),

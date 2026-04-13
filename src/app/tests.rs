@@ -1517,7 +1517,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         .times(1)
         .returning(|_, _, _| Ok(()));
     tmux.expect_create_window()
-        .times(1)
+        .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .times(1)

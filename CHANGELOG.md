@@ -12,6 +12,44 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.15.0] - 2026-04-13
+
+### Added
+
+- Agent harness configuration and setup flow. AMF now lets you choose
+  which harnesses are enabled, persists that selection in
+  `projects.json`, and can prompt for setup on startup when no
+  harnesses are configured.
+- Pi support as a fourth harness/session type alongside Claude,
+  Opencode, and Codex.
+
+### Changed
+
+- UI language now refers to user-selectable agents as "harnesses" in
+  dialogs, help text, and picker flows.
+- Feature creation can now skip the default terminal session and skip
+  steering prompt setup when those extras are not needed.
+- Feature creation, session pickers, and related config flows now only
+  show harnesses that are currently enabled.
+- Dashboard activity indicators are now animated, making background
+  work and harness checks easier to spot.
+
+### Fixed
+
+- `amf upgrade` now streams release downloads to disk instead of
+  buffering the full archive in memory first, improving reliability for
+  larger bundles and lower-memory systems.
+- Diff syntax highlighting now refreshes its cache correctly, reducing
+  stale or incorrect highlighting in the diff viewer. Added multi-file
+  syntax fixtures to make regressions easier to catch.
+
+### Migration
+
+- Existing stores migrate in place to keep using project store version
+  5 while adding the new `available_harnesses` field.
+- After upgrading, AMF may ask you to configure at least one harness
+  before feature creation or session picker flows are available.
+
 ## [v0.14.1] - 2026-04-07
 
 ### Changed

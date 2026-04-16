@@ -529,6 +529,26 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
                 state.scroll_offset = state.scroll_offset.saturating_sub(1);
             }
         }
+        KeyCode::PageDown => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_add(10);
+            }
+        }
+        KeyCode::PageUp => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = 0;
+            }
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.scroll_offset = usize::MAX;
+            }
+        }
         KeyCode::Char('c') => {
             app.debug_log.clear();
             if let AppMode::DebugLog(state) = &mut app.mode {
@@ -902,6 +922,38 @@ mod tests {
                 );
             }
             _ => panic!("expected command picker after pressing / in debug log"),
+        }
+    }
+
+    #[test]
+    fn debug_log_g_jumps_to_top() {
+        let mut app = markdown_app();
+        app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+            scroll_offset: 42,
+            from_view: None,
+        });
+
+        handle_debug_log_key(&mut app, KeyCode::Char('g')).unwrap();
+
+        match &app.mode {
+            AppMode::DebugLog(state) => assert_eq!(state.scroll_offset, 0),
+            _ => panic!("expected debug log to stay open"),
+        }
+    }
+
+    #[test]
+    fn debug_log_g_uppercase_jumps_to_bottom() {
+        let mut app = markdown_app();
+        app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+            scroll_offset: 0,
+            from_view: None,
+        });
+
+        handle_debug_log_key(&mut app, KeyCode::Char('G')).unwrap();
+
+        match &app.mode {
+            AppMode::DebugLog(state) => assert_eq!(state.scroll_offset, usize::MAX),
+            _ => panic!("expected debug log to stay open"),
         }
     }
 }

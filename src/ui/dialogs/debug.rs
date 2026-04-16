@@ -10,6 +10,8 @@ use super::super::dashboard::centered_rect;
 use crate::debug::{DebugLog, LogLevel};
 use crate::theme::Theme;
 
+const END_OF_LOG_MARKER: &str = "------- END OF LOG -------";
+
 pub fn draw_debug_log(
     frame: &mut Frame,
     debug_log: &DebugLog,
@@ -35,7 +37,7 @@ pub fn draw_debug_log(
         return;
     }
 
-    let entries: Vec<Line> = debug_log
+    let mut entries: Vec<Line> = debug_log
         .entries()
         .iter()
         .map(|entry| {
@@ -65,6 +67,12 @@ pub fn draw_debug_log(
             ])
         })
         .collect();
+    entries.push(Line::from(Span::styled(
+        END_OF_LOG_MARKER,
+        Style::default()
+            .fg(theme.secondary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
 
     let content_area = {
         use ratatui::layout::{Constraint, Direction, Layout};
@@ -104,7 +112,7 @@ pub fn draw_debug_log(
 
     let hint = Line::from(vec![
         Span::styled(
-            "j/k:scroll  c:clear  /:actions  Esc:close  ",
+            "j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  c:clear  /:actions  Esc:close  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(
@@ -127,7 +135,7 @@ fn count_wrapped_lines(debug_log: &DebugLog, width: usize) -> usize {
         return 0;
     }
 
-    debug_log
+    let entry_lines: usize = debug_log
         .entries()
         .iter()
         .map(|entry| {
@@ -140,5 +148,10 @@ fn count_wrapped_lines(debug_log: &DebugLog, width: usize) -> usize {
             );
             UnicodeWidthStr::width(line.as_str()).max(1).div_ceil(width)
         })
-        .sum()
+        .sum();
+
+    entry_lines
+        + UnicodeWidthStr::width(END_OF_LOG_MARKER)
+            .max(1)
+            .div_ceil(width)
 }

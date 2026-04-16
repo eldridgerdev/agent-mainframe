@@ -6,6 +6,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
+use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
@@ -132,12 +133,21 @@ fn build_agent_sidebar_data(
 
     let status_text = compose_sidebar_status_text(activity_line, usage_line, usage_confidence);
 
+    let todos_text = if sidebar_kind == SessionKind::Claude {
+        let claude_session_id = session.and_then(|s| s.claude_session_id.as_deref());
+        read_claude_task_state(&feature.workdir, claude_session_id)
+            .as_ref()
+            .and_then(claude_sidebar_todos_text)
+    } else {
+        None
+    };
+
     Some(super::pane::AgentSidebarData {
         agent_kind: sidebar_kind,
         status_text,
         prompt_text,
         work_text,
-        todos_text: None,
+        todos_text,
         summary_text,
     })
 }
@@ -223,35 +233,78 @@ fn opencode_sidebar_todos_text(
     let sidebar = opencode_sidebar?;
     let todo_count = sidebar
         .todo_count
-        .unwrap_or_else(|| sidebar.todo_preview.len() as u64);
+        .unwrap_or_else(|| sidebar.todo_preview.len() as u64) as usize;
     if todo_count == 0 && sidebar.todo_preview.is_empty() {
         return None;
     }
 
-    let preview_count = sidebar.todo_preview.len().min(2) as u64;
+    // Opencode only provides open items — no completed count — so skip the
+    // progress bar and render all preview items as pending (○).
+    const MAX_SHOWN: usize = 5;
+    let mut lines: Vec<String> = sidebar
+        .todo_preview
+        .iter()
+        .take(MAX_SHOWN)
+        .map(|item| format!("○ {item}"))
+        .collect();
+
+    let remaining = todo_count.saturating_sub(lines.len());
+    if remaining > 0 {
+        lines.push(format!("+{remaining} more"));
+    }
+
+    Some(lines.join("\n"))
+}
+
+fn claude_sidebar_todos_text(task_state: &ClaudeTaskState) -> Option<String> {
+    let total = task_state.tasks.len();
+    if total == 0 {
+        return None;
+    }
+    let completed = task_state.completed_count();
+
+    // Progress bar: 8 filled/empty blocks + " X/Y"
+    let bar_width = 8usize;
+    let filled = if total > 0 { (completed * bar_width) / total } else { 0 };
+    let empty = bar_width - filled;
     let mut lines = vec![format!(
-        "Open: {todo_count} item{}",
-        if todo_count == 1 { "" } else { "s" }
+        "{}{} {completed}/{total}",
+        "█".repeat(filled),
+        "░".repeat(empty),
     )];
-    if let Some(first) = sidebar.todo_preview.first() {
-        lines.push(format!(
-            "Next: {}",
-            compact_sidebar_text(first, SIDEBAR_TODO_VALUE_CHARS)
-        ));
+
+    // Sliding window: show up to 5 tasks anchored at the first non-completed
+    // task, with one completed item above it for context.
+    let (window_start, window_end) = if total <= 5 {
+        (0, total)
+    } else {
+        let first_active = task_state
+            .tasks
+            .iter()
+            .position(|t| t.status != "completed")
+            .unwrap_or(total);
+        let start = first_active.saturating_sub(1);
+        let end = (start + 5).min(total);
+        // Re-anchor so we always fill the window when near the end.
+        let start = end.saturating_sub(5);
+        (start, end)
+    };
+
+    for task in &task_state.tasks[window_start..window_end] {
+        let label = task.active_form.as_deref().unwrap_or(task.subject.as_str());
+        let prefix = match task.status.as_str() {
+            "completed" => "✓",
+            "in_progress" => "●",
+            _ => "○",
+        };
+        lines.push(format!("{prefix} {label}"));
     }
-    if let Some(second) = sidebar.todo_preview.get(1) {
-        lines.push(format!(
-            "Then: {}",
-            compact_sidebar_text(second, SIDEBAR_TODO_VALUE_CHARS)
-        ));
+
+    let remaining = total - window_end;
+    if remaining > 0 {
+        lines.push(format!("+{remaining} more"));
     }
-    if todo_count > preview_count {
-        let hidden_count = todo_count - preview_count;
-        lines.push(format!(
-            "More: {hidden_count} more item{}",
-            if hidden_count == 1 { "" } else { "s" }
-        ));
-    }
+
     Some(lines.join("\n"))
 }
 

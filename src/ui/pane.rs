@@ -488,7 +488,7 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Todos",
             body: todos_text,
-            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 4)),
+            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 13)),
         });
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
@@ -553,6 +553,68 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            // Progress bar: "████░░░░ 2/5"
+            if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
+                let split = line.find('░').unwrap_or(line.len());
+                let (filled, rest) = line.split_at(split);
+                return Line::from(vec![
+                    Span::styled(
+                        filled.to_string(),
+                        Style::default().fg(theme.success.to_color()),
+                    ),
+                    Span::styled(
+                        rest.to_string(),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ),
+                ]);
+            }
+            // Checkbox lines: "✓ …", "● …", "○ …"
+            if title == "Todos" {
+                if let Some(rest) = line.strip_prefix("✓ ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "✓ ".to_string(),
+                            Style::default().fg(theme.success.to_color()),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                    ]);
+                }
+                if let Some(rest) = line.strip_prefix("● ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "● ".to_string(),
+                            Style::default()
+                                .fg(theme.info.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text.to_color()),
+                        ),
+                    ]);
+                }
+                if let Some(rest) = line.strip_prefix("○ ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "○ ".to_string(),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text.to_color()),
+                        ),
+                    ]);
+                }
+                if line.starts_with('+') {
+                    return Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ));
+                }
+            }
             if let Some((label, value)) = line.split_once(": ") {
                 Line::from(vec![
                     Span::styled(

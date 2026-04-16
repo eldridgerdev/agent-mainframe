@@ -178,6 +178,12 @@ impl TmuxRuntime {
 }
 
 impl TmuxManager {
+    fn persistent_input_enabled() -> bool {
+        std::env::var("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT")
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
+    }
+
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
         RUNTIME.get_or_init(TmuxRuntime::detect)
@@ -1098,6 +1104,10 @@ impl TmuxManager {
 
     /// Send literal text to a tmux pane (no key name interpretation)
     pub fn send_literal(session: &str, window: &str, text: &str) -> Result<()> {
+        if !Self::persistent_input_enabled() {
+            return Self::send_literal_direct(session, window, text);
+        }
+
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_text = Self::tmux_command_quote(text);
@@ -1148,6 +1158,10 @@ impl TmuxManager {
 
     /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
     pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
+        if !Self::persistent_input_enabled() {
+            return Self::send_key_name_direct(session, window, key_name);
+        }
+
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
         match Self::send_via_input_client(session, |client| {
@@ -1172,6 +1186,10 @@ impl TmuxManager {
 
     /// Send keys to a specific window in a session
     pub fn send_keys(session: &str, window: &str, keys: &str) -> Result<()> {
+        if !Self::persistent_input_enabled() {
+            return Self::send_keys_direct(session, window, keys);
+        }
+
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_keys = Self::tmux_command_quote(keys);

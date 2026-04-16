@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::{
     Mutex, OnceLock,
-    mpsc::{self, Receiver},
+    mpsc::{self, Receiver, RecvTimeoutError},
 };
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
@@ -26,6 +27,7 @@ pub struct SpawnedTmuxCommand {
 struct PersistentTmuxInputClient {
     child: Child,
     stdin: ChildStdin,
+    output_rx: Receiver<String>,
 }
 
 impl PersistentTmuxInputClient {
@@ -36,6 +38,41 @@ impl PersistentTmuxInputClient {
         self.stdin
             .flush()
             .context("Failed to flush tmux input command")
+    }
+
+    fn is_running(&mut self) -> Result<bool> {
+        Ok(self
+            .child
+            .try_wait()
+            .context("Failed to poll tmux input client process")?
+            .is_none())
+    }
+
+    fn wait_for_token(&mut self, token: &str, timeout: Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if !self.is_running()? {
+                bail!("tmux input client exited before acknowledging readiness");
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                bail!("timed out waiting for tmux input client readiness");
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            match self.output_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(line) => {
+                    if line.contains(token) {
+                        return Ok(());
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    bail!("tmux input client output stream disconnected");
+                }
+            }
+        }
     }
 }
 
@@ -425,10 +462,26 @@ impl TmuxManager {
             .take()
             .context("Failed to open tmux input stdin")?;
 
-        Self::drain_child_output(child.stdout.take());
-        Self::drain_child_output(child.stderr.take());
+        let (tx, rx) = mpsc::channel();
+        Self::stream_child_output(child.stdout.take(), tx.clone());
+        Self::stream_child_output(child.stderr.take(), tx);
 
-        Ok(PersistentTmuxInputClient { child, stdin })
+        let mut client = PersistentTmuxInputClient {
+            child,
+            stdin,
+            output_rx: rx,
+        };
+        let ready_token = format!("__AMF_INPUT_READY__{session}__");
+        client.send_command(&format!("display-message -p {ready_token}\n"))?;
+        client.wait_for_token(&ready_token, Duration::from_millis(500))?;
+
+        log_to_file(
+            LogLevel::Debug,
+            "tmux",
+            &format!("Spawned persistent tmux input client for session {session}"),
+        );
+
+        Ok(client)
     }
 
     fn remove_input_client(session: &str) {
@@ -447,6 +500,20 @@ impl TmuxManager {
             let mut clients = Self::input_clients()
                 .lock()
                 .expect("tmux input client mutex poisoned");
+            let needs_respawn = match clients.get_mut(session) {
+                Some(client) => !client.is_running()?,
+                None => false,
+            };
+            if needs_respawn {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!("Respawning dead tmux input client for session {session}"),
+                );
+                if let Some(mut client) = clients.remove(session) {
+                    let _ = client.child.kill();
+                }
+            }
             let client = match clients.entry(session.to_string()) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -467,6 +534,33 @@ impl TmuxManager {
             .entry(session.to_string())
             .or_insert(Self::spawn_input_client(session)?);
         send(client)
+    }
+
+    fn send_literal_direct(session: &str, window: &str, text: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Self::run(
+            &["send-keys", "-t", &target, "-l", text],
+            "Failed to send literal text to tmux",
+            "tmux send-keys failed",
+        )
+    }
+
+    fn send_key_name_direct(session: &str, window: &str, key_name: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Self::run(
+            &["send-keys", "-t", &target, key_name],
+            "Failed to send key to tmux",
+            "tmux send-keys failed",
+        )
+    }
+
+    fn send_keys_direct(session: &str, window: &str, keys: &str) -> Result<()> {
+        let target = format!("{}:{}", session, window);
+        Self::run(
+            &["send-keys", "-t", &target, keys, "Enter"],
+            "Failed to send keys to tmux",
+            "tmux send-keys failed",
+        )
     }
 
     /// Check if tmux is available
@@ -1007,12 +1101,28 @@ impl TmuxManager {
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_text = Self::tmux_command_quote(text);
-        Self::send_via_input_client(session, |client| {
+        match Self::send_via_input_client(session, |client| {
             client.send_command(&format!(
                 "send-keys -t {quoted_target} -l {quoted_text}\n"
             ))
         })
-        .with_context(|| format!("Failed to send literal text to tmux target {target}"))
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "Persistent tmux input client failed for {target}; falling back to direct send-keys: {err}"
+                    ),
+                );
+                Self::send_literal_direct(session, window, text).with_context(|| {
+                    format!(
+                        "Failed to send literal text to tmux target {target} after input client fallback"
+                    )
+                })
+            }
+        }
     }
 
     /// Paste text into a tmux pane using bracketed paste mode.
@@ -1040,10 +1150,24 @@ impl TmuxManager {
     pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
-        Self::send_via_input_client(session, |client| {
+        match Self::send_via_input_client(session, |client| {
             client.send_command(&format!("send-keys -t {quoted_target} {key_name}\n"))
         })
-        .with_context(|| format!("Failed to send key to tmux target {target}"))
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "Persistent tmux input client failed for {target}; falling back to direct send-keys: {err}"
+                    ),
+                );
+                Self::send_key_name_direct(session, window, key_name).with_context(|| {
+                    format!("Failed to send key to tmux target {target} after input client fallback")
+                })
+            }
+        }
     }
 
     /// Send keys to a specific window in a session
@@ -1051,10 +1175,24 @@ impl TmuxManager {
         let target = format!("{}:{}", session, window);
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_keys = Self::tmux_command_quote(keys);
-        Self::send_via_input_client(session, |client| {
+        match Self::send_via_input_client(session, |client| {
             client.send_command(&format!("send-keys -t {quoted_target} {quoted_keys} Enter\n"))
         })
-        .with_context(|| format!("Failed to send keys to tmux target {target}"))
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "Persistent tmux input client failed for {target}; falling back to direct send-keys: {err}"
+                    ),
+                );
+                Self::send_keys_direct(session, window, keys).with_context(|| {
+                    format!("Failed to send keys to tmux target {target} after input client fallback")
+                })
+            }
+        }
     }
 
     /// Enter tmux copy mode for a pane

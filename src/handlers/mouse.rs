@@ -8,6 +8,7 @@ use crate::tmux::TmuxManager;
 static mut LAST_CLICK_TIME: Option<Instant> = None;
 static mut LAST_CLICK_ROW: Option<u16> = None;
 const VIEW_MOUSE_SCROLL_LINES: usize = 3;
+const DEBUG_LOG_MOUSE_SCROLL_LINES: usize = 3;
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
     match mouse.kind {
@@ -39,6 +40,12 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
         app.diff_review_scroll_patch_up(VIEW_MOUSE_SCROLL_LINES);
         return;
     }
+    if let AppMode::DebugLog(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_sub(DEBUG_LOG_MOUSE_SCROLL_LINES);
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -52,6 +59,12 @@ fn handle_scroll_down(app: &mut App, visible_rows: u16) {
     }
     if matches!(app.mode, AppMode::DiffReviewPrompt(_)) {
         app.diff_review_scroll_patch_down(VIEW_MOUSE_SCROLL_LINES);
+        return;
+    }
+    if let AppMode::DebugLog(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_add(DEBUG_LOG_MOUSE_SCROLL_LINES);
         return;
     }
     if matches!(app.mode, AppMode::Viewing(_)) {
@@ -409,4 +422,82 @@ fn extract_selected_text(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, AppMode, DebugLogState};
+    use crate::project::ProjectStore;
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use crossterm::event::KeyModifiers;
+    use std::collections::HashMap;
+
+    fn test_app() -> App {
+        App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        )
+    }
+
+    #[test]
+    fn mouse_scroll_down_moves_debug_log() {
+        let mut app = test_app();
+        app.mode = AppMode::DebugLog(DebugLogState {
+            scroll_offset: 1,
+            from_view: None,
+        });
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            20,
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::DebugLog(state) => {
+                assert_eq!(state.scroll_offset, 1 + DEBUG_LOG_MOUSE_SCROLL_LINES)
+            }
+            _ => panic!("expected debug log to stay open"),
+        }
+    }
+
+    #[test]
+    fn mouse_scroll_up_clamps_debug_log_at_top() {
+        let mut app = test_app();
+        app.mode = AppMode::DebugLog(DebugLogState {
+            scroll_offset: 1,
+            from_view: None,
+        });
+
+        handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            20,
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::DebugLog(state) => assert_eq!(state.scroll_offset, 0),
+            _ => panic!("expected debug log to stay open"),
+        }
+    }
 }

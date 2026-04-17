@@ -184,6 +184,22 @@ fn main() -> Result<()> {
     let mut app = App::new(store_path)?;
     app.log_startup();
 
+    // Check for VS Code availability in the background so it doesn't
+    // block startup.  The result is applied once ready.
+    let vscode_check_rx = {
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::spawn(move || {
+            let available = std::process::Command::new("code")
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok();
+            let _ = tx.send(available);
+        });
+        rx
+    };
+
     if !app.store.has_any_harnesses() {
         app.open_harness_setup(true);
     }
@@ -218,7 +234,8 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| run_loop(&mut terminal, &mut app)));
+    let result =
+        panic::catch_unwind(AssertUnwindSafe(|| run_loop(&mut terminal, &mut app, vscode_check_rx)));
 
     disable_raw_mode()?;
     execute!(
@@ -419,7 +436,11 @@ pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
     }
 }
 
-fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+fn run_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    vscode_check_rx: std::sync::mpsc::Receiver<bool>,
+) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
     let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
@@ -493,6 +514,20 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 
         if app.has_active_sidebar() {
             app.poll_codex_sidebar_metadata();
+        }
+
+        if app.session_status_bg.is_some() {
+            let started_at = Instant::now();
+            if app.poll_session_status_bg() {
+                app.perf
+                    .record_duration("startup.sync_session_status_applied", started_at.elapsed());
+                force_redraw = true;
+            }
+        }
+
+        // Apply the one-shot VS Code availability check when it resolves.
+        if let Ok(available) = vscode_check_rx.try_recv() {
+            app.vscode_available = available;
         }
 
         if let Some(alert) = debug::take_user_alert() {
@@ -586,7 +621,9 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
             || startup_usage_pending
             || startup_claude_hooks_pending
             || startup_opencode_plugins_pending
-            || startup_sidebar_warm_pending;
+            || startup_sidebar_warm_pending
+            // Background session-status thread still in flight.
+            || app.session_status_bg.is_some();
         let defer_background_sync = app.should_defer_view_background_sync();
 
         if !handled_user_events
@@ -705,11 +742,13 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
                 force_redraw = true;
             } else if startup_session_status_pending {
                 let started_at = Instant::now();
-                app.sync_session_status();
-                app.perf
-                    .record_duration("startup.sync_session_status", started_at.elapsed());
+                app.sync_session_status_background();
+                app.perf.record_duration(
+                    "startup.sync_session_status_bg_start",
+                    started_at.elapsed(),
+                );
                 startup_session_status_pending = false;
-                force_redraw = true;
+                // Results applied asynchronously via poll_session_status_bg().
             } else if startup_notifications_pending {
                 let started_at = Instant::now();
                 let notifications_changed = app.scan_notifications();

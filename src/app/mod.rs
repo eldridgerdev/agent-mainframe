@@ -303,6 +303,7 @@ pub struct App {
     pending_sidebar_loads: std::collections::HashSet<String>,
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
+    pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1003,6 +1004,7 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
+            session_status_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -1021,12 +1023,8 @@ impl App {
             ipc_fallback_logged: false,
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
-            vscode_available: std::process::Command::new("code")
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok(),
+            // Checked asynchronously — defaults to false until confirmed.
+            vscode_available: false,
             view_snapshot_tx,
             view_snapshot_rx,
             view_snapshot_stop: None,
@@ -1104,6 +1102,7 @@ impl App {
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
+            session_status_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

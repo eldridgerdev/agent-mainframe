@@ -1,14 +1,206 @@
 use super::*;
-use crate::project::{AgentKind, SessionKind};
+use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
 use crate::token_tracking::{
-    SessionTokenTracker, TokenUsageProvider, TokenUsageSource, format_token_usage,
-    provider_for_session_kind,
+    SessionTokenTracker, TokenPricingConfig, TokenUsageProvider, TokenUsageSource,
+    format_token_usage, provider_for_session_kind,
 };
 
 use chrono::Utc;
 use std::collections::HashSet;
+use std::path::PathBuf;
+
+// ---------------------------------------------------------------------------
+// Background session-status sync types
+// ---------------------------------------------------------------------------
+
+struct SessionStatusJob {
+    session_id: String,
+    kind: SessionKind,
+    workdir: PathBuf,
+    created_at: chrono::DateTime<chrono::Utc>,
+    existing_source: Option<TokenUsageSource>,
+    existing_source_match: Option<TokenUsageSourceMatch>,
+    claude_session_id: Option<String>,
+}
+
+enum SourceAction {
+    SetExact(TokenUsageSource),
+    SetInferred(TokenUsageSource),
+    Clear,
+    NoChange,
+}
+
+struct SessionStatusUpdate {
+    session_id: String,
+    source_action: SourceAction,
+    status_text: Option<String>,
+}
+
+pub(crate) struct SessionStatusBgResult {
+    tracker: SessionTokenTracker,
+    updates: Vec<SessionStatusUpdate>,
+    sources_discovered: bool,
+}
+
+fn collect_jobs(store: &crate::project::ProjectStore) -> Vec<SessionStatusJob> {
+    store
+        .projects
+        .iter()
+        .flat_map(|project| {
+            project.features.iter().flat_map(|feature| {
+                feature.sessions.iter().map(|session| SessionStatusJob {
+                    session_id: session.id.clone(),
+                    kind: session.kind.clone(),
+                    workdir: feature.workdir.clone(),
+                    created_at: session.created_at,
+                    existing_source: session.token_usage_source.clone(),
+                    existing_source_match: session.token_usage_source_match.clone(),
+                    claude_session_id: session.claude_session_id.clone(),
+                })
+            })
+        })
+        .collect()
+}
+
+fn run_jobs(
+    mut tracker: SessionTokenTracker,
+    jobs: Vec<SessionStatusJob>,
+    pricing: &TokenPricingConfig,
+) -> SessionStatusBgResult {
+    let mut updates = Vec::with_capacity(jobs.len());
+    let mut sources_discovered = false;
+
+    for job in jobs {
+        if job.kind == SessionKind::Custom {
+            let status_path = job
+                .workdir
+                .join(".amf")
+                .join("session-status")
+                .join(format!("{}.txt", job.session_id));
+            let status_text = std::fs::read_to_string(&status_path).ok().and_then(|s| {
+                let line = s.lines().next()?.trim().to_string();
+                if line.is_empty() { None } else { Some(line) }
+            });
+            updates.push(SessionStatusUpdate {
+                session_id: job.session_id,
+                source_action: SourceAction::NoChange,
+                status_text,
+            });
+            continue;
+        }
+
+        let Some(expected_provider) = provider_for_session_kind(&job.kind) else {
+            updates.push(SessionStatusUpdate {
+                session_id: job.session_id,
+                source_action: SourceAction::NoChange,
+                status_text: None,
+            });
+            continue;
+        };
+
+        let mut source = job.existing_source.clone();
+        let mut action = SourceAction::NoChange;
+
+        // Fast path: Claude session with a known session ID → exact match.
+        if source.is_none()
+            && matches!(job.kind, SessionKind::Claude)
+            && job.claude_session_id.is_some()
+        {
+            if let Some(id) = job.claude_session_id.as_ref() {
+                let new_source = TokenUsageSource {
+                    provider: TokenUsageProvider::Claude,
+                    id: id.clone(),
+                };
+                source = Some(new_source.clone());
+                action = SourceAction::SetExact(new_source);
+                sources_discovered = true;
+            }
+        }
+
+        // Clear if the cached source belongs to the wrong provider.
+        if source
+            .as_ref()
+            .is_some_and(|s| s.provider != expected_provider)
+        {
+            source = None;
+            action = SourceAction::Clear;
+            sources_discovered = true;
+        }
+
+        // Infer from the filesystem if we still have no source.
+        if source.is_none() {
+            if let Some(new_source) =
+                tracker.discover_source(&job.kind, &job.workdir, job.created_at)
+            {
+                source = Some(new_source.clone());
+                action = SourceAction::SetInferred(new_source);
+                sources_discovered = true;
+            }
+        }
+
+        let status_text = source
+            .as_ref()
+            .and_then(|src| tracker.read_usage(src, &job.workdir))
+            .map(|usage| format_token_usage(&usage, pricing));
+
+        updates.push(SessionStatusUpdate {
+            session_id: job.session_id,
+            source_action: action,
+            status_text,
+        });
+    }
+
+    SessionStatusBgResult {
+        tracker,
+        updates,
+        sources_discovered,
+    }
+}
+
+fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
+    app.token_tracker = result.tracker;
+
+    for update in result.updates {
+        'outer: for project in &mut app.store.projects {
+            for feature in &mut project.features {
+                for session in &mut feature.sessions {
+                    if session.id != update.session_id {
+                        continue;
+                    }
+                    match update.source_action {
+                        SourceAction::SetExact(ref src) => {
+                            session.set_token_usage_source_exact(src.clone())
+                        }
+                        SourceAction::SetInferred(ref src) => {
+                            session.set_token_usage_source_inferred(src.clone())
+                        }
+                        SourceAction::Clear => session.clear_token_usage_source(),
+                        SourceAction::NoChange => {}
+                    }
+                    session.status_text = update.status_text;
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    if result.sources_discovered {
+        if let Err(err) = app.save() {
+            app.log_warn(
+                "usage",
+                format!("Failed to persist discovered token tracking sources: {err}"),
+            );
+        }
+    }
+
+    if app.has_active_sidebar() {
+        app.refresh_sidebar_for_current_view();
+    } else if !matches!(app.mode, AppMode::Viewing(_)) {
+        app.schedule_sidebar_loads_for_all_features();
+    }
+}
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
     let lower = content.to_lowercase();
@@ -48,6 +240,53 @@ fn opencode_sidebar_thinking_state(
 }
 
 impl App {
+    /// Kick off a background thread to do the expensive token-usage I/O.
+    /// The thread takes ownership of `self.token_tracker` so the cache is
+    /// preserved; it is swapped back in when `poll_session_status_bg` applies
+    /// the results.
+    pub fn sync_session_status_background(&mut self) {
+        let jobs = collect_jobs(&self.store);
+        let pricing = self.config.token_pricing.clone();
+        let tracker = std::mem::take(&mut self.token_tracker);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.session_status_bg = Some(rx);
+
+        std::thread::spawn(move || {
+            let result = run_jobs(tracker, jobs, &pricing);
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Check whether the background session-status thread has finished and,
+    /// if so, apply its results.  Returns `true` when state changed.
+    pub fn poll_session_status_bg(&mut self) -> bool {
+        let ready = self
+            .session_status_bg
+            .as_ref()
+            .map(|rx| rx.try_recv().ok())
+            .flatten();
+
+        match ready {
+            Some(result) => {
+                self.session_status_bg = None;
+                apply_bg_result(self, result);
+                true
+            }
+            None => {
+                // Clean up a disconnected sender.
+                if self
+                    .session_status_bg
+                    .as_ref()
+                    .is_some_and(|rx| matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)))
+                {
+                    self.session_status_bg = None;
+                }
+                false
+            }
+        }
+    }
+
     pub fn sync_statuses(&mut self) {
         let live_sessions: HashSet<String> = self
             .tmux

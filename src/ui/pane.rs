@@ -1,9 +1,9 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap, block::Title},
 };
 
 use crate::app::{TextSelection, ViewState};
@@ -422,6 +422,23 @@ fn draw_agent_sidebar(
         .split(inner);
     for (sidebar_section, section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(sidebar_section.title, theme);
+        let left_title = Title::from(Span::styled(
+            format!(" {} ", sidebar_section.title),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+        let mut block = Block::default()
+            .title(left_title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent));
+        if sidebar_section.title == "Prompt" {
+            block = block.title(
+                Title::from(Span::styled(
+                    " <leader l> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
             sidebar_section.body,
@@ -429,15 +446,7 @@ fn draw_agent_sidebar(
         ))
         .wrap(Wrap { trim: false })
         .style(Style::default().bg(theme.effective_bg()))
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    format!(" {} ", sidebar_section.title),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(accent)),
-        );
+        .block(block);
         frame.render_widget(paragraph, *section);
     }
 }
@@ -660,7 +669,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     } else if title == "Todos" {
         theme.success.to_color()
     } else if title == "Prompt" {
-        theme.secondary.to_color()
+        theme.text.to_color()
     } else if title == "Summary" {
         theme.text.to_color()
     } else if label == "Usage" {

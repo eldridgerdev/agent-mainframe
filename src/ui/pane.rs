@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Position, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -422,6 +422,22 @@ fn draw_agent_sidebar(
         .split(inner);
     for (sidebar_section, section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(sidebar_section.title, theme);
+        let mut block = Block::default()
+            .title_top(Line::from(Span::styled(
+                format!(" {} ", sidebar_section.title),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(accent));
+        if sidebar_section.title == "Prompt" {
+            block = block.title_top(
+                Line::from(Span::styled(
+                    " <leader l> ",
+                    Style::default().fg(theme.text_muted.to_color()),
+                ))
+                .alignment(Alignment::Right),
+            );
+        }
         let paragraph = Paragraph::new(styled_sidebar_lines(
             sidebar_section.title,
             sidebar_section.body,
@@ -429,15 +445,7 @@ fn draw_agent_sidebar(
         ))
         .wrap(Wrap { trim: false })
         .style(Style::default().bg(theme.effective_bg()))
-        .block(
-            Block::default()
-                .title(Span::styled(
-                    format!(" {} ", sidebar_section.title),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ))
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(accent)),
-        );
+        .block(block);
         frame.render_widget(paragraph, *section);
     }
 }
@@ -488,7 +496,7 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Todos",
             body: todos_text,
-            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 4)),
+            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 13)),
         });
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
@@ -553,6 +561,68 @@ fn summary_section_height(body: &str, section_width: u16) -> u16 {
 fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
     body.lines()
         .map(|line| {
+            // Progress bar: "████░░░░ 2/5"
+            if title == "Todos" && (line.starts_with('█') || line.starts_with('░')) {
+                let split = line.find('░').unwrap_or(line.len());
+                let (filled, rest) = line.split_at(split);
+                return Line::from(vec![
+                    Span::styled(
+                        filled.to_string(),
+                        Style::default().fg(theme.success.to_color()),
+                    ),
+                    Span::styled(
+                        rest.to_string(),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ),
+                ]);
+            }
+            // Checkbox lines: "✓ …", "● …", "○ …"
+            if title == "Todos" {
+                if let Some(rest) = line.strip_prefix("✓ ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "✓ ".to_string(),
+                            Style::default().fg(theme.success.to_color()),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                    ]);
+                }
+                if let Some(rest) = line.strip_prefix("● ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "● ".to_string(),
+                            Style::default()
+                                .fg(theme.info.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text.to_color()),
+                        ),
+                    ]);
+                }
+                if let Some(rest) = line.strip_prefix("○ ") {
+                    return Line::from(vec![
+                        Span::styled(
+                            "○ ".to_string(),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                        Span::styled(
+                            rest.to_string(),
+                            Style::default().fg(theme.text.to_color()),
+                        ),
+                    ]);
+                }
+                if line.starts_with('+') {
+                    return Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ));
+                }
+            }
             if let Some((label, value)) = line.split_once(": ") {
                 Line::from(vec![
                     Span::styled(
@@ -598,7 +668,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     } else if title == "Todos" {
         theme.success.to_color()
     } else if title == "Prompt" {
-        theme.secondary.to_color()
+        theme.text.to_color()
     } else if title == "Summary" {
         theme.text.to_color()
     } else if label == "Usage" {

@@ -12,6 +12,48 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.17.0] - 2026-04-20
+
+### Added
+
+- Embedded tmux sessions now use a full tmux control-mode view by
+  default, streaming pane output directly into AMF for much more
+  responsive typing and rendering in view mode.
+- Added `tmux_control_mode` to `~/.config/amf/config.json`. It defaults
+  to `true`; set it to `false` to return to the legacy ambient tmux
+  socket and direct `tmux send-keys` fallback path.
+- Help dialogs now support scrolling so longer keybinding and workflow
+  reference text remains readable inside smaller terminals.
+
+### Changed
+
+- AMF now uses a dedicated managed tmux socket for control-mode sessions
+  instead of inheriting a potentially polluted ambient tmux server.
+- View-mode input no longer relies on per-key `tmux send-keys`
+  subprocesses in the default path, reducing input latency and avoiding
+  stale control-client buildup on long-running tmux servers.
+- Diff-review prompts now include a short hold delay to avoid accidental
+  keystrokes being interpreted immediately after the review popup opens.
+
+### Fixed
+
+- Control-mode view reseeding now restores the parser cursor to tmux's
+  real pane cursor before applying incremental output, fixing misplaced
+  cursor and stray text artifacts during shell/readline redraws.
+- Session selection redraws now update correctly after switching
+  sessions.
+- Control-mode clients now perform readiness checks and fall back safely
+  if startup fails.
+
+### Migration
+
+- No store migration is required.
+- Existing tmux sessions on the previous ambient socket are not moved to
+  the new managed control-mode socket. Restart those sessions from AMF,
+  or temporarily set `"tmux_control_mode": false` in
+  `~/.config/amf/config.json` if you need to keep using the legacy tmux
+  server.
+
 ## [v0.16.0] - 2026-04-20
 
 ### Added

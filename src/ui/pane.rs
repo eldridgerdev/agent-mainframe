@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap, block::Title},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 use crate::app::{TextSelection, ViewState};
@@ -422,17 +422,16 @@ fn draw_agent_sidebar(
         .split(inner);
     for (sidebar_section, section) in sections_with_content.iter().zip(sections.iter()) {
         let accent = sidebar_section_color(sidebar_section.title, theme);
-        let left_title = Title::from(Span::styled(
-            format!(" {} ", sidebar_section.title),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ));
         let mut block = Block::default()
-            .title(left_title)
+            .title_top(Line::from(Span::styled(
+                format!(" {} ", sidebar_section.title),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(accent));
         if sidebar_section.title == "Prompt" {
-            block = block.title(
-                Title::from(Span::styled(
+            block = block.title_top(
+                Line::from(Span::styled(
                     " <leader l> ",
                     Style::default().fg(theme.text_muted.to_color()),
                 ))

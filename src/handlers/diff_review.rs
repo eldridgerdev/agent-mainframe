@@ -21,6 +21,10 @@ fn diff_review_uses_new_file_presentation(app: &App) -> bool {
     )
 }
 
+fn hold_active(app: &App) -> bool {
+    matches!(&app.mode, AppMode::DiffReviewPrompt(state) if state.hold_active())
+}
+
 pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(
         &app.mode,
@@ -49,7 +53,7 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     state.reason.clear();
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if !hold_active(app) => {
                 submit_diff_review(app, true, false)?;
             }
             KeyCode::Backspace => {
@@ -63,6 +67,31 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 {
                     state.reason.push(c);
                 }
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    if hold_active(app) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.diff_review_scroll_patch_down(PATCH_SCROLL_STEP);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                app.diff_review_scroll_patch_up(PATCH_SCROLL_STEP);
+            }
+            KeyCode::PageDown => {
+                app.diff_review_scroll_patch_down(PATCH_PAGE_STEP);
+            }
+            KeyCode::PageUp => {
+                app.diff_review_scroll_patch_up(PATCH_PAGE_STEP);
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                app.diff_review_scroll_patch_top();
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                app.diff_review_scroll_patch_bottom();
             }
             _ => {}
         }
@@ -330,6 +359,8 @@ mod tests {
             request_id: None,
             reply_socket: None,
             return_to_view: None,
+            opened_at: std::time::Instant::now(),
+            hold_secs: 0.0,
         });
         app
     }

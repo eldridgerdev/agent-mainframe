@@ -258,6 +258,8 @@ impl App {
             request_id: input.request_id.clone(),
             reply_socket: input.reply_socket.clone(),
             return_to_view,
+            opened_at: std::time::Instant::now(),
+            hold_secs: self.config.diff_review_popup_hold_secs,
         });
     }
 

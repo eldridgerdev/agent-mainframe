@@ -4043,6 +4043,8 @@ fn contextual_syntax_install_returns_to_diff_review_prompt() {
             reply_socket: None,
             return_to_view: None,
             patch_scroll: 0,
+            opened_at: std::time::Instant::now(),
+            hold_secs: 0.0,
         }))),
         auto_return_on_success: true,
         return_language: Some(crate::highlight::HighlightLanguage::Rust),

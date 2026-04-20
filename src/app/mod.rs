@@ -57,7 +57,7 @@ use crate::project::{
 use crate::tmux::TmuxManager;
 use crate::token_tracking::{SessionTokenTracker, TokenPricingConfig};
 use crate::traits::{TmuxOps, WorktreeOps};
-use crate::ui::render_ansi_lines;
+use crate::ui::{render_ansi_lines, render_vt100_screen};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
@@ -73,13 +73,14 @@ pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
 pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 pub const VIEW_STARTUP_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(350);
 pub const VIEW_BURST_DURATION: Duration = Duration::from_millis(175);
-pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(30);
+pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(16);
 pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
 
 const VIEW_SNAPSHOT_REFRESH_NONE: u8 = 0;
 const VIEW_SNAPSHOT_REFRESH_NORMAL: u8 = 1;
 const VIEW_SNAPSHOT_REFRESH_BURST: u8 = 2;
+const VIEW_SNAPSHOT_REFRESH_PANE_BURST: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct CodexSidebarMetadataResult {
@@ -99,6 +100,117 @@ pub struct ViewSnapshot {
     pub render_duration: Option<Duration>,
     pub cursor_duration: Option<Duration>,
     pub pipe_read_duration: Option<Duration>,
+}
+
+fn sanitize_tmux_control_line(line: &str) -> &str {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let line = line.strip_prefix("\u{1b}P1000p").unwrap_or(line);
+    line.strip_suffix("\u{1b}\\").unwrap_or(line)
+}
+
+fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = line.strip_prefix("%output ") {
+        return rest.split_once(' ');
+    }
+
+    let rest = line.strip_prefix("%extended-output ")?;
+    let (metadata, payload) = rest.split_once(" : ")?;
+    let pane_id = metadata.split_whitespace().next()?;
+    Some((pane_id, payload))
+}
+
+fn decode_tmux_control_payload(payload: &str) -> Vec<u8> {
+    let bytes = payload.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && (b'0'..=b'7').contains(&bytes[i + 1])
+            && (b'0'..=b'7').contains(&bytes[i + 2])
+            && (b'0'..=b'7').contains(&bytes[i + 3])
+        {
+            let value =
+                ((bytes[i + 1] - b'0') << 6) | ((bytes[i + 2] - b'0') << 3) | (bytes[i + 3] - b'0');
+            decoded.push(value);
+            i += 4;
+            continue;
+        }
+
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+
+    decoded
+}
+
+fn parser_cursor(parser: &vt100::Parser) -> Option<(u16, u16)> {
+    let (row, col) = parser.screen().cursor_position();
+    Some((col, row))
+}
+
+fn position_parser_cursor(parser: &mut vt100::Parser, cursor: (u16, u16), cols: u16, rows: u16) {
+    let (col, row) = cursor;
+    let row = row.min(rows.saturating_sub(1)).saturating_add(1);
+    let col = col.min(cols.saturating_sub(1)).saturating_add(1);
+    parser.process(format!("\x1b[{row};{col}H").as_bytes());
+}
+
+fn snapshot_from_parser(
+    session: &str,
+    window: &str,
+    cols: u16,
+    rows: u16,
+    parser: &vt100::Parser,
+    cursor_override: Option<(u16, u16)>,
+    capture_duration: Option<Duration>,
+    read_duration: Option<Duration>,
+) -> ViewSnapshot {
+    let screen = parser.screen();
+    let formatted = String::from_utf8_lossy(&screen.contents_formatted()).into_owned();
+
+    ViewSnapshot {
+        session: session.to_string(),
+        window: window.to_string(),
+        pane_content: Some(formatted),
+        rendered_lines: Some(render_vt100_screen(screen, cols, rows)),
+        cursor: Some(cursor_override.or_else(|| parser_cursor(parser))),
+        capture_duration,
+        render_duration: None,
+        cursor_duration: None,
+        pipe_read_duration: read_duration,
+    }
+}
+
+fn reseed_control_view_parser(
+    session: &str,
+    window: &str,
+    cols: u16,
+    rows: u16,
+    parser: &mut vt100::Parser,
+) -> ViewSnapshot {
+    *parser = vt100::Parser::new(rows, cols, 0);
+    let capture_started_at = Instant::now();
+    let captured = TmuxManager::capture_pane_ansi(session, window).unwrap_or_default();
+    let capture_duration = capture_started_at.elapsed();
+    let normalized = captured.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    let cursor = TmuxManager::cursor_position(session, window).ok();
+    if let Some(cursor) = cursor {
+        position_parser_cursor(parser, cursor, cols, rows);
+    }
+
+    snapshot_from_parser(
+        session,
+        window,
+        cols,
+        rows,
+        parser,
+        cursor,
+        Some(capture_duration),
+        None,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +331,7 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
+    pub tmux_control_mode: bool,
     pub diff_review_viewer: DiffReviewViewer,
     pub diff_viewer_layout: DiffViewerLayout,
     pub zai: Option<ZaiPlanConfig>,
@@ -252,6 +365,7 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             leader_timeout_seconds: 5,
+            tmux_control_mode: true,
             diff_review_viewer: DiffReviewViewer::default(),
             diff_viewer_layout: DiffViewerLayout::Unified,
             zai: None,
@@ -479,7 +593,11 @@ impl App {
         self.perf
             .record_duration("view.send_literal", started_at.elapsed());
         if result.is_ok() {
-            self.request_view_snapshot_burst();
+            if TmuxManager::uses_control_pty_input() {
+                self.request_view_snapshot_pane_burst();
+            } else {
+                self.request_view_snapshot_burst();
+            }
         }
         result.map(|_| true)
     }
@@ -517,6 +635,10 @@ impl App {
 
     pub fn request_view_snapshot_burst(&self) {
         self.request_view_snapshot_refresh_kind(VIEW_SNAPSHOT_REFRESH_BURST);
+    }
+
+    pub fn request_view_snapshot_pane_burst(&self) {
+        self.request_view_snapshot_refresh_kind(VIEW_SNAPSHOT_REFRESH_PANE_BURST);
     }
 
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
@@ -559,7 +681,14 @@ impl App {
             let now = Instant::now();
             let refresh_kind = refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed);
             let refresh_requested = refresh_kind != VIEW_SNAPSHOT_REFRESH_NONE;
-            if refresh_kind == VIEW_SNAPSHOT_REFRESH_BURST {
+            let cursor_refresh_requested = matches!(
+                refresh_kind,
+                VIEW_SNAPSHOT_REFRESH_NORMAL | VIEW_SNAPSHOT_REFRESH_BURST
+            );
+            if matches!(
+                refresh_kind,
+                VIEW_SNAPSHOT_REFRESH_BURST | VIEW_SNAPSHOT_REFRESH_PANE_BURST
+            ) {
                 burst_until = now + VIEW_BURST_DURATION;
             }
             let burst_active = now < burst_until;
@@ -578,9 +707,9 @@ impl App {
             } else {
                 VIEW_CURSOR_REFRESH_INTERVAL
             };
-            let pane_due = refresh_requested
-                || now.duration_since(next_pane_refresh) >= pane_interval;
-            let cursor_due = refresh_requested
+            let pane_due =
+                refresh_requested || now.duration_since(next_pane_refresh) >= pane_interval;
+            let cursor_due = cursor_refresh_requested
                 || now.duration_since(next_cursor_refresh) >= cursor_interval;
 
             if pane_due || cursor_due {
@@ -594,8 +723,7 @@ impl App {
                 if pane_due {
                     let started_at = Instant::now();
                     let captured =
-                        TmuxManager::capture_pane_ansi(session, window)
-                            .unwrap_or_default();
+                        TmuxManager::capture_pane_ansi(session, window).unwrap_or_default();
                     capture_duration = Some(started_at.elapsed());
                     let render_started_at = Instant::now();
                     rendered_lines = Some(render_ansi_lines(&captured, cols, rows));
@@ -606,9 +734,7 @@ impl App {
 
                 if cursor_due {
                     let cursor_started_at = Instant::now();
-                    cursor = Some(
-                        TmuxManager::cursor_position(session, window).ok(),
-                    );
+                    cursor = Some(TmuxManager::cursor_position(session, window).ok());
                     cursor_duration = Some(cursor_started_at.elapsed());
                     next_cursor_refresh = Instant::now();
                 }
@@ -630,6 +756,177 @@ impl App {
             let guard = condvar.0.lock().unwrap();
             let _ = condvar.1.wait_timeout(guard, Duration::from_millis(10));
         }
+    }
+
+    fn run_control_mode_view_worker(
+        session: &str,
+        window: &str,
+        cols: u16,
+        rows: u16,
+        stop: &AtomicBool,
+        refresh: &AtomicU8,
+        tx: &Sender<ViewSnapshot>,
+    ) -> anyhow::Result<()> {
+        let (target_window_id, mut target_pane_id) =
+            TmuxManager::resolve_view_target_ids(session, window)?;
+        let mut client = TmuxManager::spawn_control_mode_view_client(
+            session,
+            window,
+            &target_pane_id,
+            cols,
+            rows,
+        )?;
+        let mut parser = vt100::Parser::new(rows, cols, 0);
+        let mut debug_lines_remaining = 20usize;
+
+        crate::debug::log_to_file(
+            crate::debug::LogLevel::Info,
+            "perf",
+            &format!(
+                "control-mode worker started for {session}:{window} window_id={target_window_id} pane_id={target_pane_id}"
+            ),
+        );
+
+        let mut debug_initial_lines_remaining = 10usize;
+        while let Some(raw_line) = client.try_recv()? {
+            if debug_initial_lines_remaining > 0 {
+                let line = sanitize_tmux_control_line(&raw_line);
+                if !line.is_empty() {
+                    crate::debug::log_to_file(
+                        crate::debug::LogLevel::Debug,
+                        "tmux",
+                        &format!("control view initial recv: {line:?}"),
+                    );
+                    debug_initial_lines_remaining -= 1;
+                }
+            }
+        }
+
+        let _ = tx.send(reseed_control_view_parser(
+            session,
+            window,
+            cols,
+            rows,
+            &mut parser,
+        ));
+
+        while !stop.load(Ordering::Relaxed) {
+            match refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed) {
+                VIEW_SNAPSHOT_REFRESH_NORMAL => {
+                    let _ = tx.send(reseed_control_view_parser(
+                        session,
+                        window,
+                        cols,
+                        rows,
+                        &mut parser,
+                    ));
+                }
+                VIEW_SNAPSHOT_REFRESH_BURST | VIEW_SNAPSHOT_REFRESH_PANE_BURST => {
+                    let _ = tx.send(reseed_control_view_parser(
+                        session,
+                        window,
+                        cols,
+                        rows,
+                        &mut parser,
+                    ));
+                }
+                _ => {}
+            }
+
+            let Some(line) = client.recv_timeout(Duration::from_millis(50))? else {
+                continue;
+            };
+
+            let read_started_at = Instant::now();
+            let mut pending_lines = vec![line];
+            while let Some(extra_line) = client.try_recv()? {
+                pending_lines.push(extra_line);
+            }
+
+            let mut parser_changed = false;
+            let mut reseed_needed = false;
+
+            for raw_line in pending_lines {
+                let line = sanitize_tmux_control_line(&raw_line);
+                if line.is_empty() {
+                    continue;
+                }
+                if debug_lines_remaining > 0 {
+                    crate::debug::log_to_file(
+                        crate::debug::LogLevel::Debug,
+                        "tmux",
+                        &format!("control view recv: {line:?}"),
+                    );
+                    debug_lines_remaining -= 1;
+                }
+
+                if let Some((pane_id, payload)) = parse_tmux_output_notification(line) {
+                    if pane_id == target_pane_id {
+                        let decoded = decode_tmux_control_payload(payload);
+                        if !decoded.is_empty() {
+                            parser.process(&decoded);
+                            parser_changed = true;
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(rest) = line.strip_prefix("%window-pane-changed ") {
+                    let mut parts = rest.split_whitespace();
+                    if parts.next() == Some(target_window_id.as_str())
+                        && let Some(new_pane_id) = parts.next()
+                    {
+                        target_pane_id = new_pane_id.to_string();
+                        reseed_needed = true;
+                    }
+                    continue;
+                }
+
+                if let Some(rest) = line.strip_prefix("%pane-mode-changed ")
+                    && rest.trim() == target_pane_id
+                {
+                    reseed_needed = true;
+                    continue;
+                }
+
+                if let Some(rest) = line.strip_prefix("%pause ") {
+                    let paused_pane = rest.trim();
+                    if paused_pane == target_pane_id {
+                        let _ = client
+                            .send_command(&format!("refresh-client -A {paused_pane}:continue\n"));
+                        reseed_needed = true;
+                    }
+                    continue;
+                }
+            }
+
+            if reseed_needed {
+                let _ = tx.send(reseed_control_view_parser(
+                    session,
+                    window,
+                    cols,
+                    rows,
+                    &mut parser,
+                ));
+                continue;
+            }
+
+            if parser_changed {
+                let _ = tx.send(snapshot_from_parser(
+                    session,
+                    window,
+                    cols,
+                    rows,
+                    &parser,
+                    None,
+                    None,
+                    Some(read_started_at.elapsed()),
+                ));
+            }
+        }
+
+        let _ = client.child.kill();
+        Ok(())
     }
 
     /// Primary worker: uses pipe-pane to stream output and a persistent
@@ -659,7 +956,13 @@ impl App {
         // Slug the session name for a safe FIFO path.
         let slug: String = session
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let fifo_dir = std::path::PathBuf::from("/tmp/amf-pipes");
         fs::create_dir_all(&fifo_dir)?;
@@ -737,10 +1040,18 @@ impl App {
             let now = Instant::now();
             let refresh_kind = refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed);
             let refresh_requested = refresh_kind != VIEW_SNAPSHOT_REFRESH_NONE;
+            let pane_refresh_requested = refresh_requested;
             if refresh_requested {
                 pane_has_new_output = true;
             }
-            if refresh_kind == VIEW_SNAPSHOT_REFRESH_BURST {
+            let cursor_refresh_requested = matches!(
+                refresh_kind,
+                VIEW_SNAPSHOT_REFRESH_NORMAL | VIEW_SNAPSHOT_REFRESH_BURST
+            );
+            if matches!(
+                refresh_kind,
+                VIEW_SNAPSHOT_REFRESH_BURST | VIEW_SNAPSHOT_REFRESH_PANE_BURST
+            ) {
                 burst_until = now + VIEW_BURST_DURATION;
             }
             let burst_active = now < burst_until;
@@ -752,16 +1063,17 @@ impl App {
             } else {
                 VIEW_PANE_REFRESH_INTERVAL
             };
-            let pane_due = pane_has_new_output
-                && now.duration_since(last_capture) >= pane_interval;
+            let pane_due = pane_refresh_requested
+                || (pane_has_new_output && now.duration_since(last_capture) >= pane_interval);
 
             let cursor_interval = if burst_active {
                 VIEW_BURST_CURSOR_REFRESH_INTERVAL
             } else {
                 VIEW_CURSOR_REFRESH_INTERVAL
             };
-            let cursor_due = refresh_requested
-                || now.duration_since(next_cursor_refresh) >= cursor_interval;
+            let cursor_due = cursor_refresh_requested
+                || (!pane_refresh_requested
+                    && now.duration_since(next_cursor_refresh) >= cursor_interval);
 
             if pane_due || cursor_due {
                 let mut pane_content = None;
@@ -774,8 +1086,8 @@ impl App {
                 if pane_due {
                     pane_has_new_output = false;
                     let started_at = Instant::now();
-                    let captured = TmuxManager::capture_pane_ansi(session, window)
-                        .unwrap_or_default();
+                    let captured =
+                        TmuxManager::capture_pane_ansi(session, window).unwrap_or_default();
                     capture_duration = Some(started_at.elapsed());
                     let render_started = Instant::now();
                     rendered_lines = Some(render_ansi_lines(&captured, cols, rows));
@@ -786,9 +1098,7 @@ impl App {
 
                 if cursor_due {
                     let cursor_started = Instant::now();
-                    cursor = Some(
-                        TmuxManager::cursor_position(session, window).ok(),
-                    );
+                    cursor = Some(TmuxManager::cursor_position(session, window).ok());
                     cursor_duration = Some(cursor_started.elapsed());
                     next_cursor_refresh = Instant::now();
                 }
@@ -824,7 +1134,8 @@ impl App {
             return;
         };
 
-        if self.view_snapshot_target.as_ref() == Some(&(session.clone(), window.clone(), cols, rows))
+        if self.view_snapshot_target.as_ref()
+            == Some(&(session.clone(), window.clone(), cols, rows))
         {
             return;
         }
@@ -846,6 +1157,32 @@ impl App {
         let worker_condvar = condvar.clone();
 
         std::thread::spawn(move || {
+            if TmuxManager::uses_control_pty_input() {
+                let control_result = Self::run_control_mode_view_worker(
+                    &worker_session,
+                    &worker_window,
+                    worker_cols,
+                    worker_rows,
+                    &worker_stop,
+                    &worker_refresh,
+                    &tx,
+                );
+
+                if let Err(e) = &control_result {
+                    crate::debug::log_to_file(
+                        crate::debug::LogLevel::Warn,
+                        "perf",
+                        &format!(
+                            "control-mode view failed ({e}), falling back to pipe-pane snapshots"
+                        ),
+                    );
+                }
+
+                if control_result.is_ok() || worker_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+
             // Try pipe-pane approach first, fall back to polling capture-pane.
             let pipe_result = Self::run_pipe_pane_worker(
                 &worker_session,
@@ -906,10 +1243,12 @@ impl App {
             }
 
             if let Some(duration) = snapshot.capture_duration {
-                self.perf.record_duration("view.capture_pane_ansi", duration);
+                self.perf
+                    .record_duration("view.capture_pane_ansi", duration);
             }
             if let Some(duration) = snapshot.render_duration {
-                self.perf.record_duration("view.render_snapshot_lines", duration);
+                self.perf
+                    .record_duration("view.render_snapshot_lines", duration);
             }
             if let Some(duration) = snapshot.cursor_duration {
                 self.perf.record_duration("view.cursor_position", duration);
@@ -1594,10 +1933,8 @@ impl App {
     }
 
     pub(crate) fn open_harness_setup(&mut self, is_startup: bool) {
-        let state = crate::app::state::HarnessSetupState::new(
-            is_startup,
-            &self.store.available_harnesses,
-        );
+        let state =
+            crate::app::state::HarnessSetupState::new(is_startup, &self.store.available_harnesses);
         self.mode = AppMode::HarnessSetup(state);
         self.message = None;
     }
@@ -1624,7 +1961,9 @@ impl App {
         match kind {
             AgentKind::Claude => "Install Claude Code: https://claude.ai/code",
             AgentKind::Codex => "Install Codex: npm install -g @openai/codex",
-            AgentKind::Opencode => "Install Opencode: go install github.com/opencode-ai/opencode@latest",
+            AgentKind::Opencode => {
+                "Install Opencode: go install github.com/opencode-ai/opencode@latest"
+            }
             AgentKind::Pi => "Install Pi: check your provider's documentation",
         }
     }
@@ -1882,7 +2221,10 @@ fn session_kind_signature(session_kind: Option<&SessionKind>) -> u8 {
 fn sidebar_prompt_input_signature(workdir: &Path) -> u64 {
     let mut hasher = DefaultHasher::new();
     hash_path_metadata(&mut hasher, crate::app::util::latest_prompt_path(workdir));
-    hash_path_metadata(&mut hasher, workdir.join(".codex").join("latest-prompt.txt"));
+    hash_path_metadata(
+        &mut hasher,
+        workdir.join(".codex").join("latest-prompt.txt"),
+    );
     hasher.finish()
 }
 

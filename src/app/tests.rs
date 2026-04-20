@@ -19,6 +19,27 @@ fn prompt_entry(text: &str) -> String {
     text.to_string()
 }
 
+#[test]
+fn control_view_parser_cursor_move_keeps_relative_redraws_on_tmux_row() {
+    let mut parser = vt100::Parser::new(6, 40, 0);
+    parser.process(b"\x1b[2;1Hscreen");
+
+    position_parser_cursor(&mut parser, (8, 1), 40, 6);
+    parser.process(b"\r\x1b[10Cabc");
+
+    assert_eq!(parser_cursor(&parser), Some((13, 1)));
+    assert_eq!(
+        parser
+            .screen()
+            .contents()
+            .lines()
+            .nth(1)
+            .unwrap_or_default()
+            .trim_end(),
+        "screen    abc"
+    );
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]
@@ -168,6 +189,12 @@ fn app_config_default_leader_timeout_is_five_seconds() {
 }
 
 #[test]
+fn app_config_default_tmux_control_mode_is_enabled() {
+    let config = AppConfig::default();
+    assert!(config.tmux_control_mode);
+}
+
+#[test]
 fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
@@ -184,6 +211,18 @@ fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
     assert!(!config.nerd_font);
+}
+
+#[test]
+fn app_config_missing_tmux_control_mode_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert!(config.tmux_control_mode);
+}
+
+#[test]
+fn app_config_tmux_control_mode_can_be_disabled() {
+    let config: AppConfig = serde_json::from_str(r#"{"tmux_control_mode":false}"#).unwrap();
+    assert!(!config.tmux_control_mode);
 }
 
 #[test]
@@ -675,7 +714,9 @@ fn visible_animation_is_enabled_for_dashboard_summary_generation() {
         Box::new(MockWorktreeOps::new()),
     );
 
-    app.summary_state.generating.insert("amf-my-feat".to_string());
+    app.summary_state
+        .generating
+        .insert("amf-my-feat".to_string());
     assert!(app.has_visible_animation());
 }
 
@@ -1312,9 +1353,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
                 .returning(|_, _, _| Ok(()));
         }
         AgentKind::Pi => {
-            tmux.expect_launch_pi()
-                .times(1)
-                .returning(|_, _| Ok(()));
+            tmux.expect_launch_pi().times(1).returning(|_, _| Ok(()));
         }
     }
     tmux.expect_select_window()
@@ -1457,10 +1496,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
     tmux.expect_resize_pane()
         .times(1)
         .withf(|session, window, cols, rows| {
-            session == "amf-restore-me"
-                && window == "claude"
-                && *cols == 120
-                && *rows == 40
+            session == "amf-restore-me" && window == "claude" && *cols == 120 && *rows == 40
         })
         .returning(move |_, window, _, _| {
             if window == "claude" {

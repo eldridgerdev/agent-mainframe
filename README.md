@@ -52,8 +52,9 @@ attention, and get notified the moment one is waiting for input.
 - **tmux** — pre-built release bundles include a statically-linked
   `tmux` binary, so no system install is needed when using a release.
   When building from source, `tmux` must be available in `PATH`. AMF
-  auto-detects a bundled `tmux` binary placed next to `amf` and uses a
-  private socket when launched outside an existing tmux session;
+  auto-detects a bundled `tmux` binary placed next to `amf`. By
+  default, AMF uses tmux control mode on a dedicated managed socket for
+  responsive embedded-session input and rendering;
   `AMF_TMUX_BIN` and `AMF_TMUX_SOCKET` can override these at runtime.
 
 ### Agent (choose one or more)
@@ -462,6 +463,7 @@ automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
+| `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
 | `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI: `"amf"` uses the in-app reviewer and `"nvim"` uses the legacy tmux/neovim popup. Older `"custom"` and `"legacy"` values are still accepted. |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |

@@ -54,7 +54,11 @@ fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Resul
     app.perf
         .record_duration("view.send_literal", started_at.elapsed());
     if result.is_ok() {
-        app.request_view_snapshot_burst();
+        if TmuxManager::uses_control_pty_input() {
+            app.request_view_snapshot_pane_burst();
+        } else {
+            app.request_view_snapshot_burst();
+        }
     }
     result
 }
@@ -65,7 +69,11 @@ fn send_key_name(app: &mut App, session: &str, window: &str, key_name: &str) -> 
     app.perf
         .record_duration("view.send_key_name", started_at.elapsed());
     if result.is_ok() {
-        app.request_view_snapshot_burst();
+        if TmuxManager::uses_control_pty_input() {
+            app.request_view_snapshot_pane_burst();
+        } else {
+            app.request_view_snapshot_burst();
+        }
     }
     result
 }

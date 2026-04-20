@@ -16,8 +16,9 @@ use ratatui::{
 use crate::app::App;
 use crate::theme::Theme;
 
-pub(crate) use pane::viewing_main_width;
 pub(crate) use pane::render_ansi_lines;
+pub(crate) use pane::render_vt100_screen;
+pub(crate) use pane::viewing_main_width;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     dashboard::draw(frame, app);

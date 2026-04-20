@@ -496,7 +496,12 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Todos",
             body: todos_text,
-            constraint: Constraint::Length(sidebar_section_height(todos_text, section_width, 2, 13)),
+            constraint: Constraint::Length(sidebar_section_height(
+                todos_text,
+                section_width,
+                2,
+                13,
+            )),
         });
     }
     if is_opencode && !data.summary_text.trim().is_empty() {
@@ -598,10 +603,7 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
                                 .fg(theme.info.to_color())
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            rest.to_string(),
-                            Style::default().fg(theme.text.to_color()),
-                        ),
+                        Span::styled(rest.to_string(), Style::default().fg(theme.text.to_color())),
                     ]);
                 }
                 if let Some(rest) = line.strip_prefix("○ ") {
@@ -610,10 +612,7 @@ fn styled_sidebar_lines<'a>(title: &str, body: &'a str, theme: &Theme) -> Vec<Li
                             "○ ".to_string(),
                             Style::default().fg(theme.text_muted.to_color()),
                         ),
-                        Span::styled(
-                            rest.to_string(),
-                            Style::default().fg(theme.text.to_color()),
-                        ),
+                        Span::styled(rest.to_string(), Style::default().fg(theme.text.to_color())),
                     ]);
                 }
                 if line.starts_with('+') {
@@ -775,12 +774,11 @@ fn strip_ansi_codes(s: &str) -> String {
     result
 }
 
-pub(crate) fn render_ansi_lines(raw: &str, cols: u16, rows: u16) -> Vec<Line<'static>> {
-    let mut parser = vt100::Parser::new(rows, cols, 0);
-    let normalized = raw.replace('\n', "\r\n");
-    parser.process(normalized.as_bytes());
-    let screen = parser.screen();
-
+pub(crate) fn render_vt100_screen(
+    screen: &vt100::Screen,
+    cols: u16,
+    rows: u16,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(rows as usize);
     for row in 0..rows {
         let mut spans: Vec<Span<'static>> = Vec::new();
@@ -811,6 +809,13 @@ pub(crate) fn render_ansi_lines(raw: &str, cols: u16, rows: u16) -> Vec<Line<'st
     }
 
     lines
+}
+
+pub(crate) fn render_ansi_lines(raw: &str, cols: u16, rows: u16) -> Vec<Line<'static>> {
+    let mut parser = vt100::Parser::new(rows, cols, 0);
+    let normalized = raw.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    render_vt100_screen(parser.screen(), cols, rows)
 }
 
 fn ansi_to_ratatui_text_with_selection<'a>(

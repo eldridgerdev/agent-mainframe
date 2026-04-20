@@ -45,7 +45,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use app::App;
+use app::{load_config, App};
 use tmux::TmuxManager;
 
 #[derive(Parser, Debug)]
@@ -170,6 +170,9 @@ fn main() -> Result<()> {
         );
         return Ok(());
     }
+
+    let config = load_config();
+    TmuxManager::configure_control_mode(config.tmux_control_mode);
 
     if let Err(e) = TmuxManager::check_available() {
         eprintln!("Error: {e}");

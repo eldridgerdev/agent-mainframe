@@ -1,43 +1,158 @@
 use anyhow::{Context, Result, bail};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{
     Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering as AtomicOrdering},
     mpsc::{self, Receiver, RecvTimeoutError},
 };
 use std::time::Duration;
 
 #[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use crate::debug::{LogLevel, log_to_file};
 use crate::traits::TmuxOps;
 
 pub struct TmuxManager;
 
+static TMUX_CONTROL_MODE_ENABLED: AtomicBool = AtomicBool::new(true);
+
 pub struct SpawnedTmuxCommand {
     pub child: Child,
     pub output_rx: Receiver<String>,
 }
 
+pub struct SpawnedTmuxControlClient {
+    pub child: Child,
+    writer: TmuxInputWriter,
+    output_rx: Receiver<String>,
+}
+
+impl SpawnedTmuxControlClient {
+    pub fn send_command(&mut self, command: &str) -> Result<()> {
+        self.writer.write_command(command)
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<Option<String>> {
+        match self.output_rx.recv_timeout(timeout) {
+            Ok(line) => Ok(Some(line)),
+            Err(RecvTimeoutError::Timeout) => Ok(None),
+            Err(RecvTimeoutError::Disconnected) => {
+                bail!("tmux control client output stream disconnected");
+            }
+        }
+    }
+
+    pub fn try_recv(&self) -> Result<Option<String>> {
+        match self.output_rx.try_recv() {
+            Ok(line) => Ok(Some(line)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                bail!("tmux control client output stream disconnected");
+            }
+        }
+    }
+
+    pub fn is_running(&mut self) -> Result<bool> {
+        Ok(self
+            .child
+            .try_wait()
+            .context("Failed to poll tmux control client process")?
+            .is_none())
+    }
+
+    pub fn wait_for_token(&mut self, token: &str, timeout: Duration) -> Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if !self.is_running()? {
+                bail!("tmux control client exited before acknowledging readiness");
+            }
+
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                bail!("timed out waiting for tmux control client readiness");
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            match self.recv_timeout(remaining.min(Duration::from_millis(25)))? {
+                Some(line) => {
+                    log_to_file(
+                        LogLevel::Debug,
+                        "tmux",
+                        &format!("tmux control view recv: {line}"),
+                    );
+                    if line.contains(token) {
+                        return Ok(());
+                    }
+                }
+                None => continue,
+            }
+        }
+    }
+}
+
+impl Drop for SpawnedTmuxControlClient {
+    fn drop(&mut self) {
+        let _ = self.send_command("detach-client\n");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 struct PersistentTmuxInputClient {
     child: Child,
-    stdin: ChildStdin,
+    writer: TmuxInputWriter,
     output_rx: Receiver<String>,
+}
+
+impl Drop for PersistentTmuxInputClient {
+    fn drop(&mut self) {
+        let _ = self.send_command("detach-client\n");
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+enum TmuxInputWriter {
+    Pipe(std::process::ChildStdin),
+    #[cfg(unix)]
+    Pty(File),
+}
+
+impl TmuxInputWriter {
+    fn write_command(&mut self, command: &str) -> Result<()> {
+        match self {
+            Self::Pipe(stdin) => {
+                stdin
+                    .write_all(command.as_bytes())
+                    .context("Failed to write tmux input command")?;
+                stdin.flush().context("Failed to flush tmux input command")
+            }
+            #[cfg(unix)]
+            Self::Pty(writer) => {
+                writer
+                    .write_all(command.as_bytes())
+                    .context("Failed to write tmux PTY input command")?;
+                writer
+                    .flush()
+                    .context("Failed to flush tmux PTY input command")
+            }
+        }
+    }
 }
 
 impl PersistentTmuxInputClient {
     fn send_command(&mut self, command: &str) -> Result<()> {
-        self.stdin
-            .write_all(command.as_bytes())
-            .context("Failed to write tmux input command")?;
-        self.stdin
-            .flush()
-            .context("Failed to flush tmux input command")
+        self.writer.write_command(command)
     }
 
     fn is_running(&mut self) -> Result<bool> {
@@ -61,8 +176,16 @@ impl PersistentTmuxInputClient {
             }
 
             let remaining = deadline.saturating_duration_since(now);
-            match self.output_rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            match self
+                .output_rx
+                .recv_timeout(remaining.min(Duration::from_millis(25)))
+            {
                 Ok(line) => {
+                    log_to_file(
+                        LogLevel::Debug,
+                        "tmux",
+                        &format!("tmux control recv: {line}"),
+                    );
                     if line.contains(token) {
                         return Ok(());
                     }
@@ -76,6 +199,12 @@ impl PersistentTmuxInputClient {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TmuxInputTransportMode {
+    Direct,
+    ControlPty,
+}
+
 #[derive(Debug, Clone)]
 struct TmuxRuntime {
     binary: OsString,
@@ -86,11 +215,29 @@ struct TmuxRuntime {
 impl TmuxRuntime {
     fn detect() -> Self {
         let tmux_env = std::env::var("TMUX").ok();
-        let using_existing_tmux = tmux_env.is_some();
+        let socket_override = std::env::var_os("AMF_TMUX_SOCKET").map(PathBuf::from);
+        let binary_override = std::env::var_os("AMF_TMUX_BIN");
+        Self::detect_from_env(
+            tmux_env.as_deref(),
+            socket_override,
+            binary_override,
+            Self::env_flag_enabled("AMF_TMUX_DEDICATED_SOCKET")
+                || TMUX_CONTROL_MODE_ENABLED.load(AtomicOrdering::Relaxed),
+        )
+    }
 
-        let binary = std::env::var_os("AMF_TMUX_BIN")
+    fn detect_from_env(
+        tmux_env: Option<&str>,
+        socket_override: Option<PathBuf>,
+        binary_override: Option<OsString>,
+        using_dedicated_socket: bool,
+    ) -> Self {
+        let using_existing_tmux = tmux_env.is_some();
+        let inherits_ambient_tmux = using_existing_tmux && !using_dedicated_socket;
+
+        let binary = binary_override
             .or_else(|| {
-                if using_existing_tmux {
+                if inherits_ambient_tmux {
                     None
                 } else {
                     Self::bundled_binary()
@@ -98,22 +245,29 @@ impl TmuxRuntime {
             })
             .unwrap_or_else(|| OsString::from("tmux"));
 
-        let (socket, manages_private_socket) =
-            if let Some(socket) = std::env::var_os("AMF_TMUX_SOCKET").map(PathBuf::from) {
-                (Some(socket), false)
-            } else if let Some(socket) = tmux_env.as_deref().and_then(Self::socket_from_tmux_env) {
-                (Some(socket), false)
-            } else if using_existing_tmux {
-                (None, false)
-            } else {
-                (Some(Self::private_socket_path()), true)
-            };
+        let (socket, manages_private_socket) = if let Some(socket) = socket_override {
+            (Some(socket), false)
+        } else if using_dedicated_socket {
+            (Some(Self::dedicated_socket_path()), true)
+        } else if let Some(socket) = tmux_env.and_then(Self::socket_from_tmux_env) {
+            (Some(socket), false)
+        } else if using_existing_tmux {
+            (None, false)
+        } else {
+            (Some(Self::private_socket_path()), true)
+        };
 
         Self {
             binary,
             socket,
             manages_private_socket,
         }
+    }
+
+    fn env_flag_enabled(key: &str) -> bool {
+        std::env::var(key)
+            .ok()
+            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
     }
 
     fn bundled_binary() -> Option<OsString> {
@@ -136,11 +290,30 @@ impl TmuxRuntime {
         }
     }
 
-    fn private_socket_path() -> PathBuf {
+    fn owns_tmux_env_client(&self, tmux_env: Option<&str>) -> bool {
+        let Some(tmux_env) = tmux_env else {
+            return false;
+        };
+
+        match &self.socket {
+            Some(socket) => Self::socket_from_tmux_env(tmux_env)
+                .is_some_and(|tmux_socket| tmux_socket == *socket),
+            None => true,
+        }
+    }
+
+    fn state_dir() -> PathBuf {
         dirs::state_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("amf")
-            .join("tmux.sock")
+    }
+
+    fn private_socket_path() -> PathBuf {
+        Self::state_dir().join("tmux.sock")
+    }
+
+    fn dedicated_socket_path() -> PathBuf {
+        Self::state_dir().join("managed-tmux.sock")
     }
 
     fn launch_path_override(&self) -> Option<OsString> {
@@ -178,10 +351,31 @@ impl TmuxRuntime {
 }
 
 impl TmuxManager {
-    fn persistent_input_enabled() -> bool {
-        std::env::var("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT")
-            .ok()
-            .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "on" | "ON"))
+    pub fn configure_control_mode(enabled: bool) {
+        TMUX_CONTROL_MODE_ENABLED.store(enabled, AtomicOrdering::Relaxed);
+    }
+
+    fn input_transport_mode() -> TmuxInputTransportMode {
+        if let Ok(value) = std::env::var("AMF_TMUX_INPUT_TRANSPORT") {
+            match value.trim() {
+                "control-pty" | "pty" => return TmuxInputTransportMode::ControlPty,
+                _ => return TmuxInputTransportMode::Direct,
+            }
+        }
+
+        if TmuxRuntime::env_flag_enabled("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT") {
+            return TmuxInputTransportMode::ControlPty;
+        }
+
+        if TMUX_CONTROL_MODE_ENABLED.load(AtomicOrdering::Relaxed) {
+            TmuxInputTransportMode::ControlPty
+        } else {
+            TmuxInputTransportMode::Direct
+        }
+    }
+
+    pub fn uses_control_pty_input() -> bool {
+        Self::input_transport_mode() == TmuxInputTransportMode::ControlPty
     }
 
     fn runtime() -> &'static TmuxRuntime {
@@ -223,10 +417,11 @@ impl TmuxManager {
             ));
         }
 
-        if include_path
-            && let Some(path) = runtime.launch_path_override()
-        {
-            parts.push(format!("PATH={}", Self::shell_quote(&path.to_string_lossy())));
+        if include_path && let Some(path) = runtime.launch_path_override() {
+            parts.push(format!(
+                "PATH={}",
+                Self::shell_quote(&path.to_string_lossy())
+            ));
         }
 
         parts
@@ -397,11 +592,33 @@ impl TmuxManager {
     fn stream_child_output<R: Read + Send + 'static>(reader: Option<R>, tx: mpsc::Sender<String>) {
         if let Some(reader) = reader {
             std::thread::spawn(move || {
-                for line in BufReader::new(reader)
-                    .lines()
-                    .map_while(std::result::Result::ok)
-                {
-                    let _ = tx.send(line);
+                let mut reader = BufReader::new(reader);
+                let mut buf = [0u8; 8192];
+                let mut line = Vec::with_capacity(8192);
+
+                loop {
+                    let Ok(n) = reader.read(&mut buf) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+
+                    for &byte in &buf[..n] {
+                        line.push(byte);
+                        let is_line_end =
+                            matches!(byte, b'\n' | b'\r') || line.ends_with(b"\x1b\\");
+                        if is_line_end {
+                            let text = String::from_utf8_lossy(&line).into_owned();
+                            let _ = tx.send(text);
+                            line.clear();
+                        }
+                    }
+                }
+
+                if !line.is_empty() {
+                    let text = String::from_utf8_lossy(&line).into_owned();
+                    let _ = tx.send(text);
                 }
             });
         }
@@ -454,40 +671,366 @@ impl TmuxManager {
         INPUT_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    fn spawn_input_client(session: &str) -> Result<PersistentTmuxInputClient> {
-        let mut child = Self::command()
-            .args(["-C", "attach-session", "-t", session])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("Failed to spawn tmux input client for {session}"))?;
+    fn cleaned_control_sessions() -> &'static Mutex<HashSet<String>> {
+        static CLEANED_CONTROL_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        CLEANED_CONTROL_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
 
-        let stdin = child
-            .stdin
-            .take()
-            .context("Failed to open tmux input stdin")?;
+    fn bypassed_control_input_sessions() -> &'static Mutex<HashSet<String>> {
+        static BYPASSED_CONTROL_INPUT_SESSIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        BYPASSED_CONTROL_INPUT_SESSIONS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn ensure_stale_control_clients_detached(session: &str) {
+        {
+            let Ok(mut cleaned) = Self::cleaned_control_sessions().lock() else {
+                return;
+            };
+            if !cleaned.insert(session.to_string()) {
+                return;
+            }
+        }
+
+        let output = match Self::command()
+            .args([
+                "list-clients",
+                "-t",
+                session,
+                "-F",
+                "#{client_name}\t#{client_flags}",
+            ])
+            .output()
+        {
+            Ok(output) => output,
+            Err(err) => {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!("Failed to list tmux control clients for cleanup: {err}"),
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            return;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut detached = 0usize;
+        for line in stdout.lines() {
+            let Some((client_name, flags)) = line.split_once('\t') else {
+                continue;
+            };
+            if flags.contains("control-mode")
+                && (flags.contains("ignore-size") || flags.contains("no-output"))
+            {
+                let _ = Self::command()
+                    .args(["detach-client", "-t", client_name])
+                    .status();
+                detached += 1;
+            }
+        }
+
+        if detached > 0 {
+            log_to_file(
+                LogLevel::Warn,
+                "tmux",
+                &format!("Detached {detached} stale tmux control client(s) for session {session}"),
+            );
+        }
+    }
+
+    fn control_client_count(session: &str) -> usize {
+        let Ok(output) = Self::command()
+            .args(["list-clients", "-t", session, "-F", "#{client_flags}"])
+            .output()
+        else {
+            return 0;
+        };
+
+        if !output.status.success() {
+            return 0;
+        }
+
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|flags| flags.contains("control-mode"))
+            .count()
+    }
+
+    fn should_bypass_control_input(session: &str) -> bool {
+        const MAX_CONTROL_CLIENTS_BEFORE_DIRECT_FALLBACK: usize = 16;
+        if let Ok(bypassed) = Self::bypassed_control_input_sessions().lock()
+            && bypassed.contains(session)
+        {
+            return true;
+        }
+
+        let count = Self::control_client_count(session);
+        if count <= MAX_CONTROL_CLIENTS_BEFORE_DIRECT_FALLBACK {
+            return false;
+        }
+
+        if let Ok(mut bypassed) = Self::bypassed_control_input_sessions().lock() {
+            bypassed.insert(session.to_string());
+        }
+
+        log_to_file(
+            LogLevel::Warn,
+            "tmux",
+            &format!(
+                "Bypassing persistent tmux control input for session {session}; found {count} control clients"
+            ),
+        );
+        true
+    }
+
+    fn mark_control_input_bypassed(session: &str, reason: &str) {
+        if let Ok(mut bypassed) = Self::bypassed_control_input_sessions().lock() {
+            bypassed.insert(session.to_string());
+        }
+        log_to_file(
+            LogLevel::Warn,
+            "tmux",
+            &format!("Bypassing persistent tmux control input for session {session}: {reason}"),
+        );
+    }
+
+    #[cfg(unix)]
+    fn open_pty(cols: u16, rows: u16) -> Result<(File, File)> {
+        let mut master = -1;
+        let mut slave = -1;
+        let mut winsize = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let mut termios = libc::termios {
+            c_iflag: 0,
+            c_oflag: 0,
+            c_cflag: 0,
+            c_lflag: 0,
+            c_line: 0,
+            c_cc: [0; libc::NCCS],
+            c_ispeed: 0,
+            c_ospeed: 0,
+        };
+
+        unsafe {
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == -1 {
+                return Err(std::io::Error::last_os_error())
+                    .context("Failed to read terminal attributes for tmux PTY");
+            }
+            libc::cfmakeraw(&mut termios);
+        }
+
+        let result = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                &termios,
+                &mut winsize,
+            )
+        };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("Failed to open PTY for tmux control client");
+        }
+
+        let master = unsafe { File::from_raw_fd(master) };
+        let slave = unsafe { File::from_raw_fd(slave) };
+        Ok((master, slave))
+    }
+
+    #[cfg(unix)]
+    fn spawn_input_client_control_pty(session: &str) -> Result<PersistentTmuxInputClient> {
+        Self::ensure_stale_control_clients_detached(session);
+        let (master, slave) = Self::open_pty(120, 40)?;
+        let reader = master
+            .try_clone()
+            .context("Failed to clone tmux PTY reader")?;
+        let stdin_slave = slave
+            .try_clone()
+            .context("Failed to clone tmux PTY stdin")?;
+        let stdout_slave = slave
+            .try_clone()
+            .context("Failed to clone tmux PTY stdout")?;
+        let slave_fd = slave.as_raw_fd();
+
+        let mut child = Self::command();
+        unsafe {
+            child
+                .args([
+                    "-CC",
+                    "attach-session",
+                    "-f",
+                    "no-output,ignore-size",
+                    "-t",
+                    session,
+                ])
+                .stdin(Stdio::from(stdin_slave))
+                .stdout(Stdio::from(stdout_slave))
+                .stderr(Stdio::from(slave))
+                .pre_exec(move || {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+        }
+        child.env_remove("TMUX").env_remove("TMUX_PANE");
+
+        let child = child
+            .spawn()
+            .with_context(|| format!("Failed to spawn PTY tmux input client for {session}"))?;
 
         let (tx, rx) = mpsc::channel();
-        Self::stream_child_output(child.stdout.take(), tx.clone());
-        Self::stream_child_output(child.stderr.take(), tx);
+        Self::stream_child_output(Some(reader), tx);
 
         let mut client = PersistentTmuxInputClient {
             child,
-            stdin,
+            writer: TmuxInputWriter::Pty(master),
             output_rx: rx,
         };
-        let ready_token = format!("__AMF_INPUT_READY__{session}__");
+        let ready_token = format!("__AMF_INPUT_READY__{}__", std::process::id());
         client.send_command(&format!("display-message -p {ready_token}\n"))?;
-        client.wait_for_token(&ready_token, Duration::from_millis(500))?;
+        client.wait_for_token(&ready_token, Duration::from_millis(250))?;
 
         log_to_file(
             LogLevel::Debug,
             "tmux",
-            &format!("Spawned persistent tmux input client for session {session}"),
+            &format!("Spawned ready PTY tmux input client for session {session}"),
         );
 
         Ok(client)
+    }
+
+    pub fn resolve_view_target_ids(session: &str, window: &str) -> Result<(String, String)> {
+        let target = format!("{}:{}", session, window);
+        let output = Self::command()
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{window_id} #{pane_id}",
+            ])
+            .output()
+            .context("Failed to resolve tmux view target IDs")?;
+
+        if !output.status.success() {
+            bail!(
+                "{}",
+                Self::command_error(&output, "tmux display-message failed")
+            );
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = stdout.split_whitespace().collect();
+        if parts.len() == 2 {
+            Ok((parts[0].to_string(), parts[1].to_string()))
+        } else {
+            bail!("tmux did not return window_id and pane_id for {target}");
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn spawn_control_mode_view_client(
+        session: &str,
+        window: &str,
+        pane_id: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<SpawnedTmuxControlClient> {
+        Self::ensure_stale_control_clients_detached(session);
+        let (master, slave) = Self::open_pty(cols, rows)?;
+        let reader = master
+            .try_clone()
+            .context("Failed to clone tmux control PTY reader")?;
+        let stdin_slave = slave
+            .try_clone()
+            .context("Failed to clone tmux control PTY stdin")?;
+        let stdout_slave = slave
+            .try_clone()
+            .context("Failed to clone tmux control PTY stdout")?;
+        let slave_fd = slave.as_raw_fd();
+
+        let mut child = Self::command();
+        unsafe {
+            child
+                .args(["-CC", "attach-session", "-f", "ignore-size", "-t", session])
+                .stdin(Stdio::from(stdin_slave))
+                .stdout(Stdio::from(stdout_slave))
+                .stderr(Stdio::from(slave))
+                .pre_exec(move || {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+        }
+        child.env_remove("TMUX").env_remove("TMUX_PANE");
+
+        let child = child.spawn().with_context(|| {
+            format!("Failed to spawn PTY tmux control view client for {session}")
+        })?;
+
+        let (tx, rx) = mpsc::channel();
+        Self::stream_child_output(Some(reader), tx);
+
+        let mut client = SpawnedTmuxControlClient {
+            child,
+            writer: TmuxInputWriter::Pty(master),
+            output_rx: rx,
+        };
+        let target = format!("{session}:{window}");
+        let quoted_target = Self::tmux_command_quote(&target);
+        client.send_command(&format!("select-window -t {quoted_target}\n"))?;
+        client.send_command(&format!("refresh-client -A {pane_id}:on\n"))?;
+        client.send_command(&format!("refresh-client -C {cols},{rows}\n"))?;
+        let ready_token = format!("__AMF_VIEW_READY__{}__", std::process::id());
+        client.send_command(&format!("display-message -p {ready_token}\n"))?;
+        client.wait_for_token(&ready_token, Duration::from_millis(250))?;
+
+        log_to_file(
+            LogLevel::Debug,
+            "tmux",
+            &format!("Spawned ready PTY tmux control view client for {session}:{window}"),
+        );
+
+        Ok(client)
+    }
+
+    #[cfg(not(unix))]
+    pub fn spawn_control_mode_view_client(
+        _session: &str,
+        _window: &str,
+        _pane_id: &str,
+        _cols: u16,
+        _rows: u16,
+    ) -> Result<SpawnedTmuxControlClient> {
+        bail!("tmux PTY control view is only supported on Unix");
+    }
+
+    fn spawn_input_client(session: &str) -> Result<PersistentTmuxInputClient> {
+        #[cfg(unix)]
+        {
+            return Self::spawn_input_client_control_pty(session);
+        }
+
+        #[allow(unreachable_code)]
+        {
+            bail!("tmux PTY control input is only supported on Unix");
+        }
     }
 
     fn remove_input_client(session: &str) {
@@ -523,7 +1066,14 @@ impl TmuxManager {
             let client = match clients.entry(session.to_string()) {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Self::spawn_input_client(session)?)
+                    let client = match Self::spawn_input_client(session) {
+                        Ok(client) => client,
+                        Err(err) => {
+                            Self::mark_control_input_bypassed(session, &err.to_string());
+                            return Err(err);
+                        }
+                    };
+                    entry.insert(client)
                 }
             };
             if send(client).is_ok() {
@@ -536,9 +1086,19 @@ impl TmuxManager {
         let mut clients = Self::input_clients()
             .lock()
             .expect("tmux input client mutex poisoned");
-        let client = clients
-            .entry(session.to_string())
-            .or_insert(Self::spawn_input_client(session)?);
+        let client = match clients.entry(session.to_string()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let client = match Self::spawn_input_client(session) {
+                    Ok(client) => client,
+                    Err(err) => {
+                        Self::mark_control_input_bypassed(session, &err.to_string());
+                        return Err(err);
+                    }
+                };
+                entry.insert(client)
+            }
+        };
         send(client)
     }
 
@@ -571,10 +1131,11 @@ impl TmuxManager {
 
     /// Check if tmux is available
     pub fn check_available() -> Result<()> {
+        let runtime = Self::runtime();
         let output = Self::command().arg("-V").output().with_context(|| {
             format!(
                 "tmux is not installed or bundled. Looked for '{}'.",
-                Self::runtime().binary.to_string_lossy()
+                runtime.binary.to_string_lossy()
             )
         })?;
         if !output.status.success() {
@@ -583,6 +1144,24 @@ impl TmuxManager {
                 Self::command_error(&output, "tmux is not working correctly")
             );
         }
+        let socket = runtime
+            .socket
+            .as_ref()
+            .map(|socket| socket.display().to_string())
+            .unwrap_or_else(|| "<ambient default>".to_string());
+        let ownership = if runtime.manages_private_socket {
+            "managed"
+        } else {
+            "external"
+        };
+        log_to_file(
+            LogLevel::Info,
+            "tmux",
+            &format!(
+                "Using tmux binary '{}' with {ownership} socket {socket}",
+                runtime.binary.to_string_lossy()
+            ),
+        );
         Ok(())
     }
 
@@ -860,7 +1439,8 @@ impl TmuxManager {
 
     /// Check if we're currently running inside a tmux session
     pub fn is_inside_tmux() -> bool {
-        std::env::var("TMUX").is_ok()
+        let tmux_env = std::env::var("TMUX").ok();
+        Self::runtime().owns_tmux_env_client(tmux_env.as_deref())
     }
 
     /// Get the name of the current tmux session (only works inside tmux)
@@ -1104,7 +1684,9 @@ impl TmuxManager {
 
     /// Send literal text to a tmux pane (no key name interpretation)
     pub fn send_literal(session: &str, window: &str, text: &str) -> Result<()> {
-        if !Self::persistent_input_enabled() {
+        if Self::input_transport_mode() == TmuxInputTransportMode::Direct
+            || Self::should_bypass_control_input(session)
+        {
             return Self::send_literal_direct(session, window, text);
         }
 
@@ -1112,11 +1694,8 @@ impl TmuxManager {
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_text = Self::tmux_command_quote(text);
         match Self::send_via_input_client(session, |client| {
-            client.send_command(&format!(
-                "send-keys -t {quoted_target} -l {quoted_text}\n"
-            ))
-        })
-        {
+            client.send_command(&format!("send-keys -t {quoted_target} -l {quoted_text}\n"))
+        }) {
             Ok(()) => Ok(()),
             Err(err) => {
                 log_to_file(
@@ -1158,7 +1737,9 @@ impl TmuxManager {
 
     /// Send a named key (e.g. Enter, Up, BSpace) to a tmux pane
     pub fn send_key_name(session: &str, window: &str, key_name: &str) -> Result<()> {
-        if !Self::persistent_input_enabled() {
+        if Self::input_transport_mode() == TmuxInputTransportMode::Direct
+            || Self::should_bypass_control_input(session)
+        {
             return Self::send_key_name_direct(session, window, key_name);
         }
 
@@ -1166,8 +1747,7 @@ impl TmuxManager {
         let quoted_target = Self::tmux_command_quote(&target);
         match Self::send_via_input_client(session, |client| {
             client.send_command(&format!("send-keys -t {quoted_target} {key_name}\n"))
-        })
-        {
+        }) {
             Ok(()) => Ok(()),
             Err(err) => {
                 log_to_file(
@@ -1178,7 +1758,9 @@ impl TmuxManager {
                     ),
                 );
                 Self::send_key_name_direct(session, window, key_name).with_context(|| {
-                    format!("Failed to send key to tmux target {target} after input client fallback")
+                    format!(
+                        "Failed to send key to tmux target {target} after input client fallback"
+                    )
                 })
             }
         }
@@ -1186,7 +1768,9 @@ impl TmuxManager {
 
     /// Send keys to a specific window in a session
     pub fn send_keys(session: &str, window: &str, keys: &str) -> Result<()> {
-        if !Self::persistent_input_enabled() {
+        if Self::input_transport_mode() == TmuxInputTransportMode::Direct
+            || Self::should_bypass_control_input(session)
+        {
             return Self::send_keys_direct(session, window, keys);
         }
 
@@ -1194,9 +1778,10 @@ impl TmuxManager {
         let quoted_target = Self::tmux_command_quote(&target);
         let quoted_keys = Self::tmux_command_quote(keys);
         match Self::send_via_input_client(session, |client| {
-            client.send_command(&format!("send-keys -t {quoted_target} {quoted_keys} Enter\n"))
-        })
-        {
+            client.send_command(&format!(
+                "send-keys -t {quoted_target} {quoted_keys} Enter\n"
+            ))
+        }) {
             Ok(()) => Ok(()),
             Err(err) => {
                 log_to_file(
@@ -1207,7 +1792,9 @@ impl TmuxManager {
                     ),
                 );
                 Self::send_keys_direct(session, window, keys).with_context(|| {
-                    format!("Failed to send keys to tmux target {target} after input client fallback")
+                    format!(
+                        "Failed to send keys to tmux target {target} after input client fallback"
+                    )
                 })
             }
         }
@@ -1325,15 +1912,51 @@ impl TmuxOps for TmuxManager {
 
 #[cfg(test)]
 mod tests {
-    use super::TmuxManager;
+    use super::{TmuxInputTransportMode, TmuxManager, TmuxRuntime};
+    use std::ffi::OsString;
     use std::fs;
     use std::process::{ExitStatus, Output};
+    use std::sync::{Mutex, OnceLock};
 
     #[cfg(unix)]
     use std::os::unix::net::UnixListener;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     use tempfile::TempDir;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvGuard {
+        values: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            Self {
+                values: keys
+                    .iter()
+                    .map(|key| (*key, std::env::var_os(key)))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.values {
+                unsafe {
+                    if let Some(value) = value {
+                        std::env::set_var(key, value);
+                    } else {
+                        std::env::remove_var(key);
+                    }
+                }
+            }
+        }
+    }
 
     #[cfg(unix)]
     fn failure_status() -> ExitStatus {
@@ -1368,6 +1991,93 @@ mod tests {
         assert!(!TmuxManager::output_indicates_socket_startup_failure(
             &output
         ));
+    }
+
+    #[test]
+    fn dedicated_socket_mode_ignores_ambient_tmux_socket() {
+        let runtime =
+            TmuxRuntime::detect_from_env(Some("/tmp/ambient-tmux.sock,1,0"), None, None, true);
+        let socket = runtime.socket.as_ref().unwrap();
+
+        assert_eq!(
+            socket.file_name().and_then(|name| name.to_str()),
+            Some("managed-tmux.sock")
+        );
+        assert!(runtime.manages_private_socket);
+    }
+
+    #[test]
+    fn explicit_tmux_socket_overrides_dedicated_socket_mode() {
+        let runtime = TmuxRuntime::detect_from_env(
+            Some("/tmp/ambient-tmux.sock,1,0"),
+            Some(std::path::PathBuf::from("/tmp/amf-explicit.sock")),
+            None,
+            true,
+        );
+
+        assert_eq!(
+            runtime.socket.as_ref().unwrap(),
+            &std::path::PathBuf::from("/tmp/amf-explicit.sock")
+        );
+        assert!(!runtime.manages_private_socket);
+    }
+
+    #[test]
+    fn dedicated_socket_runtime_does_not_claim_outer_tmux_client() {
+        let runtime = TmuxRuntime {
+            binary: OsString::from("tmux"),
+            socket: Some(std::path::PathBuf::from("/tmp/amf-managed.sock")),
+            manages_private_socket: true,
+        };
+
+        assert!(!runtime.owns_tmux_env_client(Some("/tmp/outer-tmux.sock,1,0")));
+    }
+
+    #[test]
+    fn runtime_claims_tmux_client_on_same_socket() {
+        let runtime = TmuxRuntime {
+            binary: OsString::from("tmux"),
+            socket: Some(std::path::PathBuf::from("/tmp/amf-managed.sock")),
+            manages_private_socket: true,
+        };
+
+        assert!(runtime.owns_tmux_env_client(Some("/tmp/amf-managed.sock,1,0")));
+    }
+
+    #[test]
+    fn tmux_input_transport_defaults_to_control_mode() {
+        let _lock = env_lock().lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT",
+            "AMF_TMUX_INPUT_TRANSPORT",
+        ]);
+        unsafe {
+            std::env::remove_var("AMF_TMUX_INPUT_TRANSPORT");
+            std::env::remove_var("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT");
+        }
+        assert_eq!(
+            TmuxManager::input_transport_mode(),
+            TmuxInputTransportMode::ControlPty
+        );
+    }
+
+    #[test]
+    fn tmux_input_transport_config_can_disable_control_mode() {
+        let _lock = env_lock().lock().unwrap();
+        let _env = EnvGuard::new(&[
+            "AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT",
+            "AMF_TMUX_INPUT_TRANSPORT",
+        ]);
+        unsafe {
+            std::env::remove_var("AMF_TMUX_INPUT_TRANSPORT");
+            std::env::remove_var("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT");
+        }
+        TmuxManager::configure_control_mode(false);
+        assert_eq!(
+            TmuxManager::input_transport_mode(),
+            TmuxInputTransportMode::Direct
+        );
+        TmuxManager::configure_control_mode(true);
     }
 
     #[cfg(unix)]

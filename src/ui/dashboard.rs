@@ -5,8 +5,8 @@ use ratatui::{
     widgets::Block,
 };
 
-use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
+use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
 use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
@@ -57,57 +57,114 @@ fn build_agent_sidebar_data(
         n => format!("Waiting for {n} inputs"),
     };
 
-    if sidebar_kind == SessionKind::Opencode {
-        let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
-        let usage_line = session
-            .and_then(|session| session.status_text.as_deref())
-            .map(format_sidebar_usage)
-            .filter(|line| line != "Usage: unavailable");
-        let prompt_text = opencode_sidebar_prompt_text(
-            opencode_sidebar
-                .and_then(|sidebar| sidebar.latest_prompt.as_deref())
-                .or_else(|| app.latest_prompt_for_session(&feature.tmux_session)),
-        );
-        let work_text = opencode_sidebar_work_text(opencode_sidebar);
-        let todos_text = opencode_sidebar_todos_text(opencode_sidebar);
-        let summary_text = opencode_sidebar_summary_text(
-            app.summary_state.generating.contains(&feature.tmux_session),
-            feature.summary.as_deref(),
-            opencode_sidebar,
-        );
-        let activity_line = if opencode_sidebar
-            .and_then(|sidebar| sidebar.pending_permission.as_ref())
-            .is_some()
-        {
-            "Waiting on permission".to_string()
-        } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
-            "Running tool".to_string()
-        } else if app.is_feature_thinking(&feature.tmux_session) {
-            "Thinking".to_string()
-        } else {
-            status_line
-        };
-
-        return Some(super::pane::AgentSidebarData {
-            agent_kind: SessionKind::Opencode,
-            status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
-            prompt_text,
-            work_text,
-            todos_text,
-            summary_text,
-        });
-    }
-
     match sidebar_kind {
-        SessionKind::Claude | SessionKind::Codex => {}
-        _ => return None,
+        SessionKind::Opencode => build_opencode_sidebar_data(app, feature, session, status_line),
+        SessionKind::Claude => {
+            build_claude_sidebar_data(app, project, feature, session, view, status_line)
+        }
+        SessionKind::Codex => {
+            build_codex_sidebar_data(app, project, feature, session, view, status_line)
+        }
+        _ => None,
+    }
+}
+
+fn build_opencode_sidebar_data(
+    app: &App,
+    feature: &Feature,
+    session: Option<&FeatureSession>,
+    status_line: String,
+) -> Option<super::pane::AgentSidebarData> {
+    let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
+    let usage_line = session
+        .and_then(|session| session.status_text.as_deref())
+        .map(format_sidebar_usage)
+        .filter(|line| line != "Usage: unavailable");
+    let prompt_text = opencode_sidebar_prompt_text(
+        opencode_sidebar
+            .and_then(|sidebar| sidebar.latest_prompt.as_deref())
+            .or_else(|| app.latest_prompt_for_session(&feature.tmux_session)),
+    );
+    let work_text = opencode_sidebar_work_text(opencode_sidebar);
+    let todos_text = opencode_sidebar_todos_text(opencode_sidebar);
+    let summary_text = opencode_sidebar_summary_text(
+        app.summary_state.generating.contains(&feature.tmux_session),
+        feature.summary.as_deref(),
+        opencode_sidebar,
+    );
+    let activity_line = if opencode_sidebar
+        .and_then(|sidebar| sidebar.pending_permission.as_ref())
+        .is_some()
+    {
+        "Waiting on permission".to_string()
+    } else if app.ipc_tool_sessions.contains(&feature.tmux_session) {
+        "Running tool".to_string()
+    } else if app.is_feature_thinking(&feature.tmux_session) {
+        "Thinking".to_string()
+    } else {
+        status_line
     };
 
+    Some(super::pane::AgentSidebarData {
+        agent_kind: SessionKind::Opencode,
+        status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
+        prompt_text,
+        work_text,
+        todos_text,
+        summary_text,
+    })
+}
+
+fn build_claude_sidebar_data(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    session: Option<&FeatureSession>,
+    view: &crate::app::ViewState,
+    status_line: String,
+) -> Option<super::pane::AgentSidebarData> {
+    let usage_line = session
+        .and_then(|session| session.status_text.as_deref())
+        .map(format_sidebar_usage);
+    let prompt_text =
+        sidebar_prompt_text(None, app.latest_prompt_for_session(&feature.tmux_session));
+    let summary_text = if app.summary_state.generating.contains(&feature.tmux_session) {
+        Some("Generating summary...".to_string())
+    } else {
+        feature.summary.clone()
+    };
+    let work_text = fallback_sidebar_work_text(app, project, feature, view);
+    let summary_text = compose_sidebar_summary_text(None, summary_text);
+    let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
+    let status_text = compose_sidebar_status_text(activity_line, usage_line, None);
+    let claude_session_id = session.and_then(|s| s.claude_session_id.as_deref());
+    let todos_text = read_claude_task_state(&feature.workdir, claude_session_id)
+        .as_ref()
+        .and_then(claude_sidebar_todos_text);
+
+    Some(super::pane::AgentSidebarData {
+        agent_kind: SessionKind::Claude,
+        status_text,
+        prompt_text,
+        work_text,
+        todos_text,
+        summary_text,
+    })
+}
+
+fn build_codex_sidebar_data(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+    session: Option<&FeatureSession>,
+    view: &crate::app::ViewState,
+    status_line: String,
+) -> Option<super::pane::AgentSidebarData> {
     let usage_line = session
         .and_then(|session| session.status_text.as_deref())
         .map(format_sidebar_usage);
     let prompt_text = sidebar_prompt_text(
-        codex_sidebar_source(&sidebar_kind, session)
+        codex_sidebar_source(&SessionKind::Codex, session)
             .and_then(|source| app.cached_codex_session_prompt(&feature.workdir, &source.id)),
         app.latest_prompt_for_session(&feature.tmux_session),
     );
@@ -116,11 +173,7 @@ fn build_agent_sidebar_data(
     } else {
         feature.summary.clone()
     };
-    let codex_live = if sidebar_kind == SessionKind::Codex {
-        app.codex_live_thread(&feature.tmux_session)
-    } else {
-        None
-    };
+    let codex_live = app.codex_live_thread(&feature.tmux_session);
     let work_text = codex_live
         .and_then(|live| live.sidebar_work_text())
         .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
@@ -129,25 +182,15 @@ fn build_agent_sidebar_data(
         summary_text,
     );
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
-    let usage_confidence = format_codex_usage_source_confidence(&sidebar_kind, session);
-
+    let usage_confidence = format_codex_usage_source_confidence(&SessionKind::Codex, session);
     let status_text = compose_sidebar_status_text(activity_line, usage_line, usage_confidence);
 
-    let todos_text = if sidebar_kind == SessionKind::Claude {
-        let claude_session_id = session.and_then(|s| s.claude_session_id.as_deref());
-        read_claude_task_state(&feature.workdir, claude_session_id)
-            .as_ref()
-            .and_then(claude_sidebar_todos_text)
-    } else {
-        None
-    };
-
     Some(super::pane::AgentSidebarData {
-        agent_kind: sidebar_kind,
+        agent_kind: SessionKind::Codex,
         status_text,
         prompt_text,
         work_text,
-        todos_text,
+        todos_text: None,
         summary_text,
     })
 }
@@ -265,7 +308,11 @@ fn claude_sidebar_todos_text(task_state: &ClaudeTaskState) -> Option<String> {
 
     // Progress bar: 8 filled/empty blocks + " X/Y"
     let bar_width = 8usize;
-    let filled = if total > 0 { (completed * bar_width) / total } else { 0 };
+    let filled = if total > 0 {
+        (completed * bar_width) / total
+    } else {
+        0
+    };
     let empty = bar_width - filled;
     let mut lines = vec![format!(
         "{}{} {completed}/{total}",
@@ -801,8 +848,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
                 let presets = app.active_extension.allowed_feature_presets();
-                let allowed_agents =
-                    app.allowed_agents_for_repo(&state.project_repo);
+                let allowed_agents = app.allowed_agents_for_repo(&state.project_repo);
                 super::dialogs::draw_create_feature_dialog(
                     frame,
                     state,
@@ -941,12 +987,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::HarnessSetup(state) = &app.mode {
-        super::dialogs::draw_harness_setup_dialog(
-            frame,
-            state,
-            &app.throbber_state,
-            &app.theme,
-        );
+        super::dialogs::draw_harness_setup_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 }
 

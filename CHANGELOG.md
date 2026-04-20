@@ -12,6 +12,47 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.16.0] - 2026-04-20
+
+### Added
+
+- Claude and Opencode sidebars now show task/todo progress with a
+  compact progress bar, checkbox-style status markers, and a focused
+  window around active work.
+- Debug log navigation now supports `PageUp`/`PageDown`, `g`/`G` for
+  top/bottom jumps, mouse wheel scrolling, and an explicit end-of-log
+  marker.
+
+### Changed
+
+- Startup session-status sync now runs in the background instead of
+  blocking the main event loop, improving first-open responsiveness for
+  large session histories.
+- VS Code availability detection now runs asynchronously during startup
+  rather than blocking `App::new()`.
+- The sidebar prompt section is more compact: the `leader l` hint moved
+  into the border title, prompt text renders directly without a
+  `Preview:` prefix, and prompt copy uses the primary text color.
+- Persistent tmux control-mode input is now guarded behind
+  `AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT`, with direct `send-keys`
+  remaining the default path.
+
+### Fixed
+
+- macOS key release events from crossterm are now ignored at top-level
+  key dispatch, preventing actions from firing twice for a single
+  keystroke.
+- Recursive markdown, slash-command, usage, and session metadata scans
+  no longer follow symlinked directories, avoiding UI stalls caused by
+  symlink cycles or unexpectedly large linked trees.
+- tmux control-mode input fallback now waits for client readiness,
+  detects dead persistent clients, respawns them when needed, and falls
+  back to direct `send-keys` on failure.
+
+### Migration
+
+- No store migration is required.
+
 ## [v0.15.0] - 2026-04-13
 
 ### Added

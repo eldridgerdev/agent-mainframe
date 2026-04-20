@@ -655,9 +655,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    if let AppMode::Help(Some(view)) = &app.mode {
+    if let AppMode::Help(state) = &app.mode
+        && let Some(view) = &state.from_view
+    {
+        let scroll = state.scroll_offset;
         draw_view_pane(frame, app, view, false);
-        super::dialogs::draw_help(frame, &app.theme);
+        super::dialogs::draw_help(frame, scroll, &app.theme);
         return;
     }
 
@@ -845,8 +848,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_project_agent_config_dialog(frame, state, &app.theme);
     }
 
-    if matches!(app.mode, AppMode::Help(None)) {
-        super::dialogs::draw_help(frame, &app.theme);
+    if let AppMode::Help(state) = &app.mode
+        && state.from_view.is_none()
+    {
+        let scroll = state.scroll_offset;
+        super::dialogs::draw_help(frame, scroll, &app.theme);
     }
 
     if let AppMode::NotificationPicker(selected, None) = &app.mode {

@@ -519,6 +519,44 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
     }
 }
 
+#[test]
+fn redraw_signature_changes_when_view_selection_moves() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "claude".to_string(),
+        "Claude".to_string(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+
+    let initial = app.redraw_signature();
+    if let AppMode::Viewing(view) = &mut app.mode {
+        view.selection.is_selecting = true;
+        view.selection.start_row = 1;
+        view.selection.start_col = 2;
+        view.selection.end_row = 1;
+        view.selection.end_col = 2;
+    }
+    let selection_started = app.redraw_signature();
+
+    if let AppMode::Viewing(view) = &mut app.mode {
+        view.selection.end_col = 8;
+        view.selection.has_selection = true;
+    }
+    let selection_dragged = app.redraw_signature();
+
+    assert_ne!(initial, selection_started);
+    assert_ne!(selection_started, selection_dragged);
+}
+
 // ── sync_statuses ─────────────────────────────────────────────
 
 #[test]

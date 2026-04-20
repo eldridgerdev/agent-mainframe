@@ -60,7 +60,7 @@ fn fetch_codex_sessions_from_root(
     workdir: &Path,
     sessions_root: &Path,
 ) -> Result<Vec<CodexSessionInfo>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(Vec::new());
     }
 
@@ -94,7 +94,7 @@ fn session_info_for_workdir_from_root(
     session_id: &str,
     sessions_root: &Path,
 ) -> Result<Option<CodexSessionInfo>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(None);
     }
 
@@ -219,7 +219,7 @@ fn latest_prompt_for_workdir_from_root(
     workdir: &Path,
     sessions_root: &Path,
 ) -> Result<Option<String>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(None);
     }
 
@@ -259,7 +259,7 @@ fn latest_prompt_for_session_id_from_root(
     session_id: &str,
     sessions_root: &Path,
 ) -> Result<Option<String>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(None);
     }
 
@@ -302,7 +302,7 @@ fn sidebar_metadata_for_session_id_from_root(
     session_id: &str,
     sessions_root: &Path,
 ) -> Result<Option<CodexSidebarMetadata>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(None);
     }
 
@@ -348,7 +348,7 @@ fn prompt_history_for_session_id_from_root(
     session_id: &str,
     sessions_root: &Path,
 ) -> Result<Vec<CodexPromptEntry>> {
-    if !sessions_root.is_dir() {
+    if !is_real_dir(sessions_root) {
         return Ok(Vec::new());
     }
 
@@ -386,6 +386,12 @@ fn prompt_history_for_session_id_from_root(
     });
 
     Ok(prompts)
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn parse_codex_session_file(path: &Path, workdir: &Path) -> Option<CodexSessionInfo> {

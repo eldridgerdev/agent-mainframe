@@ -33,7 +33,7 @@ use crossterm::{
     cursor::SetCursorStyle,
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event,
+        Event, KeyEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -562,6 +562,9 @@ fn run_loop<B: Backend>(
             for ev in events {
                 match ev {
                     Event::Key(key) => {
+                        if key.kind == KeyEventKind::Release {
+                            continue;
+                        }
                         if is_viewing {
                             app.note_view_activity();
                         }

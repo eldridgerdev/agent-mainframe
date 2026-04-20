@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -638,7 +638,7 @@ fn calculate_claude_today_tokens(today: &str) -> u64 {
     let Some(projects_dir) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) else {
         return 0;
     };
-    if !projects_dir.exists() {
+    if !is_real_dir(&projects_dir) {
         return 0;
     }
 
@@ -649,10 +649,14 @@ fn calculate_claude_today_tokens(today: &str) -> u64 {
     let mut total: u64 = 0;
 
     for proj_entry in proj_entries.flatten() {
-        let proj_path = proj_entry.path();
-        if !proj_path.is_dir() {
+        if !proj_entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
+        let proj_path = proj_entry.path();
 
         let Ok(files) = std::fs::read_dir(&proj_path) else {
             continue;
@@ -724,10 +728,14 @@ fn claude_today_signature(today: &str) -> u64 {
 
     let mut files = Vec::new();
     for proj_entry in proj_entries.flatten() {
-        let proj_path = proj_entry.path();
-        if !proj_path.is_dir() {
+        if !proj_entry
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
+        let proj_path = proj_entry.path();
 
         let Ok(entries) = std::fs::read_dir(&proj_path) else {
             continue;
@@ -768,7 +776,7 @@ fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {
     let message_path = data_dir.join("message");
     let part_path = data_dir.join("part");
 
-    if !message_path.exists() {
+    if !is_real_dir(&message_path) {
         return 0;
     }
 
@@ -816,7 +824,7 @@ fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {
 
             let msg_id = msg_path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
             let part_dir = part_path.join(msg_id);
-            if !part_dir.exists() {
+            if !is_real_dir(&part_dir) {
                 continue;
             }
 
@@ -854,7 +862,7 @@ fn calculate_codex_usage() -> CodexUsageData {
     let Some(sessions_root) = codex_sessions_root() else {
         return CodexUsageData::default();
     };
-    if !sessions_root.exists() {
+    if !is_real_dir(&sessions_root) {
         return CodexUsageData::default();
     }
 
@@ -877,7 +885,7 @@ fn calculate_codex_usage() -> CodexUsageData {
     let mut latest_rate_limits_ts: Option<chrono::DateTime<chrono::Utc>> = None;
 
     for day_dir in candidates {
-        if !day_dir.exists() {
+        if !is_real_dir(&day_dir) {
             continue;
         }
 
@@ -984,6 +992,9 @@ fn codex_usage_signature() -> u64 {
 
     let mut files = Vec::new();
     for day_dir in candidate_dirs {
+        if !is_real_dir(&day_dir) {
+            continue;
+        }
         let Ok(entries) = std::fs::read_dir(day_dir) else {
             continue;
         };
@@ -1062,26 +1073,38 @@ fn find_latest_codex_rate_limits(sessions_root: &std::path::Path) -> Option<Code
     };
 
     for year in year_dirs.flatten() {
-        let year_path = year.path();
-        if !year_path.is_dir() {
+        if !year
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
             continue;
         }
+        let year_path = year.path();
         let Ok(month_dirs) = std::fs::read_dir(&year_path) else {
             continue;
         };
         for month in month_dirs.flatten() {
-            let month_path = month.path();
-            if !month_path.is_dir() {
+            if !month
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+            {
                 continue;
             }
+            let month_path = month.path();
             let Ok(day_dirs) = std::fs::read_dir(&month_path) else {
                 continue;
             };
             for day in day_dirs.flatten() {
-                let day_path = day.path();
-                if !day_path.is_dir() {
+                if !day
+                    .file_type()
+                    .map(|file_type| file_type.is_dir())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
+                let day_path = day.path();
                 let Ok(files) = std::fs::read_dir(&day_path) else {
                     continue;
                 };
@@ -1160,6 +1183,12 @@ fn codex_sessions_root() -> Option<std::path::PathBuf> {
     }
 
     from_dirs.or(from_env).or(from_user_home)
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn extract_rate_limits_from_json_line(

@@ -133,6 +133,10 @@ fn local_debug_command(name: &str, command: LocalCommand) -> CommandEntry {
 }
 
 pub fn scan_commands_recursive(base: &Path, dir: &Path, source: &str, out: &mut Vec<CommandEntry>) {
+    if !is_real_dir(dir) {
+        return;
+    }
+
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -140,9 +144,13 @@ pub fn scan_commands_recursive(base: &Path, dir: &Path, source: &str, out: &mut 
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
             scan_commands_recursive(base, &path, source, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md")
+        } else if file_type.is_file()
+            && path.extension().and_then(|e| e.to_str()) == Some("md")
             && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
         {
             let name = if let Ok(rel) = dir.strip_prefix(base)
@@ -161,6 +169,12 @@ pub fn scan_commands_recursive(base: &Path, dir: &Path, source: &str, out: &mut 
             });
         }
     }
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn codex_debug_commands() -> Vec<CommandEntry> {

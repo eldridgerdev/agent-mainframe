@@ -260,14 +260,21 @@ fn collect_markdown_paths_in_root(
 }
 
 fn collect_markdown_paths_recursive(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    if !is_real_dir(dir) {
+        return;
+    }
+
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
 
     for entry in entries.filter_map(|entry| entry.ok()) {
         let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
 
-        if path.is_dir() {
+        if file_type.is_dir() {
             if should_skip_markdown_dir(root, &path) {
                 continue;
             }
@@ -275,10 +282,16 @@ fn collect_markdown_paths_recursive(root: &Path, dir: &Path, out: &mut Vec<PathB
             continue;
         }
 
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+        if file_type.is_file() && path.extension().is_some_and(|ext| ext == "md") {
             out.push(path);
         }
     }
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn should_skip_markdown_dir(root: &Path, path: &Path) -> bool {

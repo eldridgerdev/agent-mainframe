@@ -197,7 +197,7 @@ fn find_session(
     preferred_session_id: Option<&str>,
 ) -> Option<OpencodeSessionRecord> {
     let session_root = storage_root.join("session");
-    if !session_root.is_dir() {
+    if !is_real_dir(&session_root) {
         return None;
     }
 
@@ -219,7 +219,7 @@ fn find_session(
 
 fn read_latest_user_prompt(storage_root: &Path, session_id: &str) -> Option<String> {
     let message_root = storage_root.join("message").join(session_id);
-    if !message_root.is_dir() {
+    if !is_real_dir(&message_root) {
         return None;
     }
 
@@ -240,7 +240,7 @@ fn read_latest_user_prompt(storage_root: &Path, session_id: &str) -> Option<Stri
 
 fn read_message_parts(storage_root: &Path, message_id: &str) -> Option<String> {
     let part_root = storage_root.join("part").join(message_id);
-    if !part_root.is_dir() {
+    if !is_real_dir(&part_root) {
         return None;
     }
 
@@ -272,7 +272,7 @@ fn read_message_parts(storage_root: &Path, message_id: &str) -> Option<String> {
 
 fn read_reasoning_tokens(storage_root: &Path, session_id: &str) -> Option<u64> {
     let message_root = storage_root.join("message").join(session_id);
-    if !message_root.is_dir() {
+    if !is_real_dir(&message_root) {
         return None;
     }
 
@@ -284,7 +284,7 @@ fn read_reasoning_tokens(storage_root: &Path, session_id: &str) -> Option<u64> {
             continue;
         };
         let part_root = storage_root.join("part").join(message_id);
-        if !part_root.is_dir() {
+        if !is_real_dir(&part_root) {
             continue;
         }
 
@@ -310,7 +310,7 @@ fn read_reasoning_tokens(storage_root: &Path, session_id: &str) -> Option<u64> {
 }
 
 fn walk_json_files(root: &Path) -> Vec<PathBuf> {
-    if !root.is_dir() {
+    if !is_real_dir(root) {
         return Vec::new();
     }
 
@@ -397,7 +397,7 @@ fn read_sidecar_at_time(
     preferred_session_id: Option<&str>,
     now_ts: i64,
 ) -> Option<OpencodeSidebarData> {
-    if !sidecar_root.is_dir() {
+    if !is_real_dir(sidecar_root) {
         return None;
     }
 
@@ -416,6 +416,12 @@ fn read_sidecar_at_time(
         .filter(|(updated_at, _)| sidecar_is_fresh(*updated_at, now_ts))
         .max_by_key(|(updated_at, _)| *updated_at)
         .map(|(_, data)| data)
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn sidecar_is_fresh(updated_at: i64, now_ts: i64) -> bool {

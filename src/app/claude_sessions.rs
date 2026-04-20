@@ -20,7 +20,7 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
         .join("projects")
         .join(&encoded);
 
-    if !projects_dir.is_dir() {
+    if !is_real_dir(&projects_dir) {
         return Ok(Vec::new());
     }
 
@@ -63,6 +63,12 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
     sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
 
     Ok(sessions)
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn extract_session_title(jsonl_path: &Path) -> Option<String> {

@@ -218,7 +218,10 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             Selection::Session(_, _, _) => {}
         },
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help(None);
+            app.mode = AppMode::Help(crate::app::HelpState {
+                from_view: None,
+                scroll_offset: 0,
+            });
         }
         KeyCode::Char('/') => {
             app.start_search();
@@ -317,7 +320,10 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('?') => {
-            app.mode = AppMode::Help(None);
+            app.mode = AppMode::Help(crate::app::HelpState {
+                from_view: None,
+                scroll_offset: 0,
+            });
         }
         KeyCode::Char('/') => {
             app.open_command_picker(None);

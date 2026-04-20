@@ -335,7 +335,10 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                     return Ok(());
                 }
             };
-            app.mode = AppMode::Help(Some(view));
+            app.mode = AppMode::Help(crate::app::HelpState {
+                from_view: Some(view),
+                scroll_offset: 0,
+            });
         }
         KeyCode::Char('o') | KeyCode::Char('S') => {
             app.toggle_scroll_mode(visible_rows);

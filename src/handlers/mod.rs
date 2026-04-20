@@ -59,7 +59,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
-        AppMode::Help(_) => handle_help_key(app, key.code),
+        AppMode::Help(_) => handle_help_key(app, key),
         AppMode::SteeringPrompt(_) => handle_steering_prompt_key(app, key),
         AppMode::NotificationPicker(_, _) => handle_notification_picker_key(app, key.code),
         AppMode::SessionSwitcher(_) => handle_session_switcher_key(app, key.code),

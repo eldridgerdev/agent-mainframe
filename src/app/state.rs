@@ -342,6 +342,11 @@ pub struct LatestPromptState {
     pub selected: usize,
 }
 
+pub struct HelpState {
+    pub from_view: Option<ViewState>,
+    pub scroll_offset: usize,
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -350,7 +355,7 @@ pub enum AppMode {
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
     Viewing(ViewState),
-    Help(Option<ViewState>),
+    Help(HelpState),
     NotificationPicker(usize, Option<ViewState>),
     SessionSwitcher(super::SessionSwitcherState),
     RenamingSession(RenameSessionState),

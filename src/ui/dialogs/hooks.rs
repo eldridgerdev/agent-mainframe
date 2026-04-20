@@ -795,6 +795,7 @@ mod tests {
                 highlight::HighlightLanguage::Tsx,
                 highlight::HighlightInstallState::Available,
             )),
+            0.0,
             &theme,
         );
 

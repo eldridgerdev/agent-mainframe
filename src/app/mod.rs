@@ -432,6 +432,12 @@ impl App {
             view.scroll_mode.hash(&mut hasher);
             view.scroll_total_lines.hash(&mut hasher);
             view.scroll_passthrough.hash(&mut hasher);
+            view.selection.start_row.hash(&mut hasher);
+            view.selection.start_col.hash(&mut hasher);
+            view.selection.end_row.hash(&mut hasher);
+            view.selection.end_col.hash(&mut hasher);
+            view.selection.is_selecting.hash(&mut hasher);
+            view.selection.has_selection.hash(&mut hasher);
             view.sidebar_visible.hash(&mut hasher);
             view.todos_expanded.hash(&mut hasher);
         }

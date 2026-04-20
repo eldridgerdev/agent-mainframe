@@ -221,6 +221,7 @@ pub struct AppConfig {
     pub leader_timeout_seconds: u64,
     pub diff_review_viewer: DiffReviewViewer,
     pub diff_viewer_layout: DiffViewerLayout,
+    pub diff_review_popup_hold_secs: f64,
     pub zai: Option<ZaiPlanConfig>,
     pub opencode_theme: Option<String>,
     pub projects: ProjectsConfig,
@@ -254,6 +255,7 @@ impl Default for AppConfig {
             leader_timeout_seconds: 5,
             diff_review_viewer: DiffReviewViewer::default(),
             diff_viewer_layout: DiffViewerLayout::Unified,
+            diff_review_popup_hold_secs: 3.0,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             projects: ProjectsConfig::default(),
@@ -369,7 +371,9 @@ impl App {
             AppMode::RunningHook(state) => state.child.is_some(),
             AppMode::DeletingFeatureInProgress(state) => state.child.is_some(),
             AppMode::SyntaxLanguagePicker(state) => state.operation.is_some(),
-            AppMode::DiffReviewPrompt(state) => state.explanation_child.is_some(),
+            AppMode::DiffReviewPrompt(state) => {
+                state.explanation_child.is_some() || state.hold_active()
+            }
             AppMode::HarnessSetup(state) => state
                 .harnesses
                 .iter()

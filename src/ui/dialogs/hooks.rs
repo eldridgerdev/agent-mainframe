@@ -37,6 +37,7 @@ pub fn draw_diff_review_dialog(
     throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
+    let hold_remaining = state.hold_remaining_secs();
     let area = centered_rect(92, 82, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -246,6 +247,7 @@ pub fn draw_diff_review_dialog(
         new_file_presentation,
         state.layout.clone(),
         diff_review_language_status(state),
+        hold_remaining,
         theme,
     ))
     .wrap(Wrap { trim: false });
@@ -294,12 +296,27 @@ fn diff_review_hint_lines(
         highlight::HighlightLanguage,
         highlight::HighlightInstallState,
     )>,
+    hold_remaining: f64,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     if explanation_loading {
         return vec![Line::from(vec![
             Span::styled(" e", Style::default().fg(theme.info.to_color())),
             Span::raw(" generating explanation..."),
+        ])];
+    }
+
+    if hold_remaining > 0.0 {
+        let secs = hold_remaining.ceil() as u64;
+        return vec![Line::from(vec![
+            Span::styled(
+                format!(" Hold {secs}s"),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                " — keys locked briefly to prevent accidental input",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
         ])];
     }
 

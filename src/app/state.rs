@@ -2,6 +2,7 @@ use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Child;
+use std::time::Instant;
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
@@ -576,6 +577,19 @@ pub struct DiffReviewState {
     pub request_id: Option<String>,
     pub reply_socket: Option<String>,
     pub return_to_view: Option<ViewState>,
+    pub opened_at: Instant,
+    pub hold_secs: f64,
+}
+
+impl DiffReviewState {
+    pub fn hold_remaining_secs(&self) -> f64 {
+        let elapsed = self.opened_at.elapsed().as_secs_f64();
+        (self.hold_secs - elapsed).max(0.0)
+    }
+
+    pub fn hold_active(&self) -> bool {
+        self.hold_remaining_secs() > 0.0
+    }
 }
 
 pub enum HookNext {

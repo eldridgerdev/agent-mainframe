@@ -267,6 +267,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     "Generating explanation...",
                     Style::default().fg(theme.info.to_color()),
                 ))
+            } else if state.hold_active() {
+                let secs = state.hold_remaining_secs().ceil() as u64;
+                Line::from(vec![
+                    Span::styled(
+                        format!("Hold {secs}s"),
+                        Style::default().fg(theme.warning.to_color()),
+                    ),
+                    Span::styled(
+                        " — keys locked briefly",
+                        Style::default().fg(theme.text_muted.to_color()),
+                    ),
+                ])
             } else if state.editing_feedback {
                 Line::from(vec![
                     Span::styled("Enter", key_style()),

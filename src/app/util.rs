@@ -246,7 +246,7 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
         .join("projects")
         .join(&encoded);
 
-    if !projects_dir.is_dir() {
+    if !is_real_dir(&projects_dir) {
         return Vec::new();
     }
 
@@ -319,7 +319,7 @@ fn read_prompts_from_opencode_storage_root(
         return Vec::new();
     };
     let message_root = storage_root.join("message").join(&session_id);
-    if !message_root.is_dir() {
+    if !is_real_dir(&message_root) {
         return Vec::new();
     }
 
@@ -361,7 +361,7 @@ fn find_opencode_session_id(
     preferred_session_id: Option<&str>,
 ) -> Option<String> {
     let session_root = storage_root.join("session");
-    if !session_root.is_dir() {
+    if !is_real_dir(&session_root) {
         return None;
     }
 
@@ -385,7 +385,7 @@ fn find_opencode_session_id(
 
 fn read_opencode_prompt_text(storage_root: &Path, message_id: &str) -> Option<String> {
     let part_root = storage_root.join("part").join(message_id);
-    if !part_root.is_dir() {
+    if !is_real_dir(&part_root) {
         return None;
     }
 
@@ -433,6 +433,9 @@ fn claude_session_jsonl_path(workdir: &Path, session_id: &str) -> Option<PathBuf
 
 fn latest_claude_session_jsonl_path(workdir: &Path) -> Option<PathBuf> {
     let projects_dir = claude_projects_dir(workdir)?;
+    if !is_real_dir(&projects_dir) {
+        return None;
+    }
     let read_dir = std::fs::read_dir(projects_dir).ok()?;
 
     read_dir
@@ -462,7 +465,7 @@ fn read_claude_task_state_from_task_store(session_id: &str) -> Option<ClaudeTask
         .join(".claude")
         .join("tasks")
         .join(session_id);
-    if !tasks_dir.is_dir() {
+    if !is_real_dir(&tasks_dir) {
         return None;
     }
 
@@ -686,7 +689,7 @@ fn encode_claude_path(path: &Path) -> String {
 }
 
 fn walk_json_files(root: &Path) -> Vec<PathBuf> {
-    if !root.is_dir() {
+    if !is_real_dir(root) {
         return Vec::new();
     }
 
@@ -712,6 +715,12 @@ fn walk_json_files(root: &Path) -> Vec<PathBuf> {
     }
     files.sort();
     files
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Deserialize)]

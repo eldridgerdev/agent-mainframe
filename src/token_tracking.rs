@@ -136,6 +136,9 @@ impl SessionTokenTracker {
         created_at: DateTime<Utc>,
     ) -> Option<TokenUsageSource> {
         let projects_dir = self.claude_projects_dir(workdir)?;
+        if !is_real_dir(&projects_dir) {
+            return None;
+        }
         let threshold = created_at.timestamp_millis() - 120_000;
         let mut newest_match: Option<(String, i64)> = None;
         let mut newest_any: Option<(String, i64)> = None;
@@ -413,7 +416,7 @@ impl SessionTokenTracker {
         let storage_root = self.opencode_storage_root()?;
         let message_root = storage_root.join("message").join(session_id);
         let part_root = storage_root.join("part");
-        if !message_root.is_dir() {
+        if !is_real_dir(&message_root) {
             return None;
         }
 
@@ -428,7 +431,7 @@ impl SessionTokenTracker {
                 continue;
             };
             let parts_dir = part_root.join(message_id);
-            if !parts_dir.is_dir() {
+            if !is_real_dir(&parts_dir) {
                 continue;
             }
 
@@ -483,7 +486,7 @@ impl SessionTokenTracker {
         let storage_root = self.opencode_storage_root()?;
         let message_root = storage_root.join("message").join(session_id);
         let part_root = storage_root.join("part");
-        if !message_root.is_dir() {
+        if !is_real_dir(&message_root) {
             return None;
         }
 
@@ -499,7 +502,7 @@ impl SessionTokenTracker {
             .collect::<Vec<_>>();
         for message_id in message_ids {
             let parts_dir = part_root.join(message_id);
-            if parts_dir.is_dir() {
+            if is_real_dir(&parts_dir) {
                 paths.extend(walk_files_with_extension(&parts_dir, "json"));
             }
         }
@@ -696,7 +699,7 @@ pub fn format_token_count(tokens: u64) -> String {
 }
 
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    if !dir.is_dir() {
+    if !is_real_dir(dir) {
         return;
     }
 
@@ -706,7 +709,7 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn walk_files_with_extension(root: &Path, extension: &str) -> Vec<PathBuf> {
-    if !root.is_dir() {
+    if !is_real_dir(root) {
         return Vec::new();
     }
 
@@ -731,6 +734,12 @@ fn walk_files_with_extension(root: &Path, extension: &str) -> Vec<PathBuf> {
         }
     }
     files
+}
+
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
 }
 
 fn metadata_signature_for_paths<I>(paths: I) -> Option<u64>

@@ -200,6 +200,7 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     } else if !matches!(app.mode, AppMode::Viewing(_)) {
         app.schedule_sidebar_loads_for_all_features();
     }
+    app.flush_token_cache_to_db();
 }
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
@@ -402,6 +403,7 @@ impl App {
                 format!("Failed to persist discovered token tracking sources: {err}"),
             );
         }
+        self.flush_token_cache_to_db();
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {

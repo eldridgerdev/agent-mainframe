@@ -1,5 +1,6 @@
 mod migrations;
 pub mod store;
+mod token_cache;
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -47,6 +48,23 @@ impl AmfDb {
 
     pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<()> {
         store::save(&self.conn, store)
+    }
+
+    pub fn load_token_cache(
+        &self,
+    ) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
+        token_cache::load(&self.conn)
+    }
+
+    pub fn save_token_cache(
+        &self,
+        entries: &[crate::token_tracking::DbTokenCacheEntry],
+    ) -> Result<()> {
+        token_cache::save(&self.conn, entries)
+    }
+
+    pub fn evict_stale_token_cache(&self) -> Result<()> {
+        token_cache::evict_stale(&self.conn)
     }
 }
 

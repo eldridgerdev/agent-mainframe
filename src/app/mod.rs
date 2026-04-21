@@ -1320,7 +1320,7 @@ impl App {
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
         let store_path = db.path.clone();
-        Ok(Self {
+        let mut app = Self {
             store,
             store_path,
             db: Some(db),
@@ -1388,7 +1388,17 @@ impl App {
             view_snapshot_target: None,
             harness_check_tx,
             harness_check_rx,
-        })
+        };
+
+        // Seed token usage cache from DB so first sync after restart is fast.
+        if let Some(ref db) = app.db {
+            let _ = db.evict_stale_token_cache();
+            if let Ok(entries) = db.load_token_cache() {
+                app.token_tracker.seed_from_db_cache(entries);
+            }
+        }
+
+        Ok(app)
     }
 
     pub fn log_startup(&mut self) {
@@ -2096,6 +2106,16 @@ impl App {
             "Error: {} Check debug log for details.",
             message.into()
         ));
+    }
+
+    pub fn flush_token_cache_to_db(&self) {
+        if let Some(db) = &self.db {
+            let entries = self.token_tracker.all_cache_entries();
+            if let Err(e) = db.save_token_cache(&entries) {
+                // Non-fatal: next sync will retry.
+                let _ = e;
+            }
+        }
     }
 
     pub fn save_config(&self) {

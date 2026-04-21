@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::project::SessionKind;
 
@@ -32,6 +32,13 @@ pub struct SessionTokenUsage {
     pub cache_write_tokens: u64,
     pub reasoning_tokens: u64,
     pub total_tokens: u64,
+}
+
+/// Entry exchanged between `SessionTokenTracker` and the DB cache table.
+pub struct DbTokenCacheEntry {
+    pub source: TokenUsageSource,
+    pub signature: Option<u64>,
+    pub usage: Option<SessionTokenUsage>,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +78,38 @@ impl SessionTokenTracker {
             opencode_sessions: None,
             usage_cache: HashMap::new(),
         }
+    }
+
+    /// Pre-populate the in-memory cache from DB-persisted entries.
+    /// Each entry is inserted with a stale `refreshed_at` so the first
+    /// access after startup re-validates the signature without doing a
+    /// full file re-read when the signature is unchanged.
+    pub fn seed_from_db_cache(&mut self, entries: Vec<DbTokenCacheEntry>) {
+        let stale = Instant::now()
+            .checked_sub(Duration::from_secs(31))
+            .unwrap_or_else(Instant::now);
+        for entry in entries {
+            self.usage_cache.insert(
+                entry.source,
+                UsageCacheEntry {
+                    refreshed_at: stale,
+                    signature: entry.signature,
+                    usage: entry.usage,
+                },
+            );
+        }
+    }
+
+    /// Snapshot all current cache entries for flushing to DB.
+    pub fn all_cache_entries(&self) -> Vec<DbTokenCacheEntry> {
+        self.usage_cache
+            .iter()
+            .map(|(source, entry)| DbTokenCacheEntry {
+                source: source.clone(),
+                signature: entry.signature,
+                usage: entry.usage.clone(),
+            })
+            .collect()
     }
 
     pub fn discover_source(

@@ -807,16 +807,7 @@ impl TmuxManager {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let mut termios = libc::termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_line: 0,
-            c_cc: [0; libc::NCCS],
-            c_ispeed: 0,
-            c_ospeed: 0,
-        };
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
 
         unsafe {
             if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == -1 {
@@ -831,7 +822,7 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &termios,
+                &mut termios,
                 &mut winsize,
             )
         };
@@ -878,7 +869,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -972,7 +963,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())

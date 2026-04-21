@@ -40,6 +40,50 @@ fn control_view_parser_cursor_move_keeps_relative_redraws_on_tmux_row() {
     );
 }
 
+#[test]
+fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "terminal".to_string(),
+        "Terminal".to_string(),
+        SessionKind::Terminal,
+        VibeMode::default(),
+        false,
+    ));
+    app.pane_content_cols = 4;
+    app.pane_content_rows = 1;
+    app.pane_content = "same formatted content".to_string();
+    app.pane_lines = vec![ratatui::text::Line::from("ABCD")];
+
+    app.view_snapshot_tx
+        .send(ViewSnapshot {
+            session: "amf-my-feat".to_string(),
+            window: "terminal".to_string(),
+            pane_content: Some("same formatted content".to_string()),
+            rendered_lines: Some(vec![ratatui::text::Line::from("A  D")]),
+            cursor: None,
+            capture_duration: None,
+            render_duration: None,
+            cursor_duration: None,
+            pipe_read_duration: None,
+        })
+        .unwrap();
+
+    let (pane_changed, cursor_changed) = app.drain_view_snapshots();
+
+    assert!(pane_changed);
+    assert!(!cursor_changed);
+    assert_eq!(app.pane_content, "same formatted content");
+    assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("A  D")]);
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]

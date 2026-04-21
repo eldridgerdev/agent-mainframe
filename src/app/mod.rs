@@ -1275,7 +1275,7 @@ impl App {
             }
 
             if let Some(rendered_lines) = snapshot.rendered_lines
-                && (pane_changed || self.pane_lines.is_empty())
+                && self.pane_lines != rendered_lines
             {
                 self.pane_lines = rendered_lines;
                 pane_changed = true;

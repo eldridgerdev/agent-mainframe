@@ -384,6 +384,7 @@ impl Default for AppConfig {
 pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
+    pub db: Option<crate::db::AmfDb>,
     pub config: AppConfig,
     pub active_extension: ExtensionConfig,
     pub theme: crate::theme::Theme,
@@ -1292,10 +1293,13 @@ impl App {
         (pane_changed, cursor_changed)
     }
 
-    pub fn new(store_path: PathBuf) -> Result<Self> {
+    pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
-        crate::project::prepare_store_path(&store_path, &crate::project::global_store_path());
-        let store = ProjectStore::load(&store_path)?;
+        let db = crate::db::AmfDb::open_or_seed(
+            &db_path,
+            &crate::project::global_db_path(),
+        )?;
+        let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let config = load_config();
@@ -1315,9 +1319,11 @@ impl App {
         let (harness_check_tx, harness_check_rx) = channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
+        let store_path = db.path.clone();
         Ok(Self {
             store,
             store_path,
+            db: Some(db),
             config,
             active_extension,
             theme,
@@ -1388,7 +1394,7 @@ impl App {
     pub fn log_startup(&mut self) {
         self.debug_log.info("amf", "AMF started".to_string());
         self.debug_log
-            .debug("amf", format!("Store path: {}", self.store_path.display()));
+            .debug("amf", format!("DB path: {}", self.store_path.display()));
         self.debug_log.debug(
             "amf",
             format!("Projects loaded: {}", self.store.projects.len()),
@@ -1416,6 +1422,7 @@ impl App {
         Self {
             store,
             store_path: PathBuf::new(),
+            db: None,
             config: AppConfig::default(),
             active_extension: ExtensionConfig::default(),
             theme: crate::theme::Theme::default(),
@@ -2016,7 +2023,14 @@ impl App {
     }
 
     pub fn save(&self) -> Result<()> {
-        self.store.save(&self.store_path)
+        if let Some(db) = &self.db {
+            return db.save_store(&self.store);
+        }
+        // Fallback for tests: write JSON to store_path if set.
+        if !self.store_path.as_os_str().is_empty() {
+            return self.store.save(&self.store_path);
+        }
+        Ok(())
     }
 
     pub fn start_theme_picker(&mut self) {

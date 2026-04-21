@@ -10,7 +10,26 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Embedded tmux view updates now reseed from tmux when control-mode output
+  arrives, which prevents stale whitespace from lingering until the next
+  manual input or view refresh.
+
+## [v0.17.1] - 2026-04-21
+
+### Fixed
+
+- Managed tmux control-mode sessions now bootstrap with a temporary hidden
+  session before applying the global `default-terminal` setting, avoiding the
+  macOS startup failure where tmux could not connect to the managed socket.
+- tmux startup on macOS now handles the dedicated managed socket without
+  relying on `tmux start-server`, which could fail with `server exited
+  unexpectedly`.
+
+### Migration
+
+- No store migration is required.
 
 ## [v0.17.0] - 2026-04-20
 

@@ -1001,6 +1001,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::HarnessSetup(state) = &app.mode {
         super::dialogs::draw_harness_setup_dialog(frame, state, &app.throbber_state, &app.theme);
     }
+
+    super::draw_toasts(frame, &app.toasts, &app.theme);
 }
 
 pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

@@ -1,5 +1,6 @@
 mod automation;
 mod claude_session_picker;
+pub(crate) mod toast;
 mod claude_sessions;
 mod codex_live;
 mod codex_session_picker;
@@ -66,6 +67,7 @@ pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;
 pub use state::*;
 pub use steering::{PromptAnalysis, analyze_prompt};
+pub use toast::Toast;
 
 pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
 pub const VIEW_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
@@ -391,6 +393,7 @@ pub struct App {
     pub selection: Selection,
     pub mode: AppMode,
     pub message: Option<String>,
+    pub toasts: Vec<Toast>,
     pub should_quit: bool,
     pub should_switch: Option<String>,
     pub pane_content: String,
@@ -481,7 +484,7 @@ impl App {
     }
 
     pub(crate) fn has_visible_animation(&self) -> bool {
-        match &self.mode {
+        let base = match &self.mode {
             AppMode::Normal => self.has_dashboard_animation(),
             AppMode::RunningHook(state) => state.child.is_some(),
             AppMode::DeletingFeatureInProgress(state) => state.child.is_some(),
@@ -494,7 +497,8 @@ impl App {
                 .iter()
                 .any(|h| h.status == HarnessCheckStatus::Checking),
             _ => false,
-        }
+        };
+        base || self.has_active_toasts()
     }
 
     pub fn should_defer_view_background_sync(&self) -> bool {
@@ -513,6 +517,7 @@ impl App {
         self.should_switch.hash(&mut hasher);
         self.leader_active.hash(&mut hasher);
         self.message.hash(&mut hasher);
+        self.toasts.len().hash(&mut hasher);
         self.pending_inputs.len().hash(&mut hasher);
         self.tmux_cursor.hash(&mut hasher);
 
@@ -1330,6 +1335,7 @@ impl App {
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
+            toasts: Vec::new(),
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),
@@ -1442,6 +1448,7 @@ impl App {
             selection: Selection::Project(0),
             mode: AppMode::Normal,
             message: None,
+            toasts: Vec::new(),
             should_quit: false,
             should_switch: None,
             pane_content: String::new(),

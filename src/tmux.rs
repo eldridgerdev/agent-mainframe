@@ -478,6 +478,23 @@ impl TmuxManager {
             || std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL").is_some()
     }
 
+    fn global_default_terminal_args(term: &str, manages_private_socket: bool) -> Vec<Vec<String>> {
+        let mut commands = Vec::new();
+
+        if manages_private_socket {
+            commands.push(vec!["start-server".to_string()]);
+        }
+
+        commands.push(vec![
+            "set-option".to_string(),
+            "-g".to_string(),
+            "default-terminal".to_string(),
+            term.to_string(),
+        ]);
+
+        commands
+    }
+
     fn set_global_default_terminal_if_needed() -> Result<()> {
         let Some(term) = Self::pane_default_terminal() else {
             return Ok(());
@@ -486,19 +503,24 @@ impl TmuxManager {
             return Ok(());
         }
 
-        if Self::runtime().manages_private_socket {
-            Self::run(
-                &["start-server"],
-                "Failed to start tmux server for default terminal configuration",
-                "tmux start-server failed",
-            )?;
+        for args in Self::global_default_terminal_args(&term, Self::runtime().manages_private_socket)
+        {
+            let refs: Vec<&str> = args.iter().map(|arg| arg.as_str()).collect();
+            let (context, failure) = if refs.first() == Some(&"start-server") {
+                (
+                    "Failed to start tmux server for default terminal configuration",
+                    "tmux start-server failed",
+                )
+            } else {
+                (
+                    "Failed to configure tmux default terminal",
+                    "tmux set-option failed",
+                )
+            };
+            Self::run_with_private_socket_recovery(&refs, context, failure)?;
         }
 
-        Self::run_with_private_socket_recovery(
-            &["set-option", "-g", "default-terminal", &term],
-            "Failed to configure tmux default terminal",
-            "tmux set-option failed",
-        )
+        Ok(())
     }
 
     fn set_session_default_terminal_if_needed(session: &str) -> Result<()> {
@@ -2131,6 +2153,39 @@ mod tests {
             TmuxInputTransportMode::Direct
         );
         TmuxManager::configure_control_mode(true);
+    }
+
+    #[test]
+    fn managed_socket_global_default_terminal_runs_start_server_first() {
+        let commands = TmuxManager::global_default_terminal_args("screen-256color", true);
+
+        assert_eq!(
+            commands,
+            vec![
+                vec!["start-server".to_string()],
+                vec![
+                    "set-option".to_string(),
+                    "-g".to_string(),
+                    "default-terminal".to_string(),
+                    "screen-256color".to_string(),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn ambient_socket_global_default_terminal_skips_start_server() {
+        let commands = TmuxManager::global_default_terminal_args("screen-256color", false);
+
+        assert_eq!(
+            commands,
+            vec![vec![
+                "set-option".to_string(),
+                "-g".to_string(),
+                "default-terminal".to_string(),
+                "screen-256color".to_string(),
+            ]]
+        );
     }
 
     #[cfg(unix)]

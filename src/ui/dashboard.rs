@@ -689,6 +689,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             ));
             frame.render_widget(paragraph, msg_area);
         }
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
 

@@ -1390,11 +1390,14 @@ impl App {
             harness_check_rx,
         };
 
-        // Seed token usage cache from DB so first sync after restart is fast.
+        // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
             let _ = db.evict_stale_token_cache();
             if let Ok(entries) = db.load_token_cache() {
                 app.token_tracker.seed_from_db_cache(entries);
+            }
+            if let Ok(entries) = db.load_recent_log(app.debug_log.max_entries()) {
+                app.debug_log.inject_entries(entries);
             }
         }
 
@@ -2080,19 +2083,31 @@ impl App {
     }
 
     pub fn log_debug(&mut self, context: &str, message: String) {
-        self.debug_log.debug(context, message);
+        let entry = self.debug_log.debug(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_info(&mut self, context: &str, message: String) {
-        self.debug_log.info(context, message);
+        let entry = self.debug_log.info(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_warn(&mut self, context: &str, message: String) {
-        self.debug_log.warn(context, message);
+        let entry = self.debug_log.warn(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_error(&mut self, context: &str, message: String) {
-        self.debug_log.error(context, message);
+        let entry = self.debug_log.error(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn report_logged_error(&mut self, context: &str, detail: impl Into<String>) {

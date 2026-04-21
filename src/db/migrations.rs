@@ -24,6 +24,7 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_001,
         ),
         ("Persist token usage cache across restarts", MIGRATION_002),
+        ("Replace unbounded debug.log file with capped DB table", MIGRATION_003),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -58,6 +59,25 @@ CREATE TABLE IF NOT EXISTS token_usage_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_token_cache_updated
     ON token_usage_cache(updated_at);
+";
+
+const MIGRATION_003: &str = "
+CREATE TABLE IF NOT EXISTS debug_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    level   TEXT NOT NULL,
+    context TEXT NOT NULL,
+    message TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_debug_log_ts ON debug_log(ts DESC);
+CREATE TRIGGER IF NOT EXISTS debug_log_cap
+AFTER INSERT ON debug_log
+BEGIN
+    DELETE FROM debug_log
+    WHERE id <= (
+        SELECT id FROM debug_log ORDER BY id DESC LIMIT 1 OFFSET 10000
+    );
+END;
 ";
 
 const MIGRATION_001: &str = "

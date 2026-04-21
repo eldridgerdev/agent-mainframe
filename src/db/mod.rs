@@ -1,3 +1,4 @@
+mod debug_log;
 mod migrations;
 pub mod store;
 mod token_cache;
@@ -65,6 +66,17 @@ impl AmfDb {
 
     pub fn evict_stale_token_cache(&self) -> Result<()> {
         token_cache::evict_stale(&self.conn)
+    }
+
+    pub fn append_log_entry(&self, entry: &crate::debug::LogEntry) -> Result<()> {
+        debug_log::append(&self.conn, entry)
+    }
+
+    pub fn load_recent_log(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::debug::LogEntry>> {
+        debug_log::load_recent(&self.conn, limit)
     }
 }
 

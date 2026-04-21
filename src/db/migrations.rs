@@ -18,10 +18,13 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
         )
         .unwrap_or(0);
 
-    let migrations: &[(&str, &str)] = &[(
-        "Initial schema: projects, features, sessions, bookmarks",
-        MIGRATION_001,
-    )];
+    let migrations: &[(&str, &str)] = &[
+        (
+            "Initial schema: projects, features, sessions, bookmarks",
+            MIGRATION_001,
+        ),
+        ("Persist token usage cache across restarts", MIGRATION_002),
+    ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
         let target = (i + 1) as i64;
@@ -37,6 +40,25 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
 
     Ok(())
 }
+
+const MIGRATION_002: &str = "
+CREATE TABLE IF NOT EXISTS token_usage_cache (
+    source_provider   TEXT NOT NULL,
+    source_id         TEXT NOT NULL,
+    signature         INTEGER,
+    has_usage         INTEGER NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens  INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    updated_at        TEXT NOT NULL,
+    PRIMARY KEY (source_provider, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_token_cache_updated
+    ON token_usage_cache(updated_at);
+";
 
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (

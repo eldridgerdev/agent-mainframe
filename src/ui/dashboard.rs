@@ -634,8 +634,20 @@ fn format_sidebar_usage(status: &str) -> String {
     }
 }
 
-fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, leader_active: bool) {
+fn draw_view_pane(
+    frame: &mut Frame,
+    app: &App,
+    view: &crate::app::ViewState,
+    leader_active: bool,
+    show_tmux_cursor: bool,
+) {
     let sidebar_data = build_agent_sidebar_data(app, view);
+    let tmux_cursor = if show_tmux_cursor {
+        app.tmux_cursor
+    } else {
+        None
+    };
+
     super::pane::draw_with_lines(
         frame,
         view,
@@ -644,7 +656,7 @@ fn draw_view_pane(frame: &mut Frame, app: &App, view: &crate::app::ViewState, le
         sidebar_data.as_ref(),
         leader_active,
         app.pending_inputs.len(),
-        app.tmux_cursor,
+        tmux_cursor,
         &app.theme,
     );
 }
@@ -657,7 +669,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
-        draw_view_pane(frame, app, view, app.leader_active);
+        draw_view_pane(frame, app, view, app.leader_active, true);
         // Show transient message (e.g. "Copied N chars") on the bottom line
         if let Some(ref msg) = app.message {
             let msg_area = Rect::new(
@@ -697,7 +709,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             state.vibe_mode.clone(),
             state.review,
         );
-        draw_view_pane(frame, app, &temp_view, false);
+        draw_view_pane(frame, app, &temp_view, false, false);
         super::picker::draw_session_switcher(frame, state, app.config.nerd_font, &app.theme);
         return;
     }
@@ -706,25 +718,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && let Some(view) = &state.from_view
     {
         let scroll = state.scroll_offset;
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
         super::dialogs::draw_help(frame, scroll, &app.theme);
         return;
     }
 
     if let AppMode::NotificationPicker(selected, Some(view)) = &app.mode {
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
         super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
         return;
     }
 
     if let AppMode::LatestPrompt(state) = &app.mode {
-        draw_view_pane(frame, app, &state.view, false);
+        draw_view_pane(frame, app, &state.view, false, false);
         super::dialogs::draw_latest_prompt_dialog(frame, state, app.message.as_deref(), &app.theme);
         return;
     }
 
     if let AppMode::DiffViewer(state) = &app.mode {
-        draw_view_pane(frame, app, &state.from_view, false);
+        draw_view_pane(frame, app, &state.from_view, false, false);
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
         return;
     }
@@ -735,7 +747,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         None
     };
     if let Some(view) = markdown_from_view.as_ref() {
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
     }
     if let AppMode::MarkdownViewer(state) = &mut app.mode {
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
@@ -747,7 +759,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         None
     };
     if let Some(view) = steering_from_view.as_ref() {
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
     }
     if let AppMode::SteeringPrompt(state) = &mut app.mode {
         super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
@@ -758,7 +770,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
         super::picker::draw_command_picker(frame, state, &app.theme);
         return;
     }
@@ -772,7 +784,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
         super::picker::draw_markdown_file_picker(frame, state, &app.theme);
         return;
     }
@@ -781,7 +793,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && state.from_view.is_some()
     {
         let view = state.from_view.as_ref().unwrap();
-        draw_view_pane(frame, app, view, false);
+        draw_view_pane(frame, app, view, false, false);
         let rows = app.bookmark_picker_rows();
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
         return;
@@ -806,7 +818,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             sw.vibe_mode.clone(),
             sw.review,
         );
-        draw_view_pane(frame, app, &temp_view, false);
+        draw_view_pane(frame, app, &temp_view, false, false);
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
         return;
     }

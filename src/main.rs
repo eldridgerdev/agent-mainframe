@@ -4,6 +4,7 @@ mod app;
 mod automation;
 mod claude;
 mod codex;
+mod db;
 mod debug;
 mod diff;
 mod editor;
@@ -200,8 +201,8 @@ fn main() -> Result<()> {
         cleanup_global_hooks();
         app::App::cleanup_stale_thinking_files();
 
-        let store_path = project::store_path();
-        let mut app = App::new(store_path)?;
+        let db_path = project::db_path();
+        let mut app = App::new(db_path)?;
         app.log_startup();
 
         // Check for VS Code availability in the background so it doesn't

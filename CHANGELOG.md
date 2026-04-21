@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.17.2] - 2026-04-21
+
 ### Fixed
 
 - Embedded tmux view updates now reseed from tmux when control-mode output

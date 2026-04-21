@@ -156,7 +156,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if is_codex.unwrap_or(false) {
                 app.pick_codex_session();
             } else {
-                app.message = Some("S only works for opencode, claude, or codex sessions".into());
+                app.push_toast_warning("S only works for opencode, claude, or codex sessions");
             }
         }
         KeyCode::Char('u') => match &app.selection {
@@ -230,7 +230,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if !app.pending_inputs.is_empty() {
                 app.mode = AppMode::NotificationPicker(0, None);
             } else {
-                app.message = Some("No pending input requests".into());
+                app.push_toast_warning("No pending input requests");
             }
         }
         KeyCode::Char('r') => match &app.selection {
@@ -271,7 +271,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
-            app.message = Some(format!("Filter: {}", app.session_filter.display_name()));
+            app.push_toast_info(format!("Filter: {}", app.session_filter.display_name()));
         }
         KeyCode::Char('Z') => {
             app.trigger_summary_for_selected()?;
@@ -316,7 +316,7 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
             if !app.pending_inputs.is_empty() {
                 app.mode = AppMode::NotificationPicker(0, None);
             } else {
-                app.message = Some("No pending input requests".into());
+                app.push_toast_warning("No pending input requests");
             }
         }
         KeyCode::Char('?') => {

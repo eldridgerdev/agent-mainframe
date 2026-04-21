@@ -17,7 +17,7 @@ pub fn handle_fork_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::ForkingFeature(state) = &mut app.mode {
                     if state.new_branch.is_empty() {
-                        app.message = Some("Branch name cannot be empty".into());
+                        app.push_toast_warning("Branch name cannot be empty");
                     } else {
                         state.step = ForkFeatureStep::Agent;
                     }

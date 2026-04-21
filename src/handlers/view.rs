@@ -254,7 +254,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
-            app.message = Some("Refreshed statuses".into());
+            app.push_toast_success("Refreshed statuses");
         }
         KeyCode::Char('R') => {
             app.refresh_view_sizing()?;
@@ -267,11 +267,11 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             let _ = TmuxManager::kill_session(&session);
             app.exit_view();
             app.sync_statuses();
-            app.message = Some("Stopped session".into());
+            app.push_toast_success("Stopped session");
         }
         KeyCode::Char('i') => {
             if app.pending_inputs.is_empty() {
-                app.message = Some("No pending input requests".into());
+                app.push_toast_warning("No pending input requests");
             } else {
                 let view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                     AppMode::Viewing(v) => v,

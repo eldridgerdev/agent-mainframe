@@ -486,6 +486,14 @@ impl TmuxManager {
             return Ok(());
         }
 
+        if Self::runtime().manages_private_socket {
+            Self::run(
+                &["start-server"],
+                "Failed to start tmux server for default terminal configuration",
+                "tmux start-server failed",
+            )?;
+        }
+
         Self::run_with_private_socket_recovery(
             &["set-option", "-g", "default-terminal", &term],
             "Failed to configure tmux default terminal",

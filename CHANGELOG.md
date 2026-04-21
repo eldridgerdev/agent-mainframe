@@ -10,7 +10,11 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Embedded tmux view updates now reseed from tmux when control-mode output
+  arrives, which prevents stale whitespace from lingering until the next
+  manual input or view refresh.
 
 ## [v0.17.1] - 2026-04-21
 

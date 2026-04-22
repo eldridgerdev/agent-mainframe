@@ -9,6 +9,8 @@ static mut LAST_CLICK_TIME: Option<Instant> = None;
 static mut LAST_CLICK_ROW: Option<u16> = None;
 const VIEW_MOUSE_SCROLL_LINES: usize = 3;
 const DEBUG_LOG_MOUSE_SCROLL_LINES: usize = 3;
+const MARKDOWN_MOUSE_SCROLL_LINES: usize = 3;
+const HELP_MOUSE_SCROLL_LINES: usize = 3;
 
 pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Result<()> {
     match mouse.kind {
@@ -46,6 +48,18 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
             .saturating_sub(DEBUG_LOG_MOUSE_SCROLL_LINES);
         return;
     }
+    if let AppMode::MarkdownViewer(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_sub(MARKDOWN_MOUSE_SCROLL_LINES);
+        return;
+    }
+    if let AppMode::Help(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_sub(HELP_MOUSE_SCROLL_LINES);
+        return;
+    }
     if matches!(app.mode, AppMode::Viewing(_)) {
         handle_view_scroll(app, ScrollDirection::Up, visible_rows);
         return;
@@ -65,6 +79,18 @@ fn handle_scroll_down(app: &mut App, visible_rows: u16) {
         state.scroll_offset = state
             .scroll_offset
             .saturating_add(DEBUG_LOG_MOUSE_SCROLL_LINES);
+        return;
+    }
+    if let AppMode::MarkdownViewer(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_add(MARKDOWN_MOUSE_SCROLL_LINES);
+        return;
+    }
+    if let AppMode::Help(state) = &mut app.mode {
+        state.scroll_offset = state
+            .scroll_offset
+            .saturating_add(HELP_MOUSE_SCROLL_LINES);
         return;
     }
     if matches!(app.mode, AppMode::Viewing(_)) {

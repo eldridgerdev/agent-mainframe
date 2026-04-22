@@ -31,6 +31,13 @@ pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('c') => {
             confirm_harness_setup(app)?;
         }
+        KeyCode::Char('q') => {
+            if state.is_startup {
+                app.should_quit = true;
+            } else {
+                app.mode = AppMode::Normal;
+            }
+        }
         KeyCode::Esc => {
             if state.is_startup {
                 let enabled = state.enabled_harnesses();

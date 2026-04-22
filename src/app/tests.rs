@@ -14,9 +14,31 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use crossterm::event::KeyCode;
 
 fn prompt_entry(text: &str) -> String {
     text.to_string()
+}
+
+#[test]
+fn startup_harness_setup_allows_quit_with_q() {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        extra: HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.open_harness_setup(true);
+    crate::handlers::handle_harness_setup_key(&mut app, KeyCode::Char('q')).unwrap();
+
+    assert!(app.should_quit);
 }
 
 #[test]

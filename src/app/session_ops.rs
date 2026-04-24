@@ -574,12 +574,15 @@ impl App {
                     .spawn();
             }
 
-            // Clean up status file.
+            // Clean up status file and DB entry.
             let status_file = workdir
                 .join(".amf")
                 .join("session-status")
                 .join(format!("{}.txt", session_id));
             let _ = std::fs::remove_file(status_file);
+            if let Some(ref db) = self.db {
+                let _ = db.delete_session_status(&session_id);
+            }
         }
 
         if clear_sidebar {

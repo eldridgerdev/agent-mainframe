@@ -75,7 +75,7 @@ impl DebugLog {
         }
     }
 
-    pub fn log(&mut self, level: LogLevel, context: &str, message: String) {
+    pub fn log(&mut self, level: LogLevel, context: &str, message: String) -> LogEntry {
         let entry = LogEntry {
             timestamp: Utc::now(),
             level,
@@ -86,8 +86,18 @@ impl DebugLog {
             self.entries.pop_front();
         }
         self.entries.push_back(entry.clone());
-
         self.write_to_file(&entry);
+        entry
+    }
+
+    /// Pre-populate from DB history without writing back to file or DB.
+    pub fn inject_entries(&mut self, entries: Vec<LogEntry>) {
+        for entry in entries {
+            if self.entries.len() >= self.max_entries {
+                self.entries.pop_front();
+            }
+            self.entries.push_back(entry);
+        }
     }
 
     fn write_to_file(&self, entry: &LogEntry) {
@@ -108,20 +118,20 @@ impl DebugLog {
         }
     }
 
-    pub fn debug(&mut self, context: &str, message: String) {
-        self.log(LogLevel::Debug, context, message);
+    pub fn debug(&mut self, context: &str, message: String) -> LogEntry {
+        self.log(LogLevel::Debug, context, message)
     }
 
-    pub fn info(&mut self, context: &str, message: String) {
-        self.log(LogLevel::Info, context, message);
+    pub fn info(&mut self, context: &str, message: String) -> LogEntry {
+        self.log(LogLevel::Info, context, message)
     }
 
-    pub fn warn(&mut self, context: &str, message: String) {
-        self.log(LogLevel::Warn, context, message);
+    pub fn warn(&mut self, context: &str, message: String) -> LogEntry {
+        self.log(LogLevel::Warn, context, message)
     }
 
-    pub fn error(&mut self, context: &str, message: String) {
-        self.log(LogLevel::Error, context, message);
+    pub fn error(&mut self, context: &str, message: String) -> LogEntry {
+        self.log(LogLevel::Error, context, message)
     }
 
     pub fn entries(&self) -> &VecDeque<LogEntry> {
@@ -142,6 +152,10 @@ impl DebugLog {
 
     pub fn log_file(&self) -> &PathBuf {
         &self.log_file
+    }
+
+    pub fn max_entries(&self) -> usize {
+        self.max_entries
     }
 }
 

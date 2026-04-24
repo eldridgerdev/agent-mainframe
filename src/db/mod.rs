@@ -1,0 +1,134 @@
+mod debug_log;
+mod migrations;
+mod session_status;
+pub mod store;
+mod token_cache;
+
+use anyhow::Result;
+use rusqlite::Connection;
+use std::path::{Path, PathBuf};
+
+pub struct AmfDb {
+    conn: Connection,
+    pub path: PathBuf,
+}
+
+impl AmfDb {
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        migrations::run(&conn)?;
+        Ok(Self {
+            conn,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// Open `path`, seeding it first if it does not exist.
+    ///
+    /// Seeding priority:
+    /// 1. Copy all data from `global_path` (worktree-local isolation).
+    /// 2. Import from a `projects.json` file in the same directory.
+    /// 3. Import from the global `~/.config/amf/projects.json`.
+    pub fn open_or_seed(path: &Path, global_path: &Path) -> Result<Self> {
+        if !path.exists() {
+            if path != global_path && global_path.exists() {
+                seed_from_db(path, global_path);
+            } else {
+                seed_from_json(path);
+            }
+        }
+        Self::open(path)
+    }
+
+    pub fn load_store(&self) -> Result<crate::project::ProjectStore> {
+        store::load(&self.conn)
+    }
+
+    pub fn save_store(&self, store: &crate::project::ProjectStore) -> Result<()> {
+        store::save(&self.conn, store)
+    }
+
+    pub fn load_token_cache(
+        &self,
+    ) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
+        token_cache::load(&self.conn)
+    }
+
+    pub fn save_token_cache(
+        &self,
+        entries: &[crate::token_tracking::DbTokenCacheEntry],
+    ) -> Result<()> {
+        token_cache::save(&self.conn, entries)
+    }
+
+    pub fn evict_stale_token_cache(&self) -> Result<()> {
+        token_cache::evict_stale(&self.conn)
+    }
+
+    pub fn append_log_entry(&self, entry: &crate::debug::LogEntry) -> Result<()> {
+        debug_log::append(&self.conn, entry)
+    }
+
+    pub fn load_recent_log(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<crate::debug::LogEntry>> {
+        debug_log::load_recent(&self.conn, limit)
+    }
+
+    pub fn get_session_status(&self, session_id: &str) -> Result<Option<String>> {
+        session_status::get(&self.conn, session_id)
+    }
+
+    pub fn set_session_status(&self, session_id: &str, status_text: &str) -> Result<()> {
+        session_status::set(&self.conn, session_id, status_text)
+    }
+
+    pub fn delete_session_status(&self, session_id: &str) -> Result<()> {
+        session_status::delete(&self.conn, session_id)
+    }
+}
+
+fn seed_from_db(dest: &Path, source: &Path) {
+    let Ok(source_db) = AmfDb::open(source) else {
+        return;
+    };
+    let Ok(store) = source_db.load_store() else {
+        return;
+    };
+    if let Ok(dest_db) = AmfDb::open(dest) {
+        let _ = dest_db.save_store(&store);
+    }
+}
+
+fn seed_from_json(db_path: &Path) {
+    let json_candidates: Vec<PathBuf> = vec![
+        db_path
+            .parent()
+            .map(|p| p.join("projects.json"))
+            .unwrap_or_default(),
+        dirs::config_dir()
+            .unwrap_or_default()
+            .join("amf")
+            .join("projects.json"),
+        dirs::config_dir()
+            .unwrap_or_default()
+            .join("claude-super-vibeless")
+            .join("projects.json"),
+    ];
+
+    for json_path in json_candidates {
+        if json_path.exists() {
+            if let Ok(store) = crate::project::ProjectStore::load(&json_path) {
+                if let Ok(db) = AmfDb::open(db_path) {
+                    let _ = db.save_store(&store);
+                }
+            }
+            return;
+        }
+    }
+}

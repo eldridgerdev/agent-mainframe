@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::token_tracking::TokenUsageSource;
 use crate::worktree::WorktreeManager;
 
-const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
+pub(crate) const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -932,6 +932,28 @@ pub fn amf_config_dir() -> PathBuf {
 
 pub fn global_store_path() -> PathBuf {
     amf_config_dir().join("projects.json")
+}
+
+pub fn global_db_path() -> PathBuf {
+    amf_config_dir().join("amf.db")
+}
+
+pub fn db_path() -> PathBuf {
+    let global_path = global_db_path();
+    env::current_dir()
+        .ok()
+        .map(|current_dir| {
+            worktree_store_path_for_dir(&current_dir)
+                .map(|json_path| {
+                    // .amf/projects.json → .amf/amf.db
+                    json_path
+                        .parent()
+                        .map(|p| p.join("amf.db"))
+                        .unwrap_or_else(|| global_path.clone())
+                })
+                .unwrap_or_else(|| global_path.clone())
+        })
+        .unwrap_or(global_path)
 }
 
 fn worktree_store_path_for_dir(current_dir: &Path) -> Option<PathBuf> {

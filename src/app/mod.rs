@@ -384,6 +384,7 @@ impl Default for AppConfig {
 pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
+    pub db: Option<crate::db::AmfDb>,
     pub config: AppConfig,
     pub active_extension: ExtensionConfig,
     pub theme: crate::theme::Theme,
@@ -1292,10 +1293,13 @@ impl App {
         (pane_changed, cursor_changed)
     }
 
-    pub fn new(store_path: PathBuf) -> Result<Self> {
+    pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
-        crate::project::prepare_store_path(&store_path, &crate::project::global_store_path());
-        let store = ProjectStore::load(&store_path)?;
+        let db = crate::db::AmfDb::open_or_seed(
+            &db_path,
+            &crate::project::global_db_path(),
+        )?;
+        let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let config = load_config();
@@ -1315,9 +1319,11 @@ impl App {
         let (harness_check_tx, harness_check_rx) = channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
-        Ok(Self {
+        let store_path = db.path.clone();
+        let mut app = Self {
             store,
             store_path,
+            db: Some(db),
             config,
             active_extension,
             theme,
@@ -1382,13 +1388,26 @@ impl App {
             view_snapshot_target: None,
             harness_check_tx,
             harness_check_rx,
-        })
+        };
+
+        // Seed in-memory caches from DB so first use after restart is fast.
+        if let Some(ref db) = app.db {
+            let _ = db.evict_stale_token_cache();
+            if let Ok(entries) = db.load_token_cache() {
+                app.token_tracker.seed_from_db_cache(entries);
+            }
+            if let Ok(entries) = db.load_recent_log(app.debug_log.max_entries()) {
+                app.debug_log.inject_entries(entries);
+            }
+        }
+
+        Ok(app)
     }
 
     pub fn log_startup(&mut self) {
         self.debug_log.info("amf", "AMF started".to_string());
         self.debug_log
-            .debug("amf", format!("Store path: {}", self.store_path.display()));
+            .debug("amf", format!("DB path: {}", self.store_path.display()));
         self.debug_log.debug(
             "amf",
             format!("Projects loaded: {}", self.store.projects.len()),
@@ -1416,6 +1435,7 @@ impl App {
         Self {
             store,
             store_path: PathBuf::new(),
+            db: None,
             config: AppConfig::default(),
             active_extension: ExtensionConfig::default(),
             theme: crate::theme::Theme::default(),
@@ -2016,7 +2036,14 @@ impl App {
     }
 
     pub fn save(&self) -> Result<()> {
-        self.store.save(&self.store_path)
+        if let Some(db) = &self.db {
+            return db.save_store(&self.store);
+        }
+        // Fallback for tests: write JSON to store_path if set.
+        if !self.store_path.as_os_str().is_empty() {
+            return self.store.save(&self.store_path);
+        }
+        Ok(())
     }
 
     pub fn start_theme_picker(&mut self) {
@@ -2056,19 +2083,31 @@ impl App {
     }
 
     pub fn log_debug(&mut self, context: &str, message: String) {
-        self.debug_log.debug(context, message);
+        let entry = self.debug_log.debug(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_info(&mut self, context: &str, message: String) {
-        self.debug_log.info(context, message);
+        let entry = self.debug_log.info(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_warn(&mut self, context: &str, message: String) {
-        self.debug_log.warn(context, message);
+        let entry = self.debug_log.warn(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn log_error(&mut self, context: &str, message: String) {
-        self.debug_log.error(context, message);
+        let entry = self.debug_log.error(context, message);
+        if let Some(db) = &self.db {
+            let _ = db.append_log_entry(&entry);
+        }
     }
 
     pub fn report_logged_error(&mut self, context: &str, detail: impl Into<String>) {
@@ -2082,6 +2121,16 @@ impl App {
             "Error: {} Check debug log for details.",
             message.into()
         ));
+    }
+
+    pub fn flush_token_cache_to_db(&self) {
+        if let Some(db) = &self.db {
+            let entries = self.token_tracker.all_cache_entries();
+            if let Err(e) = db.save_token_cache(&entries) {
+                // Non-fatal: next sync will retry.
+                let _ = e;
+            }
+        }
     }
 
     pub fn save_config(&self) {

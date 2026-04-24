@@ -9,7 +9,44 @@ use crate::token_tracking::{
 
 use chrono::Utc;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+// ---------------------------------------------------------------------------
+// Custom session status helpers
+// ---------------------------------------------------------------------------
+
+/// Read the status text for a custom session.
+///
+/// Tries the DB first; falls back to the legacy `.amf/session-status/<id>.txt`
+/// file and lazily migrates the value into the DB so subsequent reads are
+/// DB-only.
+fn read_custom_session_status(
+    session_id: &str,
+    workdir: &Path,
+    db: Option<&crate::db::AmfDb>,
+) -> Option<String> {
+    if let Some(db) = db {
+        if let Ok(Some(text)) = db.get_session_status(session_id) {
+            return Some(text);
+        }
+    }
+
+    let status_path = workdir
+        .join(".amf")
+        .join("session-status")
+        .join(format!("{}.txt", session_id));
+
+    let file_text = std::fs::read_to_string(&status_path).ok().and_then(|s| {
+        let line = s.lines().next()?.trim().to_string();
+        if line.is_empty() { None } else { Some(line) }
+    });
+
+    if let (Some(ref text), Some(db)) = (file_text.as_ref(), db) {
+        let _ = db.set_session_status(session_id, text);
+    }
+
+    file_text
+}
 
 // ---------------------------------------------------------------------------
 // Background session-status sync types
@@ -68,21 +105,16 @@ fn run_jobs(
     mut tracker: SessionTokenTracker,
     jobs: Vec<SessionStatusJob>,
     pricing: &TokenPricingConfig,
+    db_path: Option<PathBuf>,
 ) -> SessionStatusBgResult {
+    let db = db_path.as_ref().and_then(|p| crate::db::AmfDb::open(p).ok());
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
 
     for job in jobs {
         if job.kind == SessionKind::Custom {
-            let status_path = job
-                .workdir
-                .join(".amf")
-                .join("session-status")
-                .join(format!("{}.txt", job.session_id));
-            let status_text = std::fs::read_to_string(&status_path).ok().and_then(|s| {
-                let line = s.lines().next()?.trim().to_string();
-                if line.is_empty() { None } else { Some(line) }
-            });
+            let status_text =
+                read_custom_session_status(&job.session_id, &job.workdir, db.as_ref());
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
@@ -200,6 +232,7 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     } else if !matches!(app.mode, AppMode::Viewing(_)) {
         app.schedule_sidebar_loads_for_all_features();
     }
+    app.flush_token_cache_to_db();
 }
 
 pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
@@ -248,12 +281,13 @@ impl App {
         let jobs = collect_jobs(&self.store);
         let pricing = self.config.token_pricing.clone();
         let tracker = std::mem::take(&mut self.token_tracker);
+        let db_path = self.db.as_ref().map(|db| db.path.clone());
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.session_status_bg = Some(rx);
 
         std::thread::spawn(move || {
-            let result = run_jobs(tracker, jobs, &pricing);
+            let result = run_jobs(tracker, jobs, &pricing, db_path);
             let _ = tx.send(result);
         });
     }
@@ -326,20 +360,14 @@ impl App {
 
         for project in &mut self.store.projects {
             for feature in &mut project.features {
+                let workdir = feature.workdir.clone();
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
-                        let status_path = feature
-                            .workdir
-                            .join(".amf")
-                            .join("session-status")
-                            .join(format!("{}.txt", session.id));
-                        session.status_text =
-                            std::fs::read_to_string(&status_path)
-                                .ok()
-                                .and_then(|content| {
-                                    let line = content.lines().next()?.trim().to_string();
-                                    if line.is_empty() { None } else { Some(line) }
-                                });
+                        session.status_text = read_custom_session_status(
+                            &session.id,
+                            &workdir,
+                            self.db.as_ref(),
+                        );
                         continue;
                     }
 
@@ -402,6 +430,7 @@ impl App {
                 format!("Failed to persist discovered token tracking sources: {err}"),
             );
         }
+        self.flush_token_cache_to_db();
     }
 
     pub fn sync_thinking_status(&mut self) -> bool {

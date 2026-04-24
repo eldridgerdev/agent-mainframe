@@ -4,6 +4,7 @@ mod app;
 mod automation;
 mod claude;
 mod codex;
+mod db;
 mod debug;
 mod diff;
 mod editor;
@@ -81,6 +82,13 @@ enum Commands {
         /// Timeout in milliseconds while waiting for reply.
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
+    },
+    /// Write a custom session status into the AMF database.
+    /// Used by hook scripts for custom sessions.
+    #[command(name = "set-status", hide = true)]
+    SetStatus {
+        session_id: String,
+        status_text: String,
     },
 }
 
@@ -172,6 +180,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Commands::SetStatus {
+        session_id,
+        status_text,
+    }) = cli.command
+    {
+        let db_path = project::db_path();
+        let db = db::AmfDb::open(&db_path)?;
+        db.set_session_status(&session_id, &status_text)?;
+        return Ok(());
+    }
+
     let config = load_config();
     TmuxManager::configure_control_mode(config.tmux_control_mode);
 
@@ -200,8 +219,8 @@ fn main() -> Result<()> {
         cleanup_global_hooks();
         app::App::cleanup_stale_thinking_files();
 
-        let store_path = project::store_path();
-        let mut app = App::new(store_path)?;
+        let db_path = project::db_path();
+        let mut app = App::new(db_path)?;
         app.log_startup();
 
         // Check for VS Code availability in the background so it doesn't

@@ -274,12 +274,18 @@ impl TmuxRuntime {
     fn bundled_binary() -> Option<OsString> {
         let exe = std::env::current_exe().ok()?;
         let dir = exe.parent()?;
-        let bundled = dir.join("tmux");
-        if bundled.exists() {
-            Some(bundled.into_os_string())
-        } else {
-            None
+        Self::bundled_binary_in(dir)
+    }
+
+    fn bundled_binary_in(dir: &Path) -> Option<OsString> {
+        for candidate in ["tmux", "tmux-real"] {
+            let bundled = dir.join(candidate);
+            if bundled.is_file() {
+                return Some(bundled.into_os_string());
+            }
         }
+
+        None
     }
 
     fn socket_from_tmux_env(value: &str) -> Option<PathBuf> {
@@ -2076,6 +2082,28 @@ mod tests {
             stdout: stdout.as_bytes().to_vec(),
             stderr: stderr.as_bytes().to_vec(),
         }
+    }
+
+    #[test]
+    fn bundled_binary_prefers_tmux_then_tmux_real() {
+        let _guard = env_lock().lock().unwrap();
+        let tempdir = TempDir::new().unwrap();
+
+        fs::write(tempdir.path().join("tmux-real"), "binary").unwrap();
+        assert_eq!(
+            TmuxRuntime::bundled_binary_in(tempdir.path())
+                .unwrap()
+                .to_string_lossy(),
+            tempdir.path().join("tmux-real").to_string_lossy()
+        );
+
+        fs::write(tempdir.path().join("tmux"), "wrapper").unwrap();
+        assert_eq!(
+            TmuxRuntime::bundled_binary_in(tempdir.path())
+                .unwrap()
+                .to_string_lossy(),
+            tempdir.path().join("tmux").to_string_lossy()
+        );
     }
 
     #[test]

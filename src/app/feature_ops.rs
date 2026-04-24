@@ -838,7 +838,7 @@ impl App {
     pub fn do_stop_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // Run on_stop for custom sessions before killing tmux.
         if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
-            Self::run_custom_session_on_stop(feature);
+            Self::run_custom_session_on_stop(feature, self.db.as_ref());
         }
 
         let tmux_session = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
@@ -867,8 +867,8 @@ impl App {
     }
 
     /// Run on_stop commands for all custom sessions in a
-    /// feature and clean up their status files. Fire-and-forget.
-    fn run_custom_session_on_stop(feature: &Feature) {
+    /// feature and clean up their status files and DB rows. Fire-and-forget.
+    fn run_custom_session_on_stop(feature: &Feature, db: Option<&crate::db::AmfDb>) {
         use crate::project::SessionKind;
 
         let status_dir = feature.workdir.join(".amf").join("session-status");
@@ -889,6 +889,9 @@ impl App {
                     .spawn();
             }
             let _ = std::fs::remove_file(status_dir.join(format!("{}.txt", session.id)));
+            if let Some(db) = db {
+                let _ = db.delete_session_status(&session.id);
+            }
         }
     }
 
@@ -903,7 +906,7 @@ impl App {
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
         {
             // Run on_stop for custom sessions before killing.
-            Self::run_custom_session_on_stop(feature);
+            Self::run_custom_session_on_stop(feature, self.db.as_ref());
             (
                 feature.tmux_session.clone(),
                 feature.is_worktree,

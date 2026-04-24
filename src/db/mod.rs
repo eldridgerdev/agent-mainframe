@@ -1,5 +1,6 @@
 mod debug_log;
 mod migrations;
+mod session_status;
 pub mod store;
 mod token_cache;
 
@@ -77,6 +78,18 @@ impl AmfDb {
         limit: usize,
     ) -> Result<Vec<crate::debug::LogEntry>> {
         debug_log::load_recent(&self.conn, limit)
+    }
+
+    pub fn get_session_status(&self, session_id: &str) -> Result<Option<String>> {
+        session_status::get(&self.conn, session_id)
+    }
+
+    pub fn set_session_status(&self, session_id: &str, status_text: &str) -> Result<()> {
+        session_status::set(&self.conn, session_id, status_text)
+    }
+
+    pub fn delete_session_status(&self, session_id: &str) -> Result<()> {
+        session_status::delete(&self.conn, session_id)
     }
 }
 

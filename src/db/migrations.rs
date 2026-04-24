@@ -25,6 +25,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
         ),
         ("Persist token usage cache across restarts", MIGRATION_002),
         ("Replace unbounded debug.log file with capped DB table", MIGRATION_003),
+        (
+            "Replace per-file session-status with DB table",
+            MIGRATION_004,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -78,6 +82,14 @@ BEGIN
         SELECT id FROM debug_log ORDER BY id DESC LIMIT 1 OFFSET 10000
     );
 END;
+";
+
+const MIGRATION_004: &str = "
+CREATE TABLE IF NOT EXISTS session_status (
+    session_id  TEXT PRIMARY KEY,
+    status_text TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 ";
 
 const MIGRATION_001: &str = "

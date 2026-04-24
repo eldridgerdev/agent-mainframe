@@ -83,6 +83,13 @@ enum Commands {
         #[arg(long, default_value_t = 120000)]
         timeout_ms: u64,
     },
+    /// Write a custom session status into the AMF database.
+    /// Used by hook scripts for custom sessions.
+    #[command(name = "set-status", hide = true)]
+    SetStatus {
+        session_id: String,
+        status_text: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -170,6 +177,17 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string(&reply).unwrap_or_else(|_| "{}".to_string())
         );
+        return Ok(());
+    }
+
+    if let Some(Commands::SetStatus {
+        session_id,
+        status_text,
+    }) = cli.command
+    {
+        let db_path = project::db_path();
+        let db = db::AmfDb::open(&db_path)?;
+        db.set_session_status(&session_id, &status_text)?;
         return Ok(());
     }
 

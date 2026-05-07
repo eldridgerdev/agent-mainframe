@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::app::util::latest_prompt_path;
+use crate::app::toast::input_request_toast_message;
 use crate::automation::{
     CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
     CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
@@ -758,7 +759,7 @@ impl App {
                 );
             }
         }
-        self.pending_inputs.push(PendingInput {
+        let pending_input = PendingInput {
             session_id,
             cwd,
             message: msg.message.unwrap_or_default(),
@@ -780,7 +781,13 @@ impl App {
             proceed_signal: msg.proceed_signal,
             request_id: msg.request_id,
             reply_socket: msg.reply_socket,
-        });
+        };
+        if pending_input.notification_type == "input-request"
+            && !self.pending_inputs.iter().any(|input| input == &pending_input)
+        {
+            self.push_toast_warning(input_request_toast_message(&pending_input));
+        }
+        self.pending_inputs.push(pending_input);
     }
 
     pub fn scan_notifications(&mut self) -> bool {
@@ -788,6 +795,8 @@ impl App {
         if self.last_file_notification_fingerprint == Some(fingerprint) {
             return false;
         }
+
+        let old_pending_inputs = self.pending_inputs.clone();
 
         #[derive(Deserialize)]
         struct NotificationJson {
@@ -1019,6 +1028,25 @@ impl App {
                 format!("File-notification fallback pending count: {}", file_count),
             );
             self.last_file_notification_count = file_count;
+        }
+
+        let new_input_requests: Vec<&PendingInput> = self
+            .pending_inputs
+            .iter()
+            .filter(|input| {
+                input.notification_type == "input-request"
+                    && !old_pending_inputs.iter().any(|existing| existing == *input)
+            })
+            .collect();
+        if let Some(first) = new_input_requests.first() {
+            if new_input_requests.len() == 1 {
+                self.push_toast_warning(input_request_toast_message(first));
+            } else {
+                self.push_toast_warning(format!(
+                    "{} new input requests",
+                    new_input_requests.len()
+                ));
+            }
         }
 
         if let AppMode::Viewing(ref view) = self.mode {

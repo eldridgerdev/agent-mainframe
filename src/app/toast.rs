@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use crate::app::App;
+use crate::app::PendingInput;
 
 pub enum ToastKind {
     Success,
@@ -81,4 +82,22 @@ impl App {
     pub fn has_active_toasts(&self) -> bool {
         !self.toasts.is_empty()
     }
+}
+
+pub(crate) fn input_request_toast_message(input: &PendingInput) -> String {
+    let target = input
+        .feature_name
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .or_else(|| input.project_name.as_deref().filter(|value| !value.is_empty()))
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if input.session_id.is_empty() {
+                "unknown session".to_string()
+            } else {
+                input.session_id.clone()
+            }
+        });
+
+    format!("New input request from {target}")
 }

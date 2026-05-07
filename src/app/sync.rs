@@ -1,4 +1,5 @@
 use super::*;
+use super::toast::input_request_toast_message;
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -546,7 +547,7 @@ impl App {
                         && p.feature_name.as_deref() == Some(&feature_name)
                 });
                 if !any_pending_for_feature {
-                    self.pending_inputs.push(PendingInput {
+                    let pending_input = PendingInput {
                         session_id: sid.clone(),
                         cwd,
                         message: "Agent finished and is waiting for input".to_string(),
@@ -568,7 +569,9 @@ impl App {
                         proceed_signal: None,
                         request_id: None,
                         reply_socket: None,
-                    });
+                    };
+                    self.push_toast_warning(input_request_toast_message(&pending_input));
+                    self.pending_inputs.push(pending_input);
                     self.log_info(
                         "sync",
                         format!(

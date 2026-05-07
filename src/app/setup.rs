@@ -41,7 +41,6 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const CODEX_CONFIG_TOML: &str = "config.toml";
 
 #[derive(Default)]
 struct ClaudeSettingsState {
@@ -318,22 +317,6 @@ fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
     }
 }
 
-fn parse_codex_notify_commands(value: Option<&toml::Value>) -> Option<Vec<String>> {
-    let Some(value) = value else {
-        return Some(vec![]);
-    };
-
-    if let Some(arr) = value.as_array() {
-        let values: Option<Vec<String>> = arr
-            .iter()
-            .map(|item| item.as_str().map(ToOwned::to_owned))
-            .collect();
-        return values;
-    }
-
-    value.as_str().map(|command| vec![command.to_string()])
-}
-
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
@@ -602,50 +585,11 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     let _ = std::fs::create_dir_all(&codex_dir);
 
     let hook_path = codex_dir.join("amf-codex-notify.sh");
-    let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
     let _ = std::fs::write(&hook_path, CODEX_NOTIFY_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
-    }
-
-    let config_path = codex_dir.join(CODEX_CONFIG_TOML);
-    let mut config = if config_path.exists() {
-        match std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-        {
-            Some(v) => v,
-            None => return,
-        }
-    } else {
-        toml::Value::Table(Default::default())
-    };
-
-    let Some(table) = config.as_table_mut() else {
-        return;
-    };
-    let hook_cmd = hook_path.to_string_lossy().to_string();
-    let Some(mut notify_entries) = parse_codex_notify_commands(table.get("notify")) else {
-        return;
-    };
-    if !notify_entries.iter().any(|entry| entry == &hook_cmd) {
-        notify_entries.push(hook_cmd);
-    }
-    let _ = std::fs::remove_file(&original_notify_path);
-    table.insert(
-        "notify".to_string(),
-        toml::Value::Array(
-            notify_entries
-                .into_iter()
-                .map(toml::Value::String)
-                .collect(),
-        ),
-    );
-
-    if let Ok(rendered) = toml::to_string_pretty(&config) {
-        let _ = std::fs::write(&config_path, rendered);
     }
 }
 
@@ -718,43 +662,9 @@ fn cleanup_opencode_plugins(workdir: &Path) {
 
 fn cleanup_codex_notify_hook(workdir: &Path) {
     let codex_dir = workdir.join(".codex");
-    let config_path = codex_dir.join(CODEX_CONFIG_TOML);
     let hook_path = codex_dir.join("amf-codex-notify.sh");
-    let original_notify_path = codex_dir.join("amf-codex-notify-original.json");
-    let hook_cmd = hook_path.to_string_lossy().to_string();
-
-    if config_path.exists()
-        && let Some(mut config) = std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-        && let Some(table) = config.as_table_mut()
-    {
-        if let Some(mut notify_entries) = parse_codex_notify_commands(table.get("notify")) {
-            notify_entries.retain(|entry| entry != &hook_cmd);
-            if notify_entries.is_empty() {
-                table.remove("notify");
-            } else {
-                table.insert(
-                    "notify".to_string(),
-                    toml::Value::Array(
-                        notify_entries
-                            .into_iter()
-                            .map(toml::Value::String)
-                            .collect(),
-                    ),
-                );
-            }
-        }
-
-        if table.is_empty() {
-            let _ = std::fs::remove_file(&config_path);
-        } else if let Ok(rendered) = toml::to_string_pretty(&config) {
-            let _ = std::fs::write(&config_path, rendered);
-        }
-    }
 
     let _ = std::fs::remove_file(&hook_path);
-    let _ = std::fs::remove_file(&original_notify_path);
     cleanup_amf_skills(workdir, &AgentKind::Codex);
 }
 

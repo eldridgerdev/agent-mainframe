@@ -77,7 +77,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     if state.worktrees.is_empty() {
-                        app.message = Some("No available worktrees".into());
+                        app.push_toast_warning("No available worktrees");
                     } else if let Some(wt) = state.worktrees.get(state.worktree_index) {
                         state.branch = wt.branch.clone().unwrap_or_else(|| {
                             wt.path
@@ -163,7 +163,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     _ => return Ok(()),
                 };
                 if empty {
-                    app.message = Some("Branch name cannot be empty".into());
+                    app.push_toast_warning("Branch name cannot be empty");
                 } else if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.step = CreateFeatureStep::Worktree;
                 }

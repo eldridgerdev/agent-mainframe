@@ -5,6 +5,7 @@ mod list;
 mod pane;
 mod picker;
 mod status;
+mod toast;
 
 use ratatui::{
     Frame,
@@ -19,6 +20,7 @@ use crate::theme::Theme;
 pub(crate) use pane::render_ansi_lines;
 pub(crate) use pane::render_vt100_screen;
 pub(crate) use pane::viewing_main_width;
+pub(crate) use toast::draw_toasts;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     dashboard::draw(frame, app);

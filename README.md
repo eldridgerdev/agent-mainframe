@@ -192,6 +192,10 @@ For a clean, isolated AMF setup that boots straight into a seeded demo
 dashboard for screenshots, see
 [`docs/docker-screenshots.md`](docs/docker-screenshots.md).
 
+For a container that installs AMF in an environment without the system
+`tmux` package preinstalled, see
+[`docs/docker-no-tmux.md`](docs/docker-no-tmux.md).
+
 ## Automation
 
 AMF exposes machine-friendly automation commands for external agents:

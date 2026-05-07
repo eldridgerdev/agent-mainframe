@@ -5,6 +5,7 @@ use std::env;
 use std::fs;
 use std::fs::File;
 use std::io;
+use std::os::unix::fs as unix_fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
@@ -217,6 +218,24 @@ fn install_bundle_asset(asset: &ReleaseAsset, exe_dir: &Path) -> Result<()> {
 fn replace_path_recursive(src: &Path, dest: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(src)
         .with_context(|| format!("Failed to read metadata for {}", src.display()))?;
+    let file_type = metadata.file_type();
+
+    if file_type.is_symlink() {
+        if dest.exists() {
+            remove_existing_path(dest)?;
+        }
+
+        let target = fs::read_link(src)
+            .with_context(|| format!("Failed to read symlink target for {}", src.display()))?;
+        unix_fs::symlink(&target, dest).with_context(|| {
+            format!(
+                "Failed to recreate symlink {} -> {}",
+                dest.display(),
+                target.display()
+            )
+        })?;
+        return Ok(());
+    }
 
     if metadata.is_dir() {
         if dest.exists() {
@@ -423,6 +442,42 @@ mod tests {
             "db"
         );
         assert!(!dest.path().join("tmux-root").join("stale").exists());
+    }
+
+    #[test]
+    fn replace_path_recursive_preserves_symlinks_to_directories() {
+        let src = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+
+        let source_dir = src.path().join("tmux-root").join("usr").join("share");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("terminfo"), "db").unwrap();
+        unix_fs::symlink(
+            "share",
+            src.path().join("tmux-root").join("usr").join("doc"),
+        )
+        .unwrap();
+
+        replace_path_recursive(
+            &src.path().join("tmux-root"),
+            &dest.path().join("tmux-root"),
+        )
+        .unwrap();
+
+        let doc_link =
+            fs::read_link(dest.path().join("tmux-root").join("usr").join("doc")).unwrap();
+        assert_eq!(doc_link, Path::new("share"));
+        assert_eq!(
+            fs::read_to_string(
+                dest.path()
+                    .join("tmux-root")
+                    .join("usr")
+                    .join("doc")
+                    .join("terminfo")
+            )
+            .unwrap(),
+            "db"
+        );
     }
 
     #[test]

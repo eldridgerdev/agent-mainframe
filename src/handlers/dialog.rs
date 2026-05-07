@@ -323,7 +323,7 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
         if let AppMode::SteeringPrompt(state) = &mut app.mode {
             state.clear_prompt();
-            app.message = Some("Steering prompt cleared".into());
+            app.push_toast_success("Steering prompt cleared");
         }
         return Ok(());
     }
@@ -806,7 +806,10 @@ mod tests {
             }
             _ => panic!("expected steering prompt to stay open"),
         }
-        assert_eq!(app.message.as_deref(), Some("Steering prompt cleared"));
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Steering prompt cleared")
+        );
     }
 
     #[test]

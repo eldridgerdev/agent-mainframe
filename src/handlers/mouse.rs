@@ -360,7 +360,7 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
 
             if !text.is_empty() {
                 copy_to_clipboard_osc52(&text);
-                app.message = Some(format!("Copied {} chars", text.len()));
+                app.push_toast_success(format!("Copied {} chars", text.len()));
             }
         }
     }

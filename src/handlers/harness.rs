@@ -35,7 +35,7 @@ pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
             if state.is_startup {
                 let enabled = state.enabled_harnesses();
                 if enabled.is_empty() {
-                    app.message = Some("Select at least one harness before continuing".into());
+                    app.push_toast_warning("Select at least one harness before continuing");
                 } else {
                     apply_harnesses(app, enabled)?;
                 }
@@ -99,7 +99,7 @@ fn confirm_harness_setup(app: &mut App) -> Result<()> {
     let enabled = state.enabled_harnesses();
     if enabled.is_empty() {
         if state.is_startup {
-            app.message = Some("Select at least one harness before continuing".into());
+            app.push_toast_warning("Select at least one harness before continuing");
         } else {
             app.mode = AppMode::Normal;
         }
@@ -114,7 +114,7 @@ fn apply_harnesses(app: &mut App, harnesses: Vec<crate::project::AgentKind>) -> 
     app.save()?;
     let count = app.store.available_harnesses.len();
     app.mode = AppMode::Normal;
-    app.message = Some(format!(
+    app.push_toast_success(format!(
         "Configured {} harness{}",
         count,
         if count == 1 { "" } else { "es" }

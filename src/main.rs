@@ -4,6 +4,7 @@ mod app;
 mod automation;
 mod claude;
 mod codex;
+mod codex_config;
 mod db;
 mod debug;
 mod diff;
@@ -573,6 +574,9 @@ fn run_loop<B: Backend>(
         app.viewport_rows = visible_rows;
 
         app.throbber_state.calc_next();
+        if app.tick_toasts() {
+            force_redraw = true;
+        }
 
         if matches!(app.mode, app::AppMode::RunningHook(_))
             && let Err(e) = app.poll_running_hook()
@@ -633,7 +637,7 @@ fn run_loop<B: Backend>(
         }
 
         if let Some(alert) = debug::take_user_alert() {
-            app.message = Some(alert);
+            app.push_toast_info(alert);
             force_redraw = true;
         }
 

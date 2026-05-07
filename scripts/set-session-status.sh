@@ -18,7 +18,11 @@ if command -v amf >/dev/null 2>&1; then
     amf set-status "$SESSION_ID" "$STATUS_TEXT" 2>/dev/null && exit 0
 fi
 
+<<<<<<< HEAD
 # Fallback: write to the legacy file path when amf is not in PATH.
+=======
+# Fallback: write to legacy file path when amf is not in PATH
+>>>>>>> origin/main
 if [ -n "$AMF_STATUS_DIR" ]; then
     mkdir -p "$AMF_STATUS_DIR"
     printf '%s\n' "$STATUS_TEXT" > "$AMF_STATUS_DIR/${SESSION_ID}.txt"

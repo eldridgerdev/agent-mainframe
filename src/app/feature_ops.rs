@@ -614,10 +614,13 @@ impl App {
                         self.tmux
                             .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
                     } else {
+                        let extra_args =
+                            crate::codex_config::launch_override_args(&feature.workdir);
                         self.tmux.launch_codex(
                             &feature.tmux_session,
                             &session.tmux_window,
                             None,
+                            extra_args,
                         )?;
                     }
                 }
@@ -866,7 +869,7 @@ impl App {
     }
 
     /// Run on_stop commands for all custom sessions in a
-    /// feature and clean up their status files. Fire-and-forget.
+    /// feature and clean up their status files and DB rows. Fire-and-forget.
     fn run_custom_session_on_stop(feature: &Feature, db: Option<&crate::db::AmfDb>) {
         use crate::project::SessionKind;
 

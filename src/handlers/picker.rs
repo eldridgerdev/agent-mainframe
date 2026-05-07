@@ -95,9 +95,12 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                             {
                                 let event = codex_debug_event(debug_command);
                                 app.apply_codex_live_event(&session_id, &event);
-                                app.message = Some(format!("Applied '{}'", command.name.as_str()));
+                                app.push_toast_success(format!(
+                                    "Applied '{}'",
+                                    command.name.as_str()
+                                ));
                             } else {
-                                app.message = Some("No Codex session selected".into());
+                                app.push_toast_warning("No Codex session selected");
                             }
                         }
                         CommandAction::SlashCommand => {
@@ -127,9 +130,9 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                             if let Some((session, window)) = &tmux_info {
                                 let _ = TmuxManager::send_literal(session, window, &command_text);
                                 let _ = TmuxManager::send_key_name(session, window, "Enter");
-                                app.message = Some(format!("Sent '{}'", command_text));
+                                app.push_toast_success(format!("Sent '{}'", command_text));
                             } else {
-                                app.message = Some("No active session to send to".into());
+                                app.push_toast_warning("No active session to send to");
                             }
                         }
                     }
@@ -207,7 +210,7 @@ pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<
 
     if operation_running {
         if matches!(key, KeyCode::Esc | KeyCode::Char('q')) {
-            app.message = Some("Wait for the syntax operation to finish".into());
+            app.push_toast_warning("Wait for the syntax operation to finish");
         }
         return Ok(());
     }
@@ -514,7 +517,10 @@ mod tests {
                 .as_deref(),
             Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
         );
-        assert_eq!(app.message.as_deref(), Some("Applied 'demo-plan'"));
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Applied 'demo-plan'")
+        );
         assert!(matches!(app.mode, AppMode::Normal));
     }
 
@@ -543,7 +549,7 @@ mod tests {
             )
         );
         assert_eq!(
-            app.message.as_deref(),
+            app.toasts.last().map(|t| t.message.as_str()),
             Some("Applied 'demo-work-change-reason'")
         );
         assert!(matches!(app.mode, AppMode::Normal));
@@ -584,25 +590,33 @@ pub fn handle_notification_picker_key(app: &mut App, key: KeyCode) -> Result<()>
             app.handle_notification_select()?;
         }
         KeyCode::Char('x') | KeyCode::Delete => {
-            if let AppMode::NotificationPicker(ref mut idx, _) = app.mode {
+            let deleted = if let AppMode::NotificationPicker(ref mut idx, _) = app.mode {
                 let i = *idx;
                 if i < app.pending_inputs.len() {
                     let input = app.pending_inputs.remove(i);
                     let _ = std::fs::remove_file(&input.file_path);
-                    app.message = Some("Input request deleted".into());
-                    if app.pending_inputs.is_empty() {
-                        let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
-                            AppMode::NotificationPicker(_, v) => v,
-                            other => {
-                                app.mode = other;
-                                return Ok(());
-                            }
-                        };
-                        if let Some(view) = from_view {
-                            app.mode = AppMode::Viewing(view);
-                        }
-                    } else if *idx >= app.pending_inputs.len() {
+                    if *idx >= app.pending_inputs.len() && !app.pending_inputs.is_empty() {
                         *idx = app.pending_inputs.len() - 1;
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if deleted {
+                app.push_toast_success("Input request deleted");
+                if app.pending_inputs.is_empty() {
+                    let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                        AppMode::NotificationPicker(_, v) => v,
+                        other => {
+                            app.mode = other;
+                            return Ok(());
+                        }
+                    };
+                    if let Some(view) = from_view {
+                        app.mode = AppMode::Viewing(view);
                     }
                 }
             }
@@ -852,16 +866,16 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                 if state.selected < builtin_len {
                     let builtin = &state.builtin_sessions[state.selected];
                     if let Some(ref reason) = builtin.disabled {
-                        app.message = Some(format!("Cannot start: {}", reason));
+                        app.push_toast_warning(format!("Cannot start: {}", reason));
                         app.mode = AppMode::SessionPicker(state);
                         return Ok(());
                     }
                     match app.add_builtin_session(state.pi, state.fi, builtin.kind.clone()) {
                         Ok(()) => {
-                            app.message = Some(format!("Added '{}'", builtin.label));
+                            app.push_toast_success(format!("Added '{}'", builtin.label));
                         }
                         Err(e) => {
-                            app.message = Some(format!("Error: {}", e));
+                            app.push_toast_error(format!("Error: {}", e));
                         }
                     }
                 } else {
@@ -885,11 +899,11 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                             None => Ok(()),
                         };
                         if let Err(reason) = pre_ok {
-                            app.message = Some(format!("{}: {}", cfg.name, reason));
+                            app.push_toast_warning(format!("{}: {}", cfg.name, reason));
                         } else {
                             match app.add_custom_session_type(state.pi, state.fi, &cfg) {
                                 Ok(autolaunch) => {
-                                    app.message = Some(format!("Added '{}'", cfg.name));
+                                    app.push_toast_success(format!("Added '{}'", cfg.name));
                                     if autolaunch {
                                         // Point selection to the newly added session
                                         // (last in the sessions list).
@@ -907,7 +921,7 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                     }
                                 }
                                 Err(e) => {
-                                    app.message = Some(format!("Error: {}", e));
+                                    app.push_toast_error(format!("Error: {}", e));
                                 }
                             }
                         }
@@ -956,7 +970,7 @@ pub fn handle_bookmark_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             let slot = if let AppMode::BookmarkPicker(state) = &app.mode {
                 if app.store.session_bookmarks.is_empty() {
-                    app.message = Some("No bookmarks yet".into());
+                    app.push_toast_info("No bookmarks yet");
                     return Ok(());
                 }
                 state.selected + 1
@@ -968,7 +982,7 @@ pub fn handle_bookmark_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('d') | KeyCode::Delete => {
             let slot = if let AppMode::BookmarkPicker(state) = &app.mode {
                 if app.store.session_bookmarks.is_empty() {
-                    app.message = Some("No bookmarks to remove".into());
+                    app.push_toast_info("No bookmarks to remove");
                     return Ok(());
                 }
                 state.selected + 1

@@ -615,7 +615,7 @@ impl App {
                             self.tmux
                                 .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
                     } else {
-                        let extra_args = crate::codex_notify::notify_override_args(&feature.workdir);
+                        let extra_args = crate::codex_config::launch_override_args(&feature.workdir);
                         self.tmux.launch_codex(
                             &feature.tmux_session,
                             &session.tmux_window,

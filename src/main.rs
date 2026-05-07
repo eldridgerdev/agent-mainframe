@@ -4,6 +4,7 @@ mod app;
 mod automation;
 mod claude;
 mod codex;
+mod codex_notify;
 mod db;
 mod debug;
 mod diff;

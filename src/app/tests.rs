@@ -2887,8 +2887,12 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
         "Claude hook settings should be removed after switching away"
     );
     assert!(
-        workdir.path().join(".codex").join("config.toml").exists(),
-        "Codex config should be injected after switching"
+        workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "Codex notify script should be injected after switching"
     );
 }
 

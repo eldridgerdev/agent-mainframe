@@ -806,7 +806,10 @@ mod tests {
             }
             _ => panic!("expected steering prompt to stay open"),
         }
-        assert_eq!(app.message.as_deref(), Some("Steering prompt cleared"));
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Steering prompt cleared")
+        );
     }
 
     #[test]

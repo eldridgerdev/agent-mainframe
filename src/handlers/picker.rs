@@ -514,7 +514,10 @@ mod tests {
                 .as_deref(),
             Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
         );
-        assert_eq!(app.message.as_deref(), Some("Applied 'demo-plan'"));
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Applied 'demo-plan'")
+        );
         assert!(matches!(app.mode, AppMode::Normal));
     }
 
@@ -543,7 +546,7 @@ mod tests {
             )
         );
         assert_eq!(
-            app.message.as_deref(),
+            app.toasts.last().map(|t| t.message.as_str()),
             Some("Applied 'demo-work-change-reason'")
         );
         assert!(matches!(app.mode, AppMode::Normal));

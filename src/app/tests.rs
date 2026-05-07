@@ -3600,6 +3600,12 @@ fn ipc_input_request_updates_codex_live_work_state() {
             "State: waiting for input\nRequest: Need approval before applying the patch.\nTool: Bash\nFile: src/main.rs"
         )
     );
+    assert_eq!(app.toasts.len(), 1);
+    assert!(
+        app.toasts[0]
+            .message
+            .contains("New input request from my-feat")
+    );
 }
 
 #[test]
@@ -4031,6 +4037,45 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
         _ => panic!("expected diff review prompt after entering view"),
     }
     assert!(app.pending_inputs.is_empty());
+}
+
+#[test]
+fn scan_notifications_pushes_input_request_toast() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let notification = serde_json::json!({
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Need input before continuing.",
+        "type": "input-request",
+        "tool": "write",
+        "response_file": workdir.path().join("response.json").display().to_string(),
+    });
+    std::fs::write(
+        notify_dir.join("input-request.json"),
+        serde_json::to_string(&notification).unwrap(),
+    )
+    .unwrap();
+
+    app.scan_notifications();
+
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.toasts.len(), 1);
+    assert!(
+        app.toasts[0]
+            .message
+            .contains("New input request from my-feat")
+    );
 }
 
 #[test]

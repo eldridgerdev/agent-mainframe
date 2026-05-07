@@ -342,14 +342,20 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
 
     let fields: Vec<(String, String)> = if state.agent == AgentKind::Claude {
         vec![
-            ("Harness".to_string(), state.agent.display_name().to_string()),
+            (
+                "Harness".to_string(),
+                state.agent.display_name().to_string(),
+            ),
             ("Mode".to_string(), state.mode.display_name().to_string()),
             ("Review".to_string(), review_value.to_string()),
             ("Chrome".to_string(), chrome_value.to_string()),
         ]
     } else {
         vec![
-            ("Harness".to_string(), state.agent.display_name().to_string()),
+            (
+                "Harness".to_string(),
+                state.agent.display_name().to_string(),
+            ),
             ("Mode".to_string(), state.mode.display_name().to_string()),
             ("Review".to_string(), review_value.to_string()),
         ]

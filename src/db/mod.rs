@@ -1,5 +1,6 @@
 mod debug_log;
 mod migrations;
+mod session_status;
 pub mod store;
 mod token_cache;
 
@@ -51,9 +52,7 @@ impl AmfDb {
         store::save(&self.conn, store)
     }
 
-    pub fn load_token_cache(
-        &self,
-    ) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
+    pub fn load_token_cache(&self) -> Result<Vec<crate::token_tracking::DbTokenCacheEntry>> {
         token_cache::load(&self.conn)
     }
 
@@ -72,11 +71,29 @@ impl AmfDb {
         debug_log::append(&self.conn, entry)
     }
 
-    pub fn load_recent_log(
-        &self,
-        limit: usize,
-    ) -> Result<Vec<crate::debug::LogEntry>> {
+    pub fn load_recent_log(&self, limit: usize) -> Result<Vec<crate::debug::LogEntry>> {
         debug_log::load_recent(&self.conn, limit)
+    }
+
+    pub fn load_session_status(&self, session_id: &str) -> Result<Option<String>> {
+        session_status::load(&self.conn, session_id)
+    }
+
+    pub fn upsert_session_status(
+        &self,
+        session_id: &str,
+        feature_id: &str,
+        status_text: &str,
+    ) -> Result<()> {
+        session_status::upsert(&self.conn, session_id, feature_id, status_text)
+    }
+
+    pub fn delete_session_status(&self, session_id: &str) -> Result<()> {
+        session_status::delete_session(&self.conn, session_id)
+    }
+
+    pub fn delete_feature_statuses(&self, feature_id: &str) -> Result<()> {
+        session_status::delete_feature(&self.conn, feature_id)
     }
 }
 

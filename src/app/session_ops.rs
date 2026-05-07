@@ -580,6 +580,9 @@ impl App {
                 .join("session-status")
                 .join(format!("{}.txt", session_id));
             let _ = std::fs::remove_file(status_file);
+            if let Some(ref db) = self.db {
+                let _ = db.delete_session_status(&session_id);
+            }
         }
 
         if clear_sidebar {

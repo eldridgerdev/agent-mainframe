@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, AppMode, HarnessCheckStatus, HarnessSetupState};
 use crate::app::HarnessCheckResult;
+use crate::app::{App, AppMode, HarnessCheckStatus, HarnessSetupState};
 
 pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
     let state = match &app.mode {
@@ -35,8 +35,7 @@ pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
             if state.is_startup {
                 let enabled = state.enabled_harnesses();
                 if enabled.is_empty() {
-                    app.message =
-                        Some("Select at least one harness before continuing".into());
+                    app.message = Some("Select at least one harness before continuing".into());
                 } else {
                     apply_harnesses(app, enabled)?;
                 }
@@ -82,7 +81,10 @@ fn check_and_toggle(app: &mut App) -> Result<()> {
     let kind_clone = kind.clone();
     std::thread::spawn(move || {
         let result = App::check_harness_available(&kind_clone);
-        let _ = tx.send(HarnessCheckResult { kind: kind_clone, result });
+        let _ = tx.send(HarnessCheckResult {
+            kind: kind_clone,
+            result,
+        });
     });
 
     Ok(())

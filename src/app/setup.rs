@@ -14,11 +14,31 @@ const TOOL_START_SH: &str = include_str!("../../scripts/tool-start.sh");
 const TOOL_STOP_SH: &str = include_str!("../../scripts/tool-stop.sh");
 const CODEX_NOTIFY_SH: &str = include_str!("../../scripts/codex-notify.sh");
 const CODEX_DIFF_REVIEW_SH: &str = include_str!("../../scripts/codex-diff-review.sh");
+const SET_SESSION_STATUS_SH: &str = include_str!("../../scripts/set-session-status.sh");
 const INPUT_REQUEST_JS: &str = include_str!("../../.opencode/plugins/input-request.js");
 const CHANGE_TRACKER_JS: &str = include_str!("../../.opencode/plugins/change-tracker.js");
 const SIDEBAR_STATE_JS: &str = include_str!("../../.opencode/plugins/sidebar-state.js");
 const CUSTOM_DIFF_REVIEW_SH: &str =
     include_str!("../../plugins/diff-review/scripts/custom-diff-review.sh");
+
+const AMF_SKILLS: &[(&str, &str)] = &[
+    (
+        "add-session",
+        include_str!("../../skills/amf-add-session/SKILL.md"),
+    ),
+    (
+        "add-hook",
+        include_str!("../../skills/amf-add-hook/SKILL.md"),
+    ),
+    (
+        "add-preset",
+        include_str!("../../skills/amf-add-preset/SKILL.md"),
+    ),
+    (
+        "configure",
+        include_str!("../../skills/amf-configure/SKILL.md"),
+    ),
+];
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
@@ -344,6 +364,8 @@ pub fn ensure_notify_scripts() {
     let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
     let codex_diff_review_path = config_dir.join("codex-diff-review.sh");
     let _ = std::fs::write(&codex_diff_review_path, CODEX_DIFF_REVIEW_SH);
+    let set_session_status_path = config_dir.join("set-session-status.sh");
+    let _ = std::fs::write(&set_session_status_path, SET_SESSION_STATUS_SH);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -356,6 +378,10 @@ pub fn ensure_notify_scripts() {
         let _ = std::fs::set_permissions(&tool_stop_path, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::set_permissions(
             &codex_diff_review_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &set_session_status_path,
             std::fs::Permissions::from_mode(0o755),
         );
     }
@@ -630,6 +656,35 @@ fn ensure_codex_notify_hook(workdir: &Path) {
     }
 }
 
+fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> Option<PathBuf> {
+    match agent {
+        AgentKind::Claude => Some(workdir.join(".claude").join("skills")),
+        AgentKind::Opencode => Some(workdir.join(".opencode").join("skills")),
+        AgentKind::Codex => Some(workdir.join(".agents").join("skills")),
+        AgentKind::Pi => None,
+    }
+}
+
+fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
+    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
+        return;
+    };
+    for (name, content) in AMF_SKILLS {
+        let skill_dir = skills_dir.join(format!("amf-{name}"));
+        let _ = std::fs::create_dir_all(&skill_dir);
+        let _ = std::fs::write(skill_dir.join("SKILL.md"), content);
+    }
+}
+
+fn cleanup_amf_skills(workdir: &Path, agent: &AgentKind) {
+    let Some(skills_dir) = agent_skills_dir(workdir, agent) else {
+        return;
+    };
+    for (name, _) in AMF_SKILLS {
+        let _ = std::fs::remove_dir_all(skills_dir.join(format!("amf-{name}")));
+    }
+}
+
 fn cleanup_claude_notification_hooks(workdir: &Path) {
     let claude_dir = workdir.join(".claude");
     cleanup_claude_settings_file(
@@ -640,6 +695,7 @@ fn cleanup_claude_notification_hooks(workdir: &Path) {
 
     let _ = std::fs::remove_file(claude_dir.join("latest-prompt.txt"));
     let _ = std::fs::remove_dir_all(claude_dir.join("notifications"));
+    cleanup_amf_skills(workdir, &AgentKind::Claude);
 }
 
 fn cleanup_opencode_plugins(workdir: &Path) {
@@ -664,6 +720,7 @@ fn cleanup_opencode_plugins(workdir: &Path) {
     }
 
     let _ = std::fs::remove_dir_all(sidebar_dir);
+    cleanup_amf_skills(workdir, &AgentKind::Opencode);
 }
 
 fn cleanup_codex_notify_hook(workdir: &Path) {
@@ -705,6 +762,7 @@ fn cleanup_codex_notify_hook(workdir: &Path) {
 
     let _ = std::fs::remove_file(&hook_path);
     let _ = std::fs::remove_file(&original_notify_path);
+    cleanup_amf_skills(workdir, &AgentKind::Codex);
 }
 
 pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
@@ -779,10 +837,12 @@ pub fn ensure_notification_hooks_with_config(
 
     if matches!(agent, AgentKind::Opencode) {
         ensure_opencode_plugins(workdir, repo, mode);
+        ensure_amf_skills(workdir, agent);
         return;
     }
     if matches!(agent, AgentKind::Codex) {
         ensure_codex_notify_hook(workdir);
+        ensure_amf_skills(workdir, agent);
         return;
     }
 
@@ -914,6 +974,9 @@ pub fn ensure_notification_hooks_with_config(
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
+    ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
+
+    ensure_amf_skills(workdir, agent);
 }
 
 pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {

@@ -18,6 +18,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
+use uuid::Uuid;
 
 use crate::debug::{LogLevel, log_to_file};
 use crate::traits::TmuxOps;
@@ -273,12 +274,18 @@ impl TmuxRuntime {
     fn bundled_binary() -> Option<OsString> {
         let exe = std::env::current_exe().ok()?;
         let dir = exe.parent()?;
-        let bundled = dir.join("tmux");
-        if bundled.exists() {
-            Some(bundled.into_os_string())
-        } else {
-            None
+        Self::bundled_binary_in(dir)
+    }
+
+    fn bundled_binary_in(dir: &Path) -> Option<OsString> {
+        for candidate in ["tmux", "tmux-real"] {
+            let bundled = dir.join(candidate);
+            if bundled.is_file() {
+                return Some(bundled.into_os_string());
+            }
         }
+
+        None
     }
 
     fn socket_from_tmux_env(value: &str) -> Option<PathBuf> {
@@ -458,6 +465,108 @@ impl TmuxManager {
         parts.join(" ")
     }
 
+    fn pane_default_terminal() -> Option<String> {
+        if let Some(value) = std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL") {
+            let value = value.to_string_lossy().trim().to_string();
+            return if value.is_empty() { None } else { Some(value) };
+        }
+
+        if cfg!(target_os = "macos") {
+            // macOS's system terminfo database often lacks tmux-256color,
+            // which makes shells and TUIs warn when a pane starts.
+            Some("screen-256color".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn should_set_global_default_terminal() -> bool {
+        Self::runtime().manages_private_socket
+            || std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL").is_some()
+    }
+
+    fn global_default_terminal_args(
+        term: &str,
+        bootstrap_session: Option<&str>,
+    ) -> Vec<Vec<String>> {
+        let mut commands = Vec::new();
+
+        if let Some(bootstrap_session) = bootstrap_session {
+            commands.push(vec![
+                "new-session".to_string(),
+                "-d".to_string(),
+                "-s".to_string(),
+                bootstrap_session.to_string(),
+            ]);
+        }
+
+        commands.push(vec![
+            "set-option".to_string(),
+            "-g".to_string(),
+            "default-terminal".to_string(),
+            term.to_string(),
+        ]);
+
+        if let Some(bootstrap_session) = bootstrap_session {
+            commands.push(vec![
+                "kill-session".to_string(),
+                "-t".to_string(),
+                bootstrap_session.to_string(),
+            ]);
+        }
+
+        commands
+    }
+
+    fn set_global_default_terminal_if_needed() -> Result<()> {
+        let Some(term) = Self::pane_default_terminal() else {
+            return Ok(());
+        };
+        if !Self::should_set_global_default_terminal() {
+            return Ok(());
+        }
+
+        let bootstrap_session = Self::runtime()
+            .manages_private_socket
+            .then(|| format!("__amf-bootstrap-{}", Uuid::new_v4().simple()));
+
+        if let Some(session) = bootstrap_session.as_deref() {
+            Self::run_with_private_socket_recovery(
+                &["new-session", "-d", "-s", session],
+                "Failed to start tmux server for default terminal configuration",
+                "tmux new-session failed",
+            )?;
+        }
+
+        let result = Self::run_with_private_socket_recovery(
+            &["set-option", "-g", "default-terminal", &term],
+            "Failed to configure tmux default terminal",
+            "tmux set-option failed",
+        );
+
+        if let Some(session) = bootstrap_session.as_deref() {
+            let _ = Self::run(
+                &["kill-session", "-t", session],
+                "Failed to clean up tmux bootstrap session",
+                "tmux kill-session failed",
+            );
+        }
+
+        result
+    }
+
+    fn set_session_default_terminal_if_needed(session: &str) -> Result<()> {
+        let Some(term) = Self::pane_default_terminal() else {
+            return Ok(());
+        };
+
+        Self::run(
+            &["set-option", "-t", session, "default-terminal", &term],
+            "Failed to configure tmux session default terminal",
+            "tmux set-option failed",
+        )
+    }
+
     fn output(args: &[&str], context: &str) -> Result<Output> {
         Self::command()
             .args(args)
@@ -553,7 +662,7 @@ impl TmuxManager {
     }
 
     fn should_retry_after_private_socket_cleanup(args: &[&str], output: &Output) -> bool {
-        if !matches!(args.first(), Some(&"new-session")) {
+        if !matches!(args.first().copied(), Some("new-session" | "set-option")) {
             return false;
         }
 
@@ -807,16 +916,7 @@ impl TmuxManager {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        let mut termios = libc::termios {
-            c_iflag: 0,
-            c_oflag: 0,
-            c_cflag: 0,
-            c_lflag: 0,
-            c_line: 0,
-            c_cc: [0; libc::NCCS],
-            c_ispeed: 0,
-            c_ospeed: 0,
-        };
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
 
         unsafe {
             if libc::tcgetattr(libc::STDIN_FILENO, &mut termios) == -1 {
@@ -831,7 +931,7 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &termios,
+                &mut termios,
                 &mut winsize,
             )
         };
@@ -878,7 +978,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -972,7 +1072,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1181,6 +1281,7 @@ impl TmuxManager {
         }
 
         let workdir_str = workdir.to_string_lossy();
+        Self::set_global_default_terminal_if_needed()?;
 
         // Create detached session with first window named "claude"
         Self::run_with_private_socket_recovery(
@@ -1197,6 +1298,8 @@ impl TmuxManager {
             "Failed to create tmux session",
             "tmux new-session failed",
         )?;
+
+        Self::set_session_default_terminal_if_needed(session)?;
 
         // Create second window named "terminal"
         let target = format!("{}:", session);
@@ -1250,6 +1353,7 @@ impl TmuxManager {
         }
 
         let workdir_str = workdir.to_string_lossy();
+        Self::set_global_default_terminal_if_needed()?;
 
         Self::run_with_private_socket_recovery(
             &[
@@ -1265,6 +1369,8 @@ impl TmuxManager {
             "Failed to create tmux session",
             "tmux new-session failed",
         )?;
+
+        Self::set_session_default_terminal_if_needed(session)?;
 
         // Set status bar hint
         Self::run(
@@ -1285,6 +1391,7 @@ impl TmuxManager {
     /// Add a new window to an existing tmux session.
     pub fn create_window(session: &str, window_name: &str, workdir: &Path) -> Result<()> {
         let workdir_str = workdir.to_string_lossy();
+        Self::set_session_default_terminal_if_needed(session)?;
 
         let target = format!("{}:", session);
         Self::run(
@@ -1978,6 +2085,28 @@ mod tests {
     }
 
     #[test]
+    fn bundled_binary_prefers_tmux_then_tmux_real() {
+        let _guard = env_lock().lock().unwrap();
+        let tempdir = TempDir::new().unwrap();
+
+        fs::write(tempdir.path().join("tmux-real"), "binary").unwrap();
+        assert_eq!(
+            TmuxRuntime::bundled_binary_in(tempdir.path())
+                .unwrap()
+                .to_string_lossy(),
+            tempdir.path().join("tmux-real").to_string_lossy()
+        );
+
+        fs::write(tempdir.path().join("tmux"), "wrapper").unwrap();
+        assert_eq!(
+            TmuxRuntime::bundled_binary_in(tempdir.path())
+                .unwrap()
+                .to_string_lossy(),
+            tempdir.path().join("tmux").to_string_lossy()
+        );
+    }
+
+    #[test]
     fn detects_tmux_socket_startup_failures_from_stderr() {
         let output = output_with("server exited unexpectedly", "");
         assert!(TmuxManager::output_indicates_socket_startup_failure(
@@ -2080,6 +2209,52 @@ mod tests {
         TmuxManager::configure_control_mode(true);
     }
 
+    #[test]
+    fn managed_socket_global_default_terminal_bootstraps_with_new_session_first() {
+        let commands = TmuxManager::global_default_terminal_args(
+            "screen-256color",
+            Some("__amf-bootstrap-test"),
+        );
+
+        assert_eq!(
+            commands,
+            vec![
+                vec![
+                    "new-session".to_string(),
+                    "-d".to_string(),
+                    "-s".to_string(),
+                    "__amf-bootstrap-test".to_string(),
+                ],
+                vec![
+                    "set-option".to_string(),
+                    "-g".to_string(),
+                    "default-terminal".to_string(),
+                    "screen-256color".to_string(),
+                ],
+                vec![
+                    "kill-session".to_string(),
+                    "-t".to_string(),
+                    "__amf-bootstrap-test".to_string(),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn ambient_socket_global_default_terminal_skips_bootstrap_session() {
+        let commands = TmuxManager::global_default_terminal_args("screen-256color", None);
+
+        assert_eq!(
+            commands,
+            vec![vec![
+                "set-option".to_string(),
+                "-g".to_string(),
+                "default-terminal".to_string(),
+                "screen-256color".to_string(),
+            ]]
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn removes_stale_socket_files() {
@@ -2112,5 +2287,30 @@ mod tests {
         assert!(prefix.contains("AMF_TMUX_BIN="));
         assert!(prefix.contains("AMF_SESSION='amf-test'"));
         assert!(!prefix.contains("PATH="));
+    }
+
+    #[test]
+    fn pane_default_terminal_can_be_overridden() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new(&["AMF_TMUX_DEFAULT_TERMINAL"]);
+        unsafe {
+            std::env::set_var("AMF_TMUX_DEFAULT_TERMINAL", "xterm-256color");
+        }
+
+        assert_eq!(
+            TmuxManager::pane_default_terminal().as_deref(),
+            Some("xterm-256color")
+        );
+    }
+
+    #[test]
+    fn empty_pane_default_terminal_override_disables_override() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new(&["AMF_TMUX_DEFAULT_TERMINAL"]);
+        unsafe {
+            std::env::set_var("AMF_TMUX_DEFAULT_TERMINAL", "");
+        }
+
+        assert_eq!(TmuxManager::pane_default_terminal(), None);
     }
 }

@@ -397,11 +397,20 @@ mod tests {
             &dest.path().join("tmux-real"),
         )
         .unwrap();
-        replace_path_recursive(&src.path().join("tmux-root"), &dest.path().join("tmux-root"))
-            .unwrap();
+        replace_path_recursive(
+            &src.path().join("tmux-root"),
+            &dest.path().join("tmux-root"),
+        )
+        .unwrap();
 
-        assert_eq!(fs::read_to_string(dest.path().join("tmux")).unwrap(), "#!/bin/sh\n");
-        assert_eq!(fs::read_to_string(dest.path().join("tmux-real")).unwrap(), "binary");
+        assert_eq!(
+            fs::read_to_string(dest.path().join("tmux")).unwrap(),
+            "#!/bin/sh\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.path().join("tmux-real")).unwrap(),
+            "binary"
+        );
         assert_eq!(
             fs::read_to_string(
                 dest.path()

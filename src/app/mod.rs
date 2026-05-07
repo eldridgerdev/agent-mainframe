@@ -848,7 +848,6 @@ impl App {
                 continue;
             };
 
-            let read_started_at = Instant::now();
             let mut pending_lines = vec![line];
             while let Some(extra_line) = client.try_recv()? {
                 pending_lines.push(extra_line);
@@ -923,15 +922,16 @@ impl App {
             }
 
             if parser_changed {
-                let _ = tx.send(snapshot_from_parser(
+                // Control-mode output can drift from the parser state in ways
+                // that leave whitespace stale until a full redraw. Re-seed
+                // from tmux here so the visible screen always matches the
+                // authoritative pane contents.
+                let _ = tx.send(reseed_control_view_parser(
                     session,
                     window,
                     cols,
                     rows,
-                    &parser,
-                    None,
-                    None,
-                    Some(read_started_at.elapsed()),
+                    &mut parser,
                 ));
             }
         }
@@ -1276,7 +1276,7 @@ impl App {
             }
 
             if let Some(rendered_lines) = snapshot.rendered_lines
-                && (pane_changed || self.pane_lines.is_empty())
+                && self.pane_lines != rendered_lines
             {
                 self.pane_lines = rendered_lines;
                 pane_changed = true;
@@ -1295,10 +1295,7 @@ impl App {
 
     pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
-        let db = crate::db::AmfDb::open_or_seed(
-            &db_path,
-            &crate::project::global_db_path(),
-        )?;
+        let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);

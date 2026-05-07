@@ -105,9 +105,8 @@ impl App {
         let available = self.allowed_agents_for_repo(&project_repo);
         if available.is_empty() {
             self.open_harness_setup(false);
-            self.message = Some(
-                "No harnesses configured. Enable at least one to create a feature.".into(),
-            );
+            self.message =
+                Some("No harnesses configured. Enable at least one to create a feature.".into());
             return;
         }
 
@@ -838,7 +837,7 @@ impl App {
     pub fn do_stop_feature(&mut self, pi: usize, fi: usize) -> Result<()> {
         // Run on_stop for custom sessions before killing tmux.
         if let Some(feature) = self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
-            Self::run_custom_session_on_stop(feature);
+            Self::run_custom_session_on_stop(feature, self.db.as_ref());
         }
 
         let tmux_session = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
@@ -868,7 +867,7 @@ impl App {
 
     /// Run on_stop commands for all custom sessions in a
     /// feature and clean up their status files. Fire-and-forget.
-    fn run_custom_session_on_stop(feature: &Feature) {
+    fn run_custom_session_on_stop(feature: &Feature, db: Option<&crate::db::AmfDb>) {
         use crate::project::SessionKind;
 
         let status_dir = feature.workdir.join(".amf").join("session-status");
@@ -889,6 +888,9 @@ impl App {
                     .spawn();
             }
             let _ = std::fs::remove_file(status_dir.join(format!("{}.txt", session.id)));
+            if let Some(db) = db {
+                let _ = db.delete_session_status(&session.id);
+            }
         }
     }
 
@@ -903,7 +905,7 @@ impl App {
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
         {
             // Run on_stop for custom sessions before killing.
-            Self::run_custom_session_on_stop(feature);
+            Self::run_custom_session_on_stop(feature, self.db.as_ref());
             (
                 feature.tmux_session.clone(),
                 feature.is_worktree,
@@ -1002,12 +1004,21 @@ impl App {
     }
 
     pub fn complete_deleting_feature(&mut self) -> Result<()> {
-        let (project_name, feature_name, tmux_session, had_error, error_msg) = {
+        let (project_name, feature_name, tmux_session, feature_id, had_error, error_msg) = {
             match &self.mode {
                 AppMode::DeletingFeatureInProgress(s) => (
                     s.project_name.clone(),
                     s.feature_name.clone(),
                     s.tmux_session.clone(),
+                    self.store
+                        .find_project(&s.project_name)
+                        .and_then(|project| {
+                            project
+                                .features
+                                .iter()
+                                .find(|feature| feature.name == s.feature_name)
+                                .map(|feature| feature.id.clone())
+                        }),
                     s.error.is_some(),
                     s.error.clone(),
                 ),
@@ -1029,6 +1040,11 @@ impl App {
         }
 
         self.clear_sidebar_state_for_session(&tmux_session);
+        if let Some(feature_id) = feature_id.as_deref()
+            && let Some(db) = self.db.as_ref()
+        {
+            let _ = db.delete_feature_statuses(feature_id);
+        }
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 

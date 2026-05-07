@@ -4,8 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::PathBuf;
 
 use crate::project::{
-    AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionBookmark,
-    SessionKind, TokenUsageSourceMatch, VibeMode, CURRENT_PROJECT_STORE_VERSION,
+    AgentKind, CURRENT_PROJECT_STORE_VERSION, Feature, FeatureSession, Project, ProjectStatus,
+    ProjectStore, SessionBookmark, SessionKind, TokenUsageSourceMatch, VibeMode,
 };
 use crate::token_tracking::TokenUsageSource;
 
@@ -141,9 +141,8 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
 
-    let mut bookmark_stmt = conn.prepare(
-        "SELECT project_id, feature_id, session_id FROM session_bookmarks",
-    )?;
+    let mut bookmark_stmt =
+        conn.prepare("SELECT project_id, feature_id, session_id FROM session_bookmarks")?;
     let session_bookmarks: Vec<SessionBookmark> = bookmark_stmt
         .query_map([], |row| {
             Ok(SessionBookmark {
@@ -383,7 +382,11 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
         conn.execute(
             "INSERT OR IGNORE INTO session_bookmarks (project_id, feature_id, session_id)
              VALUES (?1, ?2, ?3)",
-            params![bookmark.project_id, bookmark.feature_id, bookmark.session_id],
+            params![
+                bookmark.project_id,
+                bookmark.feature_id,
+                bookmark.session_id
+            ],
         )?;
     }
 
@@ -460,10 +463,7 @@ fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
                         session.tmux_window,
                         session.claude_session_id,
                         session.token_usage_source.as_ref().map(source_to_json),
-                        session
-                            .token_usage_source_match
-                            .as_ref()
-                            .map(match_to_str),
+                        session.token_usage_source_match.as_ref().map(match_to_str),
                         dt_to_str(&session.created_at),
                         session.command,
                         session.on_stop,

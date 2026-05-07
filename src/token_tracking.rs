@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -161,7 +161,11 @@ impl SessionTokenTracker {
         usage
     }
 
-    fn current_usage_signature(&mut self, source: &TokenUsageSource, workdir: &Path) -> Option<u64> {
+    fn current_usage_signature(
+        &mut self,
+        source: &TokenUsageSource,
+        workdir: &Path,
+    ) -> Option<u64> {
         match source.provider {
             TokenUsageProvider::Claude => self.claude_usage_signature(workdir, &source.id),
             TokenUsageProvider::Opencode => self.opencode_usage_signature(&source.id),

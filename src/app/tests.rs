@@ -40,6 +40,50 @@ fn control_view_parser_cursor_move_keeps_relative_redraws_on_tmux_row() {
     );
 }
 
+#[test]
+fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "terminal".to_string(),
+        "Terminal".to_string(),
+        SessionKind::Terminal,
+        VibeMode::default(),
+        false,
+    ));
+    app.pane_content_cols = 4;
+    app.pane_content_rows = 1;
+    app.pane_content = "same formatted content".to_string();
+    app.pane_lines = vec![ratatui::text::Line::from("ABCD")];
+
+    app.view_snapshot_tx
+        .send(ViewSnapshot {
+            session: "amf-my-feat".to_string(),
+            window: "terminal".to_string(),
+            pane_content: Some("same formatted content".to_string()),
+            rendered_lines: Some(vec![ratatui::text::Line::from("A  D")]),
+            cursor: None,
+            capture_duration: None,
+            render_duration: None,
+            cursor_duration: None,
+            pipe_read_duration: None,
+        })
+        .unwrap();
+
+    let (pane_changed, cursor_changed) = app.drain_view_snapshots();
+
+    assert!(pane_changed);
+    assert!(!cursor_changed);
+    assert_eq!(app.pane_content, "same formatted content");
+    assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("A  D")]);
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]
@@ -3053,6 +3097,34 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
     let session_id = "test-sess-123";
+
+    let store = store_with_custom_session(workdir.path(), session_id);
+    let feature_id = store.projects[0].features[0].id.clone();
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.path().join("amf.db");
+    let db = crate::db::AmfDb::open(&db_path).unwrap();
+    db.save_store(&store).unwrap();
+    db.upsert_session_status(session_id, &feature_id, "API :3000 | DB :5432")
+        .unwrap();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(db);
+    app.sync_session_status();
+
+    assert_eq!(
+        app.store.projects[0].features[0].sessions[0].status_text,
+        Some("API :3000 | DB :5432".to_string()),
+    );
+}
+
+#[test]
+fn sync_session_status_migrates_legacy_file_to_db() {
+    let workdir = TempDir::new().unwrap();
+    let session_id = "test-sess-migrate";
     let status_dir = workdir.path().join(".amf").join("session-status");
     std::fs::create_dir_all(&status_dir).unwrap();
     std::fs::write(
@@ -3062,16 +3134,30 @@ fn sync_session_status_reads_first_line() {
     .unwrap();
 
     let store = store_with_custom_session(workdir.path(), session_id);
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.path().join("amf.db");
+    let db = crate::db::AmfDb::open(&db_path).unwrap();
+    db.save_store(&store).unwrap();
+
     let mut app = App::new_for_test(
         store,
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
+    app.db = Some(db);
     app.sync_session_status();
 
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("API :3000 | DB :5432".to_string()),
+    );
+    assert_eq!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_session_status(session_id)
+            .unwrap(),
+        Some("API :3000 | DB :5432".to_string())
     );
 }
 
@@ -4357,11 +4443,19 @@ fn status_file_cleanup_during_remove() {
 
     // Build a store with a custom session
     let store = store_with_custom_session(workdir.path(), session_id);
+    let feature_id = store.projects[0].features[0].id.clone();
+    let db_dir = TempDir::new().unwrap();
+    let db_path = db_dir.path().join("amf.db");
+    let db = crate::db::AmfDb::open(&db_path).unwrap();
+    db.save_store(&store).unwrap();
+    db.upsert_session_status(session_id, &feature_id, "running")
+        .unwrap();
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_list_sessions().returning(|| Ok(vec![]));
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.db = Some(db);
     app.pending_sidebar_loads
         .insert("amf-custom-cleanup-test-sess".to_string());
     app.latest_prompt_cache
@@ -4397,6 +4491,15 @@ fn status_file_cleanup_during_remove() {
     assert!(
         !status_file.exists(),
         "status file should be removed on session removal"
+    );
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .load_session_status(session_id)
+            .unwrap()
+            .is_none(),
+        "status row should be removed on session removal"
     );
     assert!(app.latest_prompt_for_session("amf-my-feat").is_none());
     assert!(!app.opencode_sidebar_cache.contains_key("amf-my-feat"));

@@ -1508,19 +1508,20 @@ impl TmuxManager {
         session: &str,
         window: &str,
         resume_session_id: Option<&str>,
+        extra_args: &[&str],
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
-        let cmd = match resume_session_id {
-            Some(id) => format!(
-                "{} codex resume {}",
-                Self::shell_launch_env_with(&[("AMF_SESSION", session)]),
-                id
-            ),
-            None => format!(
-                "{} codex",
-                Self::shell_launch_env_with(&[("AMF_SESSION", session)])
-            ),
-        };
+        let mut cmd = format!(
+            "{} codex",
+            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
+        );
+        for arg in extra_args {
+            cmd.push(' ');
+            cmd.push_str(arg);
+        }
+        if let Some(id) = resume_session_id {
+            cmd.push_str(&format!(" resume {}", Self::shell_quote(id)));
+        }
 
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
@@ -1980,8 +1981,15 @@ impl TmuxOps for TmuxManager {
         TmuxManager::launch_opencode_with_session(session, window, resume_id.as_deref())
     }
 
-    fn launch_codex(&self, session: &str, window: &str, resume_id: Option<String>) -> Result<()> {
-        TmuxManager::launch_codex(session, window, resume_id.as_deref())
+    fn launch_codex(
+        &self,
+        session: &str,
+        window: &str,
+        resume_id: Option<String>,
+        extra_args: Vec<String>,
+    ) -> Result<()> {
+        let refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
+        TmuxManager::launch_codex(session, window, resume_id.as_deref(), &refs)
     }
 
     fn launch_pi(&self, session: &str, window: &str) -> Result<()> {

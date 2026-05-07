@@ -1429,10 +1429,13 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         AgentKind::Codex => {
             tmux.expect_launch_codex()
                 .times(1)
-                .withf(|session, window, resume| {
-                    session == "amf-coached" && window == "codex" && resume.is_none()
+                .withf(|session, window, resume, extra_args| {
+                    session == "amf-coached"
+                        && window == "codex"
+                        && resume.is_none()
+                        && extra_args.iter().any(|arg| arg.starts_with("notify="))
                 })
-                .returning(|_, _, _| Ok(()));
+                .returning(|_, _, _, _| Ok(()));
         }
         AgentKind::Pi => {
             tmux.expect_launch_pi().times(1).returning(|_, _| Ok(()));
@@ -2589,10 +2592,6 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
 
     call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, false);
     assert!(
-        workdir.path().join(".codex").join("config.toml").exists(),
-        "repo-root codex feature should get local codex config"
-    );
-    assert!(
         workdir
             .path()
             .join(".codex")
@@ -2600,13 +2599,13 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
             .exists(),
         "repo-root codex feature should get local notify hook script"
     );
+    assert!(
+        !workdir.path().join(".codex").join("config.toml").exists(),
+        "repo-root codex feature should not write unsupported project-local config"
+    );
 
     let second = TempDir::new().unwrap();
     call_ensure_hooks_for(&second, VibeMode::Vibe, AgentKind::Codex, true);
-    assert!(
-        second.path().join(".codex").join("config.toml").exists(),
-        "worktree codex feature should get local codex config"
-    );
     assert!(
         second
             .path()
@@ -2615,43 +2614,28 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
             .exists(),
         "worktree codex feature should get local notify hook script"
     );
+    assert!(
+        !second.path().join(".codex").join("config.toml").exists(),
+        "worktree codex feature should not write unsupported project-local config"
+    );
 }
 
 #[test]
-fn codex_hook_merges_existing_notify_entries() {
+fn codex_hook_only_writes_helper_script() {
     let workdir = TempDir::new().unwrap();
-    let codex_dir = workdir.path().join(".codex");
-    std::fs::create_dir_all(&codex_dir).unwrap();
-    let cfg = codex_dir.join("config.toml");
-    std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
-
     call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
 
-    let rendered = std::fs::read_to_string(&cfg).unwrap();
-    let parsed: toml::Value = toml::from_str(&rendered).unwrap();
-    let notify = parsed
-        .get("notify")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let entries: Vec<String> = notify
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
     assert!(
-        entries.iter().any(|entry| entry == "/tmp/existing-hook.sh"),
-        "existing Codex notify entry should be preserved"
+        workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "Codex setup should still write the helper script"
     );
     assert!(
-        entries
-            .iter()
-            .any(|e| e.ends_with("/.codex/amf-codex-notify.sh")),
-        "amf codex notify hook should be added"
-    );
-    assert_eq!(
-        entries.len(),
-        2,
-        "notify should merge user and AMF commands"
+        !workdir.path().join(".codex").join("config.toml").exists(),
+        "Codex setup should not write unsupported local config"
     );
 }
 
@@ -2708,39 +2692,21 @@ fn cleanup_claude_hooks_preserves_user_settings() {
 }
 
 #[test]
-fn cleanup_codex_hooks_restores_previous_notify_command() {
+fn cleanup_codex_hooks_removes_helper_script() {
     let workdir = TempDir::new().unwrap();
     let codex_dir = workdir.path().join(".codex");
     std::fs::create_dir_all(&codex_dir).unwrap();
-    let cfg = codex_dir.join("config.toml");
-    std::fs::write(&cfg, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
 
     call_ensure_hooks_for(&workdir, VibeMode::Vibe, AgentKind::Codex, true);
     cleanup_agent_injected_files(workdir.path(), &AgentKind::Codex);
 
-    let rendered = std::fs::read_to_string(&cfg).unwrap();
-    let parsed: toml::Value = toml::from_str(&rendered).unwrap();
-    let notify = parsed
-        .get("notify")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let entries: Vec<String> = notify
-        .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-        .collect();
-    assert_eq!(
-        entries,
-        vec!["/tmp/existing-hook.sh".to_string()],
-        "cleanup should restore the previous Codex notify command"
-    );
     assert!(
         !codex_dir.join("amf-codex-notify.sh").exists(),
         "cleanup should remove AMF Codex hook script"
     );
     assert!(
-        !codex_dir.join("amf-codex-notify-original.json").exists(),
-        "cleanup should remove any legacy Codex sidecar backup"
+        !codex_dir.join("config.toml").exists(),
+        "cleanup should not leave behind unsupported project-local config"
     );
 }
 
@@ -2921,8 +2887,12 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
         "Claude hook settings should be removed after switching away"
     );
     assert!(
-        workdir.path().join(".codex").join("config.toml").exists(),
-        "Codex config should be injected after switching"
+        workdir
+            .path()
+            .join(".codex")
+            .join("amf-codex-notify.sh")
+            .exists(),
+        "Codex notify script should be injected after switching"
     );
 }
 
@@ -4826,7 +4796,8 @@ fn create_feature_automation_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
-        .returning(|_, _, _| Ok(()));
+        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg.starts_with("notify=")))
+        .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -5009,7 +4980,8 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(2)
-        .returning(|_, _, _| Ok(()));
+        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg.starts_with("notify=")))
+        .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(2)
         .returning(|_, _| Ok(()));

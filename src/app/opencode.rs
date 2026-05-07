@@ -288,8 +288,13 @@ impl App {
                     )?;
                 }
                 SessionKind::Codex => {
-                    self.tmux
-                        .launch_codex(&feature.tmux_session, &session.tmux_window, None)?;
+                    let extra_args = crate::codex_config::launch_override_args(&feature.workdir);
+                    self.tmux.launch_codex(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        None,
+                        extra_args,
+                    )?;
                 }
                 SessionKind::Pi => {
                     self.tmux

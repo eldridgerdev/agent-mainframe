@@ -12,6 +12,8 @@ CLAUDE.local.md
 PLAN.md
 
 # Docker screenshot tooling
-docker/
+docker/*
+!docker/no-tmux/
+!docker/no-tmux/**
 .dockerignore
 docs/docker-screenshots.md

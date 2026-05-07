@@ -31,6 +31,18 @@ are tagged.
 
 - No store migration is required.
 
+## [v0.17.1] - 2026-04-21
+
+### Fixed
+
+- macOS cross-compilation now skips the PTY termios setup that is not
+  available on that target, resolving the build failure in
+  `src/tmux.rs`.
+
+### Migration
+
+- No store migration is required.
+
 ## [v0.17.0] - 2026-04-20
 
 ### Added

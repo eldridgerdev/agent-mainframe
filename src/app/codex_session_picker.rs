@@ -267,7 +267,7 @@ impl App {
                         provider: TokenUsageProvider::Codex,
                         id: codex_session_id.to_string(),
                     });
-                    let extra_args = crate::codex_notify::notify_override_args(&feature.workdir);
+                    let extra_args = crate::codex_config::launch_override_args(&feature.workdir);
                     self.tmux.launch_codex(
                         &feature.tmux_session,
                         &session.tmux_window,

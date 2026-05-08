@@ -12,6 +12,25 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.18.2] - 2026-05-08
+
+### Fixed
+
+- Fixed noticeable input lag on macOS caused by the wrong terminal type
+  (`screen-256color`) being used for AMF-managed tmux sessions. macOS's
+  system terminfo does not include `screen-256color`, which caused the
+  tmux control-mode clients to fail initialisation and fall back to
+  spawning a `tmux send-keys` subprocess per keypress (~20–50 ms each).
+  AMF now uses `xterm-256color` on macOS, which is present in the system
+  terminfo, and explicitly overrides `TERM` when spawning control-mode
+  clients so they are not affected by an inherited broken terminal type.
+  This also eliminates the "warning: could not set up terminal" message
+  that appeared when opening a terminal inside an AMF session on macOS.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.18.1] - 2026-05-08
 
 ### Fixed

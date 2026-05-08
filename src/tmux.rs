@@ -472,9 +472,9 @@ impl TmuxManager {
         }
 
         if cfg!(target_os = "macos") {
-            // macOS's system terminfo database often lacks tmux-256color,
-            // which makes shells and TUIs warn when a pane starts.
-            Some("screen-256color".to_string())
+            // macOS's system terminfo lacks tmux-256color and screen-256color;
+            // xterm-256color is in the system terminfo at /usr/share/terminfo/.
+            Some("xterm-256color".to_string())
         } else {
             None
         }
@@ -986,6 +986,10 @@ impl TmuxManager {
         }
         child.env_remove("TMUX").env_remove("TMUX_PANE");
 
+        // Override TERM so tmux doesn't inherit screen-256color from within a
+        // tmux session. xterm-256color is available in every system terminfo.
+        child.env("TERM", "xterm-256color");
+
         let child = child
             .spawn()
             .with_context(|| format!("Failed to spawn PTY tmux input client for {session}"))?;
@@ -1079,6 +1083,7 @@ impl TmuxManager {
                 });
         }
         child.env_remove("TMUX").env_remove("TMUX_PANE");
+        child.env("TERM", "xterm-256color");
 
         let child = child.spawn().with_context(|| {
             format!("Failed to spawn PTY tmux control view client for {session}")
@@ -1465,11 +1470,11 @@ impl TmuxManager {
             Self::shell_launch_env_with(&[("AMF_SESSION", session)])
         );
         if let Some(sid) = resume_session_id {
-            cmd_str.push_str(&format!(" --resume {}", sid));
+            cmd_str.push_str(&format!(" --resume {}", Self::shell_quote(sid)));
         }
         for arg in extra_args {
             cmd_str.push(' ');
-            cmd_str.push_str(arg);
+            cmd_str.push_str(&Self::shell_quote(arg));
         }
 
         Self::run(
@@ -1517,7 +1522,7 @@ impl TmuxManager {
         );
         for arg in extra_args {
             cmd.push(' ');
-            cmd.push_str(arg);
+            cmd.push_str(&Self::shell_quote(arg));
         }
         if let Some(id) = resume_session_id {
             cmd.push_str(&format!(" resume {}", Self::shell_quote(id)));

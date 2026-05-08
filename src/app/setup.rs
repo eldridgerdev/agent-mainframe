@@ -347,6 +347,8 @@ pub fn ensure_notify_scripts() {
     let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
     let codex_diff_review_path = config_dir.join("codex-diff-review.sh");
     let _ = std::fs::write(&codex_diff_review_path, CODEX_DIFF_REVIEW_SH);
+    let codex_notify_path = config_dir.join("codex-notify.sh");
+    let _ = std::fs::write(&codex_notify_path, CODEX_NOTIFY_SH);
     let set_session_status_path = config_dir.join("set-session-status.sh");
     let _ = std::fs::write(&set_session_status_path, SET_SESSION_STATUS_SH);
     #[cfg(unix)]
@@ -361,6 +363,10 @@ pub fn ensure_notify_scripts() {
         let _ = std::fs::set_permissions(&tool_stop_path, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::set_permissions(
             &codex_diff_review_path,
+            std::fs::Permissions::from_mode(0o755),
+        );
+        let _ = std::fs::set_permissions(
+            &codex_notify_path,
             std::fs::Permissions::from_mode(0o755),
         );
         let _ = std::fs::set_permissions(
@@ -598,6 +604,26 @@ fn ensure_codex_notify_hook(workdir: &Path) {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755));
     }
+
+    let global_hook_path = crate::project::amf_config_dir().join("codex-notify.sh");
+    crate::codex_config::ensure_user_config_notify_hook(&global_hook_path);
+
+    let project_config_path = codex_dir.join("config.toml");
+    if project_config_path.exists() {
+        let mut config = std::fs::read_to_string(&project_config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+
+        if let Some(table) = config.as_table_mut() {
+            table.remove("notify");
+            if table.is_empty() {
+                let _ = std::fs::remove_file(&project_config_path);
+            } else if let Ok(rendered) = toml::to_string_pretty(&config) {
+                let _ = std::fs::write(&project_config_path, rendered + "\n");
+            }
+        }
+    }
 }
 
 fn agent_skills_dir(workdir: &Path, agent: &AgentKind) -> Option<PathBuf> {
@@ -672,6 +698,22 @@ fn cleanup_codex_notify_hook(workdir: &Path) {
     let hook_path = codex_dir.join("amf-codex-notify.sh");
 
     let _ = std::fs::remove_file(&hook_path);
+    let project_config_path = codex_dir.join("config.toml");
+    if project_config_path.exists() {
+        let mut config = std::fs::read_to_string(&project_config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()));
+
+        if let Some(table) = config.as_table_mut() {
+            table.remove("notify");
+            if table.is_empty() {
+                let _ = std::fs::remove_file(&project_config_path);
+            } else if let Ok(rendered) = toml::to_string_pretty(&config) {
+                let _ = std::fs::write(&project_config_path, rendered + "\n");
+            }
+        }
+    }
     cleanup_amf_skills(workdir, &AgentKind::Codex);
 }
 

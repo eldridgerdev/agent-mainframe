@@ -1,5 +1,16 @@
 use std::path::Path;
 
+pub fn ensure_user_config_notify_hook(hook_path: &Path) {
+    if cfg!(test) {
+        return;
+    }
+    let Some(config_path) = dirs::home_dir().map(|home| home.join(".codex").join("config.toml"))
+    else {
+        return;
+    };
+    let _ = ensure_user_config_notify_hook_for(&config_path, hook_path);
+}
+
 pub fn launch_override_args(workdir: &Path) -> Vec<String> {
     let hook_path = workdir.join(".codex").join("amf-codex-notify.sh");
     let user_config_path = dirs::home_dir()
@@ -68,6 +79,36 @@ fn launch_config_to_args(config: toml::map::Map<String, toml::Value>) -> Vec<Str
         args.push(format!("{key}={value}"));
     }
     args
+}
+
+fn ensure_user_config_notify_hook_for(config_path: &Path, hook_path: &Path) -> Option<()> {
+    let mut config = if config_path.exists() {
+        std::fs::read_to_string(config_path)
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .filter(|value| value.is_table())?
+    } else {
+        toml::Value::Table(toml::map::Map::new())
+    };
+
+    let table = config.as_table_mut()?;
+    let hook_cmd = hook_path.to_string_lossy().into_owned();
+    let mut entries = parse_notify_entries(table.get("notify")).unwrap_or_default();
+    if !entries.iter().any(|entry| entry == &hook_cmd) {
+        entries.push(hook_cmd);
+    }
+
+    table.insert(
+        "notify".to_string(),
+        toml::Value::Array(entries.into_iter().map(toml::Value::String).collect()),
+    );
+
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let rendered = toml::to_string_pretty(&config).ok()?;
+    let _ = std::fs::write(config_path, rendered + "\n");
+    Some(())
 }
 
 #[cfg(test)]

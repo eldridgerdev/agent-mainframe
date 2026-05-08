@@ -342,10 +342,9 @@ ProjectStore (version: 4, session_bookmarks)
                                label, tmux window)
 ```
 
-State is persisted as JSON at `~/.config/amf/projects.json` for the
-primary checkout. Linked git worktrees use a private
-`.amf/projects.json` inside that worktree so branch-local store changes
-do not affect other checkouts.
+State is persisted in the SQLite database at `~/.config/amf/amf.db`
+for every checkout. AMF resolves this single global store regardless of
+the directory you launch it from.
 
 ### Tmux Sessions
 

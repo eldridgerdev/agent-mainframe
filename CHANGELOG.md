@@ -10,7 +10,20 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- AMF now uses one global project database at `~/.config/amf/amf.db`
+  no matter which checkout you launch it from, so your project list stays
+  consistent across directories.
+- If you already had separate per-worktree project stores, AMF now merges
+  them into the global database automatically the next time you start it.
+  That means the first launch after upgrading may bring in projects from
+  other checkouts instead of keeping them isolated.
+
+### Migration
+
+- No manual migration is required. AMF will fold legacy worktree-local
+  project data into the global database on startup.
 
 ## [v0.18.3] - 2026-05-08
 

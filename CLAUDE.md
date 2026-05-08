@@ -44,10 +44,9 @@ ProjectStore (version: u32, projects: Vec<Project>)
 ProjectStatus: Active | Idle | Stopped
 ```
 
-State persisted as JSON at
-`~/.config/amf/projects.json` for the primary checkout. Linked git
-worktrees use a private `.amf/projects.json` inside that worktree so
-branch-local store changes do not affect other checkouts.
+State is persisted in the SQLite database at
+`~/.config/amf/amf.db` for every checkout. AMF resolves this single
+global store regardless of which directory you launch it from.
 Tmux sessions are prefixed `amf-` (e.g., `amf-mybranch`).
 
 ### App State & Modes (app/)

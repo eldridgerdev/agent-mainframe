@@ -10,7 +10,23 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- View mode now shows a real scrollbar while you are in scroll/copy mode, so it is easier to tell that the pane is being scrolled instead of forwarded directly to tmux.
+- Scroll/copy mode now supports fast movement with `Ctrl+j`, `Ctrl+k`, `Ctrl+Up`, and `Ctrl+Down`, matching the faster scrolling behavior used in other viewers.
+
+### Changed
+
+- Scroll/copy mode now preserves the pane's ANSI coloring instead of flattening everything into plain text, so syntax highlighting and terminal colors remain visible while scrolling.
+- The scroll-mode header now makes the active mode more explicit for users who are reading the status line.
+
+### Fixed
+
+- Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.18.3] - 2026-05-08
 

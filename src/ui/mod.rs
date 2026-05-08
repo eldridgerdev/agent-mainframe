@@ -19,6 +19,7 @@ use crate::theme::Theme;
 
 pub(crate) use pane::render_ansi_lines;
 pub(crate) use pane::render_vt100_screen;
+pub(crate) use pane::SCROLLBAR_WIDTH;
 pub(crate) use pane::viewing_main_width;
 pub(crate) use toast::draw_toasts;
 

@@ -9,12 +9,12 @@ use super::util::{
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
+use crossterm::event::KeyCode;
 use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use crossterm::event::KeyCode;
 
 fn prompt_entry(text: &str) -> String {
     text.to_string()

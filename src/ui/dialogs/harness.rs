@@ -148,7 +148,11 @@ pub fn draw_harness_setup_dialog(
                 .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(if state.is_startup { " confirm" } else { " cancel" }),
+        Span::raw(if state.is_startup {
+            " confirm"
+        } else {
+            " cancel"
+        }),
         Span::raw("  "),
         Span::styled(
             "q",

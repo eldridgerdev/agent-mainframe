@@ -36,6 +36,10 @@ are tagged.
 
 - Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
 
+### Changed
+
+- GitHub releases now publish their notes from the matching changelog
+  section, with a direct link back to the source entry in `CHANGELOG.md`.
 
 ## [v0.18.3] - 2026-05-08
 

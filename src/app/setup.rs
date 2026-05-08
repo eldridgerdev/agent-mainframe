@@ -38,6 +38,10 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         "configure",
         include_str!("../../skills/amf-configure/SKILL.md"),
     ),
+    (
+        "release-notes",
+        include_str!("../../skills/amf-release-notes/SKILL.md"),
+    ),
 ];
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";

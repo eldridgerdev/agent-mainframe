@@ -58,12 +58,27 @@ echo "Bumping version: $CURRENT -> $NEW"
 
 IFS='.' read -r NEW_MAJOR NEW_MINOR NEW_PATCH <<< "$NEW"
 
-require_changelog=0
-if [ "$NEW_MAJOR" -gt "$MAJOR" ]; then
-  require_changelog=1
-elif [ "$NEW_MAJOR" -eq "$MAJOR" ] && [ "$NEW_MINOR" -gt "$MINOR" ]; then
-  require_changelog=1
-fi
+release_notes_file="$(mktemp)"
+cleanup() {
+  rm -f "$release_notes_file"
+}
+trap cleanup EXIT
+
+extract_release_notes() {
+  awk -v version="v$NEW" '
+    $0 ~ "^## \\[" version "\\] - " { capture=1; next }
+    capture && $0 ~ "^## \\[" { exit }
+    capture { print }
+  ' "$CHANGELOG"
+}
+
+find_release_heading_line() {
+  awk -v version="v$NEW" '
+    $0 ~ "^## \\[" version "\\] - " { print NR; exit }
+  ' "$CHANGELOG"
+}
+
+require_changelog=1
 
 if [ "$require_changelog" -eq 1 ]; then
   if [ ! -f "$CHANGELOG" ]; then
@@ -79,11 +94,7 @@ if [ "$require_changelog" -eq 1 ]; then
   fi
 
   section_body="$(
-    awk -v version="v$NEW" '
-      $0 ~ "^## \\[" version "\\] - " { capture=1; next }
-      capture && $0 ~ "^## \\[" { exit }
-      capture { print }
-    ' "$CHANGELOG"
+    extract_release_notes
   )"
 
   meaningful_body="$(
@@ -101,6 +112,19 @@ if [ "$require_changelog" -eq 1 ]; then
   echo "Validated CHANGELOG.md entry for v$NEW"
 fi
 
+repo_url="$(gh repo view --json url --jq .url)"
+heading_line="$(find_release_heading_line)"
+
+{
+  printf '%s\n' "$section_body"
+  printf '\n'
+  printf '_Full changelog section: [%s](%s/blob/v%s/CHANGELOG.md#L%s)_\n' \
+    "CHANGELOG.md" \
+    "$repo_url" \
+    "$NEW" \
+    "$heading_line"
+} > "$release_notes_file"
+
 # Update Cargo.toml (first occurrence of version = "...")
 sed -i "0,/^version = \"$CURRENT\"/s//version = \"$NEW\"/" "$CARGO_TOML"
 
@@ -112,6 +136,26 @@ git -C "$REPO_ROOT" add Cargo.toml Cargo.lock CHANGELOG.md
 git -C "$REPO_ROOT" commit -m "chore: bump version to v$NEW"
 git -C "$REPO_ROOT" tag -a "v$NEW" -m "Release v$NEW"
 
+if ! command -v gh >/dev/null 2>&1; then
+  echo "Error: gh is required to publish the GitHub release." >&2
+  exit 1
+fi
+
+current_branch="$(git -C "$REPO_ROOT" branch --show-current)"
+if [ -z "$current_branch" ]; then
+  echo "Error: release.sh must be run from a branch, not detached HEAD." >&2
+  exit 1
+fi
+
+release_tag="v$NEW"
+
+git -C "$REPO_ROOT" push -u origin "$current_branch"
+git -C "$REPO_ROOT" push origin "$release_tag"
+gh release create "$release_tag" \
+  --title "$release_tag" \
+  --notes-file "$release_notes_file" \
+  --verify-tag \
+  --latest
+
 echo ""
-echo "Done. Push the commit and tag with:"
-echo "  git push && git push --tags"
+echo "Done. GitHub release v$NEW was created from CHANGELOG.md."

@@ -12,6 +12,10 @@ are tagged.
 
 ### Added
 
+- Debug log overlay now supports `p` to hide perf entries when you want
+  to focus on non-performance messages.
+- Feature create and delete actions now write richer audit entries to
+  the debug log so a removed feature is easier to reconstruct later.
 - View mode now shows a real scrollbar while you are in scroll/copy mode, so it is easier to tell that the pane is being scrolled instead of forwarded directly to tmux.
 - Scroll/copy mode now supports fast movement with `Ctrl+j`, `Ctrl+k`, `Ctrl+Up`, and `Ctrl+Down`, matching the faster scrolling behavior used in other viewers.
 

@@ -13,6 +13,27 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    pub(crate) fn feature_audit_details(project_name: &str, feature: &Feature) -> String {
+        let nickname = feature.nickname.as_deref().unwrap_or("<none>");
+        let summary = feature.summary.as_deref().unwrap_or("<none>");
+        let nickname = nickname.replace(['\n', '\r'], " ");
+        let summary = summary.replace(['\n', '\r'], " ");
+
+        format!(
+            "project='{}' feature='{}' id={} branch='{}' workdir={} tmux_session='{}' is_worktree={} sessions={} nickname='{}' summary='{}'",
+            project_name,
+            feature.name.replace(['\n', '\r'], " "),
+            feature.id,
+            feature.branch.replace(['\n', '\r'], " "),
+            feature.workdir.display(),
+            feature.tmux_session.replace(['\n', '\r'], " "),
+            feature.is_worktree,
+            feature.sessions.len(),
+            nickname,
+            summary
+        )
+    }
+
     fn drain_background_command_output(
         output: &mut String,
         rx: &std::sync::mpsc::Receiver<String>,
@@ -319,6 +340,24 @@ impl App {
         }
 
         self.save()?;
+        if let Some(feature) = self
+            .store
+            .find_project(&prepared.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == prepared.branch)
+            })
+        {
+            self.log_info(
+                "feature_create",
+                format!(
+                    "Created feature: {}",
+                    Self::feature_audit_details(&prepared.project_name, feature)
+                ),
+            );
+        }
         if let Some(pi) = self
             .store
             .projects
@@ -901,7 +940,7 @@ impl App {
             _ => return Ok(()),
         };
 
-        let (tmux_session, is_worktree, repo, workdir) = if let Some(project) =
+        let (tmux_session, is_worktree, repo, workdir, audit_details) = if let Some(project) =
             self.store.find_project(&project_name)
             && let Some(feature) = project.features.iter().find(|f| f.name == feature_name)
         {
@@ -912,10 +951,16 @@ impl App {
                 feature.is_worktree,
                 project.repo.clone(),
                 feature.workdir.clone(),
+                Self::feature_audit_details(&project_name, feature),
             )
         } else {
             return Ok(());
         };
+
+        self.log_info(
+            "feature_delete",
+            format!("Delete requested: {}", audit_details),
+        );
 
         let spawned = TmuxManager::spawn_kill_session(&tmux_session)?;
         let (child, output_rx) = match spawned {

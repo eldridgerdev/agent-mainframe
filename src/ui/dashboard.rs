@@ -996,7 +996,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if let AppMode::DebugLog(state) = &app.mode {
-        super::dialogs::draw_debug_log(frame, &app.debug_log, state.scroll_offset, &app.theme);
+        super::dialogs::draw_debug_log(
+            frame,
+            &app.debug_log,
+            state.scroll_offset,
+            state.hide_perf_logs,
+            &app.theme,
+        );
     }
 
     if let AppMode::HarnessSetup(state) = &app.mode {

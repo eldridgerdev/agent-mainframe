@@ -438,6 +438,7 @@ impl App {
         let mut response_features = Vec::new();
 
         for planned in planned_features {
+            let planned_name = planned.name.clone();
             let workdir = self
                 .worktree
                 .create(&project_repo, &planned.branch, &planned.branch)?;
@@ -462,6 +463,25 @@ impl App {
                 ..planned
             });
             self.save()?;
+
+            if let Some(feature) =
+                self.store
+                    .find_project(&request.project_name)
+                    .and_then(|project| {
+                        project
+                            .features
+                            .iter()
+                            .find(|feature| feature.name == planned_name)
+                    })
+            {
+                self.log_info(
+                    "feature_create",
+                    format!(
+                        "Created feature: {}",
+                        App::feature_audit_details(&request.project_name, feature)
+                    ),
+                );
+            }
         }
 
         for branch in &created_feature_names {

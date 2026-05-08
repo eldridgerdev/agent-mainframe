@@ -102,6 +102,7 @@ impl App {
         self.mode = AppMode::DebugLog(DebugLogState {
             scroll_offset: 0,
             from_view,
+            hide_perf_logs: false,
         });
     }
 

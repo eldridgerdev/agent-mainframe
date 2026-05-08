@@ -360,11 +360,8 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
                 view.selection.end_col = content_col;
             }
 
-            let (content, rows) = selection_source_for_view(
-                &app.pane_content,
-                app.pane_content_rows,
-                view,
-            );
+            let (content, rows) =
+                selection_source_for_view(&app.pane_content, app.pane_content_rows, view);
             let text = extract_selected_text(content, &view.selection, rows, app.pane_content_cols);
 
             if !text.is_empty() {
@@ -410,7 +407,10 @@ fn selection_source_for_view<'a>(
     view: &'a crate::app::ViewState,
 ) -> (&'a str, u16) {
     if view.scroll_mode && !view.scroll_passthrough {
-        (&view.scroll_content, view.scroll_total_lines.min(u16::MAX as usize) as u16)
+        (
+            &view.scroll_content,
+            view.scroll_total_lines.min(u16::MAX as usize) as u16,
+        )
     } else {
         (pane_content, pane_content_rows)
     }
@@ -524,6 +524,7 @@ mod tests {
         app.mode = AppMode::DebugLog(DebugLogState {
             scroll_offset: 1,
             from_view: None,
+            hide_perf_logs: false,
         });
 
         handle_mouse(
@@ -552,6 +553,7 @@ mod tests {
         app.mode = AppMode::DebugLog(DebugLogState {
             scroll_offset: 1,
             from_view: None,
+            hide_perf_logs: false,
         });
 
         handle_mouse(

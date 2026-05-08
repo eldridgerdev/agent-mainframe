@@ -1262,7 +1262,10 @@ mod tests {
         base.merge_from(incoming);
 
         assert_eq!(base.version, 5);
-        assert_eq!(base.available_harnesses, vec![AgentKind::Claude, AgentKind::Codex, AgentKind::Pi]);
+        assert_eq!(
+            base.available_harnesses,
+            vec![AgentKind::Claude, AgentKind::Codex, AgentKind::Pi]
+        );
         assert_eq!(base.session_bookmarks.len(), 2);
         assert_eq!(base.extra.get("alpha"), Some(&serde_json::json!(2)));
         assert_eq!(base.extra.get("beta"), Some(&serde_json::json!(true)));
@@ -1689,5 +1692,4 @@ mod tests {
         assert_eq!(feature.mode, VibeMode::Vibeless);
         assert!(feature.review);
     }
-
 }

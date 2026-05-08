@@ -660,7 +660,7 @@ fn run_loop<B: Backend>(
         let poll_duration = if startup_loading {
             Duration::from_millis(50)
         } else if is_viewing {
-            Duration::from_millis(5)
+            Duration::from_millis(1)
         } else if animating {
             ANIMATED_REDRAW_INTERVAL
         } else {

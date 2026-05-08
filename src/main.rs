@@ -187,7 +187,7 @@ fn main() -> Result<()> {
     }) = cli.command
     {
         let db_path = project::db_path();
-        let db = db::AmfDb::open(&db_path)?;
+        let db = db::AmfDb::open_or_seed(&db_path, &project::global_db_path())?;
         let store = db.load_store()?;
         let feature_id = store
             .projects

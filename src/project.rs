@@ -2,13 +2,11 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::token_tracking::TokenUsageSource;
-use crate::worktree::WorktreeManager;
 
 pub(crate) const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
@@ -550,6 +548,96 @@ impl ProjectStore {
     pub fn remove_harness(&mut self, kind: &AgentKind) {
         self.available_harnesses.retain(|k| k != kind);
     }
+
+    pub fn merge_from(&mut self, other: ProjectStore) {
+        self.version = self.version.max(other.version);
+
+        for kind in other.available_harnesses {
+            if !self.available_harnesses.contains(&kind) {
+                self.available_harnesses.push(kind);
+            }
+        }
+
+        for bookmark in other.session_bookmarks {
+            if !self.session_bookmarks.iter().any(|existing| {
+                existing.project_id == bookmark.project_id
+                    && existing.feature_id == bookmark.feature_id
+                    && existing.session_id == bookmark.session_id
+            }) {
+                self.session_bookmarks.push(bookmark);
+            }
+        }
+
+        for (key, value) in other.extra {
+            self.extra.insert(key, value);
+        }
+
+        for project in other.projects {
+            if let Some(existing) = self.projects.iter_mut().find(|p| p.id == project.id) {
+                merge_project(existing, project);
+            } else {
+                self.projects.push(project);
+            }
+        }
+    }
+}
+
+fn merge_project(target: &mut Project, incoming: Project) {
+    target.name = incoming.name;
+    target.repo = incoming.repo;
+    target.collapsed = incoming.collapsed;
+    target.features = merge_feature_vec(std::mem::take(&mut target.features), incoming.features);
+    target.created_at = incoming.created_at;
+    target.preferred_agent = incoming.preferred_agent;
+    target.is_git = incoming.is_git;
+}
+
+fn merge_feature_vec(mut existing: Vec<Feature>, incoming: Vec<Feature>) -> Vec<Feature> {
+    for feature in incoming {
+        if let Some(existing_feature) = existing.iter_mut().find(|f| f.id == feature.id) {
+            merge_feature(existing_feature, feature);
+        } else {
+            existing.push(feature);
+        }
+    }
+    existing
+}
+
+fn merge_feature(target: &mut Feature, incoming: Feature) {
+    target.name = incoming.name;
+    target.branch = incoming.branch;
+    target.workdir = incoming.workdir;
+    target.is_worktree = incoming.is_worktree;
+    target.tmux_session = incoming.tmux_session;
+    target.sessions = merge_session_vec(std::mem::take(&mut target.sessions), incoming.sessions);
+    target.collapsed = incoming.collapsed;
+    target.mode = incoming.mode;
+    target.review = incoming.review;
+    target.plan_mode = incoming.plan_mode;
+    target.agent = incoming.agent;
+    target.enable_chrome = incoming.enable_chrome;
+    target.pending_worktree_script = incoming.pending_worktree_script;
+    target.ready = incoming.ready;
+    target.status = incoming.status;
+    target.created_at = incoming.created_at;
+    target.last_accessed = incoming.last_accessed;
+    target.summary = incoming.summary;
+    target.summary_updated_at = incoming.summary_updated_at;
+    target.nickname = incoming.nickname;
+}
+
+fn merge_session_vec(
+    mut existing: Vec<FeatureSession>,
+    incoming: Vec<FeatureSession>,
+) -> Vec<FeatureSession> {
+    for session in incoming {
+        if let Some(existing_session) = existing.iter_mut().find(|s| s.id == session.id) {
+            *existing_session = session;
+        } else {
+            existing.push(session);
+        }
+    }
+    existing
 }
 
 // --- V1 types for migration ---
@@ -939,51 +1027,19 @@ pub fn global_db_path() -> PathBuf {
 }
 
 pub fn db_path() -> PathBuf {
-    let global_path = global_db_path();
-    env::current_dir()
-        .ok()
-        .map(|current_dir| {
-            worktree_store_path_for_dir(&current_dir)
-                .map(|json_path| {
-                    // .amf/projects.json → .amf/amf.db
-                    json_path
-                        .parent()
-                        .map(|p| p.join("amf.db"))
-                        .unwrap_or_else(|| global_path.clone())
-                })
-                .unwrap_or_else(|| global_path.clone())
-        })
-        .unwrap_or(global_path)
-}
-
-fn worktree_store_path_for_dir(current_dir: &Path) -> Option<PathBuf> {
-    if !WorktreeManager::is_worktree(current_dir) {
-        return None;
-    }
-
-    WorktreeManager::repo_root(current_dir)
-        .ok()
-        .map(|root| root.join(".amf").join("projects.json"))
-}
-
-fn resolve_store_path_for_dir(current_dir: &Path, global_path: &Path) -> PathBuf {
-    worktree_store_path_for_dir(current_dir).unwrap_or_else(|| global_path.to_path_buf())
+    global_db_path()
 }
 
 pub fn store_path() -> PathBuf {
-    let global_path = global_store_path();
-    env::current_dir()
-        .ok()
-        .map(|current_dir| resolve_store_path_for_dir(&current_dir, &global_path))
-        .unwrap_or(global_path)
+    global_store_path()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::process::Command;
-    use tempfile::{NamedTempFile, TempDir};
+    use std::collections::HashMap;
+    use tempfile::NamedTempFile;
 
     fn make_feature_session(kind: SessionKind, window: &str) -> FeatureSession {
         FeatureSession {
@@ -1026,6 +1082,208 @@ mod tests {
             summary_updated_at: None,
             nickname: None,
         }
+    }
+
+    #[test]
+    fn db_path_is_global_db_path() {
+        assert_eq!(db_path(), global_db_path());
+    }
+
+    #[test]
+    fn store_path_is_global_store_path() {
+        assert_eq!(store_path(), global_store_path());
+    }
+
+    #[test]
+    fn project_store_merge_unions_entities_by_id() {
+        let mut base = ProjectStore {
+            version: 4,
+            projects: vec![Project {
+                id: "project-1".to_string(),
+                name: "alpha".to_string(),
+                repo: PathBuf::from("/repo/alpha"),
+                collapsed: true,
+                features: vec![Feature {
+                    id: "feature-1".to_string(),
+                    name: "feature-one".to_string(),
+                    branch: "branch-a".to_string(),
+                    workdir: PathBuf::from("/repo/alpha/.worktrees/a"),
+                    is_worktree: true,
+                    tmux_session: "amf-a".to_string(),
+                    sessions: vec![FeatureSession {
+                        id: "session-1".to_string(),
+                        kind: SessionKind::Claude,
+                        label: "Claude 1".to_string(),
+                        tmux_window: "claude".to_string(),
+                        claude_session_id: None,
+                        token_usage_source: None,
+                        token_usage_source_match: None,
+                        created_at: Utc::now(),
+                        command: None,
+                        on_stop: None,
+                        pre_check: None,
+                        status_text: None,
+                    }],
+                    collapsed: true,
+                    mode: VibeMode::Vibeless,
+                    review: false,
+                    plan_mode: false,
+                    agent: AgentKind::Claude,
+                    enable_chrome: false,
+                    pending_worktree_script: false,
+                    ready: false,
+                    status: ProjectStatus::Stopped,
+                    created_at: Utc::now(),
+                    last_accessed: Utc::now(),
+                    summary: None,
+                    summary_updated_at: None,
+                    nickname: None,
+                }],
+                created_at: Utc::now(),
+                preferred_agent: AgentKind::Claude,
+                is_git: true,
+            }],
+            session_bookmarks: vec![SessionBookmark {
+                project_id: "project-1".to_string(),
+                feature_id: "feature-1".to_string(),
+                session_id: "session-1".to_string(),
+            }],
+            available_harnesses: vec![AgentKind::Claude],
+            extra: HashMap::from([(String::from("alpha"), serde_json::json!(1))]),
+        };
+
+        let incoming = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "project-1".to_string(),
+                name: "alpha-renamed".to_string(),
+                repo: PathBuf::from("/repo/alpha-renamed"),
+                collapsed: false,
+                features: vec![
+                    Feature {
+                        id: "feature-1".to_string(),
+                        name: "feature-one-renamed".to_string(),
+                        branch: "branch-b".to_string(),
+                        workdir: PathBuf::from("/repo/alpha/.worktrees/b"),
+                        is_worktree: false,
+                        tmux_session: "amf-b".to_string(),
+                        sessions: vec![
+                            FeatureSession {
+                                id: "session-1".to_string(),
+                                kind: SessionKind::Terminal,
+                                label: "Terminal 1".to_string(),
+                                tmux_window: "terminal".to_string(),
+                                claude_session_id: Some("claude-123".to_string()),
+                                token_usage_source: None,
+                                token_usage_source_match: None,
+                                created_at: Utc::now(),
+                                command: Some("echo hi".to_string()),
+                                on_stop: None,
+                                pre_check: None,
+                                status_text: None,
+                            },
+                            FeatureSession {
+                                id: "session-2".to_string(),
+                                kind: SessionKind::Claude,
+                                label: "Claude 2".to_string(),
+                                tmux_window: "claude-2".to_string(),
+                                claude_session_id: None,
+                                token_usage_source: None,
+                                token_usage_source_match: None,
+                                created_at: Utc::now(),
+                                command: None,
+                                on_stop: None,
+                                pre_check: None,
+                                status_text: None,
+                            },
+                        ],
+                        collapsed: false,
+                        mode: VibeMode::Vibe,
+                        review: true,
+                        plan_mode: true,
+                        agent: AgentKind::Codex,
+                        enable_chrome: true,
+                        pending_worktree_script: true,
+                        ready: true,
+                        status: ProjectStatus::Active,
+                        created_at: Utc::now(),
+                        last_accessed: Utc::now(),
+                        summary: Some("summary".to_string()),
+                        summary_updated_at: Some(Utc::now()),
+                        nickname: Some("nick".to_string()),
+                    },
+                    Feature {
+                        id: "feature-2".to_string(),
+                        name: "feature-two".to_string(),
+                        branch: "branch-c".to_string(),
+                        workdir: PathBuf::from("/repo/alpha/.worktrees/c"),
+                        is_worktree: true,
+                        tmux_session: "amf-c".to_string(),
+                        sessions: vec![],
+                        collapsed: true,
+                        mode: VibeMode::SuperVibe,
+                        review: false,
+                        plan_mode: false,
+                        agent: AgentKind::Pi,
+                        enable_chrome: false,
+                        pending_worktree_script: false,
+                        ready: false,
+                        status: ProjectStatus::Idle,
+                        created_at: Utc::now(),
+                        last_accessed: Utc::now(),
+                        summary: None,
+                        summary_updated_at: None,
+                        nickname: None,
+                    },
+                ],
+                created_at: Utc::now(),
+                preferred_agent: AgentKind::Codex,
+                is_git: false,
+            }],
+            session_bookmarks: vec![
+                SessionBookmark {
+                    project_id: "project-1".to_string(),
+                    feature_id: "feature-1".to_string(),
+                    session_id: "session-1".to_string(),
+                },
+                SessionBookmark {
+                    project_id: "project-1".to_string(),
+                    feature_id: "feature-2".to_string(),
+                    session_id: "session-2".to_string(),
+                },
+            ],
+            available_harnesses: vec![AgentKind::Codex, AgentKind::Pi],
+            extra: HashMap::from([
+                (String::from("alpha"), serde_json::json!(2)),
+                (String::from("beta"), serde_json::json!(true)),
+            ]),
+        };
+
+        base.merge_from(incoming);
+
+        assert_eq!(base.version, 5);
+        assert_eq!(base.available_harnesses, vec![AgentKind::Claude, AgentKind::Codex, AgentKind::Pi]);
+        assert_eq!(base.session_bookmarks.len(), 2);
+        assert_eq!(base.extra.get("alpha"), Some(&serde_json::json!(2)));
+        assert_eq!(base.extra.get("beta"), Some(&serde_json::json!(true)));
+        assert_eq!(base.projects.len(), 1);
+        assert_eq!(base.projects[0].name, "alpha-renamed");
+        assert_eq!(base.projects[0].repo, PathBuf::from("/repo/alpha-renamed"));
+        assert!(!base.projects[0].collapsed);
+        assert_eq!(base.projects[0].preferred_agent, AgentKind::Codex);
+        assert!(!base.projects[0].is_git);
+        assert_eq!(base.projects[0].features.len(), 2);
+        let merged_feature = base.projects[0]
+            .features
+            .iter()
+            .find(|feature| feature.id == "feature-1")
+            .unwrap();
+        assert_eq!(merged_feature.name, "feature-one-renamed");
+        assert_eq!(merged_feature.tmux_session, "amf-b");
+        assert_eq!(merged_feature.mode, VibeMode::Vibe);
+        assert!(merged_feature.review);
+        assert!(merged_feature.pending_worktree_script);
+        assert_eq!(merged_feature.sessions.len(), 2);
     }
 
     // ── ProjectStore serialization round-trip ────────────────
@@ -1432,151 +1690,4 @@ mod tests {
         assert!(feature.review);
     }
 
-    fn run_git(dir: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn init_git_repo() -> TempDir {
-        let repo = TempDir::new().unwrap();
-        run_git(repo.path(), &["init", "-b", "main"]);
-        std::fs::write(repo.path().join("README.md"), "seed\n").unwrap();
-        run_git(repo.path(), &["add", "README.md"]);
-        run_git(
-            repo.path(),
-            &[
-                "-c",
-                "user.name=Test User",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-m",
-                "seed",
-            ],
-        );
-        repo
-    }
-
-    #[test]
-    fn primary_checkout_uses_global_store_path() {
-        let repo = init_git_repo();
-        let global_path = repo.path().join("global-projects.json");
-
-        assert_eq!(
-            resolve_store_path_for_dir(repo.path(), &global_path),
-            global_path
-        );
-    }
-
-    #[test]
-    fn linked_worktree_uses_local_store_path() {
-        let repo = init_git_repo();
-        let worktree_path = repo.path().join(".worktrees").join("feature-a");
-        std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
-        run_git(
-            repo.path(),
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature-a",
-                worktree_path.to_str().unwrap(),
-            ],
-        );
-
-        let global_path = repo.path().join("global-projects.json");
-        assert_eq!(
-            resolve_store_path_for_dir(&worktree_path, &global_path),
-            worktree_path.join(".amf").join("projects.json")
-        );
-    }
-
-    #[test]
-    fn prepare_store_path_seeds_linked_worktree_from_global_store() {
-        let repo = init_git_repo();
-        let worktree_path = repo.path().join(".worktrees").join("feature-b");
-        std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
-        run_git(
-            repo.path(),
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature-b",
-                worktree_path.to_str().unwrap(),
-            ],
-        );
-
-        let global_path = repo.path().join("global-projects.json");
-        std::fs::write(
-            &global_path,
-            "{\n  \"version\": 5,\n  \"projects\": []\n}\n",
-        )
-        .unwrap();
-
-        let local_path = resolve_store_path_for_dir(&worktree_path, &global_path);
-        prepare_store_path(&local_path, &global_path);
-
-        assert_eq!(
-            std::fs::read_to_string(&local_path).unwrap(),
-            std::fs::read_to_string(&global_path).unwrap()
-        );
-    }
-}
-
-pub fn prepare_store_path(path: &Path, global_path: &Path) {
-    if path.exists() {
-        return;
-    }
-
-    if path != global_path && global_path.exists() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::copy(global_path, path);
-        return;
-    }
-
-    migrate_from_old_path_to(path);
-}
-
-pub fn migrate_from_old_path() {
-    let new_path = store_path();
-    prepare_store_path(&new_path, &global_store_path());
-}
-
-fn migrate_from_old_path_to(new_path: &Path) {
-    if new_path.exists() {
-        return;
-    }
-
-    let old_paths = vec![
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("amf")
-            .join("projects.json"),
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("claude-super-vibeless")
-            .join("projects.json"),
-    ];
-
-    for old_path in old_paths {
-        if old_path.exists() {
-            if let Some(parent) = new_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let _ = std::fs::copy(&old_path, &new_path);
-            return;
-        }
-    }
 }

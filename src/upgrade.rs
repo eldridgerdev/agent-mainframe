@@ -256,6 +256,13 @@ fn replace_path_recursive(src: &Path, dest: &Path) -> Result<()> {
         return Ok(());
     }
 
+    if !metadata.is_file() {
+        if dest.exists() {
+            remove_existing_path(dest)?;
+        }
+        return Ok(());
+    }
+
     if dest.exists() {
         remove_existing_path(dest)?;
     }
@@ -478,6 +485,28 @@ mod tests {
             .unwrap(),
             "db"
         );
+    }
+
+    #[test]
+    fn replace_path_recursive_skips_unsupported_file_types() {
+        let src = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+
+        let bundle_root = src.path().join("tmux-root");
+        fs::create_dir_all(&bundle_root).unwrap();
+        fs::write(bundle_root.join("regular"), "ok").unwrap();
+
+        let fifo_path = bundle_root.join("special");
+        let status = Command::new("mkfifo").arg(&fifo_path).status().unwrap();
+        assert!(status.success());
+
+        replace_path_recursive(&bundle_root, &dest.path().join("tmux-root")).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dest.path().join("tmux-root").join("regular")).unwrap(),
+            "ok"
+        );
+        assert!(!dest.path().join("tmux-root").join("special").exists());
     }
 
     #[test]

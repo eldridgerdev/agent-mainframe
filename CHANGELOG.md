@@ -12,6 +12,18 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.18.1] - 2026-05-08
+
+### Fixed
+
+- Linux `amf upgrade` now skips unsupported packaged file types inside the
+  bundled `tmux-root` tree, which prevents failures when copying release
+  assets that contain special entries such as package docs.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.18.0] - 2026-05-08
 
 ### Added

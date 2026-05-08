@@ -10,6 +10,32 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- View mode now shows a real scrollbar while you are in scroll/copy mode, so it is easier to tell that the pane is being scrolled instead of forwarded directly to tmux.
+- Scroll/copy mode now supports fast movement with `Ctrl+j`, `Ctrl+k`, `Ctrl+Up`, and `Ctrl+Down`, matching the faster scrolling behavior used in other viewers.
+
+### Changed
+
+- AMF now uses one global project database at `~/.config/amf/amf.db`
+  no matter which checkout you launch it from, so your project list stays
+  consistent across directories.
+- If you already had separate per-worktree project stores, AMF now merges
+  them into the global database automatically the next time you start it.
+  That means the first launch after upgrading may bring in projects from
+  other checkouts instead of keeping them isolated.
+- Scroll/copy mode now preserves the pane's ANSI coloring instead of flattening everything into plain text, so syntax highlighting and terminal colors remain visible while scrolling.
+- The scroll-mode header now makes the active mode more explicit for users who are reading the status line.
+
+### Migration
+
+- No manual migration is required. AMF will fold legacy worktree-local
+  project data into the global database on startup.
+
+### Fixed
+
+- Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
+
 ### Changed
 
 - GitHub releases now publish their notes from the matching changelog

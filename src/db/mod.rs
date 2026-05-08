@@ -6,7 +6,10 @@ mod token_cache;
 
 use anyhow::Result;
 use rusqlite::Connection;
+use std::env;
 use std::path::{Path, PathBuf};
+
+use crate::worktree::WorktreeManager;
 
 pub struct AmfDb {
     conn: Connection,
@@ -27,20 +30,33 @@ impl AmfDb {
         })
     }
 
-    /// Open `path`, seeding it first if it does not exist.
+    /// Open `path`, seeding or merging legacy stores first if needed.
     ///
-    /// Seeding priority:
-    /// 1. Copy all data from `global_path` (worktree-local isolation).
-    /// 2. Import from a `projects.json` file in the same directory.
+    /// Merge priority:
+    /// 1. Import a legacy worktree-local `amf.db`.
+    /// 2. Import a legacy worktree-local `projects.json`.
     /// 3. Import from the global `~/.config/amf/projects.json`.
-    pub fn open_or_seed(path: &Path, global_path: &Path) -> Result<Self> {
+    pub fn open_or_seed(path: &Path, _global_path: &Path) -> Result<Self> {
+        let legacy_store = load_legacy_worktree_store();
+
         if !path.exists() {
-            if path != global_path && global_path.exists() {
-                seed_from_db(path, global_path);
-            } else {
-                seed_from_json(path);
+            if let Some(store) = legacy_store {
+                let db = AmfDb::open(path)?;
+                db.save_store(&store)?;
+                return Ok(db);
             }
+
+            seed_from_json(path, Vec::new());
+            return Self::open(path);
         }
+
+        if let Some(store) = legacy_store {
+            let db = Self::open(path)?;
+            let mut merged = db.load_store()?;
+            merged.merge_from(store);
+            db.save_store(&merged)?;
+        }
+
         Self::open(path)
     }
 
@@ -97,20 +113,8 @@ impl AmfDb {
     }
 }
 
-fn seed_from_db(dest: &Path, source: &Path) {
-    let Ok(source_db) = AmfDb::open(source) else {
-        return;
-    };
-    let Ok(store) = source_db.load_store() else {
-        return;
-    };
-    if let Ok(dest_db) = AmfDb::open(dest) {
-        let _ = dest_db.save_store(&store);
-    }
-}
-
-fn seed_from_json(db_path: &Path) {
-    let json_candidates: Vec<PathBuf> = vec![
+fn seed_from_json(db_path: &Path, extra_candidates: Vec<PathBuf>) {
+    let mut json_candidates: Vec<PathBuf> = vec![
         db_path
             .parent()
             .map(|p| p.join("projects.json"))
@@ -124,6 +128,7 @@ fn seed_from_json(db_path: &Path) {
             .join("claude-super-vibeless")
             .join("projects.json"),
     ];
+    json_candidates.splice(0..0, extra_candidates);
 
     for json_path in json_candidates {
         if json_path.exists() {
@@ -135,4 +140,35 @@ fn seed_from_json(db_path: &Path) {
             return;
         }
     }
+}
+
+fn load_legacy_worktree_store() -> Option<crate::project::ProjectStore> {
+    let current_dir = env::current_dir().ok()?;
+    if !WorktreeManager::is_worktree(&current_dir) {
+        return None;
+    }
+
+    let root = WorktreeManager::repo_root(&current_dir).ok()?;
+    let db_path = root.join(".amf").join("amf.db");
+    let json_path = root.join(".amf").join("projects.json");
+
+    let mut merged: Option<crate::project::ProjectStore> = None;
+
+    if json_path.exists()
+        && let Ok(store) = crate::project::ProjectStore::load(&json_path)
+    {
+        merged = Some(store);
+    }
+
+    if db_path.exists()
+        && let Ok(source_db) = AmfDb::open(&db_path)
+        && let Ok(store) = source_db.load_store()
+    {
+        match &mut merged {
+            Some(existing) => existing.merge_from(store),
+            None => merged = Some(store),
+        }
+    }
+
+    merged
 }

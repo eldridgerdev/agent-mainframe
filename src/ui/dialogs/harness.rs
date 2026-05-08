@@ -148,11 +148,15 @@ pub fn draw_harness_setup_dialog(
                 .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(if state.is_startup {
-            " confirm"
-        } else {
-            " cancel"
-        }),
+        Span::raw(if state.is_startup { " confirm" } else { " cancel" }),
+        Span::raw("  "),
+        Span::styled(
+            "q",
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(if state.is_startup { " quit" } else { " exit" }),
     ]);
     let hints_widget = Paragraph::new(hints);
     frame.render_widget(hints_widget, chunks[2]);

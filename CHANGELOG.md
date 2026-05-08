@@ -41,6 +41,29 @@ are tagged.
 - GitHub releases now publish their notes from the matching changelog
   section, with a direct link back to the source entry in `CHANGELOG.md`.
 
+## [v0.18.4] - 2026-05-08
+
+### Fixed
+
+- Eliminated the remaining source of input lag in view mode on all
+  platforms, but most noticeably on macOS. The control-mode view worker
+  was calling `reseed_control_view_parser` (two `tmux` subprocesses:
+  `capture-pane` + `display-message`) on every keypress burst *and* on
+  every control-protocol pane update, completely negating the benefit of
+  having an event-driven control-mode view. The worker now:
+  - On keypress burst: sends the current vt100 parser state immediately
+    (zero subprocesses) so the display responds instantly; the actual
+    pane update arrives shortly via the control protocol.
+  - On control-protocol update (`parser_changed`): sends the
+    incrementally-updated parser state directly (zero subprocesses)
+    instead of re-capturing from tmux.
+  - Periodic `NORMAL` reseeds and structural changes (pane swap, mode
+    change, pause) still do a full reseed to correct any parser drift.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.18.3] - 2026-05-08
 
 ### Fixed

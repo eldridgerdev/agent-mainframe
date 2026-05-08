@@ -829,6 +829,7 @@ impl App {
         while !stop.load(Ordering::Relaxed) {
             match refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed) {
                 VIEW_SNAPSHOT_REFRESH_NORMAL => {
+                    // Periodic full reseed to fix any parser/pane drift.
                     let _ = tx.send(reseed_control_view_parser(
                         session,
                         window,
@@ -838,12 +839,12 @@ impl App {
                     ));
                 }
                 VIEW_SNAPSHOT_REFRESH_BURST | VIEW_SNAPSHOT_REFRESH_PANE_BURST => {
-                    let _ = tx.send(reseed_control_view_parser(
-                        session,
-                        window,
-                        cols,
-                        rows,
-                        &mut parser,
+                    // Keypress burst: send the current parser state immediately
+                    // with zero subprocess overhead. The control-protocol stream
+                    // will deliver the actual pane update shortly and trigger
+                    // an incremental parser_changed snapshot below.
+                    let _ = tx.send(snapshot_from_parser(
+                        session, window, cols, rows, &parser, None, None, None,
                     ));
                 }
                 _ => {}
@@ -927,16 +928,12 @@ impl App {
             }
 
             if parser_changed {
-                // Control-mode output can drift from the parser state in ways
-                // that leave whitespace stale until a full redraw. Re-seed
-                // from tmux here so the visible screen always matches the
-                // authoritative pane contents.
-                let _ = tx.send(reseed_control_view_parser(
-                    session,
-                    window,
-                    cols,
-                    rows,
-                    &mut parser,
+                // Send a snapshot directly from the incrementally-updated
+                // parser — no subprocess needed. The vt100 parser already
+                // reflects the current pane state delivered by the control
+                // protocol. Periodic NORMAL reseeds handle any drift.
+                let _ = tx.send(snapshot_from_parser(
+                    session, window, cols, rows, &parser, None, None, None,
                 ));
             }
         }

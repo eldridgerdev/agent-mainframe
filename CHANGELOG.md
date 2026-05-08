@@ -17,6 +17,7 @@ are tagged.
 
 ### Changed
 
+- The dashboard header now shows the AMF version next to the app title.
 - AMF now uses one global project database at `~/.config/amf/amf.db`
   no matter which checkout you launch it from, so your project list stays
   consistent across directories.

@@ -369,10 +369,8 @@ pub fn ensure_notify_scripts() {
             &codex_diff_review_path,
             std::fs::Permissions::from_mode(0o755),
         );
-        let _ = std::fs::set_permissions(
-            &codex_notify_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
+        let _ =
+            std::fs::set_permissions(&codex_notify_path, std::fs::Permissions::from_mode(0o755));
         let _ = std::fs::set_permissions(
             &set_session_status_path,
             std::fs::Permissions::from_mode(0o755),

@@ -521,6 +521,7 @@ pub struct SyntaxLanguagePickerState {
 pub struct DebugLogState {
     pub scroll_offset: usize,
     pub from_view: Option<ViewState>,
+    pub hide_perf_logs: bool,
 }
 
 pub struct MarkdownViewerState {

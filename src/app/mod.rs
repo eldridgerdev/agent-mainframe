@@ -850,7 +850,7 @@ impl App {
                 _ => {}
             }
 
-            let Some(line) = client.recv_timeout(Duration::from_millis(50))? else {
+            let Some(line) = client.recv_timeout(Duration::from_millis(10))? else {
                 continue;
             };
 

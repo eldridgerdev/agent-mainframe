@@ -16,6 +16,7 @@ pub fn draw_debug_log(
     frame: &mut Frame,
     debug_log: &DebugLog,
     scroll_offset: usize,
+    hide_perf_logs: bool,
     theme: &Theme,
 ) {
     let area = centered_rect(80, 80, frame.area());
@@ -37,9 +38,13 @@ pub fn draw_debug_log(
         return;
     }
 
-    let mut entries: Vec<Line> = debug_log
+    let entries_iter = debug_log
         .entries()
         .iter()
+        .filter(|entry| !hide_perf_logs || entry.context != "perf");
+
+    let visible_entry_count = entries_iter.clone().count();
+    let mut entries: Vec<Line> = entries_iter
         .map(|entry| {
             let level_color = match entry.level {
                 LogLevel::Debug => theme.text_muted.to_color(),
@@ -85,11 +90,11 @@ pub fn draw_debug_log(
 
     let visible_lines = content_area.height as usize;
     let mut wrap_width = content_area.width as usize;
-    let mut total_visual_lines = count_wrapped_lines(debug_log, wrap_width);
+    let mut total_visual_lines = count_wrapped_lines(debug_log, wrap_width, hide_perf_logs);
     if total_visual_lines > visible_lines && wrap_width > 1 {
         // Reserve one column for the scrollbar and recompute wrapped height.
         wrap_width -= 1;
-        total_visual_lines = count_wrapped_lines(debug_log, wrap_width);
+        total_visual_lines = count_wrapped_lines(debug_log, wrap_width, hide_perf_logs);
     }
     let max_scroll = total_visual_lines.saturating_sub(visible_lines);
     let scroll_offset = scroll_offset.min(max_scroll);
@@ -112,11 +117,15 @@ pub fn draw_debug_log(
 
     let hint = Line::from(vec![
         Span::styled(
-            "j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  c:clear  /:actions  Esc:close  ",
+            "j/k:scroll  PgUp/PgDn:page  g/G:top/bottom  c:clear  p:toggle perf logs  /:actions  Esc:close  ",
             Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled(
-            format!("({} entries)", debug_log.len()),
+            format!(
+                "({} entries{})",
+                visible_entry_count,
+                if hide_perf_logs { ", perf hidden" } else { "" }
+            ),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ]);
@@ -130,7 +139,7 @@ pub fn draw_debug_log(
     frame.render_widget(hint_paragraph, chunks[1]);
 }
 
-fn count_wrapped_lines(debug_log: &DebugLog, width: usize) -> usize {
+fn count_wrapped_lines(debug_log: &DebugLog, width: usize, hide_perf_logs: bool) -> usize {
     if width == 0 {
         return 0;
     }
@@ -138,6 +147,7 @@ fn count_wrapped_lines(debug_log: &DebugLog, width: usize) -> usize {
     let entry_lines: usize = debug_log
         .entries()
         .iter()
+        .filter(|entry| !hide_perf_logs || entry.context != "perf")
         .map(|entry| {
             let line = format!(
                 "{} [{:<5}] {}: {}",

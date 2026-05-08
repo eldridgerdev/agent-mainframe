@@ -585,6 +585,12 @@ pub fn handle_debug_log_key(app: &mut App, key: KeyCode) -> Result<()> {
                 state.scroll_offset = 0;
             }
         }
+        KeyCode::Char('p') => {
+            if let AppMode::DebugLog(state) = &mut app.mode {
+                state.hide_perf_logs = !state.hide_perf_logs;
+                state.scroll_offset = 0;
+            }
+        }
         KeyCode::Char('/') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::DebugLog(state) => state.from_view,
@@ -936,6 +942,7 @@ mod tests {
         app.mode = AppMode::DebugLog(crate::app::DebugLogState {
             scroll_offset: 0,
             from_view: Some(view.clone()),
+            hide_perf_logs: false,
         });
 
         handle_debug_log_key(&mut app, KeyCode::Char('/')).unwrap();
@@ -964,6 +971,7 @@ mod tests {
         app.mode = AppMode::DebugLog(crate::app::DebugLogState {
             scroll_offset: 42,
             from_view: None,
+            hide_perf_logs: false,
         });
 
         handle_debug_log_key(&mut app, KeyCode::Char('g')).unwrap();
@@ -980,12 +988,33 @@ mod tests {
         app.mode = AppMode::DebugLog(crate::app::DebugLogState {
             scroll_offset: 0,
             from_view: None,
+            hide_perf_logs: false,
         });
 
         handle_debug_log_key(&mut app, KeyCode::Char('G')).unwrap();
 
         match &app.mode {
             AppMode::DebugLog(state) => assert_eq!(state.scroll_offset, usize::MAX),
+            _ => panic!("expected debug log to stay open"),
+        }
+    }
+
+    #[test]
+    fn debug_log_p_toggles_perf_visibility() {
+        let mut app = markdown_app();
+        app.mode = AppMode::DebugLog(crate::app::DebugLogState {
+            scroll_offset: 9,
+            from_view: None,
+            hide_perf_logs: false,
+        });
+
+        handle_debug_log_key(&mut app, KeyCode::Char('p')).unwrap();
+
+        match &app.mode {
+            AppMode::DebugLog(state) => {
+                assert!(state.hide_perf_logs);
+                assert_eq!(state.scroll_offset, 0);
+            }
             _ => panic!("expected debug log to stay open"),
         }
     }

@@ -10,7 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- GitHub releases now publish their notes from the matching changelog
+  section, with a direct link back to the source entry in `CHANGELOG.md`.
 
 ## [v0.18.3] - 2026-05-08
 

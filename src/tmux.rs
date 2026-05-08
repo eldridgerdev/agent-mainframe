@@ -985,10 +985,7 @@ impl TmuxManager {
                 });
         }
         child.env_remove("TMUX").env_remove("TMUX_PANE");
-
-        // Override TERM so tmux doesn't inherit screen-256color from within a
-        // tmux session. xterm-256color is available in every system terminfo.
-        child.env("TERM", "xterm-256color");
+        Self::apply_control_client_term_env(&mut child);
 
         let child = child
             .spawn()
@@ -1083,7 +1080,7 @@ impl TmuxManager {
                 });
         }
         child.env_remove("TMUX").env_remove("TMUX_PANE");
-        child.env("TERM", "xterm-256color");
+        Self::apply_control_client_term_env(&mut child);
 
         let child = child.spawn().with_context(|| {
             format!("Failed to spawn PTY tmux control view client for {session}")
@@ -1124,6 +1121,17 @@ impl TmuxManager {
         _rows: u16,
     ) -> Result<SpawnedTmuxControlClient> {
         bail!("tmux PTY control view is only supported on Unix");
+    }
+
+    /// Apply a clean terminal environment to a control-mode client process.
+    ///
+    /// Removes `TERMINFO` and `TERMINFO_DIRS` so the process uses the
+    /// compiled-in default terminfo paths rather than any user-set override
+    /// (e.g. a Homebrew ncurses path that no longer exists). Sets `TERM` to
+    /// `xterm-256color`, which is present in every system terminfo database.
+    fn apply_control_client_term_env(cmd: &mut Command) {
+        cmd.env_remove("TERMINFO").env_remove("TERMINFO_DIRS");
+        cmd.env("TERM", "xterm-256color");
     }
 
     fn spawn_input_client(session: &str) -> Result<PersistentTmuxInputClient> {

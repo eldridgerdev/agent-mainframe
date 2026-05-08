@@ -12,6 +12,24 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.18.3] - 2026-05-08
+
+### Fixed
+
+- Fixed persistent "warning: could not set up terminal" on macOS even after
+  the `xterm-256color` fix in v0.18.2. The root cause was that a user-set
+  `TERMINFO` or `TERMINFO_DIRS` env var (e.g. a Homebrew ncurses path) was
+  inherited by AMF's control-mode tmux clients, overriding the system
+  terminfo lookup and preventing any terminal type — including `dumb` —
+  from being found. AMF now strips `TERMINFO` and `TERMINFO_DIRS` from the
+  environment of all spawned control-mode clients so they fall back to the
+  compiled-in system terminfo paths where `xterm-256color` is reliably
+  present.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.18.2] - 2026-05-08
 
 ### Fixed

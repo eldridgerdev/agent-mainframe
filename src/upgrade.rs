@@ -416,11 +416,20 @@ mod tests {
             &dest.path().join("tmux-real"),
         )
         .unwrap();
-        replace_path_recursive(&src.path().join("tmux-root"), &dest.path().join("tmux-root"))
-            .unwrap();
+        replace_path_recursive(
+            &src.path().join("tmux-root"),
+            &dest.path().join("tmux-root"),
+        )
+        .unwrap();
 
-        assert_eq!(fs::read_to_string(dest.path().join("tmux")).unwrap(), "#!/bin/sh\n");
-        assert_eq!(fs::read_to_string(dest.path().join("tmux-real")).unwrap(), "binary");
+        assert_eq!(
+            fs::read_to_string(dest.path().join("tmux")).unwrap(),
+            "#!/bin/sh\n"
+        );
+        assert_eq!(
+            fs::read_to_string(dest.path().join("tmux-real")).unwrap(),
+            "binary"
+        );
         assert_eq!(
             fs::read_to_string(
                 dest.path()
@@ -443,12 +452,20 @@ mod tests {
         let source_dir = src.path().join("tmux-root").join("usr").join("share");
         fs::create_dir_all(&source_dir).unwrap();
         fs::write(source_dir.join("terminfo"), "db").unwrap();
-        unix_fs::symlink("share", src.path().join("tmux-root").join("usr").join("doc")).unwrap();
+        unix_fs::symlink(
+            "share",
+            src.path().join("tmux-root").join("usr").join("doc"),
+        )
+        .unwrap();
 
-        replace_path_recursive(&src.path().join("tmux-root"), &dest.path().join("tmux-root"))
-            .unwrap();
+        replace_path_recursive(
+            &src.path().join("tmux-root"),
+            &dest.path().join("tmux-root"),
+        )
+        .unwrap();
 
-        let doc_link = fs::read_link(dest.path().join("tmux-root").join("usr").join("doc")).unwrap();
+        let doc_link =
+            fs::read_link(dest.path().join("tmux-root").join("usr").join("doc")).unwrap();
         assert_eq!(doc_link, Path::new("share"));
         assert_eq!(
             fs::read_to_string(

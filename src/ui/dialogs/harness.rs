@@ -28,7 +28,11 @@ pub fn draw_harness_setup_dialog(
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .style(Style::default().fg(theme.text.to_color()).bg(theme.effective_bg()))
+        .style(
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_bg()),
+        )
         .border_style(Style::default().fg(theme.border.to_color()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -68,10 +72,7 @@ pub fn draw_harness_setup_dialog(
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(
-                "[ ] ",
-                Style::default().fg(theme.text_muted.to_color()),
-            )
+            Span::styled("[ ] ", Style::default().fg(theme.text_muted.to_color()))
         };
 
         let name_style = if is_selected {
@@ -98,10 +99,7 @@ pub fn draw_harness_setup_dialog(
                 vec![
                     Span::raw(" "),
                     spin,
-                    Span::styled(
-                        " checking...",
-                        Style::default().fg(theme.info.to_color()),
-                    ),
+                    Span::styled(" checking...", Style::default().fg(theme.info.to_color())),
                 ]
             }
             HarnessCheckStatus::Installed => vec![Span::styled(

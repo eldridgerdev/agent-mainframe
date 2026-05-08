@@ -1569,7 +1569,8 @@ index 0000000..1111111
         let indented_code_line = &lines[2];
         let default_added_fg = new_file_added_row_style(&theme).fg;
         let has_syntax_colored_token = indented_code_line.spans.iter().any(|span| {
-            !span.content.trim().is_empty() && span.content.contains("primary")
+            !span.content.trim().is_empty()
+                && span.content.contains("primary")
                 && span.style.fg != default_added_fg
         });
 

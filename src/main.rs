@@ -188,7 +188,20 @@ fn main() -> Result<()> {
     {
         let db_path = project::db_path();
         let db = db::AmfDb::open(&db_path)?;
-        db.set_session_status(&session_id, &status_text)?;
+        let store = db.load_store()?;
+        let feature_id = store
+            .projects
+            .iter()
+            .flat_map(|project| &project.features)
+            .find_map(|feature| {
+                feature
+                    .sessions
+                    .iter()
+                    .any(|session| session.id == session_id)
+                    .then(|| feature.id.clone())
+            })
+            .context("session not found in store")?;
+        db.upsert_session_status(&session_id, &feature_id, &status_text)?;
         return Ok(());
     }
 

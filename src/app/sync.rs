@@ -1,5 +1,4 @@
 use super::*;
-use super::toast::input_request_toast_message;
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -12,22 +11,22 @@ use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-// ---------------------------------------------------------------------------
-// Custom session status helpers
-// ---------------------------------------------------------------------------
+fn read_status_line(content: &str) -> Option<String> {
+    let line = content.lines().next()?.trim().to_string();
+    if line.is_empty() { None } else { Some(line) }
+}
 
-/// Read the status text for a custom session.
-///
-/// Tries the DB first; falls back to the legacy `.amf/session-status/<id>.txt`
-/// file and lazily migrates the value into the DB so subsequent reads are
-/// DB-only.
 fn read_custom_session_status(
     session_id: &str,
+    feature_id: &str,
     workdir: &Path,
     db: Option<&crate::db::AmfDb>,
 ) -> Option<String> {
-    if let Some(db) = db {
-        if let Ok(Some(text)) = db.get_session_status(session_id) {
+    if let Some(db) = db
+        && let Ok(Some(text)) = db.load_session_status(session_id)
+    {
+        let text = text.trim().to_string();
+        if !text.is_empty() {
             return Some(text);
         }
     }
@@ -37,13 +36,12 @@ fn read_custom_session_status(
         .join("session-status")
         .join(format!("{}.txt", session_id));
 
-    let file_text = std::fs::read_to_string(&status_path).ok().and_then(|s| {
-        let line = s.lines().next()?.trim().to_string();
-        if line.is_empty() { None } else { Some(line) }
-    });
+    let file_text = std::fs::read_to_string(&status_path)
+        .ok()
+        .and_then(|content| read_status_line(&content));
 
-    if let (Some(ref text), Some(db)) = (file_text.as_ref(), db) {
-        let _ = db.set_session_status(session_id, text);
+    if let (Some(text), Some(db)) = (file_text.as_ref(), db) {
+        let _ = db.upsert_session_status(session_id, feature_id, text);
     }
 
     file_text
@@ -61,6 +59,7 @@ struct SessionStatusJob {
     existing_source: Option<TokenUsageSource>,
     existing_source_match: Option<TokenUsageSourceMatch>,
     claude_session_id: Option<String>,
+    custom_status_text: Option<String>,
 }
 
 enum SourceAction {
@@ -82,7 +81,10 @@ pub(crate) struct SessionStatusBgResult {
     sources_discovered: bool,
 }
 
-fn collect_jobs(store: &crate::project::ProjectStore) -> Vec<SessionStatusJob> {
+fn collect_jobs(
+    store: &crate::project::ProjectStore,
+    db: Option<&crate::db::AmfDb>,
+) -> Vec<SessionStatusJob> {
     store
         .projects
         .iter()
@@ -96,6 +98,11 @@ fn collect_jobs(store: &crate::project::ProjectStore) -> Vec<SessionStatusJob> {
                     existing_source: session.token_usage_source.clone(),
                     existing_source_match: session.token_usage_source_match.clone(),
                     claude_session_id: session.claude_session_id.clone(),
+                    custom_status_text: if session.kind == SessionKind::Custom {
+                        read_custom_session_status(&session.id, &feature.id, &feature.workdir, db)
+                    } else {
+                        None
+                    },
                 })
             })
         })
@@ -106,20 +113,16 @@ fn run_jobs(
     mut tracker: SessionTokenTracker,
     jobs: Vec<SessionStatusJob>,
     pricing: &TokenPricingConfig,
-    db_path: Option<PathBuf>,
 ) -> SessionStatusBgResult {
-    let db = db_path.as_ref().and_then(|p| crate::db::AmfDb::open(p).ok());
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
 
     for job in jobs {
         if job.kind == SessionKind::Custom {
-            let status_text =
-                read_custom_session_status(&job.session_id, &job.workdir, db.as_ref());
             updates.push(SessionStatusUpdate {
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
-                status_text,
+                status_text: job.custom_status_text,
             });
             continue;
         }
@@ -279,16 +282,15 @@ impl App {
     /// preserved; it is swapped back in when `poll_session_status_bg` applies
     /// the results.
     pub fn sync_session_status_background(&mut self) {
-        let jobs = collect_jobs(&self.store);
+        let jobs = collect_jobs(&self.store, self.db.as_ref());
         let pricing = self.config.token_pricing.clone();
         let tracker = std::mem::take(&mut self.token_tracker);
-        let db_path = self.db.as_ref().map(|db| db.path.clone());
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.session_status_bg = Some(rx);
 
         std::thread::spawn(move || {
-            let result = run_jobs(tracker, jobs, &pricing, db_path);
+            let result = run_jobs(tracker, jobs, &pricing);
             let _ = tx.send(result);
         });
     }
@@ -310,11 +312,12 @@ impl App {
             }
             None => {
                 // Clean up a disconnected sender.
-                if self
-                    .session_status_bg
-                    .as_ref()
-                    .is_some_and(|rx| matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)))
-                {
+                if self.session_status_bg.as_ref().is_some_and(|rx| {
+                    matches!(
+                        rx.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Disconnected)
+                    )
+                }) {
                     self.session_status_bg = None;
                 }
                 false
@@ -361,12 +364,12 @@ impl App {
 
         for project in &mut self.store.projects {
             for feature in &mut project.features {
-                let workdir = feature.workdir.clone();
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
                         session.status_text = read_custom_session_status(
                             &session.id,
-                            &workdir,
+                            &feature.id,
+                            &feature.workdir,
                             self.db.as_ref(),
                         );
                         continue;
@@ -482,9 +485,7 @@ impl App {
                             Self::is_session_marked_thinking(&feature.tmux_session)
                         }
                     }
-                    AgentKind::Pi => {
-                        Self::is_session_marked_thinking(&feature.tmux_session)
-                    }
+                    AgentKind::Pi => Self::is_session_marked_thinking(&feature.tmux_session),
                 };
                 if thinking {
                     self.thinking_features.insert(feature.tmux_session.clone());
@@ -547,7 +548,7 @@ impl App {
                         && p.feature_name.as_deref() == Some(&feature_name)
                 });
                 if !any_pending_for_feature {
-                    let pending_input = PendingInput {
+                    self.pending_inputs.push(PendingInput {
                         session_id: sid.clone(),
                         cwd,
                         message: "Agent finished and is waiting for input".to_string(),
@@ -569,9 +570,7 @@ impl App {
                         proceed_signal: None,
                         request_id: None,
                         reply_socket: None,
-                    };
-                    self.push_toast_warning(input_request_toast_message(&pending_input));
-                    self.pending_inputs.push(pending_input);
+                    });
                     self.log_info(
                         "sync",
                         format!(

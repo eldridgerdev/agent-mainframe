@@ -320,24 +320,24 @@ fn draw_create_feature_branch_mode(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // branch
-            Constraint::Length(1), // spacer
-            Constraint::Length(3), // worktree
-            Constraint::Length(1), // spacer
-            Constraint::Length(4), // agent
-            Constraint::Length(1), // spacer
-            Constraint::Length(5), // mode
-            Constraint::Length(1), // spacer
-            Constraint::Length(1), // review checkbox
-            Constraint::Length(0), // spacer
-            Constraint::Length(1), // plan_mode checkbox
-            Constraint::Length(0), // spacer
-            Constraint::Length(1), // terminal checkbox
-            Constraint::Length(0), // spacer
+            Constraint::Length(2),                                  // branch
+            Constraint::Length(1),                                  // spacer
+            Constraint::Length(3),                                  // worktree
+            Constraint::Length(1),                                  // spacer
+            Constraint::Length(4),                                  // agent
+            Constraint::Length(1),                                  // spacer
+            Constraint::Length(5),                                  // mode
+            Constraint::Length(1),                                  // spacer
+            Constraint::Length(1),                                  // review checkbox
+            Constraint::Length(0),                                  // spacer
+            Constraint::Length(1),                                  // plan_mode checkbox
+            Constraint::Length(0),                                  // spacer
+            Constraint::Length(1),                                  // terminal checkbox
+            Constraint::Length(0),                                  // spacer
             Constraint::Length(if has_chrome_row { 1 } else { 0 }), // chrome checkbox
-            Constraint::Length(0), // spacer
-            Constraint::Length(1), // steering coach checkbox
-            Constraint::Length(0), // extra space
+            Constraint::Length(0),                                  // spacer
+            Constraint::Length(1),                                  // steering coach checkbox
+            Constraint::Length(0),                                  // extra space
             Constraint::Min(0),
             Constraint::Length(1), // hints
         ])

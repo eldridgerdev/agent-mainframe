@@ -65,10 +65,7 @@ pub(crate) fn draw_toasts(frame: &mut Frame, toasts: &[Toast], theme: &Theme) {
             style = style.add_modifier(Modifier::DIM);
         }
 
-        let paragraph = Paragraph::new(Line::from(Span::styled(
-            format!(" {display}"),
-            style,
-        )));
+        let paragraph = Paragraph::new(Line::from(Span::styled(format!(" {display}"), style)));
         frame.render_widget(paragraph, inner);
     }
 }

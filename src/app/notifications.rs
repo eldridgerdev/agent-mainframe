@@ -6,8 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::app::util::latest_prompt_path;
 use crate::app::toast::input_request_toast_message;
+use crate::app::util::latest_prompt_path;
 use crate::automation::{
     CREATE_BATCH_FEATURES_ACTION, CREATE_FEATURE_ACTION, CREATE_PROJECT_ACTION,
     CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
@@ -783,7 +783,10 @@ impl App {
             reply_socket: msg.reply_socket,
         };
         if pending_input.notification_type == "input-request"
-            && !self.pending_inputs.iter().any(|input| input == &pending_input)
+            && !self
+                .pending_inputs
+                .iter()
+                .any(|input| input == &pending_input)
         {
             self.push_toast_warning(input_request_toast_message(&pending_input));
         }
@@ -1042,10 +1045,7 @@ impl App {
             if new_input_requests.len() == 1 {
                 self.push_toast_warning(input_request_toast_message(first));
             } else {
-                self.push_toast_warning(format!(
-                    "{} new input requests",
-                    new_input_requests.len()
-                ));
+                self.push_toast_warning(format!("{} new input requests", new_input_requests.len()));
             }
         }
 

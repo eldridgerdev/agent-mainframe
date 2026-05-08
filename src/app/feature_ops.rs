@@ -105,9 +105,8 @@ impl App {
         let available = self.allowed_agents_for_repo(&project_repo);
         if available.is_empty() {
             self.open_harness_setup(false);
-            self.message = Some(
-                "No harnesses configured. Enable at least one to create a feature.".into(),
-            );
+            self.message =
+                Some("No harnesses configured. Enable at least one to create a feature.".into());
             return;
         }
 
@@ -612,10 +611,11 @@ impl App {
                                 &feature.tmux_session
                             )]),
                         );
-                            self.tmux
-                                .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
+                        self.tmux
+                            .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
                     } else {
-                        let extra_args = crate::codex_config::launch_override_args(&feature.workdir);
+                        let extra_args =
+                            crate::codex_config::launch_override_args(&feature.workdir);
                         self.tmux.launch_codex(
                             &feature.tmux_session,
                             &session.tmux_window,
@@ -1007,12 +1007,21 @@ impl App {
     }
 
     pub fn complete_deleting_feature(&mut self) -> Result<()> {
-        let (project_name, feature_name, tmux_session, had_error, error_msg) = {
+        let (project_name, feature_name, tmux_session, feature_id, had_error, error_msg) = {
             match &self.mode {
                 AppMode::DeletingFeatureInProgress(s) => (
                     s.project_name.clone(),
                     s.feature_name.clone(),
                     s.tmux_session.clone(),
+                    self.store
+                        .find_project(&s.project_name)
+                        .and_then(|project| {
+                            project
+                                .features
+                                .iter()
+                                .find(|feature| feature.name == s.feature_name)
+                                .map(|feature| feature.id.clone())
+                        }),
                     s.error.is_some(),
                     s.error.clone(),
                 ),
@@ -1034,6 +1043,11 @@ impl App {
         }
 
         self.clear_sidebar_state_for_session(&tmux_session);
+        if let Some(feature_id) = feature_id.as_deref()
+            && let Some(db) = self.db.as_ref()
+        {
+            let _ = db.delete_feature_statuses(feature_id);
+        }
         self.store.remove_feature(&project_name, &feature_name);
         self.save()?;
 

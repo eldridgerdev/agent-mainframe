@@ -138,15 +138,13 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let max_scroll = total_lines.saturating_sub(visible_height);
     let scroll = scroll_offset.min(max_scroll) as u16;
 
-    let help = Paragraph::new(lines)
-        .scroll((scroll, 0))
-        .block(
-            Block::default()
-                .title(" Keybindings ")
-                .borders(Borders::ALL)
-                .style(Style::default().bg(theme.effective_bg()))
-                .border_style(Style::default().fg(theme.primary.to_color())),
-        );
+    let help = Paragraph::new(lines).scroll((scroll, 0)).block(
+        Block::default()
+            .title(" Keybindings ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(theme.effective_bg()))
+            .border_style(Style::default().fg(theme.primary.to_color())),
+    );
 
     frame.render_widget(help, area);
 

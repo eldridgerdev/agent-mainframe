@@ -1,8 +1,8 @@
 use anyhow::Result;
 use crossterm::event::KeyCode;
 
-use crate::app::{App, AppMode, HarnessCheckStatus, HarnessSetupState};
 use crate::app::HarnessCheckResult;
+use crate::app::{App, AppMode, HarnessCheckStatus, HarnessSetupState};
 
 pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
     let state = match &app.mode {
@@ -88,7 +88,10 @@ fn check_and_toggle(app: &mut App) -> Result<()> {
     let kind_clone = kind.clone();
     std::thread::spawn(move || {
         let result = App::check_harness_available(&kind_clone);
-        let _ = tx.send(HarnessCheckResult { kind: kind_clone, result });
+        let _ = tx.send(HarnessCheckResult {
+            kind: kind_clone,
+            result,
+        });
     });
 
     Ok(())

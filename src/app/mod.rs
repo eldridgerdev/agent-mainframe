@@ -1,6 +1,5 @@
 mod automation;
 mod claude_session_picker;
-pub(crate) mod toast;
 mod claude_sessions;
 mod codex_live;
 mod codex_session_picker;
@@ -27,6 +26,7 @@ mod steering;
 mod switcher;
 mod sync;
 mod syntax;
+pub(crate) mod toast;
 pub mod util;
 mod view;
 
@@ -1300,10 +1300,7 @@ impl App {
 
     pub fn new(db_path: PathBuf) -> Result<Self> {
         setup::ensure_notify_scripts();
-        let db = crate::db::AmfDb::open_or_seed(
-            &db_path,
-            &crate::project::global_db_path(),
-        )?;
+        let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);

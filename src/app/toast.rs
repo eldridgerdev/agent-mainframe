@@ -89,7 +89,12 @@ pub(crate) fn input_request_toast_message(input: &PendingInput) -> String {
         .feature_name
         .as_deref()
         .filter(|value| !value.is_empty())
-        .or_else(|| input.project_name.as_deref().filter(|value| !value.is_empty()))
+        .or_else(|| {
+            input
+                .project_name
+                .as_deref()
+                .filter(|value| !value.is_empty())
+        })
         .map(str::to_string)
         .unwrap_or_else(|| {
             if input.session_id.is_empty() {

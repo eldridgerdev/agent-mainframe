@@ -55,9 +55,7 @@ fn handle_scroll_up(app: &mut App, visible_rows: u16) {
         return;
     }
     if let AppMode::Help(state) = &mut app.mode {
-        state.scroll_offset = state
-            .scroll_offset
-            .saturating_sub(HELP_MOUSE_SCROLL_LINES);
+        state.scroll_offset = state.scroll_offset.saturating_sub(HELP_MOUSE_SCROLL_LINES);
         return;
     }
     if matches!(app.mode, AppMode::Viewing(_)) {
@@ -88,9 +86,7 @@ fn handle_scroll_down(app: &mut App, visible_rows: u16) {
         return;
     }
     if let AppMode::Help(state) = &mut app.mode {
-        state.scroll_offset = state
-            .scroll_offset
-            .saturating_add(HELP_MOUSE_SCROLL_LINES);
+        state.scroll_offset = state.scroll_offset.saturating_add(HELP_MOUSE_SCROLL_LINES);
         return;
     }
     if matches!(app.mode, AppMode::Viewing(_)) {

@@ -95,7 +95,10 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                             {
                                 let event = codex_debug_event(debug_command);
                                 app.apply_codex_live_event(&session_id, &event);
-                                app.push_toast_success(format!("Applied '{}'", command.name.as_str()));
+                                app.push_toast_success(format!(
+                                    "Applied '{}'",
+                                    command.name.as_str()
+                                ));
                             } else {
                                 app.push_toast_warning("No Codex session selected");
                             }

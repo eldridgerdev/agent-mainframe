@@ -8,7 +8,14 @@ use ratatui::{
 
 use crate::theme::Theme;
 
-pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize, theme: &Theme) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    cwd: &str,
+    version: &str,
+    pending_count: usize,
+    theme: &Theme,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border_focus.to_color()));
@@ -21,6 +28,10 @@ pub fn draw(frame: &mut Frame, area: Rect, cwd: &str, pending_count: usize, them
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("v{version} "),
+            Style::default().fg(theme.text_muted.to_color()),
         ),
         Span::styled("| ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled(cwd, Style::default().fg(theme.text.to_color())),

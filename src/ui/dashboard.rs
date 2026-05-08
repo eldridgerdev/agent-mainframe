@@ -839,6 +839,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
+        env!("CARGO_PKG_VERSION"),
         app.pending_inputs.len(),
         &app.theme,
     );

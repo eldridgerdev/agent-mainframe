@@ -10,11 +10,45 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.18.0] - 2026-05-08
+
+### Added
+
+- Toast notifications now surface input requests and other transient
+  prompts directly in the dashboard.
+- AMF skills can now be injected into feature workspaces when a feature
+  starts.
+- Mouse-wheel scrolling now works in the Markdown viewer and help
+  dialog.
+
+### Changed
+
+- Project storage, token caching, debug logging, and session status
+  tracking now use SQLite-backed persistence.
+- Codex notification hooks now use the updated `codex_config` flow, and
+  Codex settings overrides are merged into the local workspace config.
+- The tmux viewing stack now has a fallback path for environments where
+  control-mode is unavailable.
+- Startup now shows a loading screen while AMF initializes.
+- Embedded overlays now keep the tmux cursor hidden behind dialogs and
+  other UI surfaces.
+
 ### Fixed
 
-- Embedded tmux view updates now reseed from tmux when control-mode output
-  arrives, which prevents stale whitespace from lingering until the next
-  manual input or view refresh.
+- Embedded tmux view updates now reseed from tmux when control-mode
+  output arrives, which prevents stale whitespace from lingering until
+  the next manual input or view refresh.
+- Toasts now render correctly in Viewing mode.
+- macOS control-mode space rendering now works correctly.
+- `amf upgrade` now handles symlinked release paths correctly.
+- Harness setup can now be dismissed cleanly.
+
+### Migration
+
+- Existing stores migrate in place to the SQLite-backed schema; no
+  manual migration is required.
 
 ## [v0.17.1] - 2026-04-21
 

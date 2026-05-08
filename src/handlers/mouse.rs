@@ -188,8 +188,11 @@ fn handle_click(
                 return Ok(());
             }
             app.message = None;
-            let content_row = row - 1;
-            let content_col = col.min(app.pane_content_cols.saturating_sub(1));
+            let Some((content_row, content_col)) =
+                selection_coords_for_view(view, row - 1, col, app.pane_content_cols)
+            else {
+                return Ok(());
+            };
             view.selection.start_row = content_row;
             view.selection.start_col = content_col;
             view.selection.end_row = content_row;
@@ -327,8 +330,11 @@ fn handle_drag(app: &mut App, col: u16, row: u16, button: MouseButton) -> Result
         && row > 0
         && app.pane_content_cols > 0
     {
-        let content_row = row - 1;
-        let content_col = col.min(app.pane_content_cols.saturating_sub(1));
+        let Some((content_row, content_col)) =
+            selection_coords_for_view(view, row - 1, col, app.pane_content_cols)
+        else {
+            return Ok(());
+        };
         view.selection.end_row = content_row;
         view.selection.end_col = content_col;
         view.selection.has_selection = true;
@@ -345,18 +351,21 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
 
         if view.selection.has_selection {
             if row > 0 && app.pane_content_cols > 0 {
-                let content_row = row - 1;
-                let content_col = col.min(app.pane_content_cols.saturating_sub(1));
+                let Some((content_row, content_col)) =
+                    selection_coords_for_view(view, row - 1, col, app.pane_content_cols)
+                else {
+                    return Ok(());
+                };
                 view.selection.end_row = content_row;
                 view.selection.end_col = content_col;
             }
 
-            let text = extract_selected_text(
+            let (content, rows) = selection_source_for_view(
                 &app.pane_content,
-                &view.selection,
                 app.pane_content_rows,
-                app.pane_content_cols,
+                view,
             );
+            let text = extract_selected_text(content, &view.selection, rows, app.pane_content_cols);
 
             if !text.is_empty() {
                 copy_to_clipboard_osc52(&text);
@@ -365,6 +374,46 @@ fn handle_release(app: &mut App, col: u16, row: u16, button: MouseButton) -> Res
         }
     }
     Ok(())
+}
+
+fn selection_coords_for_view(
+    view: &crate::app::ViewState,
+    row: u16,
+    col: u16,
+    pane_content_cols: u16,
+) -> Option<(u16, u16)> {
+    if view.scroll_mode && !view.scroll_passthrough {
+        let scrollbar_width = crate::ui::SCROLLBAR_WIDTH;
+        let content_width = pane_content_cols.saturating_sub(scrollbar_width);
+        if col >= content_width {
+            return None;
+        }
+
+        if content_width == 0 {
+            return None;
+        }
+
+        Some((
+            (row as usize)
+                .saturating_add(view.scroll_offset)
+                .min(u16::MAX as usize) as u16,
+            col,
+        ))
+    } else {
+        Some((row, col.min(pane_content_cols.saturating_sub(1))))
+    }
+}
+
+fn selection_source_for_view<'a>(
+    pane_content: &'a str,
+    pane_content_rows: u16,
+    view: &'a crate::app::ViewState,
+) -> (&'a str, u16) {
+    if view.scroll_mode && !view.scroll_passthrough {
+        (&view.scroll_content, view.scroll_total_lines.min(u16::MAX as usize) as u16)
+    } else {
+        (pane_content, pane_content_rows)
+    }
 }
 
 /// Copy text to clipboard using OSC 52 escape sequence.

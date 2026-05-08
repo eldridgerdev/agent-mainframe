@@ -8,6 +8,7 @@ use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
 const VIEW_INPUT_BATCH_MAX_LEN: usize = 64;
+const VIEW_FAST_SCROLL_STEP: usize = 10;
 
 enum TmuxKey {
     Literal(String),
@@ -177,6 +178,15 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.toggle_scroll_mode(visible_rows);
         }
         KeyCode::Up | KeyCode::Char('k') => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if passthrough {
+                    send_key_name(app, &session, &window, "PPage")?;
+                } else {
+                    flush_view_input_batch(app)?;
+                    app.scroll_up(VIEW_FAST_SCROLL_STEP);
+                }
+                return Ok(());
+            }
             if passthrough {
                 send_key_name(app, &session, &window, "PPage")?;
             } else {
@@ -185,6 +195,15 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                if passthrough {
+                    send_key_name(app, &session, &window, "NPage")?;
+                } else {
+                    flush_view_input_batch(app)?;
+                    app.scroll_down(VIEW_FAST_SCROLL_STEP, visible_rows);
+                }
+                return Ok(());
+            }
             if passthrough {
                 send_key_name(app, &session, &window, "NPage")?;
             } else {
@@ -775,6 +794,62 @@ mod tests {
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
         assert_eq!(app.message.as_deref(), Some("Refreshed pane sizing"));
+    }
+
+    #[test]
+    fn scroll_mode_ctrl_j_scrolls_faster() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        if let AppMode::Viewing(view) = &mut app.mode {
+            view.scroll_mode = true;
+            view.scroll_passthrough = false;
+            view.scroll_offset = 4;
+            view.scroll_total_lines = 200;
+            view.scroll_content = (0..200)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+
+        handle_view_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+            20,
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert_eq!(view.scroll_offset, 4 + VIEW_FAST_SCROLL_STEP),
+            _ => panic!("expected Viewing mode"),
+        }
+    }
+
+    #[test]
+    fn scroll_mode_ctrl_up_scrolls_back_faster() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        if let AppMode::Viewing(view) = &mut app.mode {
+            view.scroll_mode = true;
+            view.scroll_passthrough = false;
+            view.scroll_offset = 12;
+            view.scroll_total_lines = 200;
+            view.scroll_content = (0..200)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+
+        handle_view_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+            20,
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::Viewing(view) => assert_eq!(view.scroll_offset, 12 - VIEW_FAST_SCROLL_STEP),
+            _ => panic!("expected Viewing mode"),
+        }
     }
 
     fn init_repo_with_branch_change() -> TempDir {

@@ -3,7 +3,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use crate::app::{TextSelection, ViewState};
@@ -36,6 +38,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
 const CLAUDE_SIDEBAR_WIDTH: u16 = 32;
 const OPENCODE_SIDEBAR_WIDTH: u16 = 36;
 const SIDEBAR_MIN_MAIN_WIDTH: u16 = 72;
+pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentSidebarData {
@@ -240,16 +243,16 @@ pub(crate) fn draw_with_lines(
             &format!("{}%", scroll_pct)
         };
         header_spans.push(Span::styled(
-            format!("|SCROLL {} ", mode_label),
+            format!("| SCROLL COPY {mode_label} "),
             Style::default()
                 .fg(theme.shortcut_text.to_color())
-                .bg(theme.secondary.to_color())
+                .bg(theme.info.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         let help = if view.scroll_passthrough {
-            "wheel/j/k:PgUp/Dn - q/Esc:exit"
+            "wheel/j/k/Ctrl+j/k:PgUp/Dn - q/Esc:exit"
         } else {
-            "wheel/j/k:scroll PgUp/Dn:page - q/Esc:exit"
+            "wheel/j/k/Ctrl+j/k:scroll PgUp/Dn:page - q/Esc:exit"
         };
         header_spans.push(Span::styled(
             help,
@@ -311,17 +314,46 @@ pub(crate) fn draw_with_lines(
     }
 
     if view.scroll_mode && !view.scroll_passthrough {
-        let text = scroll_content_to_lines(
+        let scrollbar_width = SCROLLBAR_WIDTH.min(main_content_area.width);
+        let content_width = main_content_area.width.saturating_sub(scrollbar_width);
+        let content_area = Rect::new(
+            main_content_area.x,
+            main_content_area.y,
+            content_width,
+            main_content_area.height,
+        );
+
+        if scrollbar_width > 0 {
+            let scrollbar_area = Rect::new(
+                main_content_area.x + content_width,
+                main_content_area.y,
+                scrollbar_width,
+                main_content_area.height,
+            );
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+            let mut scrollbar_state = ScrollbarState::new(view.scroll_total_lines)
+                .position(view.scroll_offset)
+                .viewport_content_length(main_content_area.height as usize);
+            frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+
+        let text = scroll_content_to_lines_with_selection(
             &view.scroll_content,
             view.scroll_offset,
             main_content_area.height,
+            content_area.width,
+            &view.selection,
+            theme,
         );
         let paragraph = Paragraph::new(text).style(
             Style::default()
                 .fg(theme.text.to_color())
                 .bg(theme.effective_bg()),
         );
-        frame.render_widget(paragraph, main_content_area);
+        frame.render_widget(paragraph, content_area);
     } else {
         let text = if view.selection.has_selection || pane_lines.is_empty() {
             ansi_to_ratatui_text_with_selection(
@@ -733,16 +765,46 @@ fn draw_leader_menu(frame: &mut Frame, content_area: Rect, theme: &Theme) {
     frame.render_widget(popup, area);
 }
 
-fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<'static>> {
+fn scroll_content_to_lines_with_selection(
+    content: &str,
+    offset: usize,
+    rows: u16,
+    cols: u16,
+    selection: &TextSelection,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let all_lines: Vec<&str> = content.lines().collect();
     let total_lines = all_lines.len();
     let start = offset.min(total_lines);
     let end = (start + rows as usize).min(total_lines);
+    let (sel_start_row, sel_start_col, sel_end_row, sel_end_col) = selection.normalized();
+    let sel_start_row = sel_start_row as usize;
+    let sel_start_col = sel_start_col as usize;
+    let sel_end_row = sel_end_row as usize;
+    let sel_end_col = sel_end_col as usize;
+    let has_selection = selection.has_selection;
 
     let mut lines = Vec::with_capacity(rows as usize);
-    for i in start..end {
+    for (visible_row, i) in (start..end).enumerate() {
+        let content_row = start + visible_row;
         let line_text = all_lines.get(i).unwrap_or(&"");
-        lines.push(Line::raw(strip_ansi_codes(line_text)));
+        let is_selected_row = has_selection
+            && ((content_row > sel_start_row && content_row < sel_end_row)
+                || (content_row == sel_start_row && content_row == sel_end_row)
+                || (content_row == sel_start_row && content_row < sel_end_row)
+                || (content_row > sel_start_row && content_row == sel_end_row));
+
+        lines.push(render_ansi_line_with_selection(
+            line_text,
+            cols,
+            content_row,
+            is_selected_row,
+            sel_start_col,
+            sel_end_col,
+            sel_start_row,
+            sel_end_row,
+            theme,
+        ));
     }
     while lines.len() < rows as usize {
         lines.push(Line::raw(""));
@@ -750,28 +812,74 @@ fn scroll_content_to_lines(content: &str, offset: usize, rows: u16) -> Vec<Line<
     lines
 }
 
-fn strip_ansi_codes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            if let Some(&next) = chars.peek()
-                && next == '['
-            {
-                chars.next();
-                while let Some(&c) = chars.peek() {
-                    chars.next();
-                    if c.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-                continue;
-            }
-        } else {
-            result.push(ch);
+fn render_ansi_line_with_selection(
+    line_text: &str,
+    cols: u16,
+    content_row: usize,
+    is_selected_row: bool,
+    sel_start_col: usize,
+    sel_end_col: usize,
+    sel_start_row: usize,
+    sel_end_row: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let measured_width = unicode_width::UnicodeWidthStr::width(line_text);
+    let parser_cols = cols
+        .max(2)
+        .max(measured_width.saturating_add(2).min(u16::MAX as usize) as u16);
+    let mut parser = vt100::Parser::new(1, parser_cols, 0);
+    let normalized = line_text.replace('\n', "\r\n");
+    parser.process(normalized.as_bytes());
+    let screen = parser.screen();
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut current_text = String::new();
+    let mut current_style = Style::default();
+
+    let line_len = cols as usize;
+    let start_col = if is_selected_row && content_row == sel_start_row {
+        sel_start_col.min(line_len)
+    } else {
+        0
+    };
+    let end_col = if is_selected_row && content_row == sel_end_row {
+        sel_end_col.min(line_len)
+    } else {
+        line_len
+    };
+
+    for col in 0..cols {
+        let Some(cell) = screen.cell(0, col) else {
+            continue;
+        };
+
+        let mut style = vt100_cell_to_style(cell);
+        let col = col as usize;
+        if is_selected_row && col >= start_col && col < end_col {
+            style = style
+                .bg(theme.effective_selection_bg())
+                .fg(theme.text.to_color());
         }
+
+        if style != current_style && !current_text.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut current_text),
+                current_style,
+            ));
+        }
+        current_style = style;
+        current_text.push_str(&cell.contents());
     }
-    result
+
+    if !current_text.is_empty() {
+        spans.push(Span::styled(current_text, current_style));
+    }
+
+    if spans.is_empty() {
+        Line::raw("")
+    } else {
+        Line::from(spans)
+    }
 }
 
 pub(crate) fn render_vt100_screen(
@@ -1445,5 +1553,87 @@ mod tests {
         assert!(!rendered.contains("Status"));
         assert!(!rendered.contains("Prompt"));
         assert!(!rendered.contains("Summary"));
+    }
+
+    #[test]
+    fn scroll_selection_highlights_visible_slice() {
+        let theme = Theme::default();
+        let mut selection = TextSelection::default();
+        selection.start_row = 2;
+        selection.start_col = 1;
+        selection.end_row = 2;
+        selection.end_col = 3;
+        selection.has_selection = true;
+
+        let lines = scroll_content_to_lines_with_selection(
+            "zero\none\ntwo\nthree",
+            1,
+            3,
+            8,
+            &selection,
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 3);
+        let line = &lines[1];
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(text, "two");
+        assert!(
+            line.spans
+                .iter()
+                .any(|span| span.style.bg == Some(theme.effective_selection_bg()))
+        );
+    }
+
+    #[test]
+    fn scroll_mode_renders_scrollbar_arrows() {
+        let backend = TestBackend::new(20, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut view = sample_view(crate::project::SessionKind::Terminal);
+        view.scroll_mode = true;
+        view.scroll_content = "one\ntwo\nthree\nfour\nfive".into();
+        view.scroll_total_lines = 5;
+        view.scroll_offset = 1;
+        let theme = Theme::default();
+
+        terminal
+            .draw(|frame| {
+                draw(frame, &view, "", None, false, 0, None, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rendered: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(rendered.contains("↑"));
+        assert!(rendered.contains("↓"));
+    }
+
+    #[test]
+    fn scroll_renderer_handles_narrow_content_without_panicking() {
+        let theme = Theme::default();
+        let selection = TextSelection::default();
+        let lines = scroll_content_to_lines_with_selection("😊", 0, 1, 1, &selection, &theme);
+
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn scroll_renderer_handles_long_colored_lines_without_panicking() {
+        let theme = Theme::default();
+        let selection = TextSelection::default();
+        let lines = scroll_content_to_lines_with_selection(
+            "\u{1b}[31mthis is a very long colored line that should not wrap or panic when rendered in scroll mode\u{1b}[0m",
+            0,
+            1,
+            8,
+            &selection,
+            &theme,
+        );
+
+        assert_eq!(lines.len(), 1);
     }
 }

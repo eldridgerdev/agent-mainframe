@@ -13,13 +13,15 @@ if [ -z "$PROMPT" ] || [ -z "$CWD" ]; then
     exit 0
 fi
 
-if command -v amf >/dev/null 2>&1; then
+AMF_CMD="${AMF_BIN:-amf}"
+
+if command -v "$AMF_CMD" >/dev/null 2>&1; then
     PAYLOAD=$(jq -nc \
         --arg sid "$SESSION_ID" \
         --arg cwd "$CWD" \
         --arg prompt "$PROMPT" \
         '{type:"prompt-submit",session_id:$sid,cwd:$cwd,prompt:$prompt}')
-    echo "$PAYLOAD" | amf notify 2>/dev/null && exit 0
+    echo "$PAYLOAD" | "$AMF_CMD" notify 2>/dev/null && exit 0
 fi
 
 mkdir -p "$CWD/.claude"

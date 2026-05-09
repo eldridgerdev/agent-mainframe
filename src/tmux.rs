@@ -417,6 +417,13 @@ impl TmuxManager {
             Self::shell_quote(&runtime.binary.to_string_lossy())
         )];
 
+        if let Ok(exe) = std::env::current_exe() {
+            parts.push(format!(
+                "AMF_BIN={}",
+                Self::shell_quote(&exe.to_string_lossy())
+            ));
+        }
+
         if let Some(socket) = &runtime.socket {
             parts.push(format!(
                 "AMF_TMUX_SOCKET={}",

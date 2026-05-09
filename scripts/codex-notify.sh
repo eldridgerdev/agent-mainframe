@@ -83,12 +83,14 @@ if [ -n "$PROMPT" ]; then
 fi
 INPUT_MSG="{\"type\":\"input-request\",\"source\":\"codex-notify\",\"notification_type\":\"input-request\",\"session_id\":\"$SESSION_ID\",\"cwd\":\"$CWD\",\"message\":\"Codex finished and is waiting for input\"}"
 
-if command -v amf >/dev/null 2>&1; then
-    echo "$STOP_MSG" | amf notify 2>/dev/null || true
+AMF_CMD="${AMF_BIN:-amf}"
+
+if command -v "$AMF_CMD" >/dev/null 2>&1; then
+    echo "$STOP_MSG" | "$AMF_CMD" notify 2>/dev/null || true
     if [ -n "$PROMPT_MSG" ]; then
-        echo "$PROMPT_MSG" | amf notify 2>/dev/null || true
+        echo "$PROMPT_MSG" | "$AMF_CMD" notify 2>/dev/null || true
     fi
-    echo "$INPUT_MSG" | amf notify 2>/dev/null || true
+    echo "$INPUT_MSG" | "$AMF_CMD" notify 2>/dev/null || true
 fi
 
 if [ -n "$PROMPT" ]; then
@@ -96,11 +98,5 @@ if [ -n "$PROMPT" ]; then
     printf '%s' "$PROMPT" > "$CWD/.claude/latest-prompt.txt"
 fi
 
-# Fallback for when IPC delivery is unavailable.
 mkdir -p /tmp/amf-thinking
 rm -f "/tmp/amf-thinking/$SESSION_ID"
-
-NOTIFY_DIR="$HOME/.config/amf/notifications"
-mkdir -p "$NOTIFY_DIR"
-FILE="$NOTIFY_DIR/codex-input-$(date +%s)-$$.json"
-printf '%s\n' "$INPUT_MSG" > "$FILE"

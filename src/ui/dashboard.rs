@@ -2,7 +2,7 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
-    widgets::Block,
+    widgets::{Block, Clear},
 };
 
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
@@ -662,6 +662,7 @@ fn draw_view_pane(
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    frame.render_widget(Clear, frame.area());
     frame.render_widget(
         Block::default().style(Style::default().bg(app.theme.effective_bg())),
         frame.area(),
@@ -1043,6 +1044,7 @@ mod tests {
     };
     use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use ratatui::{Terminal, backend::TestBackend};
     use ratatui::layout::Rect;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -1104,6 +1106,52 @@ mod tests {
             format_sidebar_usage("tokens unavailable"),
             "Usage: tokens unavailable"
         );
+    }
+
+    #[test]
+    fn expired_toasts_do_not_leave_stale_cells_behind() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.toasts.push(crate::app::Toast::new(
+            "toast should disappear",
+            crate::app::toast::ToastKind::Info,
+        ));
+
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("first draw");
+        let first_rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(first_rendered.contains("toast should disappear"));
+
+        app.toasts.clear();
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("second draw");
+        let second_rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(!second_rendered.contains("toast should disappear"));
     }
 
     fn codex_feature_session(session_id: &str) -> FeatureSession {

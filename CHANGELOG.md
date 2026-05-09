@@ -17,6 +17,8 @@ are tagged.
   path by default, whitespace-triggered edits still refresh the cursor
   when needed, and repeated backspaces avoid forcing a refresh on every
   repeat event.
+- Toast and overlay redraws now clear stale cells before repainting, so
+  expired notifications no longer leave artifacts behind on the dashboard.
 
 ## [v0.19.1] - 2026-05-09
 

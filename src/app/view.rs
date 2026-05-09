@@ -382,6 +382,58 @@ impl App {
             files,
             selected: 0,
             plan_only: true,
+            search_active: false,
+            query: String::new(),
+            workdir,
+            repo_root,
+            from_view: Some(view),
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    pub fn open_markdown_file_picker_from_viewer(&mut self) -> Result<()> {
+        let viewer = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::MarkdownViewer(viewer) => viewer,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let Some(view) = viewer.from_view.clone() else {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return Ok(());
+        }
+
+        let selected = files
+            .iter()
+            .position(|path| path == &viewer.source_path)
+            .unwrap_or(0);
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected,
+            plan_only: true,
+            search_active: false,
+            query: String::new(),
             workdir,
             repo_root,
             from_view: Some(view),

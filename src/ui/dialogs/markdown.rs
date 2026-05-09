@@ -91,9 +91,9 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
         )),
         Line::from(Span::styled(
             if state.return_to_picker.is_some() {
-                "j/k:scroll  Ctrl+j/k:fast  PgUp/PgDn:page  g/G:top/bottom  b:files  Esc:close"
+                "j/k:scroll  Ctrl+j/k:fast  PgUp/PgDn:page  g/G:top/bottom  /:files  b:back  Esc:close"
             } else {
-                "j/k:scroll  Ctrl+j/k:fast  PgUp/PgDn:page  g/G:top/bottom  Esc:close"
+                "j/k:scroll  Ctrl+j/k:fast  PgUp/PgDn:page  g/G:top/bottom  /:files  Esc:close"
             },
             Style::default().fg(theme.text_muted.to_color()),
         )),

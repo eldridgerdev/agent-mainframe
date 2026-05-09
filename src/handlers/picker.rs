@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::json;
 
 use crate::app::{App, AppMode, CodexDebugCommand, CommandAction, Selection};
@@ -26,9 +26,22 @@ fn markdown_file_matches_plan_filter(
 }
 
 fn visible_markdown_file_indices(state: &crate::app::MarkdownFilePickerState) -> Vec<usize> {
-    (0..state.files.len())
+    let mut matches: Vec<(usize, usize)> = (0..state.files.len())
         .filter(|&idx| !state.plan_only || markdown_file_matches_plan_filter(state, idx))
-        .collect()
+        .filter_map(|idx| {
+            let path = state.files.get(idx)?;
+            let score = crate::app::util::markdown_file_picker_score(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+                &state.query,
+            )?;
+            Some((idx, score))
+        })
+        .collect();
+
+    matches.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    matches.into_iter().map(|(idx, _)| idx).collect()
 }
 
 fn clamp_markdown_picker_selection(state: &mut crate::app::MarkdownFilePickerState) {
@@ -257,9 +270,19 @@ pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<
     Ok(())
 }
 
-pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
+pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        KeyEvent {
+            code: KeyCode::Esc,
+            ..
+        } => {
+            if let AppMode::MarkdownFilePicker(state) = &mut app.mode
+                && state.search_active
+            {
+                state.search_active = false;
+                return Ok(());
+            }
+
             let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::MarkdownFilePicker(state) = old_mode
                 && let Some(view) = state.from_view
@@ -267,7 +290,30 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
                 app.mode = AppMode::Viewing(view);
             }
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers,
+            ..
+        } if modifiers.is_empty() => {
+            if let AppMode::MarkdownFilePicker(state) = &mut app.mode
+                && state.search_active
+            {
+                state.query.push('q');
+                clamp_markdown_picker_selection(state);
+                return Ok(());
+            }
+
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::MarkdownFilePicker(state) = old_mode
+                && let Some(view) = state.from_view
+            {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Down | KeyCode::Char('j'),
+            ..
+        } => {
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
                 clamp_markdown_picker_selection(state);
                 let visible = visible_markdown_file_indices(state);
@@ -280,7 +326,10 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
                 }
             }
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        KeyEvent {
+            code: KeyCode::Up | KeyCode::Char('k'),
+            ..
+        } => {
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
                 clamp_markdown_picker_selection(state);
                 let visible = visible_markdown_file_indices(state);
@@ -297,22 +346,80 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyCode) -> Result<()
                 }
             }
         }
-        KeyCode::Char('p') => {
+        KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers,
+            ..
+        } if modifiers.is_empty() => {
+            if let AppMode::MarkdownFilePicker(state) = &mut app.mode
+                && state.search_active
+            {
+                state.query.push('p');
+                clamp_markdown_picker_selection(state);
+                return Ok(());
+            }
+
             if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
                 state.plan_only = !state.plan_only;
                 clamp_markdown_picker_selection(state);
             }
         }
-        KeyCode::Enter => {
+        KeyEvent {
+            code: KeyCode::Char('/'),
+            ..
+        } => {
+            if let AppMode::MarkdownFilePicker(ref mut state) = app.mode {
+                if state.search_active {
+                    state.query.push('/');
+                } else {
+                    state.search_active = true;
+                    state.query.clear();
+                }
+                clamp_markdown_picker_selection(state);
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Backspace,
+            ..
+        } => {
+            if let AppMode::MarkdownFilePicker(ref mut state) = app.mode
+                && state.search_active
+            {
+                state.query.pop();
+                clamp_markdown_picker_selection(state);
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers,
+            ..
+        } if modifiers.is_empty() => {
+            if let AppMode::MarkdownFilePicker(ref mut state) = app.mode
+                && state.search_active
+            {
+                state.query.push(c);
+                clamp_markdown_picker_selection(state);
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Enter,
+            ..
+        } => {
             let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
             if let AppMode::MarkdownFilePicker(mut state) = old_mode {
                 clamp_markdown_picker_selection(&mut state);
-                let path = state.files.get(state.selected).cloned();
+                let visible = visible_markdown_file_indices(&state);
+                let path = visible
+                    .iter()
+                    .find(|&&idx| idx == state.selected)
+                    .and_then(|idx| state.files.get(*idx).cloned());
                 if let (Some(path), Some(view)) = (path, state.from_view.clone()) {
                     let return_to_picker = Some(crate::app::MarkdownFilePickerState {
                         files: state.files,
                         selected: state.selected,
                         plan_only: state.plan_only,
+                        search_active: state.search_active,
+                        query: state.query,
                         workdir: state.workdir.clone(),
                         repo_root: state.repo_root.clone(),
                         from_view: Some(view.clone()),
@@ -454,12 +561,18 @@ mod tests {
             ],
             selected: 0,
             plan_only: true,
+            search_active: false,
+            query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: None,
             from_view: Some(picker_view()),
         });
 
-        handle_markdown_file_picker_key(&mut app, KeyCode::Char('p')).unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
 
         match &app.mode {
             AppMode::MarkdownFilePicker(state) => {
@@ -481,15 +594,74 @@ mod tests {
             ],
             selected: 1,
             plan_only: true,
+            search_active: false,
+            query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: None,
             from_view: Some(picker_view()),
         });
 
-        handle_markdown_file_picker_key(&mut app, KeyCode::Char('j')).unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        )
+        .unwrap();
 
         match &app.mode {
             AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
+            _ => panic!("expected markdown picker to stay open"),
+        }
+    }
+
+    #[test]
+    fn markdown_picker_characters_filter_visible_rows() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![
+                PathBuf::from("/tmp/demo/docs/guide.md"),
+                PathBuf::from("/tmp/demo/.claude/plan.md"),
+                PathBuf::from("/tmp/demo/docs/notes.md"),
+            ],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => {
+                assert_eq!(state.query, "plan");
+                assert_eq!(state.selected, 1);
+            }
             _ => panic!("expected markdown picker to stay open"),
         }
     }

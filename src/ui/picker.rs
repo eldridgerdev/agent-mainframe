@@ -442,7 +442,7 @@ pub fn draw_markdown_file_picker(
     state: &MarkdownFilePickerState,
     theme: &Theme,
 ) {
-    let visible_indices: Vec<usize> = state
+    let mut visible_matches: Vec<(usize, usize)> = state
         .files
         .iter()
         .enumerate()
@@ -456,8 +456,18 @@ pub fn draw_markdown_file_picker(
                 .to_ascii_lowercase()
                 .contains("plan")
         })
-        .map(|(idx, _)| idx)
+        .filter_map(|(idx, path)| {
+            crate::app::util::markdown_file_picker_score(
+                path,
+                &state.workdir,
+                state.repo_root.as_deref(),
+                &state.query,
+            )
+            .map(|score| (idx, score))
+        })
         .collect();
+    visible_matches.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let visible_indices: Vec<usize> = visible_matches.into_iter().map(|(idx, _)| idx).collect();
     let visible_count = visible_indices.len();
     let selected_visible = visible_indices
         .iter()
@@ -494,11 +504,12 @@ pub fn draw_markdown_file_picker(
         .constraints(if showing_repo_root {
             vec![
                 Constraint::Length(1),
+                Constraint::Length(1),
                 Constraint::Min(1),
                 Constraint::Length(2),
             ]
         } else {
-            vec![Constraint::Min(1), Constraint::Length(2)]
+            vec![Constraint::Length(1), Constraint::Min(1), Constraint::Length(2)]
         })
         .split(inner);
 
@@ -528,16 +539,54 @@ pub fn draw_markdown_file_picker(
         frame.render_widget(legend, chunks[0]);
     }
 
-    let list_chunk = if showing_repo_root {
+    let query_chunk = if showing_repo_root {
         chunks[1]
     } else {
         chunks[0]
     };
-    let hint_chunk = if showing_repo_root {
+    let list_chunk = if showing_repo_root {
         chunks[2]
     } else {
         chunks[1]
     };
+    let hint_chunk = if showing_repo_root {
+        chunks[3]
+    } else {
+        chunks[2]
+    };
+
+    let query_line = if state.search_active {
+        let query_text = if state.query.is_empty() {
+            "Type to filter markdown files"
+        } else {
+            &state.query
+        };
+        let query_style = if state.query.is_empty() {
+            Style::default().fg(theme.text_muted.to_color())
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  / ",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(query_text, query_style),
+            ]))
+    } else {
+        let text = if state.query.is_empty() {
+            "  Press / to search".to_string()
+        } else {
+            format!("  Search: {}", state.query)
+        };
+        Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+    };
+    frame.render_widget(query_line, query_chunk);
 
     let items: Vec<ListItem> = visible_indices
         .iter()
@@ -612,29 +661,56 @@ pub fn draw_markdown_file_picker(
         frame.render_stateful_widget(list, list_chunk, &mut list_state);
     }
 
-    let hints = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "  j/k or \u{2191}/\u{2193}",
-            Style::default().fg(theme.warning.to_color()),
-        ),
-        Span::styled(
-            " navigate  ",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
-        Span::styled("p", Style::default().fg(theme.warning.to_color())),
-        Span::styled(
-            if state.plan_only {
-                " all-files  "
-            } else {
-                " plan-only  "
-            },
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
-    ]));
+    let hints = if state.search_active {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  j/k or \u{2191}/\u{2193}",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                " navigate  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled("Backspace", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" clear filter  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " back to selection mode",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ]))
+    } else {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  j/k or \u{2191}/\u{2193}",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(
+                " navigate  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled("/", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                " search  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("p", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                if state.plan_only {
+                    " all-files  "
+                } else {
+                    " plan-only  "
+                },
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::styled(" cancel", Style::default().fg(theme.text_muted.to_color())),
+        ]))
+    };
     frame.render_widget(hints, hint_chunk);
 }
 

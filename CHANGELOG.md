@@ -20,6 +20,11 @@ are tagged.
 - Toast and overlay redraws now clear stale cells before repainting, so
   expired notifications no longer leave artifacts behind on the dashboard.
 
+### Changed
+
+- Markdown file picker search now starts with `/`, keeps the last query visible after you return to selection mode, and uses `p` for the plan-only toggle again.
+- Markdown file picker matching now uses fuzzy subsequence scoring instead of a plain substring match.
+
 ## [v0.19.1] - 2026-05-09
 
 ### Fixed

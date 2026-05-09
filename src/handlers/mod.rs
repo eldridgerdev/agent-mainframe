@@ -68,7 +68,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::SessionConfig(_) => handle_session_config_key(app, key.code),
         AppMode::ProjectAgentConfig(_) => handle_session_config_key(app, key.code),
         AppMode::CommandPicker(_) => handle_command_picker_key(app, key.code),
-        AppMode::MarkdownFilePicker(_) => handle_markdown_file_picker_key(app, key.code),
+        AppMode::MarkdownFilePicker(_) => handle_markdown_file_picker_key(app, key),
         AppMode::Searching(_) => handle_search_key(app, key.code),
         AppMode::OpencodeSessionPicker(_) => handle_opencode_session_picker_key(app, key.code),
         AppMode::ConfirmingOpencodeSession { .. } => {

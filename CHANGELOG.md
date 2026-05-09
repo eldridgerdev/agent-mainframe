@@ -12,6 +12,11 @@ are tagged.
 
 ### Fixed
 
+- Reduced embedded view input lag while typing and especially while
+  holding `Backspace`. Literal typing now keeps the cheaper pane burst
+  path by default, whitespace-triggered edits still refresh the cursor
+  when needed, and repeated backspaces avoid forcing a refresh on every
+  repeat event.
 - Toast and overlay redraws now clear stale cells before repainting, so
   expired notifications no longer leave artifacts behind on the dashboard.
 

@@ -627,10 +627,12 @@ impl App {
         self.perf
             .record_duration("view.send_literal", started_at.elapsed());
         if result.is_ok() {
-            if TmuxManager::uses_control_pty_input() {
-                self.request_view_snapshot_pane_burst();
-            } else {
+            if batch.text.chars().any(char::is_whitespace) {
+                // Whitespace can be hidden by a stale cursor block, so force
+                // a cursor refresh only when the batch needs it.
                 self.request_view_snapshot_burst();
+            } else {
+                self.request_view_snapshot_pane_burst();
             }
         }
         result.map(|_| true)

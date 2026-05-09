@@ -450,6 +450,7 @@ mod tests {
     };
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use chrono::Utc;
+    use crossterm::event::KeyModifiers;
     use std::collections::HashMap;
     use std::path::PathBuf;
 

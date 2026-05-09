@@ -43,6 +43,7 @@ use crossterm::{
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Paragraph};
 use std::io;
+use std::os::unix::io::RawFd;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -562,6 +563,7 @@ fn run_loop<B: Backend>(
     let mut startup_opencode_plugins_pending = true;
     let mut startup_sidebar_warm_pending = true;
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
+    let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
 
     loop {
         let loop_state_signature = app.redraw_signature();
@@ -668,7 +670,31 @@ fn run_loop<B: Backend>(
         };
         let mut handled_user_events = false;
 
-        if event::poll(poll_duration)? {
+        // In view mode, multiplex stdin and the snapshot-wakeup pipe so we
+        // unblock the moment a new frame arrives rather than waiting for the
+        // full poll_duration.  Outside view mode (or when no pipe is
+        // available) fall back to the standard crossterm path.
+        let has_terminal_events = if is_viewing && !startup_loading {
+            if let Some(wfd) = wakeup_rx_fd {
+                let mut fds = [
+                    libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
+                    libc::pollfd { fd: wfd, events: libc::POLLIN, revents: 0 },
+                ];
+                let timeout_ms = poll_duration.as_millis() as libc::c_int;
+                unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
+                if fds[1].revents & libc::POLLIN != 0 {
+                    let mut buf = [0u8; 64];
+                    unsafe { libc::read(wfd, buf.as_mut_ptr() as *mut _, 64) };
+                }
+                event::poll(Duration::ZERO)?
+            } else {
+                event::poll(poll_duration)?
+            }
+        } else {
+            event::poll(poll_duration)?
+        };
+
+        if has_terminal_events {
             let mut events = vec![event::read()?];
 
             if is_viewing || startup_loading {

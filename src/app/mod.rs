@@ -44,6 +44,7 @@ use anyhow::{Context, Result};
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -383,6 +384,22 @@ impl Default for AppConfig {
     }
 }
 
+/// Wraps the view snapshot channel sender with a Unix pipe write-end so that
+/// every snapshot delivery also wakes the main loop out of `libc::poll()`.
+#[derive(Clone)]
+struct SnapshotSender {
+    tx: Sender<ViewSnapshot>,
+    wakeup_fd: Arc<OwnedFd>,
+}
+
+impl SnapshotSender {
+    fn send(&self, snap: ViewSnapshot) {
+        let _ = self.tx.send(snap);
+        let byte = 1u8;
+        unsafe { libc::write(self.wakeup_fd.as_raw_fd(), &byte as *const u8 as *const _, 1) };
+    }
+}
+
 pub struct App {
     pub store: ProjectStore,
     pub store_path: PathBuf,
@@ -443,8 +460,9 @@ pub struct App {
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
-    view_snapshot_tx: Sender<ViewSnapshot>,
+    view_snapshot_tx: SnapshotSender,
     view_snapshot_rx: Receiver<ViewSnapshot>,
+    view_snapshot_wakeup_rx: Option<OwnedFd>,
     view_snapshot_stop: Option<Arc<AtomicBool>>,
     view_snapshot_refresh: Option<Arc<AtomicU8>>,
     view_snapshot_condvar: Option<Arc<(StdMutex<()>, StdCondvar)>>,
@@ -657,6 +675,12 @@ impl App {
         self.request_view_snapshot_refresh_kind(VIEW_SNAPSHOT_REFRESH_PANE_BURST);
     }
 
+    /// Returns the read end of the wakeup pipe so the main loop can use
+    /// `libc::poll()` to wake immediately when a snapshot is ready.
+    pub fn view_wakeup_rx_fd(&self) -> Option<RawFd> {
+        self.view_snapshot_wakeup_rx.as_ref().map(|fd| fd.as_raw_fd())
+    }
+
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
         if let Some(refresh) = &self.view_snapshot_refresh {
             let mut current = refresh.load(Ordering::Relaxed);
@@ -686,7 +710,7 @@ impl App {
         stop: &AtomicBool,
         refresh: &AtomicU8,
         condvar: &(StdMutex<()>, StdCondvar),
-        tx: &Sender<ViewSnapshot>,
+        tx: &SnapshotSender,
     ) {
         let mut next_pane_refresh = Instant::now() - VIEW_PANE_REFRESH_INTERVAL;
         let mut next_cursor_refresh = Instant::now() - VIEW_CURSOR_REFRESH_INTERVAL;
@@ -781,7 +805,8 @@ impl App {
         rows: u16,
         stop: &AtomicBool,
         refresh: &AtomicU8,
-        tx: &Sender<ViewSnapshot>,
+        condvar: &(StdMutex<()>, StdCondvar),
+        tx: &SnapshotSender,
     ) -> anyhow::Result<()> {
         let (target_window_id, mut target_pane_id) =
             TmuxManager::resolve_view_target_ids(session, window)?;
@@ -850,8 +875,18 @@ impl App {
                 _ => {}
             }
 
-            let Some(line) = client.recv_timeout(Duration::from_millis(10))? else {
-                continue;
+            // Non-blocking recv first; wait on condvar so burst signals from
+            // request_view_snapshot_refresh_kind() wake this loop immediately.
+            let line = match client.try_recv()? {
+                Some(line) => line,
+                None => {
+                    let guard = condvar.0.lock().unwrap();
+                    let _ = condvar.1.wait_timeout(guard, Duration::from_millis(5));
+                    match client.try_recv()? {
+                        Some(line) => line,
+                        None => continue,
+                    }
+                }
             };
 
             let mut pending_lines = vec![line];
@@ -960,7 +995,7 @@ impl App {
         stop: &AtomicBool,
         refresh: &AtomicU8,
         condvar: &(StdMutex<()>, StdCondvar),
-        tx: &Sender<ViewSnapshot>,
+        tx: &SnapshotSender,
     ) -> anyhow::Result<()> {
         use std::fs;
         use std::io::Read as _;
@@ -1178,6 +1213,7 @@ impl App {
                     worker_rows,
                     &worker_stop,
                     &worker_refresh,
+                    &worker_condvar,
                     &tx,
                 );
 
@@ -1314,7 +1350,17 @@ impl App {
             .unwrap_or(global_ext);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_tx, view_snapshot_rx) = channel();
+        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let (wakeup_rx, wakeup_tx) = unsafe {
+            let mut fds = [0i32; 2];
+            libc::pipe(fds.as_mut_ptr());
+            libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+            (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
+        };
+        let view_snapshot_tx = SnapshotSender {
+            tx: view_snapshot_inner_tx,
+            wakeup_fd: Arc::new(wakeup_tx),
+        };
         let (harness_check_tx, harness_check_rx) = channel();
         let mut theme = crate::theme::Theme::load(&config.theme);
         theme.set_transparent(config.transparent_background);
@@ -1382,6 +1428,7 @@ impl App {
             vscode_available: false,
             view_snapshot_tx,
             view_snapshot_rx,
+            view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
             view_snapshot_condvar: None,
@@ -1430,7 +1477,17 @@ impl App {
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_tx, view_snapshot_rx) = channel();
+        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let (wakeup_rx, wakeup_tx) = unsafe {
+            let mut fds = [0i32; 2];
+            libc::pipe(fds.as_mut_ptr());
+            libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+            (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
+        };
+        let view_snapshot_tx = SnapshotSender {
+            tx: view_snapshot_inner_tx,
+            wakeup_fd: Arc::new(wakeup_tx),
+        };
         let (harness_check_tx, harness_check_rx) = channel();
         Self {
             store,
@@ -1494,6 +1551,7 @@ impl App {
             vscode_available: false,
             view_snapshot_tx,
             view_snapshot_rx,
+            view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
             view_snapshot_condvar: None,

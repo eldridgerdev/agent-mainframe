@@ -67,6 +67,7 @@ are tagged.
 ### Fixed
 
 - Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
+- AMF now validates installed syntax highlighters at startup and repairs stale parser bundles automatically, so release builds should stop silently dropping syntax coloring.
 
 ## [v0.18.4] - 2026-05-08
 

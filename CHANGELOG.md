@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.19.0] - 2026-05-09
+
 ### Added
 
 - Debug log overlay now supports `p` to hide perf entries when you want
@@ -31,6 +35,11 @@ are tagged.
   other checkouts instead of keeping them isolated.
 - Scroll/copy mode now preserves the pane's ANSI coloring instead of flattening everything into plain text, so syntax highlighting and terminal colors remain visible while scrolling.
 - The scroll-mode header now makes the active mode more explicit for users who are reading the status line.
+- View mode now wakes immediately when new snapshots arrive, using a
+  self-pipe wakeup and condvar-assisted worker polling to reduce input
+  lag.
+- GitHub releases now publish their notes from the matching changelog
+  section, with a direct link back to the source entry in `CHANGELOG.md`.
 
 ### Migration
 
@@ -40,11 +49,6 @@ are tagged.
 ### Fixed
 
 - Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
-
-### Changed
-
-- GitHub releases now publish their notes from the matching changelog
-  section, with a direct link back to the source entry in `CHANGELOG.md`.
 
 ## [v0.18.4] - 2026-05-08
 

@@ -10,7 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Reduced embedded view input lag while typing and especially while
+  holding `Backspace`. Literal typing now keeps the cheaper pane burst
+  path by default, whitespace-triggered edits still refresh the cursor
+  when needed, and repeated backspaces avoid forcing a refresh on every
+  repeat event.
 
 ## [v0.19.1] - 2026-05-09
 

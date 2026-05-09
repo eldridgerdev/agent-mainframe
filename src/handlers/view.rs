@@ -55,26 +55,30 @@ fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Resul
     app.perf
         .record_duration("view.send_literal", started_at.elapsed());
     if result.is_ok() {
-        if TmuxManager::uses_control_pty_input() {
-            app.request_view_snapshot_pane_burst();
-        } else {
+        if text.chars().any(char::is_whitespace) {
+            // Whitespace can be hidden by a stale cursor block, so force a
+            // cursor refresh only when the batch needs it.
             app.request_view_snapshot_burst();
+        } else {
+            app.request_view_snapshot_pane_burst();
         }
     }
     result
 }
 
-fn send_key_name(app: &mut App, session: &str, window: &str, key_name: &str) -> Result<()> {
+fn send_key_name(
+    app: &mut App,
+    session: &str,
+    window: &str,
+    key_name: &str,
+    refresh_after_send: bool,
+) -> Result<()> {
     let started_at = Instant::now();
     let result = app.tmux.send_key_name(session, window, key_name);
     app.perf
         .record_duration("view.send_key_name", started_at.elapsed());
-    if result.is_ok() {
-        if TmuxManager::uses_control_pty_input() {
-            app.request_view_snapshot_pane_burst();
-        } else {
-            app.request_view_snapshot_burst();
-        }
+    if result.is_ok() && refresh_after_send {
+        app.request_view_snapshot_pane_burst();
     }
     result
 }
@@ -102,7 +106,9 @@ fn forward_tmux_key(app: &mut App, key: &KeyEvent, session: &str, window: &str) 
         }
         TmuxKey::Named(name) => {
             flush_view_input_batch(app)?;
-            send_key_name(app, session, window, &name)?;
+            let refresh_after_send = !(key.code == KeyCode::Backspace
+                && key.kind == crossterm::event::KeyEventKind::Repeat);
+            send_key_name(app, session, window, &name, refresh_after_send)?;
             Ok(key.code == KeyCode::Enter
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
                 && !key.modifiers.contains(KeyModifiers::ALT))
@@ -180,7 +186,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Up | KeyCode::Char('k') => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 if passthrough {
-                    send_key_name(app, &session, &window, "PPage")?;
+                    send_key_name(app, &session, &window, "PPage", true)?;
                 } else {
                     flush_view_input_batch(app)?;
                     app.scroll_up(VIEW_FAST_SCROLL_STEP);
@@ -188,7 +194,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 return Ok(());
             }
             if passthrough {
-                send_key_name(app, &session, &window, "PPage")?;
+                send_key_name(app, &session, &window, "PPage", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_up(1);
@@ -197,7 +203,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Down | KeyCode::Char('j') => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 if passthrough {
-                    send_key_name(app, &session, &window, "NPage")?;
+                    send_key_name(app, &session, &window, "NPage", true)?;
                 } else {
                     flush_view_input_batch(app)?;
                     app.scroll_down(VIEW_FAST_SCROLL_STEP, visible_rows);
@@ -205,7 +211,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
                 return Ok(());
             }
             if passthrough {
-                send_key_name(app, &session, &window, "NPage")?;
+                send_key_name(app, &session, &window, "NPage", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_down(1, visible_rows);
@@ -213,7 +219,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::PageUp => {
             if passthrough {
-                send_key_name(app, &session, &window, "PPage")?;
+                send_key_name(app, &session, &window, "PPage", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_up(visible_rows as usize);
@@ -221,7 +227,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::PageDown => {
             if passthrough {
-                send_key_name(app, &session, &window, "NPage")?;
+                send_key_name(app, &session, &window, "NPage", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_down(visible_rows as usize, visible_rows);
@@ -229,7 +235,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Home => {
             if passthrough {
-                send_key_name(app, &session, &window, "Home")?;
+                send_key_name(app, &session, &window, "Home", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_to_top();
@@ -237,7 +243,7 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::End => {
             if passthrough {
-                send_key_name(app, &session, &window, "End")?;
+                send_key_name(app, &session, &window, "End", true)?;
             } else {
                 flush_view_input_batch(app)?;
                 app.scroll_to_bottom(visible_rows);

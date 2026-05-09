@@ -11,6 +11,19 @@ use tree_sitter_language::LanguageFn;
 use super::detect::{HighlightGrammarSpec, HighlightInstallState, HighlightLanguage};
 use super::model::{HighlightedLine, HighlightedSpan, HighlightedText, SyntaxClass};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupValidationLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupValidationMessage {
+    pub level: StartupValidationLevel,
+    pub message: String,
+}
+
 const HIGHLIGHT_NAMES: [&str; 27] = [
     "attribute",
     "comment",
@@ -114,6 +127,51 @@ pub fn highlight_source(language: HighlightLanguage, source: &str) -> Result<Hig
             lines,
         })
     })
+}
+
+pub fn validate_startup_parsers() -> Vec<StartupValidationMessage> {
+    let mut messages = Vec::new();
+
+    for language in HighlightLanguage::ALL {
+        if matches!(language.install_state(), HighlightInstallState::Available) {
+            continue;
+        }
+
+        match validate_installed_parser(language) {
+            Ok(()) => {}
+            Err(validation_error) => {
+                messages.push(StartupValidationMessage {
+                    level: StartupValidationLevel::Warn,
+                    message: format!(
+                        "{} parser failed startup validation: {}",
+                        language.picker_title(),
+                        validation_error
+                    ),
+                });
+
+                match reinstall_language(language) {
+                    Ok(summary) => {
+                        messages.push(StartupValidationMessage {
+                            level: StartupValidationLevel::Info,
+                            message: summary,
+                        });
+                    }
+                    Err(repair_error) => {
+                        messages.push(StartupValidationMessage {
+                            level: StartupValidationLevel::Error,
+                            message: format!(
+                                "Failed to repair {} parser after startup validation: {}",
+                                language.picker_title(),
+                                repair_error
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    messages
 }
 
 pub fn install_language<F>(language: HighlightLanguage, mut progress: F) -> Result<String>
@@ -332,6 +390,14 @@ where
 
     run_command(progress, "cc", &args, None)
         .with_context(|| format!("failed to compile {}", language.display_name()))
+}
+
+fn validate_installed_parser(language: HighlightLanguage) -> Result<()> {
+    load_package(language).map(|_| ())
+}
+
+fn reinstall_language(language: HighlightLanguage) -> Result<String> {
+    install_language(language, |_| {})
 }
 
 #[cfg(target_os = "macos")]
@@ -894,6 +960,33 @@ mod tests {
                 .flat_map(|line| line.spans.iter())
                 .any(|span| span.class != SyntaxClass::Plain),
             "expected JSX block to include non-plain syntax classes"
+        );
+    }
+
+    #[test]
+    fn installed_typescript_parser_highlights_core_tokens() {
+        if HighlightLanguage::TypeScript.install_state() != HighlightInstallState::Installed {
+            return;
+        }
+
+        reset_registry();
+        crate::highlight::reload_runtime_state();
+
+        let highlighted = crate::highlight::service::highlight_source(
+            crate::highlight::model::HighlightRequest {
+                path: Some(Path::new("demo.ts")),
+                language_hint: None,
+                source: include_str!("../../docs/syntax-tests/syntax-test-highlight.ts"),
+            },
+        );
+
+        assert!(
+            highlighted
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.class != SyntaxClass::Plain),
+            "expected installed TypeScript parser to classify at least one span"
         );
     }
 }

@@ -1401,6 +1401,21 @@ impl App {
             }
         }
 
+        for message in crate::highlight::validate_startup_parsers() {
+            match message.level {
+                crate::highlight::StartupValidationLevel::Info => {
+                    app.log_info("syntax", message.message);
+                }
+                crate::highlight::StartupValidationLevel::Warn => {
+                    app.log_warn("syntax", message.message);
+                }
+                crate::highlight::StartupValidationLevel::Error => {
+                    app.log_error("syntax", message.message);
+                }
+            }
+        }
+        crate::highlight::reload_runtime_state();
+
         Ok(app)
     }
 

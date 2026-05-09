@@ -10,7 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Toast and overlay redraws now clear stale cells before repainting, so
+  expired notifications no longer leave artifacts behind on the dashboard.
 
 ## [v0.19.1] - 2026-05-09
 

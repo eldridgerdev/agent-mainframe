@@ -104,7 +104,8 @@ fi
 sed -i "0,/^version = \"$CURRENT\"/s//version = \"$NEW\"/" "$CARGO_TOML"
 
 # Validate the release against the same test suite the release workflow uses.
-cargo test --locked --manifest-path "$CARGO_TOML"
+# The version bump updates Cargo.lock, so this run must be allowed to refresh it.
+cargo test --manifest-path "$CARGO_TOML"
 
 # Commit and tag
 git -C "$REPO_ROOT" add Cargo.toml Cargo.lock CHANGELOG.md

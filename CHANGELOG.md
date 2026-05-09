@@ -12,6 +12,16 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.19.1] - 2026-05-09
+
+### Fixed
+
+- Release automation now waits for the same `cargo test --locked`
+  preflight used by CI before it tags a version, so a failing test suite
+  stops the release earlier instead of creating a broken release object.
+- Fixed the view snapshot test harness so it no longer expects a return
+  value from `send(...)` after the channel sender change.
+
 ## [v0.19.0] - 2026-05-09
 
 ### Added

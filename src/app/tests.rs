@@ -95,8 +95,7 @@ fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
             render_duration: None,
             cursor_duration: None,
             pipe_read_duration: None,
-        })
-        .unwrap();
+        });
 
     let (pane_changed, cursor_changed) = app.drain_view_snapshots();
 

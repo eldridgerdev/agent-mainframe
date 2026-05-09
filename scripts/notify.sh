@@ -12,12 +12,9 @@ if [ -z "$SESSION_ID" ] || [ -z "$CWD" ]; then
     exit 0
 fi
 
-# Prefer socket-based push notification (no polling required).
-if command -v amf >/dev/null 2>&1; then
-    echo "$INPUT" | amf notify 2>/dev/null && exit 0
-fi
+AMF_CMD="${AMF_BIN:-amf}"
 
-# Fallback: write notification file for AMF to poll.
-NOTIFY_DIR="$CWD/.claude/notifications"
-mkdir -p "$NOTIFY_DIR"
-echo "$INPUT" > "$NOTIFY_DIR/${SESSION_ID}.json"
+# Socket-based push notification. The dashboard no longer polls fallback files.
+if command -v "$AMF_CMD" >/dev/null 2>&1; then
+    echo "$INPUT" | "$AMF_CMD" notify 2>/dev/null && exit 0
+fi

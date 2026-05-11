@@ -1337,7 +1337,12 @@ impl App {
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        // These caches are populated by the background sidebar-load tasks
+        // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
+        // Building them synchronously here required reading every Claude JSONL
+        // and PLAN.md file before the first frame could draw, which caused the
+        // "Loading AMF..." stall proportional to feature count.
+        let latest_prompt_cache = HashMap::new();
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -1349,7 +1354,7 @@ impl App {
             .first()
             .map(|p| merge_project_extension_config(&global_ext, &p.repo))
             .unwrap_or(global_ext);
-        let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
+        let sidebar_plan_cache = HashMap::new();
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
         let (wakeup_rx, wakeup_tx) = unsafe {

@@ -655,7 +655,7 @@ fn run_loop<B: Backend>(
         let startup_loading = startup_tasks_pending;
 
         let poll_duration = if startup_loading {
-            Duration::from_millis(50)
+            Duration::ZERO
         } else if is_viewing {
             Duration::from_millis(1)
         } else if animating {

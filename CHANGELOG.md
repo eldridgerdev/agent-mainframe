@@ -10,6 +10,26 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.3] - 2026-05-11
+
+### Fixed
+
+- Fixed slow startup (stall on "Loading AMF..." or "Refreshing Claude
+  hooks...") that became noticeable after the v0.19.0 global store
+  migration. With a large feature count, `ensure_notify_scripts` and
+  `ensure_amf_skills` were writing tens of files per feature on every
+  launch. The hook and plugin refresh passes now record a version stamp
+  after completing; subsequent startups on the same binary skip both
+  passes entirely. Individual script and skill writes are also guarded
+  by a content check so they are no-ops when already up to date.
+- Eliminated a 50ms idle gap between each startup task; the event loop
+  now spins without delay while startup tasks are pending, so the loading
+  screen clears as fast as the tasks complete.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.19.2] - 2026-05-11
 
 ### Fixed

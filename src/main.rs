@@ -557,7 +557,9 @@ fn run_loop<B: Backend>(
     let mut startup_opencode_plugins_pending = true;
     let mut startup_sidebar_warm_pending = true;
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
+    const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
+    let mut last_view_refresh_request = Instant::now();
 
     loop {
         let loop_state_signature = app.redraw_signature();
@@ -615,7 +617,7 @@ fn run_loop<B: Backend>(
         }
 
         if app.has_active_sidebar() {
-            app.poll_codex_sidebar_metadata();
+            force_redraw |= app.poll_codex_sidebar_metadata();
         }
 
         if app.session_status_bg.is_some() {
@@ -783,6 +785,18 @@ fn run_loop<B: Backend>(
             }
         }
 
+        if is_viewing
+            && !startup_loading
+            && !handled_user_events
+            && last_view_refresh_request.elapsed() >= app::VIEW_PANE_REFRESH_INTERVAL
+            && app.last_view_activity_at.is_none_or(|last| {
+                last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD
+            })
+        {
+            app.request_view_snapshot_refresh();
+            last_view_refresh_request = Instant::now();
+        }
+
         let defer_background_sync = app.should_defer_view_background_sync();
 
         if !handled_user_events
@@ -869,7 +883,7 @@ fn run_loop<B: Backend>(
             .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
 
         if app.has_active_sidebar() {
-            app.poll_sidebar_load_results();
+            force_redraw |= app.poll_sidebar_load_results();
         }
 
         if app.should_flush_pending_debug_log_entries() {

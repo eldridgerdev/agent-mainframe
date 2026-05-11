@@ -10,29 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.2] - 2026-05-11
+
 ### Fixed
 
-- Reduced embedded view input lag while typing and especially while
-  holding `Backspace`. Literal typing now keeps the cheaper pane burst
-  path by default, whitespace-triggered edits still refresh the cursor
-  when needed, and repeated backspaces avoid forcing a refresh on every
-  repeat event.
-- Toast and overlay redraws now clear stale cells before repainting, so
-  expired notifications no longer leave artifacts behind on the dashboard.
-- Reduced dashboard lag as the number of features grows. AMF now relies
-  on push notifications from agent hooks instead of repeatedly scanning
-  every worktree for notification files, and debug-log persistence no
-  longer blocks the UI when notifications arrive.
-
-### Changed
-
-- Markdown file picker search now starts with `/`, keeps the last query visible after you return to selection mode, and uses `p` for the plan-only toggle again.
-- Markdown file picker matching now uses fuzzy subsequence scoring instead of a plain substring match.
+- View mode now stays responsive while typing again, but still refreshes
+  periodically when an agent harness is working, so live output keeps
+  moving without waiting for the next keypress.
+- Control-mode view input now uses the cheaper burst path again, which
+  removes the extra redraw work that made repeated typing feel slower.
+- Sidebar metadata and worktree sidebar updates now trigger redraws as
+  soon as they arrive, so harness-side status changes appear without an
+  extra keystroke.
 
 ### Migration
 
-- No migration is required. Existing features refresh their bundled hook
-  scripts automatically on startup.
+- No migration is required.
 
 ## [v0.19.1] - 2026-05-09
 

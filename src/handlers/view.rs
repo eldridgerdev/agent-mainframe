@@ -55,12 +55,10 @@ fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Resul
     app.perf
         .record_duration("view.send_literal", started_at.elapsed());
     if result.is_ok() {
-        if text.chars().any(char::is_whitespace) {
-            // Whitespace can be hidden by a stale cursor block, so force a
-            // cursor refresh only when the batch needs it.
-            app.request_view_snapshot_burst();
-        } else {
+        if TmuxManager::uses_control_pty_input() {
             app.request_view_snapshot_pane_burst();
+        } else {
+            app.request_view_snapshot_burst();
         }
     }
     result

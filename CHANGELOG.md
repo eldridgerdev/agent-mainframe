@@ -10,6 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.4] - 2026-05-11
+
+### Fixed
+
+- Fixed the dominant cause of the "Loading AMF..." stall that persisted
+  through v0.19.3. `App::new` was synchronously reading every Claude
+  session `.jsonl` file (potentially megabytes per feature) and every
+  `PLAN.md` to pre-populate the prompt and plan caches before the first
+  frame could draw. Both caches now start empty and are filled by the
+  background sidebar-load tasks that run immediately after the dashboard
+  appears, so startup is fast regardless of session history size.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.19.3] - 2026-05-11
 
 ### Fixed

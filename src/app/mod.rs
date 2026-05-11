@@ -628,12 +628,10 @@ impl App {
         self.perf
             .record_duration("view.send_literal", started_at.elapsed());
         if result.is_ok() {
-            if batch.text.chars().any(char::is_whitespace) {
-                // Whitespace can be hidden by a stale cursor block, so force
-                // a cursor refresh only when the batch needs it.
-                self.request_view_snapshot_burst();
-            } else {
+            if TmuxManager::uses_control_pty_input() {
                 self.request_view_snapshot_pane_burst();
+            } else {
+                self.request_view_snapshot_burst();
             }
         }
         result.map(|_| true)
@@ -1710,8 +1708,10 @@ impl App {
         }
     }
 
-    pub(crate) fn poll_sidebar_load_results(&mut self) {
+    pub(crate) fn poll_sidebar_load_results(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(result) = self.sidebar_load_rx.try_recv() {
+            changed = true;
             self.pending_sidebar_loads.remove(&result.tmux_session);
             self.sidebar_load_signatures
                 .insert(result.tmux_session.clone(), result.signature);
@@ -1735,6 +1735,7 @@ impl App {
                 self.opencode_sidebar_cache.remove(&result.tmux_session);
             }
         }
+        changed
     }
 
     pub(crate) fn clear_sidebar_state_for_session(&mut self, tmux_session: &str) {

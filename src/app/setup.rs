@@ -322,76 +322,55 @@ fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
     }
 }
 
+/// Write `content` to `path` only when the on-disk content differs.
+/// Avoids unnecessary write syscalls when the file is already up to date,
+/// which matters because `ensure_notify_scripts` is called once per feature
+/// on startup.
+fn write_if_changed(path: &Path, content: &str) {
+    if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+        return;
+    }
+    let _ = std::fs::write(path, content);
+}
+
+/// Same as `write_if_changed` but also ensures the file is executable.
+/// Permissions are only set when the file content was actually rewritten.
+#[cfg(unix)]
+fn write_executable_if_changed(path: &Path, content: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
+        return;
+    }
+    let _ = std::fs::write(path, content);
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+}
+
+#[cfg(not(unix))]
+fn write_executable_if_changed(path: &Path, content: &str) {
+    write_if_changed(path, content);
+}
+
 pub fn ensure_notify_scripts() {
     let config_dir = crate::project::amf_config_dir();
     let _ = std::fs::create_dir_all(&config_dir);
-    let notify_path = config_dir.join("notify.sh");
-    let clear_path = config_dir.join("clear-notify.sh");
-    let _ = std::fs::write(&notify_path, NOTIFY_SH);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&notify_path, std::fs::Permissions::from_mode(0o755));
-    }
-    let _ = std::fs::write(&clear_path, CLEAR_NOTIFY_SH);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&clear_path, std::fs::Permissions::from_mode(0o755));
-    }
-    let save_prompt_path = config_dir.join("save-prompt.sh");
-    let thinking_start_path = config_dir.join("thinking-start.sh");
-    let thinking_stop_path = config_dir.join("thinking-stop.sh");
-    let tool_start_path = config_dir.join("tool-start.sh");
-    let tool_stop_path = config_dir.join("tool-stop.sh");
-    let _ = std::fs::write(&save_prompt_path, SAVE_PROMPT_SH);
-    let _ = std::fs::write(&thinking_start_path, THINKING_START_SH);
-    let _ = std::fs::write(&thinking_stop_path, THINKING_STOP_SH);
-    let _ = std::fs::write(&tool_start_path, TOOL_START_SH);
-    let _ = std::fs::write(&tool_stop_path, TOOL_STOP_SH);
-    let codex_diff_review_path = config_dir.join("codex-diff-review.sh");
-    let _ = std::fs::write(&codex_diff_review_path, CODEX_DIFF_REVIEW_SH);
-    let codex_notify_path = config_dir.join("codex-notify.sh");
-    let _ = std::fs::write(&codex_notify_path, CODEX_NOTIFY_SH);
-    let set_session_status_path = config_dir.join("set-session-status.sh");
-    let _ = std::fs::write(&set_session_status_path, SET_SESSION_STATUS_SH);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&save_prompt_path, std::fs::Permissions::from_mode(0o755));
-        let _ =
-            std::fs::set_permissions(&thinking_start_path, std::fs::Permissions::from_mode(0o755));
-        let _ =
-            std::fs::set_permissions(&thinking_stop_path, std::fs::Permissions::from_mode(0o755));
-        let _ = std::fs::set_permissions(&tool_start_path, std::fs::Permissions::from_mode(0o755));
-        let _ = std::fs::set_permissions(&tool_stop_path, std::fs::Permissions::from_mode(0o755));
-        let _ = std::fs::set_permissions(
-            &codex_diff_review_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-        let _ =
-            std::fs::set_permissions(&codex_notify_path, std::fs::Permissions::from_mode(0o755));
-        let _ = std::fs::set_permissions(
-            &set_session_status_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-    }
+    write_executable_if_changed(&config_dir.join("notify.sh"), NOTIFY_SH);
+    write_executable_if_changed(&config_dir.join("clear-notify.sh"), CLEAR_NOTIFY_SH);
+    write_executable_if_changed(&config_dir.join("save-prompt.sh"), SAVE_PROMPT_SH);
+    write_executable_if_changed(&config_dir.join("thinking-start.sh"), THINKING_START_SH);
+    write_executable_if_changed(&config_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
+    write_executable_if_changed(&config_dir.join("tool-start.sh"), TOOL_START_SH);
+    write_executable_if_changed(&config_dir.join("tool-stop.sh"), TOOL_STOP_SH);
+    write_executable_if_changed(&config_dir.join("codex-diff-review.sh"), CODEX_DIFF_REVIEW_SH);
+    write_executable_if_changed(&config_dir.join("codex-notify.sh"), CODEX_NOTIFY_SH);
+    write_executable_if_changed(&config_dir.join("set-session-status.sh"), SET_SESSION_STATUS_SH);
     let plugins_dir = config_dir.join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
-    let input_request_path = plugins_dir.join("input-request.js");
-    let _ = std::fs::write(&input_request_path, INPUT_REQUEST_JS);
-    let change_tracker_path = plugins_dir.join("change-tracker.js");
-    let _ = std::fs::write(&change_tracker_path, CHANGE_TRACKER_JS);
-    let custom_diff_review_path = plugins_dir.join("custom-diff-review.sh");
-    let _ = std::fs::write(&custom_diff_review_path, CUSTOM_DIFF_REVIEW_SH);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            &custom_diff_review_path,
-            std::fs::Permissions::from_mode(0o755),
-        );
-    }
+    write_if_changed(&plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);
+    write_if_changed(&plugins_dir.join("change-tracker.js"), CHANGE_TRACKER_JS);
+    write_executable_if_changed(
+        &plugins_dir.join("custom-diff-review.sh"),
+        CUSTOM_DIFF_REVIEW_SH,
+    );
 }
 
 /// Refresh opencode plugin files in all known opencode feature
@@ -643,8 +622,12 @@ fn ensure_amf_skills(workdir: &Path, agent: &AgentKind) {
     };
     for (name, content) in AMF_SKILLS {
         let skill_dir = skills_dir.join(format!("amf-{name}"));
+        let skill_path = skill_dir.join("SKILL.md");
+        if std::fs::read_to_string(&skill_path).ok().as_deref() == Some(content) {
+            continue;
+        }
         let _ = std::fs::create_dir_all(&skill_dir);
-        let _ = std::fs::write(skill_dir.join("SKILL.md"), content);
+        let _ = std::fs::write(&skill_path, content);
     }
 }
 

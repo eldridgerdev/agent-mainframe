@@ -10,6 +10,33 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.5] - 2026-05-11
+
+### Fixed
+
+- Fixed the remaining sources of startup latency that persisted through
+  v0.19.4. Three changes ship together:
+  - **Prompt cache tail-read**: `read_prompts_from_claude_sessions` now
+    reads only the last 64 KB of the most-recently-modified session file
+    per feature instead of loading all `.jsonl` bytes across every session
+    file. For features with a long Claude history this reduces prompt-cache
+    time from seconds to microseconds.
+  - **Token-count off the hot path**: the today-token calculation
+    (`calculate_claude_today_tokens`) previously blocked the startup
+    usage-refresh task by reading every `.jsonl` file modified today
+    across all `~/.claude/projects/` subdirectories. It now runs in a
+    dedicated background thread; the usage display updates once the count
+    arrives without delaying the dashboard.
+  - **Loading gate trimmed**: the session-status background thread
+    (`session_status_bg`) no longer holds the "Loading AMF..." screen
+    open. Token-usage counts are cosmetic; the dashboard now appears as
+    soon as the other startup tasks finish and the counts fill in
+    asynchronously.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.19.4] - 2026-05-11
 
 ### Fixed

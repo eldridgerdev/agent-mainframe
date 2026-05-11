@@ -286,44 +286,68 @@ pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Optio
 }
 
 fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => return Vec::new(),
-    };
-    let encoded = encode_claude_path(workdir);
-    let projects_dir = PathBuf::from(&home)
-        .join(".claude")
-        .join("projects")
-        .join(&encoded);
+    // Inner function returning Option so we can use `?` for early exit.
+    fn inner(workdir: &Path) -> Option<Vec<PromptEntry>> {
+        use std::io::{Read, Seek, SeekFrom};
 
-    if !is_real_dir(&projects_dir) {
-        return Vec::new();
-    }
+        let home = std::env::var("HOME").ok()?;
+        let encoded = encode_claude_path(workdir);
+        let projects_dir = PathBuf::from(&home)
+            .join(".claude")
+            .join("projects")
+            .join(&encoded);
 
-    let read_dir = match std::fs::read_dir(&projects_dir) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
-
-    let mut entries = Vec::new();
-
-    for dir_entry in read_dir.flatten() {
-        let path = dir_entry.path();
-        if path.extension().is_none_or(|ext| ext != "jsonl") {
-            continue;
+        if !is_real_dir(&projects_dir) {
+            return None;
         }
-        let file_ts = dir_entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        // Only read the most-recently-modified session file — the latest
+        // prompt is overwhelmingly likely to be there, and we avoid reading
+        // all session bytes across potentially many files.
+        let (file_ts, newest_path) = std::fs::read_dir(&projects_dir)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if path.extension().is_none_or(|ext| ext != "jsonl") {
+                    return None;
+                }
+                let meta = entry.metadata().ok()?;
+                let mtime = meta.modified().ok()?;
+                let ts = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64);
+                Some((mtime, ts, path))
+            })
+            .max_by_key(|(mtime, _, _)| *mtime)
+            .map(|(_, ts, path)| (ts, path))?;
+
+        // Read only the last 64 KB of the file — avoids loading multi-MB
+        // session histories just to find the most recent user prompt.
+        const TAIL: u64 = 65_536;
+        let mut file = std::fs::File::open(&newest_path).ok()?;
+        let file_len = file.metadata().ok()?.len();
+        let start = file_len.saturating_sub(TAIL);
+        if start > 0 {
+            file.seek(SeekFrom::Start(start)).ok()?;
+        }
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).ok()?;
+
+        // If we seeked into the middle, skip the first (partial) line.
+        let data = if start > 0 {
+            let skip = buf
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(buf.len(), |p| p + 1);
+            &buf[skip..]
+        } else {
+            &buf[..]
         };
 
+        let content = std::str::from_utf8(data).unwrap_or("");
+        let mut entries = Vec::new();
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -333,30 +357,24 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-
             if value["type"] != "user" {
                 continue;
             }
-
             let text = match extract_user_prompt_text(&value) {
                 Some(t) if !t.trim().is_empty() => t,
                 _ => continue,
             };
-
             let ts = value
                 .get("timestamp")
                 .and_then(|v| v.as_str())
                 .and_then(parse_prompt_timestamp)
                 .or(file_ts);
-
-            entries.push(PromptEntry {
-                text,
-                timestamp: ts,
-            });
+            entries.push(PromptEntry { text, timestamp: ts });
         }
+        Some(entries)
     }
 
-    entries
+    inner(workdir).unwrap_or_default()
 }
 
 fn read_prompts_from_opencode_storage_root(

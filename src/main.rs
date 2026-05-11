@@ -649,9 +649,7 @@ fn run_loop<B: Backend>(
             || startup_usage_pending
             || startup_claude_hooks_pending
             || startup_opencode_plugins_pending
-            || startup_sidebar_warm_pending
-            // Background session-status thread still in flight.
-            || app.session_status_bg.is_some();
+            || startup_sidebar_warm_pending;
         let startup_loading = startup_tasks_pending;
 
         let poll_duration = if startup_loading {

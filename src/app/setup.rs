@@ -373,10 +373,39 @@ pub fn ensure_notify_scripts() {
     );
 }
 
+/// Path of the version-stamp file used to skip hook/plugin refresh when
+/// the AMF binary version has not changed since the last startup.
+fn hook_refresh_stamp_path() -> std::path::PathBuf {
+    crate::project::amf_config_dir().join("last_hook_refresh_version")
+}
+
+/// Returns `true` when the stamp matches the current binary version, meaning
+/// every feature's hooks and plugins were already refreshed by this exact
+/// version of AMF and nothing needs to be rewritten.
+fn hooks_already_current() -> bool {
+    let current = env!("CARGO_PKG_VERSION");
+    std::fs::read_to_string(hook_refresh_stamp_path())
+        .ok()
+        .as_deref()
+        == Some(current)
+}
+
+/// Record that hooks have been refreshed for the current binary version.
+fn mark_hooks_current() {
+    let _ = std::fs::write(hook_refresh_stamp_path(), env!("CARGO_PKG_VERSION"));
+}
+
 /// Refresh opencode plugin files in all known opencode feature
 /// workdirs, so existing sessions/worktrees pick up plugin fixes
 /// without requiring feature recreation.
+///
+/// Writes the version stamp after running so that subsequent startups
+/// on the same binary version skip both this pass and the Claude hooks
+/// pass (which runs first and also checks the stamp).
 pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
+    if hooks_already_current() {
+        return 0;
+    }
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
@@ -387,10 +416,16 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
             refreshed += 1;
         }
     }
+    // Both refresh passes are now complete for this version; stamp so the
+    // next startup skips both.
+    mark_hooks_current();
     refreshed
 }
 
 pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) -> usize {
+    if hooks_already_current() {
+        return 0;
+    }
     let mut refreshed = 0usize;
     for project in &store.projects {
         for feature in &project.features {
@@ -408,6 +443,9 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) 
             refreshed += 1;
         }
     }
+    // Do not write the stamp here; the opencode pass runs next and writes it
+    // once both passes are done.  If this store has no opencode features the
+    // opencode function still runs (empty loop) and stamps correctly.
     refreshed
 }
 

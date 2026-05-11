@@ -10,20 +10,27 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.2] - 2026-05-11
+
 ### Fixed
 
-- Reduced embedded view input lag while typing and especially while
-  holding `Backspace`. Literal typing now keeps the cheaper pane burst
-  path by default, whitespace-triggered edits still refresh the cursor
-  when needed, and repeated backspaces avoid forcing a refresh on every
-  repeat event.
-- Toast and overlay redraws now clear stale cells before repainting, so
-  expired notifications no longer leave artifacts behind on the dashboard.
+- View mode now stays responsive while typing again, but still refreshes
+  periodically when an agent harness is working, so live output keeps
+  moving without waiting for the next keypress.
+- Control-mode view input now uses the cheaper burst path again, which
+  removes the extra redraw work that made repeated typing feel slower.
+- Sidebar metadata and worktree sidebar updates now trigger redraws as
+  soon as they arrive, so harness-side status changes appear without an
+  extra keystroke.
 - Fixed slow startup ("Loading AMF..." screen stall) introduced in v0.19.0
   by the global project store migration. `ensure_notify_scripts` and
   `ensure_amf_skills` now skip disk writes when the on-disk content is
   already up to date, so startup I/O scales to a few cheap reads per
   feature instead of tens of unconditional writes.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.19.1] - 2026-05-09
 
@@ -72,6 +79,7 @@ are tagged.
 ### Fixed
 
 - Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
+- AMF now validates installed syntax highlighters at startup and repairs stale parser bundles automatically, so release builds should stop silently dropping syntax coloring.
 
 ## [v0.18.4] - 2026-05-08
 

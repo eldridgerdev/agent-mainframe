@@ -255,6 +255,9 @@ pub fn handle_markdown_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             };
             app.mode = AppMode::MarkdownFilePicker(picker);
         }
+        KeyCode::Char('/') => {
+            app.open_markdown_file_picker_from_viewer()?;
+        }
         KeyCode::Esc | KeyCode::Char('q') => {
             let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::MarkdownViewer(state) => state.from_view,
@@ -615,7 +618,7 @@ mod tests {
     use crate::app::{
         CommandAction, MarkdownFilePickerState, MarkdownViewerState, SteeringPromptState, ViewState,
     };
-    use crate::project::{AgentKind, Project, ProjectStore, VibeMode};
+    use crate::project::{AgentKind, Feature, Project, ProjectStore, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use tempfile::TempDir;
 
@@ -818,6 +821,39 @@ mod tests {
         );
     }
 
+    fn markdown_app_with_feature(workdir: &std::path::Path, repo_root: &std::path::Path) -> App {
+        let mut project =
+            Project::new("demo".into(), PathBuf::from("/tmp/demo"), true, AgentKind::Claude);
+        project.features.push(Feature::new(
+            "feature".into(),
+            "main".into(),
+            workdir.to_path_buf(),
+            true,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+        ));
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            extra: HashMap::new(),
+        };
+        let mut worktree = MockWorktreeOps::new();
+        let repo_root = repo_root.to_path_buf();
+        worktree
+            .expect_repo_root()
+            .returning(move |_| Ok(repo_root.clone()));
+        App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(worktree),
+        )
+    }
+
     #[test]
     fn markdown_viewer_b_returns_to_picker_when_available() {
         let mut app = markdown_app();
@@ -826,6 +862,8 @@ mod tests {
             files: vec![PathBuf::from("a.md"), PathBuf::from("b.md")],
             selected: 1,
             plan_only: true,
+            search_active: false,
+            query: String::new(),
             workdir: PathBuf::from("/tmp/demo"),
             repo_root: Some(PathBuf::from("/tmp/demo-repo")),
             from_view: Some(view.clone()),
@@ -878,6 +916,42 @@ mod tests {
         .unwrap();
 
         assert!(matches!(app.mode, AppMode::MarkdownViewer(_)));
+    }
+
+    #[test]
+    fn markdown_viewer_slash_opens_picker_for_current_feature() {
+        let repo = TempDir::new().unwrap();
+        let repo_root = TempDir::new().unwrap();
+        std::fs::write(repo.path().join("alpha.md"), "# Alpha\n").unwrap();
+        std::fs::write(repo.path().join("beta.md"), "# Beta\n").unwrap();
+
+        let mut app = markdown_app_with_feature(repo.path(), repo_root.path());
+        let view = markdown_view();
+        app.mode = AppMode::MarkdownViewer(MarkdownViewerState {
+            title: "alpha.md".into(),
+            source_path: PathBuf::from("alpha.md"),
+            content: "# Alpha".into(),
+            scroll_offset: 0,
+            rendered_width: 0,
+            rendered_lines: Vec::new(),
+            return_to_picker: None,
+            from_view: Some(view),
+        });
+
+        handle_markdown_viewer_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => {
+                assert_eq!(state.files.len(), 2);
+                assert_eq!(state.query, "");
+                assert_eq!(state.selected, 0);
+            }
+            _ => panic!("expected markdown picker after pressing /"),
+        }
     }
 
     #[test]

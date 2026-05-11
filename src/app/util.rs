@@ -116,6 +116,56 @@ pub fn read_latest_prompt_entry(workdir: &Path) -> Option<PromptEntry> {
     read_all_prompts(workdir).into_iter().next()
 }
 
+pub fn fuzzy_match_score(candidate: &str, query: &str) -> Option<usize> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let candidate = candidate.to_ascii_lowercase();
+    let candidate_chars: Vec<char> = candidate.chars().collect();
+    let query_chars: Vec<char> = query.chars().collect();
+
+    if query_chars.len() > candidate_chars.len() {
+        // Still allow subsequence matches, so keep scanning rather than bailing here.
+    }
+
+    let mut score = candidate_chars.len().saturating_sub(query_chars.len());
+    let mut search_start = 0usize;
+    let mut prev_match: Option<usize> = None;
+
+    for qc in query_chars {
+        let relative_pos = candidate_chars[search_start..]
+            .iter()
+            .position(|&c| c == qc)?;
+        let match_pos = search_start + relative_pos;
+
+        if let Some(prev) = prev_match {
+            score += match_pos.saturating_sub(prev + 1);
+        } else {
+            score += match_pos;
+        }
+
+        prev_match = Some(match_pos);
+        search_start = match_pos + 1;
+    }
+
+    Some(score)
+}
+
+pub fn markdown_file_picker_score(path: &Path, workdir: &Path, repo_root: Option<&Path>, query: &str) -> Option<usize> {
+    let label = crate::markdown::markdown_view_relative_label(path, workdir, repo_root);
+    let basename = path.file_name().and_then(|name| name.to_str());
+
+    let mut best = fuzzy_match_score(&label, query);
+    if let Some(name) = basename
+        && let Some(score) = fuzzy_match_score(name, query)
+    {
+        best = Some(best.map_or(score, |existing| existing.min(score)));
+    }
+    best
+}
+
 pub(crate) fn read_latest_prompt_for_session(
     workdir: &Path,
     session_kind: Option<&crate::project::SessionKind>,
@@ -879,6 +929,20 @@ mod tests {
         let workdir = PathBuf::from("/tmp/unused");
         let latest = read_latest_prompt_for_session(&workdir, None, None);
         assert_eq!(latest, None);
+    }
+
+    #[test]
+    fn fuzzy_match_score_matches_subsequence() {
+        assert!(fuzzy_match_score("plan-notes.md", "pn").is_some());
+        assert!(fuzzy_match_score("plan-notes.md", "pln").is_some());
+        assert!(fuzzy_match_score("plan-notes.md", "zn").is_none());
+    }
+
+    #[test]
+    fn markdown_file_picker_score_prefers_basename_hits() {
+        let workdir = PathBuf::from("/tmp/demo");
+        let path = workdir.join("docs").join("plan-notes.md");
+        assert!(markdown_file_picker_score(&path, &workdir, None, "pn").is_some());
     }
 }
 

@@ -1579,4 +1579,62 @@ index 0000000..1111111
             "expected indented JavaScript property to keep syntax coloring in new-file diff rows"
         );
     }
+
+    #[test]
+    fn new_file_patch_lines_preserve_syntax_coloring_for_typescript() {
+        if highlight::HighlightLanguage::TypeScript.install_state()
+            != highlight::HighlightInstallState::Installed
+        {
+            return;
+        }
+
+        crate::highlight::reload_runtime_state();
+
+        let theme = Theme::default();
+        let file = DiffFile {
+            old_path: None,
+            path: "docs/syntax-tests/syntax-test-highlight.ts".to_string(),
+            status: DiffFileStatus::Added,
+            additions: 74,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: Some(include_str!("../../../docs/syntax-tests/syntax-test-highlight.ts").to_string()),
+            patch: "\
+diff --git a/docs/syntax-tests/syntax-test-highlight.ts b/docs/syntax-tests/syntax-test-highlight.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/docs/syntax-tests/syntax-test-highlight.ts
+@@ -0,0 +1,74 @@
+"
+            .to_string(),
+            hunks: vec![crate::diff::DiffHunk {
+                header: "@@ -0,0 +1,74 @@".to_string(),
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: 74,
+                lines: include_str!("../../../docs/syntax-tests/syntax-test-highlight.ts")
+                    .lines()
+                    .map(|line| crate::diff::DiffLine {
+                        kind: crate::diff::DiffLineKind::Added,
+                        text: format!("+{line}"),
+                    })
+                    .collect(),
+            }],
+        };
+
+        let lines = patch_lines(&file, 120, &theme, false, true);
+        let has_syntax_colored_token = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
+            !span.content.trim().is_empty()
+                && span.content.contains("JsonPrimitive")
+                && span.style.fg != new_file_added_row_style(&theme).fg
+        });
+
+        assert!(
+            has_syntax_colored_token,
+            "expected TypeScript diff rows to keep syntax coloring in new-file diff rows"
+        );
+    }
 }

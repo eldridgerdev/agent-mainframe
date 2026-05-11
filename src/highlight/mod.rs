@@ -9,6 +9,7 @@ pub use theme::style_for_class;
 
 pub(crate) use model::{HighlightRequest, HighlightedLine, HighlightedText};
 pub(crate) use service::highlight_source;
+pub(crate) use tree_sitter::{StartupValidationLevel, StartupValidationMessage};
 
 pub(crate) fn install_language<F>(
     language: HighlightLanguage,
@@ -33,6 +34,10 @@ where
 pub(crate) fn reload_runtime_state() {
     service::clear_cache();
     tree_sitter::reset_registry();
+}
+
+pub(crate) fn validate_startup_parsers() -> Vec<StartupValidationMessage> {
+    tree_sitter::validate_startup_parsers()
 }
 
 pub(crate) fn language_install_state_for_path(

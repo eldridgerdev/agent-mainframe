@@ -308,7 +308,6 @@ fn main() -> Result<()> {
 fn startup_loading_message(
     sync_statuses_pending: bool,
     session_status_pending: bool,
-    notifications_pending: bool,
     usage_pending: bool,
     claude_hooks_pending: bool,
     opencode_plugins_pending: bool,
@@ -319,8 +318,6 @@ fn startup_loading_message(
         "Checking managed sessions..."
     } else if session_status_pending || session_status_bg_pending {
         "Reading session status..."
-    } else if notifications_pending {
-        "Loading notifications..."
     } else if usage_pending {
         "Refreshing usage..."
     } else if claude_hooks_pending {
@@ -549,21 +546,20 @@ fn run_loop<B: Backend>(
     let mut last_thinking_sync = std::time::Instant::now();
     let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
     let mut last_claude_usage_debug: Option<String> = None;
-    // Only used when no IPC socket is available (fallback).
-    let mut last_notif_scan = std::time::Instant::now();
     let mut last_resize: Option<(u16, u16, String, String)> = None;
     let mut force_redraw = true;
     let startup_grace_until = Instant::now() + Duration::from_secs(3);
     let mut startup_task_spacing_until = Instant::now();
     let mut startup_sync_statuses_pending = true;
     let mut startup_session_status_pending = true;
-    let mut startup_notifications_pending = true;
     let mut startup_usage_pending = true;
     let mut startup_claude_hooks_pending = true;
     let mut startup_opencode_plugins_pending = true;
     let mut startup_sidebar_warm_pending = true;
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
+    const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
+    let mut last_view_refresh_request = Instant::now();
 
     loop {
         let loop_state_signature = app.redraw_signature();
@@ -621,7 +617,7 @@ fn run_loop<B: Backend>(
         }
 
         if app.has_active_sidebar() {
-            app.poll_codex_sidebar_metadata();
+            force_redraw |= app.poll_codex_sidebar_metadata();
         }
 
         if app.session_status_bg.is_some() {
@@ -650,7 +646,6 @@ fn run_loop<B: Backend>(
 
         let startup_tasks_pending = startup_sync_statuses_pending
             || startup_session_status_pending
-            || startup_notifications_pending
             || startup_usage_pending
             || startup_claude_hooks_pending
             || startup_opencode_plugins_pending
@@ -780,6 +775,7 @@ fn run_loop<B: Backend>(
         }
 
         if app.should_quit || app.should_switch.is_some() {
+            app.flush_pending_debug_log_entries();
             return Ok(());
         }
 
@@ -787,6 +783,18 @@ fn run_loop<B: Backend>(
             if let Err(e) = app.flush_view_input_batch() {
                 app.show_error(e);
             }
+        }
+
+        if is_viewing
+            && !startup_loading
+            && !handled_user_events
+            && last_view_refresh_request.elapsed() >= app::VIEW_PANE_REFRESH_INTERVAL
+            && app.last_view_activity_at.is_none_or(|last| {
+                last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD
+            })
+        {
+            app.request_view_snapshot_refresh();
+            last_view_refresh_request = Instant::now();
         }
 
         let defer_background_sync = app.should_defer_view_background_sync();
@@ -858,25 +866,6 @@ fn run_loop<B: Backend>(
             app.drain_ipc_messages();
         }
 
-        if !handled_user_events && last_notif_scan.elapsed() >= Duration::from_millis(500) {
-            if app.ipc.is_none() && !app.ipc_fallback_logged {
-                app.log_warn(
-                    "ipc",
-                    "IPC unavailable; using file-based notification polling".to_string(),
-                );
-                app.ipc_fallback_logged = true;
-            }
-            // Always scan file notifications as compatibility fallback.
-            // Some producers (for example plugin runtimes) may not be
-            // able to call `amf notify` even while IPC is available.
-            let started_at = Instant::now();
-            let notifications_changed = app.scan_notifications();
-            app.perf
-                .record_duration("scan.notifications", started_at.elapsed());
-            last_notif_scan = std::time::Instant::now();
-            force_redraw |= notifications_changed;
-        }
-
         if !handled_user_events && last_thinking_sync.elapsed() >= Duration::from_millis(500) {
             let started_at = Instant::now();
             let thinking_changed = app.sync_thinking_status();
@@ -894,7 +883,11 @@ fn run_loop<B: Backend>(
             .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
 
         if app.has_active_sidebar() {
-            app.poll_sidebar_load_results();
+            force_redraw |= app.poll_sidebar_load_results();
+        }
+
+        if app.should_flush_pending_debug_log_entries() {
+            app.flush_pending_debug_log_entries();
         }
         let startup_grace_active = is_viewing && Instant::now() < startup_grace_until;
         let can_run_startup_task = startup_tasks_pending
@@ -918,13 +911,6 @@ fn run_loop<B: Backend>(
                     .record_duration("startup.sync_session_status_bg_start", started_at.elapsed());
                 startup_session_status_pending = false;
                 // Results applied asynchronously via poll_session_status_bg().
-            } else if startup_notifications_pending {
-                let started_at = Instant::now();
-                let notifications_changed = app.scan_notifications();
-                app.perf
-                    .record_duration("startup.scan_notifications", started_at.elapsed());
-                startup_notifications_pending = false;
-                force_redraw |= notifications_changed;
             } else if startup_usage_pending {
                 let started_at = Instant::now();
                 app.usage.refresh();
@@ -1011,7 +997,6 @@ fn run_loop<B: Backend>(
                 let message = startup_loading_message(
                     startup_sync_statuses_pending,
                     startup_session_status_pending,
-                    startup_notifications_pending,
                     startup_usage_pending,
                     startup_claude_hooks_pending,
                     startup_opencode_plugins_pending,
@@ -1033,6 +1018,7 @@ fn run_loop<B: Backend>(
         }
 
         if app.should_quit || app.should_switch.is_some() {
+            app.flush_pending_debug_log_entries();
             return Ok(());
         }
     }

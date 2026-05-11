@@ -22,6 +22,11 @@ are tagged.
 - Sidebar metadata and worktree sidebar updates now trigger redraws as
   soon as they arrive, so harness-side status changes appear without an
   extra keystroke.
+- Fixed slow startup ("Loading AMF..." screen stall) introduced in v0.19.0
+  by the global project store migration. `ensure_notify_scripts` and
+  `ensure_amf_skills` now skip disk writes when the on-disk content is
+  already up to date, so startup I/O scales to a few cheap reads per
+  feature instead of tens of unconditional writes.
 
 ### Migration
 

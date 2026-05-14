@@ -10,15 +10,20 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
 ## [v0.19.6] - 2026-05-14
 
-### Fixed
+### Added
 
-- Added a recovery shortcut for Vibeless diff reviews, so you can now
-  check for a pending review from the dashboard or embedded view and
-  open it manually when the normal popup flow gets stuck. This is
-  available as `V` on the dashboard for feature/session rows and as
-  `Ctrl+Space` then `V` while viewing a session.
+- Vibeless diff reviews now have a recovery shortcut, so you can check
+  for a pending review from the dashboard or embedded view and open it
+  manually when the normal popup flow gets stuck. This is available as
+  `V` on the dashboard for feature/session rows and as `Ctrl+Space`
+  then `V` while viewing a session.
+
+### Changed
+
 - Opencode sidebar updates now use AMF's IPC path when available and
   keep fallback file checks off the UI thread, so sidebar refreshes no
   longer risk making the dashboard or embedded view feel stuck. That
@@ -27,8 +32,6 @@ are tagged.
 ### Migration
 
 - No migration is required.
-
-## [Unreleased]
 
 ## [v0.19.5] - 2026-05-11
 

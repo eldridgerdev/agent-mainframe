@@ -247,6 +247,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('R') => {
             app.refresh_status_and_notifications();
         }
+        KeyCode::Char('V') => {
+            app.check_pending_diff_review()?;
+        }
         KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
             app.message = None;

@@ -279,6 +279,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.sync_statuses();
             app.push_toast_success("Refreshed statuses");
         }
+        KeyCode::Char('V') => {
+            app.check_pending_diff_review()?;
+        }
         KeyCode::Char('R') => {
             app.refresh_view_sizing()?;
         }
@@ -670,6 +673,44 @@ mod tests {
                 Some(CommandAction::Local { .. })
             )),
             _ => panic!("expected command picker"),
+        }
+    }
+
+    #[test]
+    fn leader_v_opens_pending_diff_review_from_view() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        let notify_dir = repo.path().join(".claude").join("notifications");
+        std::fs::create_dir_all(&notify_dir).unwrap();
+        let notification = serde_json::json!({
+            "session_id": "amf-feature",
+            "cwd": repo.path().display().to_string(),
+            "message": "Review: src/lib.rs",
+            "type": "diff-review",
+            "file_path": repo.path().join("src/lib.rs").display().to_string(),
+            "relative_path": "src/lib.rs",
+            "tool": "write",
+            "change_id": "chg-view",
+            "old_snippet": "",
+            "new_snippet": "new body",
+            "response_file": repo.path().join("response.json").display().to_string(),
+            "proceed_signal": repo.path().join("proceed").display().to_string()
+        });
+        std::fs::write(
+            notify_dir.join("diff-review.json"),
+            serde_json::to_string(&notification).unwrap(),
+        )
+        .unwrap();
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('V')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::DiffReviewPrompt(state) => {
+                assert_eq!(state.relative_path, "src/lib.rs");
+            }
+            _ => panic!("expected diff review prompt"),
         }
     }
 

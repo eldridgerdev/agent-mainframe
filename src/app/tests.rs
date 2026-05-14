@@ -4073,6 +4073,56 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
 }
 
 #[test]
+fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "amf-my-feat");
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Normal;
+    app.selection = Selection::Feature(0, 0);
+
+    let notify_dir = workdir.path().join(".claude").join("notifications");
+    std::fs::create_dir_all(&notify_dir).unwrap();
+    let notification = serde_json::json!({
+        "session_id": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/lib.rs",
+        "type": "diff-review",
+        "file_path": workdir.path().join("src/lib.rs").display().to_string(),
+        "relative_path": "src/lib.rs",
+        "tool": "write",
+        "change_id": "chg-3",
+        "old_snippet": "",
+        "new_snippet": "new body",
+        "response_file": workdir.path().join("response.json").display().to_string(),
+        "proceed_signal": workdir.path().join("proceed").display().to_string()
+    });
+    std::fs::write(
+        notify_dir.join("diff-review.json"),
+        serde_json::to_string(&notification).unwrap(),
+    )
+    .unwrap();
+
+    app.check_pending_diff_review().unwrap();
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            assert_eq!(state.relative_path, "src/lib.rs");
+        }
+        _ => panic!("expected diff review prompt"),
+    }
+    assert!(app.pending_inputs.is_empty());
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("Opened pending diff review"))
+            .unwrap_or(false)
+    );
+}
+
+#[test]
 fn scan_notifications_pushes_input_request_toast() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);

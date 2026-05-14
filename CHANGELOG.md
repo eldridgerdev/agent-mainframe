@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- Added a recovery shortcut for Vibeless diff reviews, so you can now
+  check for a pending review from the dashboard or embedded view and
+  open it manually when the normal popup flow gets stuck.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.19.5] - 2026-05-11
 
 ### Fixed

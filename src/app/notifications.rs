@@ -264,6 +264,96 @@ impl App {
         });
     }
 
+    fn pending_diff_review_index(&self, preferred_feature: Option<&str>) -> Option<usize> {
+        let matches_feature = |input: &PendingInput, feature: Option<&str>| {
+            input.notification_type == "diff-review"
+                && feature.map_or(true, |name| input.feature_name.as_deref() == Some(name))
+        };
+
+        if let Some(feature_name) = preferred_feature
+            && let Some(idx) = self
+                .pending_inputs
+                .iter()
+                .position(|input| matches_feature(input, Some(feature_name)))
+        {
+            return Some(idx);
+        }
+
+        self.pending_inputs
+            .iter()
+            .position(|input| input.notification_type == "diff-review")
+    }
+
+    fn pending_diff_review_feature_indices(&self, input: &PendingInput) -> Option<(usize, usize)> {
+        if let (Some(project_name), Some(feature_name)) =
+            (input.project_name.as_deref(), input.feature_name.as_deref())
+            && let Some((pi, project)) = self
+                .store
+                .projects
+                .iter()
+                .enumerate()
+                .find(|(_, project)| project.name == project_name)
+            && let Some(fi) = project
+                .features
+                .iter()
+                .enumerate()
+                .find(|(_, feature)| feature.name == feature_name)
+                .map(|(fi, _)| fi)
+        {
+            return Some((pi, fi));
+        }
+
+        self.project_feature_for_cwd(std::path::Path::new(&input.cwd))
+            .3
+    }
+
+    pub fn check_pending_diff_review(&mut self) -> Result<()> {
+        self.scan_notifications();
+
+        if matches!(self.mode, AppMode::DiffReviewPrompt(_)) {
+            self.push_toast_success("Pending diff review is already open");
+            return Ok(());
+        }
+
+        let preferred_feature = match &self.mode {
+            AppMode::Viewing(view) => Some(view.feature_name.as_str()),
+            _ => self.selected_feature().map(|(_, feature)| feature.name.as_str()),
+        };
+
+        let Some(idx) = self.pending_diff_review_index(preferred_feature) else {
+            self.push_toast_info("No pending diff review");
+            return Ok(());
+        };
+
+        let input = self.pending_inputs[idx].clone();
+        let Some((pi, fi)) = self.pending_diff_review_feature_indices(&input) else {
+            let target = input
+                .relative_path
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or(input.target_file_path.as_deref())
+                .or(Some(input.cwd.as_str()))
+                .unwrap_or("unknown target");
+            self.push_toast_warning(format!(
+                "Found pending diff review for {target}, but the feature is no longer available"
+            ));
+            return Ok(());
+        };
+
+        self.selection = Selection::Feature(pi, fi);
+        self.enter_view()?;
+
+        let target = input
+            .relative_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or(input.target_file_path.as_deref())
+            .or(Some(input.cwd.as_str()))
+            .unwrap_or("unknown target");
+        self.push_toast_success(format!("Opened pending diff review for {target}"));
+        Ok(())
+    }
+
     /// Drain all pending IPC socket messages, converting them into
     /// `pending_inputs` entries or removing them for "clear" messages.
     /// Call this every event loop iteration instead of polling files.

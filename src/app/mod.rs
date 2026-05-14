@@ -231,6 +231,7 @@ pub enum CodexDebugCommand {
 pub enum LocalCommand {
     OpenDebugLog,
     RefreshNotifications,
+    CheckPendingDiffReview,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

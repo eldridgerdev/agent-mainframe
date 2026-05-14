@@ -26,6 +26,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("m", "Markdown viewer"),
     ("b", "Show / hide sidebar"),
     ("v", "Expand / collapse todos"),
+    ("V", "Check pending diff review"),
     ("o", "Scroll mode"),
     ("r", "Refresh statuses"),
     ("R", "Refresh pane sizing"),
@@ -1292,6 +1293,7 @@ mod tests {
 
         assert!(rendered.contains("Ctrl+Space commands"));
         assert!(rendered.contains("Show / hide sidebar"));
+        assert!(rendered.contains("Check pending diff revie"));
     }
 
     #[test]

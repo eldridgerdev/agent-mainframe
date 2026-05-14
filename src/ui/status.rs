@@ -106,6 +106,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" resume  "),
                     Span::styled("u", key_style()),
                     Span::raw(" config  "),
+                    Span::styled("V", key_style()),
+                    Span::raw(" pending review  "),
                     Span::styled("f", key_style()),
                     Span::raw(" filter  "),
                     Span::styled("q", key_style()),
@@ -119,6 +121,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" expand  "),
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
+                    Span::styled("V", key_style()),
+                    Span::raw(" pending review  "),
                     Span::styled("q", key_style()),
                     Span::raw(" quit  "),
                     Span::styled(
@@ -150,6 +154,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" config  "),
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
+                    Span::styled("V", key_style()),
+                    Span::raw(" pending review  "),
                 ]);
                 if !app.active_extension.custom_sessions.is_empty() {
                     spans.push(Span::styled("p", key_style()));

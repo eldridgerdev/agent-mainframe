@@ -234,7 +234,7 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
     if app.has_active_sidebar() {
         app.refresh_sidebar_for_current_view();
     } else if !matches!(app.mode, AppMode::Viewing(_)) {
-        app.schedule_sidebar_loads_for_all_features();
+        app.schedule_sidebar_loads_for_polling_fallback();
     }
     app.flush_token_cache_to_db();
 }
@@ -425,7 +425,7 @@ impl App {
         if self.has_active_sidebar() {
             self.refresh_sidebar_for_current_view();
         } else if !matches!(self.mode, AppMode::Viewing(_)) {
-            self.schedule_sidebar_loads_for_all_features();
+            self.schedule_sidebar_loads_for_polling_fallback();
         }
 
         if discovered_sources && let Err(err) = self.save() {

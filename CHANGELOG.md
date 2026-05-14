@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- Opencode sidebar updates now use AMF's IPC path when available and
+  keep fallback file checks off the UI thread, so sidebar refreshes no
+  longer risk making the dashboard or embedded view feel stuck.
+
 ## [v0.19.5] - 2026-05-11
 
 ### Fixed

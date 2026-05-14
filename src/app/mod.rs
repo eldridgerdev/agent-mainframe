@@ -480,6 +480,7 @@ pub(crate) struct HarnessCheckResult {
 struct SidebarLoadResult {
     tmux_session: String,
     signature: u64,
+    changed: bool,
     latest_prompt: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
 }
@@ -1678,16 +1679,6 @@ impl App {
         };
 
         let request = SidebarLoadRequest::from_feature(feature);
-        let signature = request.signature();
-
-        if self
-            .sidebar_load_signatures
-            .get(&request.tmux_session)
-            .is_some_and(|cached| *cached == signature)
-        {
-            return;
-        }
-
         if !self
             .pending_sidebar_loads
             .insert(request.tmux_session.clone())
@@ -1695,9 +1686,13 @@ impl App {
             return;
         }
 
+        let previous_signature = self
+            .sidebar_load_signatures
+            .get(&request.tmux_session)
+            .copied();
         let tx = self.sidebar_load_tx.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(request.load(signature));
+            let _ = tx.send(request.load(previous_signature));
         });
     }
 
@@ -1713,13 +1708,24 @@ impl App {
         }
     }
 
+    pub(crate) fn schedule_sidebar_loads_for_polling_fallback(&mut self) {
+        if self.ipc.is_none() {
+            self.schedule_sidebar_loads_for_all_features();
+        }
+    }
+
     pub(crate) fn poll_sidebar_load_results(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.sidebar_load_rx.try_recv() {
-            changed = true;
             self.pending_sidebar_loads.remove(&result.tmux_session);
             self.sidebar_load_signatures
                 .insert(result.tmux_session.clone(), result.signature);
+
+            if !result.changed {
+                continue;
+            }
+
+            changed = true;
 
             if let Some(prompt) = result.latest_prompt {
                 let prompt = prompt.trim().to_string();
@@ -2355,14 +2361,30 @@ impl SidebarLoadRequest {
         hasher.finish()
     }
 
-    fn load(self, signature: u64) -> SidebarLoadResult {
+    fn load(self, previous_signature: Option<u64>) -> SidebarLoadResult {
+        let signature = self.signature();
+        let changed = previous_signature != Some(signature);
+
+        if !changed {
+            return SidebarLoadResult {
+                tmux_session: self.tmux_session,
+                signature,
+                changed,
+                latest_prompt: None,
+                opencode_sidebar: None,
+            };
+        }
+
         let latest_prompt = crate::app::util::read_latest_prompt_for_session(
             &self.workdir,
             self.preferred_session_kind.as_ref(),
             self.preferred_session_id.as_deref(),
         );
         let opencode_sidebar = if self.preferred_session_kind == Some(SessionKind::Opencode) {
-            opencode_storage::read_sidebar_data(&self.workdir, self.preferred_session_id.as_deref())
+            opencode_storage::read_sidebar_data(
+                &self.workdir,
+                self.preferred_session_id.as_deref(),
+            )
         } else {
             None
         };
@@ -2370,6 +2392,7 @@ impl SidebarLoadRequest {
         SidebarLoadResult {
             tmux_session: self.tmux_session,
             signature,
+            changed,
             latest_prompt,
             opencode_sidebar,
         }

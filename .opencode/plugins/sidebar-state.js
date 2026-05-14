@@ -7,12 +7,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from "fs"
+import { createConnection } from "net"
 import { join } from "path"
 
 const DEBUG_LOG = "/tmp/amf-opencode-sidebar-state.log"
 const SIDEBAR_MAX_FILES = 32
 const SIDEBAR_RETENTION_MS = 24 * 60 * 60 * 1000
 const stateBySession = new Map()
+const notifyTimers = new Map()
 
 function debug(message, data) {
   const ts = new Date().toISOString()
@@ -35,6 +37,43 @@ function ensureDir(path) {
 
 function sidebarDir(directory) {
   return join(directory, ".amf", "opencode-sidebar")
+}
+
+function amfSocketPath() {
+  const stateHome =
+    process.env.XDG_STATE_HOME ||
+    (process.env.HOME ? join(process.env.HOME, ".local", "state") : "/tmp")
+  return join(stateHome, "amf", "amf.sock")
+}
+
+function notifySidebarUpdated(directory, sessionId) {
+  if (!sessionId) return
+
+  const key = `${directory}:${sessionId}`
+  const existing = notifyTimers.get(key)
+  if (existing) {
+    clearTimeout(existing)
+  }
+
+  notifyTimers.set(
+    key,
+    setTimeout(() => {
+      notifyTimers.delete(key)
+      const payload =
+        JSON.stringify({
+          type: "opencode-sidebar-updated",
+          source: "opencode-sidebar",
+          session_id: sessionId,
+          cwd: directory,
+        }) + "\n"
+
+      try {
+        const socket = createConnection(amfSocketPath())
+        socket.on("error", () => {})
+        socket.end(payload)
+      } catch (_) {}
+    }, 50)
+  )
 }
 
 function sessionIdFrom(value) {
@@ -289,6 +328,7 @@ function writeSidebarState(directory, sessionId) {
   }
   writeFileSync(join(dir, `${sessionId}.json`), JSON.stringify(payload, null, 2) + "\n")
   pruneSidebarFiles(dir, sessionId)
+  notifySidebarUpdated(directory, sessionId)
 }
 
 function pruneSidebarFiles(dir, activeSessionId) {

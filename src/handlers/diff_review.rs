@@ -162,18 +162,26 @@ pub fn handle_diff_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
-    let (response_file, proceed_signal, reason, request_id, reply_socket, return_to_view) =
-        match &app.mode {
-            AppMode::DiffReviewPrompt(state) => (
-                state.response_file.clone(),
-                state.proceed_signal.clone(),
-                state.reason.clone(),
-                state.request_id.clone(),
-                state.reply_socket.clone(),
-                state.return_to_view.clone(),
-            ),
-            _ => return Ok(()),
-        };
+    let (
+        session_id,
+        response_file,
+        proceed_signal,
+        reason,
+        request_id,
+        reply_socket,
+        return_to_view,
+    ) = match &app.mode {
+        AppMode::DiffReviewPrompt(state) => (
+            state.session_id.clone(),
+            state.response_file.clone(),
+            state.proceed_signal.clone(),
+            state.reason.clone(),
+            state.request_id.clone(),
+            state.reply_socket.clone(),
+            state.return_to_view.clone(),
+        ),
+        _ => return Ok(()),
+    };
 
     let response = if skip {
         serde_json::json!({
@@ -243,6 +251,13 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
         Some(view) => AppMode::Viewing(view),
         None => AppMode::Normal,
     };
+    app.pending_inputs.retain(|input| {
+        !(input.session_id == session_id
+            && matches!(
+                input.notification_type.as_str(),
+                "diff-review" | "change-reason"
+            ))
+    });
     Ok(())
 }
 
@@ -596,6 +611,40 @@ mod tests {
             .unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn submit_clears_pending_review_notifications() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = make_app_with_prompt(tmp.path());
+        app.pending_inputs.push(crate::app::PendingInput {
+            session_id: "sess-1".to_string(),
+            cwd: tmp.path().display().to_string(),
+            message: "Review this".to_string(),
+            notification_type: "diff-review".to_string(),
+            file_path: tmp.path().join("notification.json"),
+            target_file_path: Some("src/main.rs".to_string()),
+            relative_path: Some("src/main.rs".to_string()),
+            change_id: Some("chg-1".to_string()),
+            tool: Some("edit".to_string()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: Some(tmp.path().join("response.json").display().to_string()),
+            project_name: Some("my-project".to_string()),
+            feature_name: Some("my-feature".to_string()),
+            proceed_signal: Some(tmp.path().join("proceed").display().to_string()),
+            request_id: None,
+            reply_socket: None,
+        });
+
+        handle_diff_review_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(app.pending_inputs.is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "agent-mainframe"
-version = "0.19.6"
+version = "0.19.7"
 edition = "2024"
 
 [[bin]]

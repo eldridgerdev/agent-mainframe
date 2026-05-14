@@ -738,12 +738,20 @@ impl App {
         let is_structured_diff_review = notification_type == "change-reason"
             || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
 
-        // change-reason/diff-review while viewing -> enter diff review mode.
+        // change-reason/diff-review while on dashboard or viewing the feature
+        // -> enter diff review mode immediately. Without this, IPC times out
+        // (120s) before the user navigates into the feature view.
         let (_, found_feature_name_for_open, _, _) = self.project_feature_for_cwd(&cwd_path);
-        if is_structured_diff_review
-            && let AppMode::Viewing(view) = &self.mode
-            && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
-        {
+        let open_diff_review_now = is_structured_diff_review
+            && found_feature_name_for_open.is_some()
+            && match &self.mode {
+                AppMode::Viewing(view) => {
+                    found_feature_name_for_open.as_deref() == Some(&view.feature_name)
+                }
+                AppMode::Normal => true,
+                _ => false,
+            };
+        if open_diff_review_now {
             let input = PendingInput {
                 session_id,
                 cwd,
@@ -966,10 +974,13 @@ impl App {
                     let is_structured_diff_review = notification_type == "change-reason"
                         || (notification_type == "diff-review"
                             && self.use_custom_diff_review_viewer());
-                    if is_structured_diff_review
-                        && let AppMode::Viewing(view) = &self.mode
-                        && feature.name == view.feature_name
-                    {
+                    let open_diff_review_now = is_structured_diff_review
+                        && match &self.mode {
+                            AppMode::Viewing(view) => feature.name == view.feature_name,
+                            AppMode::Normal => true,
+                            _ => false,
+                        };
+                    if open_diff_review_now {
                         let input = PendingInput {
                             session_id: notif.session_id.unwrap_or_default(),
                             cwd: notif.cwd.unwrap_or_default(),

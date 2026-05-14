@@ -697,6 +697,8 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if lower.contains("unavailable") || lower.contains("no summary yet") {
         theme.text_muted.to_color()
+    } else if label == "Hint" {
+        theme.info.to_color()
     } else if title == "Todos" {
         theme.success.to_color()
     } else if title == "Prompt" {
@@ -716,6 +718,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         || lower.contains("running tool")
         || lower.contains("ready")
         || lower.contains("generating")
+        || label == "Hint"
     {
         style = style.add_modifier(Modifier::BOLD);
     }

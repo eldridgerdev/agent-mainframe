@@ -10,7 +10,11 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- Pending diff reviews now show up in `Work -> state` for Claude,
+  Codex, and Opencode sessions, with a `leader V` hint when the
+  review popup is not appearing.
 
 ## [v0.19.6] - 2026-05-14
 

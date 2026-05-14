@@ -245,9 +245,12 @@ fn extract_file_change_text(raw: &Value) -> Option<String> {
         lines.push(format!("Reason: {reason}"));
     } else if !has_detail
         && default_file_change_request(status.as_deref()).is_none()
-        && let Some(status) = status
+        && let Some(status) = status.as_deref()
     {
         lines.push(format!("Detail: {status}"));
+    }
+    if status.as_deref() == Some("needs-review") {
+        lines.push("Hint: use leader V if the review prompt is not appearing.".to_string());
     }
     Some(lines.join("\n"))
 }
@@ -462,7 +465,7 @@ mod tests {
         assert_eq!(
             state.file_change_text.as_deref(),
             Some(
-                "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the diff before continuing."
+                "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the diff before continuing.\nHint: use leader V if the review prompt is not appearing."
             )
         );
     }
@@ -563,7 +566,7 @@ mod tests {
         assert_eq!(
             state.sidebar_work_text().as_deref(),
             Some(
-                "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the diff before continuing."
+                "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the diff before continuing.\nHint: use leader V if the review prompt is not appearing."
             )
         );
     }

@@ -21,6 +21,13 @@ are tagged.
 - Pending Claude diff reviews now stay visible in the sidebar `Work`
   section while they are waiting, and clear from the sidebar after the
   review is submitted.
+- Fixed vibeless diff-review not appearing when AMF was on the
+  dashboard. Previously, a diff-review arriving while the dashboard was
+  open would be silently queued and never shown — the review request
+  would time out after 120 seconds and the agent would stall waiting
+  for a response that never came. This was most noticeable on macOS.
+  The review dialog now opens immediately regardless of which screen
+  you are on.
 
 ## [v0.19.6] - 2026-05-14
 

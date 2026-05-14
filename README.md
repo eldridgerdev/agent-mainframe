@@ -75,8 +75,21 @@ attention, and get notified the moment one is waiting for input.
 
 - **GPU-accelerated terminal** (Ghostty, Wezterm, Kitty, Alacritty) —
   highly recommended for smooth ANSI rendering in the embedded view
-- **`cc` and `git`** — required if you want to install on-demand
-  tree-sitter syntax parsers from the syntax picker
+- **C compiler (`cc`) and git** — needed only when you install
+  on-demand
+  [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) syntax
+  parsers from the syntax picker. `cc` is the generic command name many
+  Unix-like systems use for a C compiler; it is often provided by
+  [Clang](https://clang.llvm.org/get_started.html) or
+  [GCC](https://gcc.gnu.org/install/). Tree-sitter compiles parser code
+  locally, and the existing git install is used to fetch parser
+  repositories. On Linux, install your distribution's C build tools
+  package such as `build-essential`, `base-devel`, or
+  `Development Tools`; on macOS, install Xcode Command Line Tools with
+  `xcode-select --install`. See the
+  [Tree-sitter parser guide](https://tree-sitter.github.io/tree-sitter/creating-parsers/1-getting-started.html)
+  and [Git installation guide](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
+  for more detail.
 - **Nerd Font** — a
   [Nerd Font](https://www.nerdfonts.com/) is recommended for icon
   rendering. The app defaults to `nerd_font: true`; if your terminal

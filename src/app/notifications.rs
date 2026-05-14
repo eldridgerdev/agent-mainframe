@@ -741,14 +741,20 @@ impl App {
         // change-reason/diff-review while on dashboard or viewing the feature
         // -> enter diff review mode immediately. Without this, IPC times out
         // (120s) before the user navigates into the feature view.
-        let (_, found_feature_name_for_open, _, _) = self.project_feature_for_cwd(&cwd_path);
+        // Codex features are excluded: they surface pending reviews via the
+        // sidebar live state instead of the diff-review prompt.
+        let (_, found_feature_name_for_open, _, found_indices) =
+            self.project_feature_for_cwd(&cwd_path);
+        let feature_is_codex = found_indices
+            .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
+            .unwrap_or(false);
         let open_diff_review_now = is_structured_diff_review
             && found_feature_name_for_open.is_some()
             && match &self.mode {
                 AppMode::Viewing(view) => {
                     found_feature_name_for_open.as_deref() == Some(&view.feature_name)
                 }
-                AppMode::Normal => true,
+                AppMode::Normal => !feature_is_codex,
                 _ => false,
             };
         if open_diff_review_now {
@@ -775,7 +781,6 @@ impl App {
                 request_id: msg.request_id.clone(),
                 reply_socket: msg.reply_socket.clone(),
             };
-            self.pending_inputs.push(input.clone());
             self.open_diff_review_prompt(&input);
             return;
         }
@@ -977,7 +982,7 @@ impl App {
                     let open_diff_review_now = is_structured_diff_review
                         && match &self.mode {
                             AppMode::Viewing(view) => feature.name == view.feature_name,
-                            AppMode::Normal => true,
+                            AppMode::Normal => feature.agent != AgentKind::Codex,
                             _ => false,
                         };
                     if open_diff_review_now {
@@ -1004,7 +1009,13 @@ impl App {
                             request_id: notif.request_id.clone(),
                             reply_socket: notif.reply_socket.clone(),
                         };
-                        self.pending_inputs.push(input.clone());
+                        // When opening from Viewing mode, keep the item in
+                        // pending_inputs so check_pending_diff_review can
+                        // detect the active review. Normal-mode opens don't
+                        // need this — the review is already visible.
+                        if matches!(self.mode, AppMode::Viewing(_)) {
+                            self.pending_inputs.push(input.clone());
+                        }
                         self.open_diff_review_prompt(&input);
                         let _ = std::fs::remove_file(&path);
                         return true;

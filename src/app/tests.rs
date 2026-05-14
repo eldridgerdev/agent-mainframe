@@ -1803,6 +1803,11 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("change-tracker.js"), "stale plugin").unwrap();
 
+    // Remove the version stamp so refresh_opencode_plugins_for_store
+    // doesn't short-circuit even if another test already marked hooks current.
+    let stamp = crate::project::amf_config_dir().join("last_hook_refresh_version");
+    let _ = std::fs::remove_file(&stamp);
+
     super::setup::ensure_notify_scripts();
 
     let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
@@ -4072,12 +4077,14 @@ fn custom_diff_review_notification_marks_new_files_as_added() {
 }
 
 #[test]
-fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_view() {
+fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
-    let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(1).return_const(true);
-    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
@@ -4107,18 +4114,13 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
 
     app.scan_notifications();
 
-    assert!(matches!(app.mode, AppMode::Normal));
-    assert_eq!(app.pending_inputs.len(), 1);
-
-    app.selection = Selection::Feature(0, 0);
-    app.enter_view().unwrap();
-
+    // Non-Codex: diff-review opens immediately from the dashboard.
     match &app.mode {
         AppMode::DiffReviewPrompt(state) => {
             assert_eq!(state.relative_path, "src/lib.rs");
-            assert!(state.return_to_view.is_some());
+            assert!(state.return_to_view.is_none());
         }
-        _ => panic!("expected diff review prompt after entering view"),
+        _ => panic!("expected diff review prompt to open immediately from Normal mode"),
     }
     assert!(app.pending_inputs.is_empty());
 }
@@ -4127,9 +4129,7 @@ fn custom_diff_review_notification_queues_from_normal_mode_and_opens_on_enter_vi
 fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
-    let mut tmux = MockTmuxOps::new();
-    tmux.expect_session_exists().times(1).return_const(true);
-    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Normal;
     app.selection = Selection::Feature(0, 0);
@@ -4156,6 +4156,8 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     )
     .unwrap();
 
+    // scan_notifications (called inside check_pending_diff_review) opens the
+    // prompt immediately for non-Codex features in Normal mode.
     app.check_pending_diff_review().unwrap();
 
     match &app.mode {
@@ -4168,7 +4170,7 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     assert!(
         app.toasts
             .last()
-            .map(|toast| toast.message.contains("Opened pending diff review"))
+            .map(|toast| toast.message.contains("already open"))
             .unwrap_or(false)
     );
 }

@@ -33,8 +33,8 @@ mod view;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -43,12 +43,12 @@ use std::sync::{Condvar as StdCondvar, Mutex as StdMutex};
 use anyhow::{Context, Result};
 use ratatui::text::Line;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
 use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
-use crate::debug::DebugLog;
+use crate::debug::{DebugLog, LogEntry};
 use crate::extension::{
     ExtensionConfig, FeaturePreset, load_global_extension_config, merge_project_extension_config,
 };
@@ -452,11 +452,12 @@ pub struct App {
     pub tmux: Box<dyn TmuxOps>,
     pub worktree: Box<dyn WorktreeOps>,
     pub debug_log: DebugLog,
+    pending_debug_log_entries: VecDeque<LogEntry>,
+    last_debug_log_flush_at: Instant,
     pub perf: PerfCollector,
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
     pub ipc: Option<crate::ipc::IpcGuard>,
-    pub ipc_fallback_logged: bool,
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
@@ -628,12 +629,10 @@ impl App {
         self.perf
             .record_duration("view.send_literal", started_at.elapsed());
         if result.is_ok() {
-            if batch.text.chars().any(char::is_whitespace) {
-                // Whitespace can be hidden by a stale cursor block, so force
-                // a cursor refresh only when the batch needs it.
-                self.request_view_snapshot_burst();
-            } else {
+            if TmuxManager::uses_control_pty_input() {
                 self.request_view_snapshot_pane_burst();
+            } else {
+                self.request_view_snapshot_burst();
             }
         }
         result.map(|_| true)
@@ -1339,7 +1338,12 @@ impl App {
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
-        let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
+        // These caches are populated by the background sidebar-load tasks
+        // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).
+        // Building them synchronously here required reading every Claude JSONL
+        // and PLAN.md file before the first frame could draw, which caused the
+        // "Loading AMF..." stall proportional to feature count.
+        let latest_prompt_cache = HashMap::new();
         let config = load_config();
         let zai_enabled = config.zai.is_some();
         let zai_monthly = config.zai.as_ref().and_then(|z| z.get_monthly_limit());
@@ -1351,7 +1355,7 @@ impl App {
             .first()
             .map(|p| merge_project_extension_config(&global_ext, &p.repo))
             .unwrap_or(global_ext);
-        let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
+        let sidebar_plan_cache = HashMap::new();
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
         let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
         let (wakeup_rx, wakeup_tx) = unsafe {
@@ -1420,11 +1424,12 @@ impl App {
             tmux: Box::new(TmuxManager),
             worktree: Box::new(WorktreeManager),
             debug_log: DebugLog::default(),
+            pending_debug_log_entries: VecDeque::new(),
+            last_debug_log_flush_at: Instant::now(),
             perf: PerfCollector::new(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
-            ipc_fallback_logged: false,
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             // Checked asynchronously — defaults to false until confirmed.
@@ -1451,14 +1456,28 @@ impl App {
             }
         }
 
+        for message in crate::highlight::validate_startup_parsers() {
+            match message.level {
+                crate::highlight::StartupValidationLevel::Info => {
+                    app.log_info("syntax", message.message);
+                }
+                crate::highlight::StartupValidationLevel::Warn => {
+                    app.log_warn("syntax", message.message);
+                }
+                crate::highlight::StartupValidationLevel::Error => {
+                    app.log_error("syntax", message.message);
+                }
+            }
+        }
+        crate::highlight::reload_runtime_state();
+
         Ok(app)
     }
 
     pub fn log_startup(&mut self) {
-        self.debug_log.info("amf", "AMF started".to_string());
-        self.debug_log
-            .debug("amf", format!("DB path: {}", self.store_path.display()));
-        self.debug_log.debug(
+        self.log_info("amf", "AMF started".to_string());
+        self.log_debug("amf", format!("DB path: {}", self.store_path.display()));
+        self.log_debug(
             "amf",
             format!("Projects loaded: {}", self.store.projects.len()),
         );
@@ -1544,11 +1563,12 @@ impl App {
             tmux,
             worktree,
             debug_log: DebugLog::default(),
+            pending_debug_log_entries: VecDeque::new(),
+            last_debug_log_flush_at: Instant::now(),
             perf: PerfCollector::new(),
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
-            ipc_fallback_logged: false,
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             vscode_available: false,
@@ -1694,7 +1714,8 @@ impl App {
         }
     }
 
-    pub(crate) fn poll_sidebar_load_results(&mut self) {
+    pub(crate) fn poll_sidebar_load_results(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(result) = self.sidebar_load_rx.try_recv() {
             self.pending_sidebar_loads.remove(&result.tmux_session);
             self.sidebar_load_signatures
@@ -1703,6 +1724,8 @@ impl App {
             if !result.changed {
                 continue;
             }
+
+            changed = true;
 
             if let Some(prompt) = result.latest_prompt {
                 let prompt = prompt.trim().to_string();
@@ -1723,6 +1746,7 @@ impl App {
                 self.opencode_sidebar_cache.remove(&result.tmux_session);
             }
         }
+        changed
     }
 
     pub(crate) fn clear_sidebar_state_for_session(&mut self, tmux_session: &str) {
@@ -2150,30 +2174,59 @@ impl App {
 
     pub fn log_debug(&mut self, context: &str, message: String) {
         let entry = self.debug_log.debug(context, message);
-        if let Some(db) = &self.db {
-            let _ = db.append_log_entry(&entry);
+        if self.db.is_some() {
+            self.pending_debug_log_entries.push_back(entry);
         }
     }
 
     pub fn log_info(&mut self, context: &str, message: String) {
         let entry = self.debug_log.info(context, message);
-        if let Some(db) = &self.db {
-            let _ = db.append_log_entry(&entry);
+        if self.db.is_some() {
+            self.pending_debug_log_entries.push_back(entry);
         }
     }
 
     pub fn log_warn(&mut self, context: &str, message: String) {
         let entry = self.debug_log.warn(context, message);
-        if let Some(db) = &self.db {
-            let _ = db.append_log_entry(&entry);
+        if self.db.is_some() {
+            self.pending_debug_log_entries.push_back(entry);
         }
     }
 
     pub fn log_error(&mut self, context: &str, message: String) {
         let entry = self.debug_log.error(context, message);
-        if let Some(db) = &self.db {
-            let _ = db.append_log_entry(&entry);
+        if self.db.is_some() {
+            self.pending_debug_log_entries.push_back(entry);
         }
+    }
+
+    pub fn flush_pending_debug_log_entries(&mut self) {
+        let Some(db) = &self.db else {
+            self.pending_debug_log_entries.clear();
+            return;
+        };
+
+        if self.pending_debug_log_entries.is_empty() {
+            return;
+        }
+
+        let mut remaining = VecDeque::new();
+        while let Some(entry) = self.pending_debug_log_entries.pop_front() {
+            if db.append_log_entry(&entry).is_err() {
+                remaining.push_back(entry);
+                remaining.extend(self.pending_debug_log_entries.drain(..));
+                break;
+            }
+        }
+
+        self.pending_debug_log_entries = remaining;
+        self.last_debug_log_flush_at = Instant::now();
+    }
+
+    pub fn should_flush_pending_debug_log_entries(&self) -> bool {
+        !self.pending_debug_log_entries.is_empty()
+            && (self.last_debug_log_flush_at.elapsed() >= Duration::from_secs(1)
+                || self.pending_debug_log_entries.len() >= 32)
     }
 
     pub fn report_logged_error(&mut self, context: &str, detail: impl Into<String>) {

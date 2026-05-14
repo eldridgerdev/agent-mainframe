@@ -110,8 +110,6 @@ impl App {
         self.sync_statuses();
         if self.ipc.is_some() {
             self.drain_ipc_messages();
-        } else {
-            self.scan_notifications();
         }
         self.message = Some("Refreshed statuses".into());
     }

@@ -15,13 +15,91 @@ are tagged.
 - Opencode sidebar updates now use AMF's IPC path when available and
   keep fallback file checks off the UI thread, so sidebar refreshes no
   longer risk making the dashboard or embedded view feel stuck.
-- Reduced embedded view input lag while typing and especially while
-  holding `Backspace`. Literal typing now keeps the cheaper pane burst
-  path by default, whitespace-triggered edits still refresh the cursor
-  when needed, and repeated backspaces avoid forcing a refresh on every
-  repeat event.
-- Toast and overlay redraws now clear stale cells before repainting, so
-  expired notifications no longer leave artifacts behind on the dashboard.
+
+## [v0.19.5] - 2026-05-11
+
+### Fixed
+
+- Fixed the remaining sources of startup latency that persisted through
+  v0.19.4. Three changes ship together:
+  - **Prompt cache tail-read**: `read_prompts_from_claude_sessions` now
+    reads only the last 64 KB of the most-recently-modified session file
+    per feature instead of loading all `.jsonl` bytes across every session
+    file. For features with a long Claude history this reduces prompt-cache
+    time from seconds to microseconds.
+  - **Token-count off the hot path**: the today-token calculation
+    (`calculate_claude_today_tokens`) previously blocked the startup
+    usage-refresh task by reading every `.jsonl` file modified today
+    across all `~/.claude/projects/` subdirectories. It now runs in a
+    dedicated background thread; the usage display updates once the count
+    arrives without delaying the dashboard.
+  - **Loading gate trimmed**: the session-status background thread
+    (`session_status_bg`) no longer holds the "Loading AMF..." screen
+    open. Token-usage counts are cosmetic; the dashboard now appears as
+    soon as the other startup tasks finish and the counts fill in
+    asynchronously.
+
+### Migration
+
+- No migration is required.
+
+## [v0.19.4] - 2026-05-11
+
+### Fixed
+
+- Fixed the dominant cause of the "Loading AMF..." stall that persisted
+  through v0.19.3. `App::new` was synchronously reading every Claude
+  session `.jsonl` file (potentially megabytes per feature) and every
+  `PLAN.md` to pre-populate the prompt and plan caches before the first
+  frame could draw. Both caches now start empty and are filled by the
+  background sidebar-load tasks that run immediately after the dashboard
+  appears, so startup is fast regardless of session history size.
+
+### Migration
+
+- No migration is required.
+
+## [v0.19.3] - 2026-05-11
+
+### Fixed
+
+- Fixed slow startup (stall on "Loading AMF..." or "Refreshing Claude
+  hooks...") that became noticeable after the v0.19.0 global store
+  migration. With a large feature count, `ensure_notify_scripts` and
+  `ensure_amf_skills` were writing tens of files per feature on every
+  launch. The hook and plugin refresh passes now record a version stamp
+  after completing; subsequent startups on the same binary skip both
+  passes entirely. Individual script and skill writes are also guarded
+  by a content check so they are no-ops when already up to date.
+- Eliminated a 50ms idle gap between each startup task; the event loop
+  now spins without delay while startup tasks are pending, so the loading
+  screen clears as fast as the tasks complete.
+
+### Migration
+
+- No migration is required.
+
+## [v0.19.2] - 2026-05-11
+
+### Fixed
+
+- View mode now stays responsive while typing again, but still refreshes
+  periodically when an agent harness is working, so live output keeps
+  moving without waiting for the next keypress.
+- Control-mode view input now uses the cheaper burst path again, which
+  removes the extra redraw work that made repeated typing feel slower.
+- Sidebar metadata and worktree sidebar updates now trigger redraws as
+  soon as they arrive, so harness-side status changes appear without an
+  extra keystroke.
+- Fixed slow startup ("Loading AMF..." screen stall) introduced in v0.19.0
+  by the global project store migration. `ensure_notify_scripts` and
+  `ensure_amf_skills` now skip disk writes when the on-disk content is
+  already up to date, so startup I/O scales to a few cheap reads per
+  feature instead of tens of unconditional writes.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.19.1] - 2026-05-09
 
@@ -70,6 +148,7 @@ are tagged.
 ### Fixed
 
 - Drag-to-copy selection now highlights correctly while you are in scroll/copy mode and still copies the selected text from the scrolled view.
+- AMF now validates installed syntax highlighters at startup and repairs stale parser bundles automatically, so release builds should stop silently dropping syntax coloring.
 
 ## [v0.18.4] - 2026-05-08
 

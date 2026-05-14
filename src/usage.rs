@@ -414,29 +414,35 @@ impl UsageManager {
         };
 
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-
         let today_stats = cache.daily_activity.iter().find(|d| d.date == today);
 
-        let today_signature = claude_today_signature(&today);
-        let today_tokens = if self.last_claude_today_signature == Some(today_signature) {
-            self.data.lock().unwrap().claude.today_tokens
-        } else {
-            let tokens = calculate_claude_today_tokens(&today);
-            self.last_claude_today_signature = Some(today_signature);
-            tokens
-        };
-
-        let mut data = self.data.lock().unwrap();
-        if let Some(stats) = today_stats {
-            data.claude.today_messages = stats.message_count;
-            data.claude.today_sessions = stats.session_count;
-            data.claude.today_tool_calls = stats.tool_call_count;
-        } else {
-            data.claude.today_messages = 0;
-            data.claude.today_sessions = 0;
-            data.claude.today_tool_calls = 0;
+        {
+            let mut data = self.data.lock().unwrap();
+            if let Some(stats) = today_stats {
+                data.claude.today_messages = stats.message_count;
+                data.claude.today_sessions = stats.session_count;
+                data.claude.today_tool_calls = stats.tool_call_count;
+            } else {
+                data.claude.today_messages = 0;
+                data.claude.today_sessions = 0;
+                data.claude.today_tool_calls = 0;
+            }
         }
-        data.claude.today_tokens = today_tokens;
+
+        // Token counting reads every JSONL modified today across all projects
+        // directories. Run it in a background thread so it never blocks the
+        // startup path or the periodic sync tick.
+        let today_signature = claude_today_signature(&today);
+        if self.last_claude_today_signature != Some(today_signature) {
+            self.last_claude_today_signature = Some(today_signature);
+            let data = Arc::clone(&self.data);
+            let _ = std::thread::Builder::new()
+                .name("usage-today-tokens".to_string())
+                .spawn(move || {
+                    let tokens = calculate_claude_today_tokens(&today);
+                    data.lock().unwrap().claude.today_tokens = tokens;
+                });
+        }
     }
 
     fn refresh_codex_stats(&mut self) {

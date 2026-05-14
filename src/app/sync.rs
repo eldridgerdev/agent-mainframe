@@ -766,8 +766,10 @@ impl App {
         Ok(())
     }
 
-    pub fn poll_codex_sidebar_metadata(&mut self) {
+    pub fn poll_codex_sidebar_metadata(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(result) = self.codex_sidebar_metadata_rx.try_recv() {
+            changed = true;
             self.codex_sidebar_metadata_inflight
                 .remove(&result.cache_key);
             self.codex_session_title_cache
@@ -775,6 +777,7 @@ impl App {
             self.codex_session_prompt_cache
                 .insert(result.cache_key, result.prompt);
         }
+        changed
     }
 
     fn get_window_for_session(&self, tmux_session: &str, _agent: &AgentKind) -> Option<String> {

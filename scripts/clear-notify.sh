@@ -14,11 +14,8 @@ fi
 
 CLEAR_MSG="{\"type\":\"clear\",\"session_id\":\"$SESSION_ID\",\"cwd\":\"$CWD\"}"
 
-# Prefer socket-based clear (no polling required).
-if command -v amf >/dev/null 2>&1; then
-    echo "$CLEAR_MSG" | amf notify 2>/dev/null && exit 0
-fi
+AMF_CMD="${AMF_BIN:-amf}"
 
-# Fallback: remove notification file.
-NOTIFY_DIR="$CWD/.claude/notifications"
-rm -f "$NOTIFY_DIR/${SESSION_ID}.json"
+if command -v "$AMF_CMD" >/dev/null 2>&1; then
+    echo "$CLEAR_MSG" | "$AMF_CMD" notify 2>/dev/null && exit 0
+fi

@@ -49,6 +49,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("x", "Stop feature / remove session"),
         ("r", "Rename session/feature"),
         ("R", "Refresh statuses"),
+        ("V", "Check pending diff review"),
         ("u", "Preferred harness / worktree config"),
         ("F", "Fork feature (new branch)"),
         ("f", "Cycle session filter"),

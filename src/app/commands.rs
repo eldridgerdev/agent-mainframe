@@ -119,6 +119,10 @@ fn local_debug_commands() -> Vec<CommandEntry> {
     vec![
         local_debug_command("open-debug-log", LocalCommand::OpenDebugLog),
         local_debug_command("refresh-statuses", LocalCommand::RefreshNotifications),
+        local_debug_command(
+            "check-pending-diff-review",
+            LocalCommand::CheckPendingDiffReview,
+        ),
     ]
 }
 

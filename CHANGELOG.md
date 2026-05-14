@@ -12,9 +12,16 @@ are tagged.
 
 ### Fixed
 
+- Added a recovery shortcut for Vibeless diff reviews, so you can now
+  check for a pending review from the dashboard or embedded view and
+  open it manually when the normal popup flow gets stuck.
 - Opencode sidebar updates now use AMF's IPC path when available and
   keep fallback file checks off the UI thread, so sidebar refreshes no
   longer risk making the dashboard or embedded view feel stuck.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.19.5] - 2026-05-11
 

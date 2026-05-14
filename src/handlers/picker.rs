@@ -101,6 +101,14 @@ pub fn handle_command_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                                     app.mode = AppMode::Viewing(view);
                                 }
                             }
+                            crate::app::LocalCommand::CheckPendingDiffReview => {
+                                app.check_pending_diff_review()?;
+                                if let Some(view) = return_view.clone()
+                                    && matches!(app.mode, AppMode::Normal)
+                                {
+                                    app.mode = AppMode::Viewing(view);
+                                }
+                            }
                         },
                         CommandAction::CodexLiveDemo(debug_command) => {
                             if let Some(session_id) =

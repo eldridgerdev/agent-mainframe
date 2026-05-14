@@ -316,6 +316,23 @@ impl App {
             return;
         }
 
+        if matches!(
+            msg_type.as_str(),
+            "opencode-sidebar-updated" | "sidebar-updated"
+        ) {
+            let cwd = raw.get("cwd").and_then(|v| v.as_str()).unwrap_or_default();
+            let cwd_path = PathBuf::from(cwd);
+            if let Some((pi, fi)) = self.project_feature_for_cwd(&cwd_path).3 {
+                let tmux_session = self.store.projects[pi].features[fi].tmux_session.clone();
+                self.schedule_sidebar_load_for_feature(pi, fi);
+                self.log_debug(
+                    "ipc",
+                    format!("Queued sidebar refresh for {tmux_session} from IPC"),
+                );
+            }
+            return;
+        }
+
         if msg_type == crate::automation::AUTOMATION_REQUEST_TYPE {
             let request_id = raw
                 .get("request_id")

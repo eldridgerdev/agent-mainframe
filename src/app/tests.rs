@@ -198,6 +198,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
         .send(super::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
             signature: 7,
+            changed: true,
             latest_prompt: Some("lazy prompt".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
@@ -758,6 +759,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
         .send(super::SidebarLoadResult {
             tmux_session: "amf-my-feat".to_string(),
             signature: 9,
+            changed: true,
             latest_prompt: Some("warm prompt".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
@@ -792,6 +794,28 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
     );
     assert!(app.is_feature_thinking("amf-my-feat"));
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
+}
+
+#[test]
+fn ipc_opencode_sidebar_update_queues_sidebar_refresh() {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
+    store.projects[0].features[0].agent = AgentKind::Opencode;
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "opencode-sidebar-updated",
+        "source": "opencode-sidebar",
+        "session_id": "ses-1",
+        "cwd": repo.path(),
+    }));
+
+    assert!(app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
 #[test]
@@ -3357,7 +3381,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
 }
 
 #[test]
-fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
+fn sync_session_status_checks_sidebar_inputs_off_thread() {
     let workdir = TempDir::new().unwrap();
     let prompt_path = workdir.path().join(".claude").join("latest-prompt.txt");
     std::fs::create_dir_all(prompt_path.parent().unwrap()).unwrap();
@@ -3433,8 +3457,23 @@ fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
     app.sync_session_status_with_tracker(&mut tracker);
 
     assert!(
+        app.pending_sidebar_loads.contains("amf-my-feat"),
+        "sidebar input checks should be queued off the UI thread"
+    );
+    for _ in 0..20 {
+        app.poll_sidebar_load_results();
+        if !app.pending_sidebar_loads.contains("amf-my-feat") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
         !app.pending_sidebar_loads.contains("amf-my-feat"),
-        "unchanged prompt inputs should not queue another sidebar load"
+        "unchanged sidebar input check should complete"
+    );
+    assert!(
+        app.latest_prompt_for_session("amf-my-feat") == Some("first prompt"),
+        "unchanged sidebar input check should leave the existing cache alone"
     );
 
     std::thread::sleep(std::time::Duration::from_millis(2));
@@ -3445,6 +3484,17 @@ fn sync_session_status_skips_sidebar_reload_until_prompt_inputs_change() {
     assert!(
         app.pending_sidebar_loads.contains("amf-my-feat"),
         "changed prompt inputs should queue a fresh sidebar load"
+    );
+    for _ in 0..20 {
+        app.poll_sidebar_load_results();
+        if !app.pending_sidebar_loads.contains("amf-my-feat") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        app.latest_prompt_for_session("amf-my-feat"),
+        Some("updated prompt")
     );
 }
 

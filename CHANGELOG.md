@@ -12,6 +12,9 @@ are tagged.
 
 ### Fixed
 
+- Opencode sidebar updates now use AMF's IPC path when available and
+  keep fallback file checks off the UI thread, so sidebar refreshes no
+  longer risk making the dashboard or embedded view feel stuck.
 - Reduced embedded view input lag while typing and especially while
   holding `Backspace`. Literal typing now keeps the cheaper pane burst
   path by default, whitespace-triggered edits still refresh the cursor

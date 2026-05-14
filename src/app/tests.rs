@@ -3999,6 +3999,8 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
         }
         _ => panic!("expected diff review prompt"),
     }
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
 }
 
 #[test]

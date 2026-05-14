@@ -317,7 +317,9 @@ impl App {
 
         let preferred_feature = match &self.mode {
             AppMode::Viewing(view) => Some(view.feature_name.as_str()),
-            _ => self.selected_feature().map(|(_, feature)| feature.name.as_str()),
+            _ => self
+                .selected_feature()
+                .map(|(_, feature)| feature.name.as_str()),
         };
 
         let Some(idx) = self.pending_diff_review_index(preferred_feature) else {
@@ -765,6 +767,7 @@ impl App {
                 request_id: msg.request_id.clone(),
                 reply_socket: msg.reply_socket.clone(),
             };
+            self.pending_inputs.push(input.clone());
             self.open_diff_review_prompt(&input);
             return;
         }
@@ -990,6 +993,7 @@ impl App {
                             request_id: notif.request_id.clone(),
                             reply_socket: notif.reply_socket.clone(),
                         };
+                        self.pending_inputs.push(input.clone());
                         self.open_diff_review_prompt(&input);
                         let _ = std::fs::remove_file(&path);
                         return true;
@@ -1078,6 +1082,7 @@ impl App {
                         request_id: notif.request_id.clone(),
                         reply_socket: notif.reply_socket.clone(),
                     };
+                    self.pending_inputs.push(input.clone());
                     self.open_diff_review_prompt(&input);
                     let _ = std::fs::remove_file(&path);
                     return true;
@@ -1245,9 +1250,18 @@ impl App {
                         );
                     }
                     self.selection = Selection::Feature(pi, fi);
-                    self.pending_inputs.remove(idx);
+                    if !is_structured_diff_review {
+                        self.pending_inputs.remove(idx);
+                    }
                     self.enter_view()?;
                     if is_structured_diff_review {
+                        if !self.pending_inputs.iter().any(|pending| {
+                            pending.session_id == input.session_id
+                                && pending.notification_type == input.notification_type
+                                && pending.request_id == input.request_id
+                        }) {
+                            self.pending_inputs.push(input.clone());
+                        }
                         self.open_diff_review_prompt(&input);
                         let _ = std::fs::remove_file(&input.file_path);
                         return Ok(());

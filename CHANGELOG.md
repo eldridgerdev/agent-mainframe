@@ -16,6 +16,12 @@ are tagged.
   Codex, and Opencode sessions, with a `leader V` hint when the
   review popup is not appearing.
 
+### Fixed
+
+- Pending Claude diff reviews now stay visible in the sidebar `Work`
+  section while they are waiting, and clear from the sidebar after the
+  review is submitted.
+
 ## [v0.19.6] - 2026-05-14
 
 ### Added

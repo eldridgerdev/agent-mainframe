@@ -609,19 +609,31 @@ fn pending_diff_review_work_text(
         .pending_inputs
         .iter()
         .filter(|input| {
-            input.notification_type == "diff-review"
-                && (input.session_id == feature.tmux_session
-                    || (input.project_name.as_deref() == Some(project.name.as_str())
-                        && input.feature_name.as_deref() == Some(feature.name.as_str())))
+            matches!(
+                input.notification_type.as_str(),
+                "diff-review" | "change-reason"
+            ) && (input.session_id == feature.tmux_session
+                || (input.project_name.as_deref() == Some(project.name.as_str())
+                    && input.feature_name.as_deref() == Some(feature.name.as_str())))
         })
         .collect::<Vec<_>>();
 
     let first = matching_inputs.first()?;
     let message = first.message.trim();
+    let (state, default_request) = match first.notification_type.as_str() {
+        "change-reason" => (
+            "waiting for change reason",
+            "Explain why this change is needed.",
+        ),
+        _ => (
+            "waiting for diff review",
+            "Review the proposed change before continuing.",
+        ),
+    };
     let mut text = format!(
-        "State: waiting for diff review\nRequest: {}",
+        "State: {state}\nRequest: {}",
         if message.is_empty() {
-            "Review the proposed change before continuing."
+            default_request
         } else {
             message
         }
@@ -1499,6 +1511,110 @@ mod tests {
             sidebar.work_text.as_deref(),
             Some(
                 "State: waiting for diff review\nRequest: Review the change before continuing.\nHint: use leader V if the review prompt is not appearing."
+            )
+        );
+    }
+
+    #[test]
+    fn pending_change_reason_updates_claude_sidebar_work_text() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "session-1".into(),
+                kind: SessionKind::Claude,
+                label: "Claude".into(),
+                tmux_window: "claude".into(),
+                claude_session_id: Some("claude-session".into()),
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.pending_inputs.push(PendingInput {
+            session_id: "amf-feature".into(),
+            cwd: "/tmp/demo".into(),
+            message: "".into(),
+            notification_type: "change-reason".into(),
+            file_path: PathBuf::new(),
+            target_file_path: Some("src/main.rs".into()),
+            relative_path: Some("src/main.rs".into()),
+            change_id: None,
+            tool: Some("Edit".into()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: None,
+            project_name: Some("demo".into()),
+            feature_name: Some("feature".into()),
+            proceed_signal: None,
+            request_id: None,
+            reply_socket: None,
+        });
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
+        assert_eq!(
+            sidebar.work_text.as_deref(),
+            Some(
+                "State: waiting for change reason\nRequest: Explain why this change is needed.\nHint: use leader V if the review prompt is not appearing."
             )
         );
     }

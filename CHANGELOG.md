@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.19.7] - 2026-05-14
+
 ### Changed
 
 - Pending diff reviews now show up in `Work -> state` for Claude,
@@ -28,6 +30,10 @@ are tagged.
   for a response that never came. This was most noticeable on macOS.
   The review dialog now opens immediately regardless of which screen
   you are on.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.19.6] - 2026-05-14
 

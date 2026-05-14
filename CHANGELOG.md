@@ -10,14 +10,28 @@ are tagged.
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- Added a recovery shortcut for Vibeless diff reviews, so you can now
-  check for a pending review from the dashboard or embedded view and
-  open it manually when the normal popup flow gets stuck.
+- Pending diff reviews now show up in `Work -> state` for Claude,
+  Codex, and Opencode sessions, with a `leader V` hint when the
+  review popup is not appearing.
+
+## [v0.19.6] - 2026-05-14
+
+### Added
+
+- Vibeless diff reviews now have a recovery shortcut, so you can check
+  for a pending review from the dashboard or embedded view and open it
+  manually when the normal popup flow gets stuck. This is available as
+  `V` on the dashboard for feature/session rows and as `Ctrl+Space`
+  then `V` while viewing a session.
+
+### Changed
+
 - Opencode sidebar updates now use AMF's IPC path when available and
   keep fallback file checks off the UI thread, so sidebar refreshes no
-  longer risk making the dashboard or embedded view feel stuck.
+  longer risk making the dashboard or embedded view feel stuck. That
+  keeps the view responsive while sidebar state is loading or updating.
 
 ### Migration
 

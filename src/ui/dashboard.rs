@@ -58,7 +58,9 @@ fn build_agent_sidebar_data(
     };
 
     match sidebar_kind {
-        SessionKind::Opencode => build_opencode_sidebar_data(app, feature, session, status_line),
+        SessionKind::Opencode => {
+            build_opencode_sidebar_data(app, project, feature, session, view, status_line)
+        }
         SessionKind::Claude => {
             build_claude_sidebar_data(app, project, feature, session, view, status_line)
         }
@@ -71,8 +73,10 @@ fn build_agent_sidebar_data(
 
 fn build_opencode_sidebar_data(
     app: &App,
+    project: &Project,
     feature: &Feature,
     session: Option<&FeatureSession>,
+    view: &crate::app::ViewState,
     status_line: String,
 ) -> Option<super::pane::AgentSidebarData> {
     let opencode_sidebar = app.opencode_sidebar_cache.get(&feature.tmux_session);
@@ -92,7 +96,9 @@ fn build_opencode_sidebar_data(
         feature.summary.as_deref(),
         opencode_sidebar,
     );
-    let activity_line = if opencode_sidebar
+    let activity_line = if pending_diff_review_work_text(app, project, feature).is_some() {
+        "Waiting for diff review".to_string()
+    } else if opencode_sidebar
         .and_then(|sidebar| sidebar.pending_permission.as_ref())
         .is_some()
     {
@@ -109,7 +115,9 @@ fn build_opencode_sidebar_data(
         agent_kind: SessionKind::Opencode,
         status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
         prompt_text,
-        work_text,
+        work_text: pending_diff_review_work_text(app, project, feature)
+            .or(work_text)
+            .or_else(|| fallback_sidebar_work_text(app, project, feature, view)),
         todos_text,
         summary_text,
     })
@@ -133,7 +141,8 @@ fn build_claude_sidebar_data(
     } else {
         feature.summary.clone()
     };
-    let work_text = fallback_sidebar_work_text(app, project, feature, view);
+    let work_text = pending_diff_review_work_text(app, project, feature)
+        .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
     let summary_text = compose_sidebar_summary_text(None, summary_text);
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
     let status_text = compose_sidebar_status_text(activity_line, usage_line, None);
@@ -174,8 +183,8 @@ fn build_codex_sidebar_data(
         feature.summary.clone()
     };
     let codex_live = app.codex_live_thread(&feature.tmux_session);
-    let work_text = codex_live
-        .and_then(|live| live.sidebar_work_text())
+    let work_text = pending_diff_review_work_text(app, project, feature)
+        .or_else(|| codex_live.and_then(|live| live.sidebar_work_text()))
         .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
     let summary_text = compose_sidebar_summary_text(
         codex_live.and_then(|live| live.summary_prefix()),
@@ -589,6 +598,39 @@ fn fallback_sidebar_work_text(
     }
 
     None
+}
+
+fn pending_diff_review_work_text(
+    app: &App,
+    project: &Project,
+    feature: &Feature,
+) -> Option<String> {
+    let matching_inputs = app
+        .pending_inputs
+        .iter()
+        .filter(|input| {
+            input.notification_type == "diff-review"
+                && (input.session_id == feature.tmux_session
+                    || (input.project_name.as_deref() == Some(project.name.as_str())
+                        && input.feature_name.as_deref() == Some(feature.name.as_str())))
+        })
+        .collect::<Vec<_>>();
+
+    let first = matching_inputs.first()?;
+    let message = first.message.trim();
+    let mut text = format!(
+        "State: waiting for diff review\nRequest: {}",
+        if message.is_empty() {
+            "Review the proposed change before continuing."
+        } else {
+            message
+        }
+    );
+    if matching_inputs.len() > 1 {
+        text.push_str(&format!("\nQueue: {} pending", matching_inputs.len()));
+    }
+    text.push_str("\nHint: use leader V if the review prompt is not appearing.");
+    Some(text)
 }
 
 fn format_sidebar_usage(status: &str) -> String {
@@ -1044,8 +1086,8 @@ mod tests {
     };
     use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
-    use ratatui::{Terminal, backend::TestBackend};
     use ratatui::layout::Rect;
+    use ratatui::{Terminal, backend::TestBackend};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -1354,6 +1396,214 @@ mod tests {
         assert_eq!(
             fallback_sidebar_work_text(&app, &project, &feature, &view).as_deref(),
             Some("State: waiting for input\nRequest: Need approval before applying the patch.")
+        );
+    }
+
+    #[test]
+    fn pending_diff_review_updates_claude_sidebar_work_text() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "session-1".into(),
+                kind: SessionKind::Claude,
+                label: "Claude".into(),
+                tmux_window: "claude".into(),
+                claude_session_id: Some("claude-session".into()),
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.pending_inputs.push(PendingInput {
+            session_id: "amf-feature".into(),
+            cwd: "/tmp/demo".into(),
+            message: "Review the change before continuing.".into(),
+            notification_type: "diff-review".into(),
+            file_path: PathBuf::new(),
+            target_file_path: Some("src/main.rs".into()),
+            relative_path: Some("src/main.rs".into()),
+            change_id: None,
+            tool: Some("Edit".into()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: None,
+            project_name: Some("demo".into()),
+            feature_name: Some("feature".into()),
+            proceed_signal: None,
+            request_id: None,
+            reply_socket: None,
+        });
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
+        assert_eq!(
+            sidebar.work_text.as_deref(),
+            Some(
+                "State: waiting for diff review\nRequest: Review the change before continuing.\nHint: use leader V if the review prompt is not appearing."
+            )
+        );
+    }
+
+    #[test]
+    fn pending_diff_review_updates_opencode_sidebar_work_text() {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "session-1".into(),
+                kind: SessionKind::Opencode,
+                label: "Opencode".into(),
+                tmux_window: "opencode".into(),
+                claude_session_id: None,
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Opencode,
+            enable_chrome: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let project = Project {
+            id: "proj-1".into(),
+            name: "demo".into(),
+            repo: PathBuf::from("/tmp/demo"),
+            collapsed: false,
+            features: vec![feature.clone()],
+            created_at: now,
+            preferred_agent: AgentKind::Opencode,
+            is_git: false,
+        };
+        let mut app = App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![project],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.pending_inputs.push(PendingInput {
+            session_id: "amf-feature".into(),
+            cwd: "/tmp/demo".into(),
+            message: "Review the change before continuing.".into(),
+            notification_type: "diff-review".into(),
+            file_path: PathBuf::new(),
+            target_file_path: Some("src/main.rs".into()),
+            relative_path: Some("src/main.rs".into()),
+            change_id: None,
+            tool: Some("Edit".into()),
+            old_snippet: None,
+            new_snippet: None,
+            original_file: None,
+            proposed_file: None,
+            is_new_file: None,
+            reason: None,
+            response_file: None,
+            project_name: Some("demo".into()),
+            feature_name: Some("feature".into()),
+            proceed_signal: None,
+            request_id: None,
+            reply_socket: None,
+        });
+
+        let view = ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "opencode".into(),
+            "Opencode".into(),
+            SessionKind::Opencode,
+            VibeMode::Vibeless,
+            false,
+        );
+
+        let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
+        assert_eq!(
+            sidebar.work_text.as_deref(),
+            Some(
+                "State: waiting for diff review\nRequest: Review the change before continuing.\nHint: use leader V if the review prompt is not appearing."
+            )
         );
     }
 

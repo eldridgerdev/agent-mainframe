@@ -166,16 +166,26 @@ jobs:
       - name: Generate release notes
         id: notes
         run: |
-          PREV_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]' \
-            | sed -n '2p')
-          if [ -n "$PREV_TAG" ]; then
-            BODY=$(git log "$PREV_TAG"..HEAD --pretty=format:"- %s" \
-              --no-merges)
-          else
-            BODY=$(git log --pretty=format:"- %s" --no-merges)
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          SECTION_LINE=$(awk -v tag="$CURRENT_TAG" '
+            $0 ~ "^## \\[" tag "\\] - " { print NR; exit }
+          ' CHANGELOG.md)
+
+          if [ -z "$SECTION_LINE" ]; then
+            echo "Error: could not find a changelog section for ${CURRENT_TAG}." >&2
+            exit 1
           fi
+
+          BODY=$(awk -v tag="$CURRENT_TAG" '
+            $0 ~ "^## \\[" tag "\\] - " { capture=1; next }
+            capture && $0 ~ "^## \\[" { exit }
+            capture { print }
+          ' CHANGELOG.md)
+
           echo "body<<EOF" >> "$GITHUB_OUTPUT"
           echo "$BODY" >> "$GITHUB_OUTPUT"
+          echo "" >> "$GITHUB_OUTPUT"
+          echo "_Full changelog section: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${CURRENT_TAG}/CHANGELOG.md#L${SECTION_LINE})_" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release

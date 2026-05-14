@@ -84,18 +84,17 @@ fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
     app.pane_content = "same formatted content".to_string();
     app.pane_lines = vec![ratatui::text::Line::from("ABCD")];
 
-    app.view_snapshot_tx
-        .send(ViewSnapshot {
-            session: "amf-my-feat".to_string(),
-            window: "terminal".to_string(),
-            pane_content: Some("same formatted content".to_string()),
-            rendered_lines: Some(vec![ratatui::text::Line::from("A  D")]),
-            cursor: None,
-            capture_duration: None,
-            render_duration: None,
-            cursor_duration: None,
-            pipe_read_duration: None,
-        });
+    app.view_snapshot_tx.send(ViewSnapshot {
+        session: "amf-my-feat".to_string(),
+        window: "terminal".to_string(),
+        pane_content: Some("same formatted content".to_string()),
+        rendered_lines: Some(vec![ratatui::text::Line::from("A  D")]),
+        cursor: None,
+        capture_duration: None,
+        render_duration: None,
+        cursor_duration: None,
+        pipe_read_duration: None,
+    });
 
     let (pane_changed, cursor_changed) = app.drain_view_snapshots();
 
@@ -3815,7 +3814,7 @@ fn ipc_diff_review_updates_codex_live_review_state() {
             .and_then(|live| live.sidebar_work_text())
             .as_deref(),
         Some(
-            "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the change before continuing."
+            "State: waiting for diff review\nFile: src/main.rs\nTool: Edit\nRequest: Review the change before continuing.\nHint: use leader V if the review prompt is not appearing."
         )
     );
 }
@@ -3864,7 +3863,7 @@ fn ipc_tool_activity_temporarily_overrides_older_review_work() {
             .and_then(|live| live.sidebar_work_text())
             .as_deref(),
         Some(
-            "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the change before continuing."
+            "State: waiting for diff review\nFile: src/main.rs\nRequest: Review the change before continuing.\nHint: use leader V if the review prompt is not appearing."
         )
     );
 }

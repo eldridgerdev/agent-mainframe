@@ -17,13 +17,20 @@ pub fn launch_override_args(workdir: &Path) -> Vec<String> {
         .map(|home| home.join(".codex").join("config.toml"))
         .unwrap_or_default();
 
-    launch_override_args_for(&user_config_path, &hook_path)
+    launch_override_args_for(&user_config_path, &hook_path, workdir)
 }
 
-fn launch_override_args_for(config_path: &Path, hook_path: &Path) -> Vec<String> {
+fn launch_override_args_for(config_path: &Path, hook_path: &Path, workdir: &Path) -> Vec<String> {
     let user_config = read_launch_config(config_path).unwrap_or_default();
     let launch_config = build_launch_config(&user_config, hook_path);
-    launch_config_to_args(launch_config)
+    let mut args = vec![
+        "-C".to_string(),
+        workdir.to_string_lossy().into_owned(),
+        "--add-dir".to_string(),
+        workdir.to_string_lossy().into_owned(),
+    ];
+    args.extend(launch_config_to_args(launch_config));
+    args
 }
 
 fn read_launch_config(config_path: &Path) -> Option<toml::map::Map<String, toml::Value>> {
@@ -124,16 +131,20 @@ mod tests {
         let hook_path = dir.path().join("amf-codex-notify.sh");
 
         fs::write(&config_path, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
-        let args = launch_override_args_for(&config_path, &hook_path);
+        let args = launch_override_args_for(&config_path, &hook_path, dir.path());
 
-        assert_eq!(args.len(), 2);
-        assert_eq!(args[0], "-c");
+        assert_eq!(args.len(), 6);
+        assert_eq!(args[0], "-C");
+        assert_eq!(args[1], dir.path().to_string_lossy());
+        assert_eq!(args[2], "--add-dir");
+        assert_eq!(args[3], dir.path().to_string_lossy());
+        assert_eq!(args[4], "-c");
         assert!(
-            args[1].contains("/tmp/existing-hook.sh"),
+            args[5].contains("/tmp/existing-hook.sh"),
             "existing user notify entry should be preserved"
         );
         assert!(
-            args[1].contains("amf-codex-notify.sh"),
+            args[5].contains("amf-codex-notify.sh"),
             "AMF hook should be injected into the transient override"
         );
     }
@@ -144,10 +155,14 @@ mod tests {
         let config_path = dir.path().join("missing.toml");
         let hook_path = dir.path().join("amf-codex-notify.sh");
 
-        let args = launch_override_args_for(&config_path, &hook_path);
+        let args = launch_override_args_for(&config_path, &hook_path, dir.path());
 
-        assert_eq!(args.len(), 2);
-        assert_eq!(args[0], "-c");
-        assert!(args[1].contains("amf-codex-notify.sh"));
+        assert_eq!(args.len(), 6);
+        assert_eq!(args[0], "-C");
+        assert_eq!(args[1], dir.path().to_string_lossy());
+        assert_eq!(args[2], "--add-dir");
+        assert_eq!(args[3], dir.path().to_string_lossy());
+        assert_eq!(args[4], "-c");
+        assert!(args[5].contains("amf-codex-notify.sh"));
     }
 }

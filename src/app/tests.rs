@@ -1477,7 +1477,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
                     session == "amf-coached"
                         && window == "codex"
                         && resume.is_none()
-                        && extra_args.is_empty()
+                        && extra_args.iter().any(|arg| arg == "--add-dir")
                 })
                 .returning(|_, _, _, _| Ok(()));
         }
@@ -5024,7 +5024,7 @@ fn create_feature_automation_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
-        .withf(|_, _, _, extra_args| extra_args.is_empty())
+        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
         .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
@@ -5208,7 +5208,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(2)
-        .withf(|_, _, _, extra_args| extra_args.is_empty())
+        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
         .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(2)

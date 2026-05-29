@@ -629,6 +629,7 @@ impl App {
                         .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
                 }
                 SessionKind::Codex => {
+                    let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
                     // In vibeless mode, launch a diff-review watcher alongside
                     // Codex so each file change can be approved/rejected via
                     // the AMF popup.
@@ -638,28 +639,23 @@ impl App {
                         && watcher_path.exists()
                     {
                         let cmd = format!(
-                            "{} {} {} & {} codex",
+                            "{} {} {} &",
                             TmuxManager::shell_env_prefix(&[(
                                 "AMF_SESSION",
                                 &feature.tmux_session
                             )]),
                             watcher_path.display(),
-                            feature.workdir.display(),
-                            TmuxManager::shell_env_prefix(&[(
-                                "AMF_SESSION",
-                                &feature.tmux_session
-                            )]),
+                            feature.workdir.display()
                         );
                         self.tmux
                             .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
-                    } else {
-                        self.tmux.launch_codex(
-                            &feature.tmux_session,
-                            &session.tmux_window,
-                            None,
-                            Vec::new(),
-                        )?;
                     }
+                    self.tmux.launch_codex(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        None,
+                        codex_args,
+                    )?;
                 }
                 SessionKind::Pi => {
                     self.tmux

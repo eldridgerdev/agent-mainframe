@@ -469,7 +469,9 @@ impl App {
                 TmuxManager::launch_opencode(&tmux_session, &window)?;
             }
             AgentKind::Codex => {
-                TmuxManager::launch_codex(&tmux_session, &window, None, &[])?;
+                let codex_args = crate::codex_config::launch_override_args(&workdir);
+                let codex_refs: Vec<&str> = codex_args.iter().map(|s| s.as_str()).collect();
+                TmuxManager::launch_codex(&tmux_session, &window, None, &codex_refs)?;
             }
             AgentKind::Pi => {
                 TmuxManager::launch_pi(&tmux_session, &window)?;

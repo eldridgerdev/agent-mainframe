@@ -16,32 +16,49 @@ fn read_status_line(content: &str) -> Option<String> {
     if line.is_empty() { None } else { Some(line) }
 }
 
+fn file_mtime_nanos(path: &Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+}
+
 fn read_custom_session_status(
     session_id: &str,
     feature_id: &str,
     workdir: &Path,
     db: Option<&crate::db::AmfDb>,
 ) -> Option<String> {
-    if let Some(db) = db
-        && let Ok(Some(text)) = db.load_session_status(session_id)
-    {
-        let text = text.trim().to_string();
-        if !text.is_empty() {
-            return Some(text);
-        }
-    }
-
     let status_path = workdir
         .join(".amf")
         .join("session-status")
         .join(format!("{}.txt", session_id));
 
+    // Cheap stat to get the current file mtime before touching the DB.
+    let current_mtime = file_mtime_nanos(&status_path);
+
+    if let Some(db) = db {
+        if let Ok(Some((text, cached_mtime))) = db.load_session_status_with_mtime(session_id) {
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                // Return cached value when:
+                //   - file doesn't exist (current_mtime is None) — use DB as fallback, OR
+                //   - file mtime matches what we last cached — file unchanged.
+                if current_mtime.is_none() || current_mtime == cached_mtime {
+                    return Some(text);
+                }
+            }
+        }
+    }
+
+    // File exists and is newer than cache (or no cache yet) — read it.
     let file_text = std::fs::read_to_string(&status_path)
         .ok()
         .and_then(|content| read_status_line(&content));
 
     if let (Some(text), Some(db)) = (file_text.as_ref(), db) {
-        let _ = db.upsert_session_status(session_id, feature_id, text);
+        let _ = db.upsert_session_status(session_id, feature_id, text, current_mtime);
     }
 
     file_text

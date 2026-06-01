@@ -202,7 +202,14 @@ fn main() -> Result<()> {
                     .then(|| feature.id.clone())
             })
             .context("session not found in store")?;
-        db.upsert_session_status(&session_id, &feature_id, &status_text)?;
+        db.upsert_session_status(&session_id, &feature_id, &status_text, None)?;
+        // Best-effort IPC push so a running AMF instance updates immediately.
+        let json = serde_json::json!({
+            "type": "session-status",
+            "session_id": session_id,
+            "message": status_text,
+        });
+        let _ = ipc::send(&ipc::socket_path(), &json.to_string());
         return Ok(());
     }
 
@@ -808,10 +815,14 @@ fn run_loop<B: Backend>(
                 app.perf
                     .record_duration("sync.statuses", started_at.elapsed());
             }
-            let session_status_started_at = Instant::now();
-            app.sync_session_status();
-            app.perf
-                .record_duration("sync.session_status", session_status_started_at.elapsed());
+            // Kick off a background refresh only when the previous one has
+            // finished; results are applied each tick via poll_session_status_bg.
+            if app.session_status_bg.is_none() {
+                let session_status_started_at = Instant::now();
+                app.sync_session_status_background();
+                app.perf
+                    .record_duration("sync.session_status_bg_start", session_status_started_at.elapsed());
+            }
             let usage_refresh_started_at = Instant::now();
             app.usage.refresh();
             app.perf

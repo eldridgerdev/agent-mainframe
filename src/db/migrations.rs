@@ -32,6 +32,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Replace per-file session-status with DB table",
             MIGRATION_004,
         ),
+        (
+            "Add file_mtime_nanos to session_status for cache invalidation",
+            MIGRATION_005,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -96,6 +100,10 @@ CREATE TABLE IF NOT EXISTS session_status (
 );
 CREATE INDEX IF NOT EXISTS idx_session_status_feature
     ON session_status(feature_id);
+";
+
+const MIGRATION_005: &str = "
+ALTER TABLE session_status ADD COLUMN file_mtime_nanos INTEGER;
 ";
 
 const MIGRATION_001: &str = "

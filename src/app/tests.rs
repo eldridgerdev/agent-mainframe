@@ -3123,7 +3123,7 @@ fn sync_session_status_reads_first_line() {
     let db_path = db_dir.path().join("amf.db");
     let db = crate::db::AmfDb::open(&db_path).unwrap();
     db.save_store(&store).unwrap();
-    db.upsert_session_status(session_id, &feature_id, "API :3000 | DB :5432")
+    db.upsert_session_status(session_id, &feature_id, "API :3000 | DB :5432", None)
         .unwrap();
 
     let mut app = App::new_for_test(
@@ -4587,7 +4587,7 @@ fn status_file_cleanup_during_remove() {
     let db_path = db_dir.path().join("amf.db");
     let db = crate::db::AmfDb::open(&db_path).unwrap();
     db.save_store(&store).unwrap();
-    db.upsert_session_status(session_id, &feature_id, "running")
+    db.upsert_session_status(session_id, &feature_id, "running", None)
         .unwrap();
 
     let mut tmux = MockTmuxOps::new();

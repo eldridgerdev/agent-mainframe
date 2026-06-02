@@ -20,6 +20,7 @@ struct IpcMsg {
     msg_type: Option<String>,
     source: Option<String>,
     session_id: Option<String>,
+    amf_session: Option<String>,
     cwd: Option<String>,
     message: Option<String>,
     notification_type: Option<String>,
@@ -167,6 +168,53 @@ impl App {
         (project_name, feature_name, agent_name, indices)
     }
 
+    fn project_feature_for_amf_session(
+        &self,
+        amf_session: Option<&str>,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<(usize, usize)>,
+    ) {
+        let Some(amf_session) = amf_session.filter(|value| !value.is_empty()) else {
+            return (None, None, None, None);
+        };
+
+        for (pi, project) in self.store.projects.iter().enumerate() {
+            for (fi, feature) in project.features.iter().enumerate() {
+                if feature.tmux_session == amf_session {
+                    return (
+                        Some(project.name.clone()),
+                        Some(feature.name.clone()),
+                        Some(feature.agent.display_name().to_string()),
+                        Some((pi, fi)),
+                    );
+                }
+            }
+        }
+
+        (None, None, None, None)
+    }
+
+    fn project_feature_for_message(
+        &self,
+        amf_session: Option<&str>,
+        cwd_path: &Path,
+    ) -> (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<(usize, usize)>,
+    ) {
+        let by_session = self.project_feature_for_amf_session(amf_session);
+        if by_session.3.is_some() {
+            by_session
+        } else {
+            self.project_feature_for_cwd(cwd_path)
+        }
+    }
+
     fn codex_feature_for_message(
         &self,
         session_id: Option<&str>,
@@ -189,7 +237,7 @@ impl App {
             }
         }
 
-        let (_, _, _, indices) = self.project_feature_for_cwd(cwd_path);
+        let (_, _, _, indices) = self.project_feature_for_message(session_id, cwd_path);
         let (pi, fi) = indices?;
         let feature = self.store.projects.get(pi)?.features.get(fi)?;
         if feature.agent != AgentKind::Codex {
@@ -728,6 +776,7 @@ impl App {
             return;
         }
 
+        let amf_session = msg.amf_session.clone();
         let session_id = msg.session_id.unwrap_or_default();
         let cwd = msg.cwd.unwrap_or_default();
         let source = msg.source.unwrap_or_default();
@@ -743,8 +792,8 @@ impl App {
         // (120s) before the user navigates into the feature view.
         // Codex features are excluded: they surface pending reviews via the
         // sidebar live state instead of the diff-review prompt.
-        let (_, found_feature_name_for_open, _, found_indices) =
-            self.project_feature_for_cwd(&cwd_path);
+        let (found_project_name_for_open, found_feature_name_for_open, _, found_indices) =
+            self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
         let feature_is_codex = found_indices
             .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
             .unwrap_or(false);
@@ -775,7 +824,7 @@ impl App {
                 is_new_file: msg.is_new_file,
                 reason: msg.reason,
                 response_file: msg.response_file,
-                project_name: None,
+                project_name: found_project_name_for_open,
                 feature_name: found_feature_name_for_open,
                 proceed_signal: msg.proceed_signal,
                 request_id: msg.request_id.clone(),
@@ -785,9 +834,9 @@ impl App {
             return;
         }
 
-        // Resolve project/feature from cwd.
+        // Resolve project/feature from the AMF tmux session first, then cwd.
         let (project_name, feature_name, agent_name, indices) =
-            self.project_feature_for_cwd(&cwd_path);
+            self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
         if let Some((pi, fi)) = indices {
             if self.store.projects[pi].features[fi].agent == AgentKind::Codex {
                 self.refresh_sidebar_plan_for_feature(pi, fi);
@@ -931,6 +980,7 @@ impl App {
             message: Option<String>,
             #[serde(alias = "type")]
             notification_type: Option<String>,
+            amf_session: Option<String>,
             proceed_signal: Option<String>,
             request_id: Option<String>,
             reply_socket: Option<String>,
@@ -1070,13 +1120,14 @@ impl App {
                 let session_id = notif.session_id.unwrap_or_default();
                 let cwd = notif.cwd.unwrap_or_default();
                 let notification_type = notif.notification_type.unwrap_or_default();
+                let amf_session = notif.amf_session.clone();
                 let proceed_signal_val = notif.proceed_signal.clone();
                 let is_structured_diff_review = notification_type == "change-reason"
                     || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
 
                 let cwd_path = PathBuf::from(&cwd);
-                let (_, found_feature_name_for_open, _, _) =
-                    self.project_feature_for_cwd(&cwd_path);
+                let (found_project_name_for_open, found_feature_name_for_open, _, _) =
+                    self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
                 if is_structured_diff_review
                     && let AppMode::Viewing(view) = &self.mode
                     && found_feature_name_for_open.as_deref() == Some(&view.feature_name)
@@ -1098,7 +1149,7 @@ impl App {
                         is_new_file: notif.is_new_file,
                         reason: notif.reason,
                         response_file: notif.response_file,
-                        project_name: None,
+                        project_name: found_project_name_for_open,
                         feature_name: found_feature_name_for_open,
                         proceed_signal: proceed_signal_val,
                         request_id: notif.request_id.clone(),
@@ -1110,7 +1161,8 @@ impl App {
                     return true;
                 }
 
-                let (project_name, feature_name, _, _) = self.project_feature_for_cwd(&cwd_path);
+                let (project_name, feature_name, _, _) =
+                    self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
 
                 inputs.push(PendingInput {
                     session_id,

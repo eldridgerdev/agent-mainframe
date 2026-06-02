@@ -177,6 +177,21 @@ pub struct RenameSessionState {
     pub return_to: RenameReturnTo,
 }
 
+#[derive(Clone)]
+pub enum NewSessionTarget {
+    Builtin(SessionKind),
+    Custom(CustomSessionConfig),
+}
+
+#[derive(Clone)]
+pub struct NewSessionNameState {
+    pub project_idx: usize,
+    pub feature_idx: usize,
+    pub target: NewSessionTarget,
+    pub input: String,
+    pub return_to: SessionPickerState,
+}
+
 #[derive(Debug, Clone)]
 pub struct RenameFeatureState {
     pub project_idx: usize,
@@ -366,6 +381,7 @@ pub enum AppMode {
     BrowsingPath(Box<BrowsePathState>),
     CommandPicker(super::CommandPickerState),
     Searching(SearchState),
+    NamingNewSession(NewSessionNameState),
     OpencodeSessionPicker(OpencodeSessionPickerState),
     ConfirmingOpencodeSession {
         session_id: String,
@@ -609,6 +625,7 @@ pub enum HookNext {
         plan_mode: bool,
         agent: AgentKind,
         create_terminal: bool,
+        session_name: String,
         enable_chrome: bool,
         steering_enabled: bool,
     },
@@ -641,6 +658,7 @@ pub struct RunningHookState {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
+    pub session_name: String,
     pub enable_chrome: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
@@ -721,6 +739,7 @@ pub struct BackgroundHook {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
+    pub session_name: String,
     pub enable_chrome: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
@@ -745,6 +764,7 @@ impl BackgroundHook {
             plan_mode: state.plan_mode,
             agent: state.agent,
             create_terminal: state.create_terminal,
+            session_name: state.session_name,
             enable_chrome: state.enable_chrome,
             steering_enabled: state.steering_enabled,
             child: state.child,
@@ -810,6 +830,7 @@ pub enum CreateFeatureStep {
     Branch,
     Worktree,
     Mode,
+    SessionName,
     TaskPrompt,
     ConfirmSuperVibe,
 }
@@ -836,6 +857,7 @@ pub struct CreateFeatureState {
     pub review: bool,
     pub plan_mode: bool,
     pub create_terminal: bool,
+    pub session_name: String,
     pub source_index: usize,
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
@@ -879,6 +901,7 @@ impl CreateFeatureState {
             review: false,
             plan_mode: false,
             create_terminal: false,
+            session_name: "Claude 1".to_string(),
             source_index: 0,
             worktrees,
             worktree_index: 0,
@@ -908,6 +931,7 @@ pub struct PreparedFeatureLaunch {
     pub plan_mode: bool,
     pub agent: AgentKind,
     pub create_terminal: bool,
+    pub session_name: String,
     pub enable_chrome: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,

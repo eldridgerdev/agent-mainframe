@@ -1,6 +1,17 @@
 {
   "custom_sessions": [
     {
+      "name": "Status Ticker",
+      "description": "Long-running test session — updates status every 2s via file and IPC",
+      "command": "bash .amf/test-ticker.sh",
+      "window_name": "ticker",
+      "icon": "~",
+      "icon_nerd": "󰁫",
+      "on_stop": null,
+      "autolaunch": null,
+      "pre_check": null
+    },
+    {
       "name": "Release",
       "description": "Run release script to bump version and tag",
       "command": "CURRENT=$(sed -n 's/^version = \"\\([^\"]*\\)\".*/\\1/p' Cargo.toml | head -1) && echo \"Current version: $CURRENT\" && read -p \"Release version (major|minor|patch|<ver>): \" version && bash scripts/release.sh \"$version\"",

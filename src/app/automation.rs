@@ -314,7 +314,7 @@ impl App {
             request.enable_chrome,
         );
         let mut feature = feature;
-        Self::initialize_feature_sessions(&mut feature, request.create_terminal);
+        Self::initialize_feature_sessions(&mut feature, request.create_terminal, None);
 
         self.store.add_feature(&request.project_name, feature);
         self.save()?;

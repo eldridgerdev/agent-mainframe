@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    ProjectAgentConfigState, RenameFeatureState, RenameSessionState, SessionConfigState,
+    NewSessionNameState, ProjectAgentConfigState, RenameFeatureState, RenameSessionState,
+    SessionConfigState,
 };
 use crate::theme::Theme;
 
@@ -19,6 +20,32 @@ pub fn draw_rename_session_dialog(frame: &mut Frame, state: &RenameSessionState,
 
     let block = Block::default()
         .title(" Rename Session ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .split(inner);
+
+    let name_field = Paragraph::new(Line::from(vec![
+        Span::styled(" Name: ", Style::default().fg(theme.primary.to_color())),
+        Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
+        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
+    ]));
+    frame.render_widget(name_field, chunks[0]);
+}
+
+pub fn draw_new_session_name_dialog(frame: &mut Frame, state: &NewSessionNameState, theme: &Theme) {
+    let area = centered_rect(50, 25, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Name Session ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));

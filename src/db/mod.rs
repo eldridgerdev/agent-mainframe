@@ -95,13 +95,24 @@ impl AmfDb {
         session_status::load(&self.conn, session_id)
     }
 
+    /// Returns `(status_text, file_mtime_nanos)` for the cached entry.
+    /// `file_mtime_nanos` is `None` when the row was written without a mtime
+    /// (e.g. from an IPC push or the old schema).
+    pub fn load_session_status_with_mtime(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, Option<u64>)>> {
+        session_status::load_with_mtime(&self.conn, session_id)
+    }
+
     pub fn upsert_session_status(
         &self,
         session_id: &str,
         feature_id: &str,
         status_text: &str,
+        file_mtime_nanos: Option<u64>,
     ) -> Result<()> {
-        session_status::upsert(&self.conn, session_id, feature_id, status_text)
+        session_status::upsert(&self.conn, session_id, feature_id, status_text, file_mtime_nanos)
     }
 
     pub fn delete_session_status(&self, session_id: &str) -> Result<()> {

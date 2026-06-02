@@ -2,7 +2,10 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::json;
 
-use crate::app::{App, AppMode, CodexDebugCommand, CommandAction, Selection};
+use crate::app::{
+    App, AppMode, CodexDebugCommand, CommandAction, NewSessionNameState, NewSessionTarget,
+    Selection,
+};
 use crate::project::SessionKind;
 use crate::tmux::TmuxManager;
 
@@ -281,8 +284,7 @@ pub fn handle_syntax_language_picker_key(app: &mut App, key: KeyCode) -> Result<
 pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key {
         KeyEvent {
-            code: KeyCode::Esc,
-            ..
+            code: KeyCode::Esc, ..
         } => {
             if let AppMode::MarkdownFilePicker(state) = &mut app.mode
                 && state.search_active
@@ -1051,66 +1053,148 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                         app.mode = AppMode::SessionPicker(state);
                         return Ok(());
                     }
-                    match app.add_builtin_session(state.pi, state.fi, builtin.kind.clone()) {
-                        Ok(()) => {
-                            app.push_toast_success(format!("Added '{}'", builtin.label));
+                    if builtin.kind == SessionKind::Vscode {
+                        match app.add_builtin_session(state.pi, state.fi, builtin.kind.clone()) {
+                            Ok(()) => {
+                                app.push_toast_success(format!("Added '{}'", builtin.label));
+                            }
+                            Err(e) => {
+                                app.push_toast_error(format!("Error: {}", e));
+                            }
                         }
-                        Err(e) => {
-                            app.push_toast_error(format!("Error: {}", e));
+                        if let Some(view) = state.from_view {
+                            app.mode = AppMode::Viewing(view);
                         }
+                        return Ok(());
                     }
+                    let input = app
+                        .store
+                        .projects
+                        .get(state.pi)
+                        .and_then(|p| p.features.get(state.fi))
+                        .map(|feature| feature.next_label(&builtin.kind))
+                        .unwrap_or_else(|| builtin.label.clone());
+                    app.mode = AppMode::NamingNewSession(NewSessionNameState {
+                        project_idx: state.pi,
+                        feature_idx: state.fi,
+                        target: NewSessionTarget::Builtin(builtin.kind.clone()),
+                        input,
+                        return_to: state.clone(),
+                    });
                 } else {
                     let custom_idx = state.selected - builtin_len;
                     if let Some(cfg) = state.custom_sessions.get(custom_idx).cloned() {
-                        // Resolve working directory for the
-                        // pre_check (same logic as session_ops).
-                        let check_dir = app
-                            .store
-                            .projects
-                            .get(state.pi)
-                            .and_then(|p| p.features.get(state.fi))
-                            .map(|f| {
-                                cfg.working_dir
-                                    .as_ref()
-                                    .map(|rel| f.workdir.join(rel))
-                                    .unwrap_or_else(|| f.workdir.clone())
-                            });
-                        let pre_ok = match &check_dir {
-                            Some(dir) => cfg.run_pre_check(dir),
-                            None => Ok(()),
-                        };
-                        if let Err(reason) = pre_ok {
-                            app.push_toast_warning(format!("{}: {}", cfg.name, reason));
-                        } else {
-                            match app.add_custom_session_type(state.pi, state.fi, &cfg) {
-                                Ok(autolaunch) => {
-                                    app.push_toast_success(format!("Added '{}'", cfg.name));
-                                    if autolaunch {
-                                        // Point selection to the newly added session
-                                        // (last in the sessions list).
-                                        if let Some(feature) = app
-                                            .store
-                                            .projects
-                                            .get(state.pi)
-                                            .and_then(|p| p.features.get(state.fi))
-                                        {
-                                            let si = feature.sessions.len().saturating_sub(1);
-                                            app.selection =
-                                                Selection::Session(state.pi, state.fi, si);
-                                        }
-                                        let _ = app.enter_view();
+                        app.mode = AppMode::NamingNewSession(NewSessionNameState {
+                            project_idx: state.pi,
+                            feature_idx: state.fi,
+                            input: cfg.name.clone(),
+                            target: NewSessionTarget::Custom(cfg),
+                            return_to: state.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Esc => {
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            if let AppMode::NamingNewSession(state) = old_mode {
+                app.mode = AppMode::SessionPicker(state.return_to);
+            }
+        }
+        KeyCode::Enter => {
+            let old_mode = std::mem::replace(&mut app.mode, AppMode::Normal);
+            let AppMode::NamingNewSession(state) = old_mode else {
+                return Ok(());
+            };
+
+            let label = state.input.trim().to_string();
+            if label.is_empty() {
+                app.message = Some("Name cannot be empty".into());
+                app.mode = AppMode::NamingNewSession(state);
+                return Ok(());
+            }
+
+            match state.target {
+                NewSessionTarget::Builtin(kind) => {
+                    match app.add_builtin_session_with_label(
+                        state.project_idx,
+                        state.feature_idx,
+                        kind,
+                        label.clone(),
+                    ) {
+                        Ok(()) => app.push_toast_success(format!("Added '{}'", label)),
+                        Err(e) => app.push_toast_error(format!("Error: {}", e)),
+                    }
+                }
+                NewSessionTarget::Custom(cfg) => {
+                    let check_dir = app
+                        .store
+                        .projects
+                        .get(state.project_idx)
+                        .and_then(|p| p.features.get(state.feature_idx))
+                        .map(|f| {
+                            cfg.working_dir
+                                .as_ref()
+                                .map(|rel| f.workdir.join(rel))
+                                .unwrap_or_else(|| f.workdir.clone())
+                        });
+                    let pre_ok = match &check_dir {
+                        Some(dir) => cfg.run_pre_check(dir),
+                        None => Ok(()),
+                    };
+                    if let Err(reason) = pre_ok {
+                        app.push_toast_warning(format!("{}: {}", cfg.name, reason));
+                    } else {
+                        match app.add_custom_session_type_named(
+                            state.project_idx,
+                            state.feature_idx,
+                            &cfg,
+                            label.clone(),
+                        ) {
+                            Ok(autolaunch) => {
+                                app.push_toast_success(format!("Added '{}'", label));
+                                if autolaunch {
+                                    if let Some(feature) = app
+                                        .store
+                                        .projects
+                                        .get(state.project_idx)
+                                        .and_then(|p| p.features.get(state.feature_idx))
+                                    {
+                                        let si = feature.sessions.len().saturating_sub(1);
+                                        app.selection = Selection::Session(
+                                            state.project_idx,
+                                            state.feature_idx,
+                                            si,
+                                        );
                                     }
-                                }
-                                Err(e) => {
-                                    app.push_toast_error(format!("Error: {}", e));
+                                    let _ = app.enter_view();
                                 }
                             }
+                            Err(e) => app.push_toast_error(format!("Error: {}", e)),
                         }
                     }
                 }
-                if let Some(view) = state.from_view {
-                    app.mode = AppMode::Viewing(view);
-                }
+            }
+
+            if let Some(view) = state.return_to.from_view {
+                app.mode = AppMode::Viewing(view);
+            }
+        }
+        KeyCode::Backspace => {
+            if let AppMode::NamingNewSession(state) = &mut app.mode {
+                state.input.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::NamingNewSession(state) = &mut app.mode {
+                state.input.push(c);
             }
         }
         _ => {}

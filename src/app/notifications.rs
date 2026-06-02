@@ -646,6 +646,36 @@ impl App {
             return;
         }
 
+        if msg_type == "session-status" {
+            if let Some(sid) = msg.session_id.as_deref() {
+                let text = msg.message.as_deref().unwrap_or("").trim().to_string();
+                'status_outer: for project in &mut self.store.projects {
+                    for feature in &mut project.features {
+                        for session in &mut feature.sessions {
+                            if session.id != sid {
+                                continue;
+                            }
+                            session.status_text =
+                                if text.is_empty() { None } else { Some(text.clone()) };
+                            // Write through to DB with no mtime so the next
+                            // file-based poll re-validates against the file.
+                            if let Some(db) = &self.db {
+                                let _ = db.upsert_session_status(
+                                    sid,
+                                    &feature.id,
+                                    &text,
+                                    None,
+                                );
+                            }
+                            break 'status_outer;
+                        }
+                    }
+                }
+                self.log_debug("ipc", format!("session-status update for {sid}: {text:?}"));
+            }
+            return;
+        }
+
         if msg_type == "thinking-start" {
             if let Some(sid) = msg.session_id {
                 self.ipc_thinking_sessions.insert(sid.clone());

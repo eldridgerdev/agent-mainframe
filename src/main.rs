@@ -202,7 +202,14 @@ fn main() -> Result<()> {
                     .then(|| feature.id.clone())
             })
             .context("session not found in store")?;
-        db.upsert_session_status(&session_id, &feature_id, &status_text)?;
+        db.upsert_session_status(&session_id, &feature_id, &status_text, None)?;
+        // Best-effort IPC push so a running AMF instance updates immediately.
+        let json = serde_json::json!({
+            "type": "session-status",
+            "session_id": session_id,
+            "message": status_text,
+        });
+        let _ = ipc::send(&ipc::socket_path(), &json.to_string());
         return Ok(());
     }
 
@@ -670,8 +677,16 @@ fn run_loop<B: Backend>(
         let has_terminal_events = if is_viewing && !startup_loading {
             if let Some(wfd) = wakeup_rx_fd {
                 let mut fds = [
-                    libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
-                    libc::pollfd { fd: wfd, events: libc::POLLIN, revents: 0 },
+                    libc::pollfd {
+                        fd: 0,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: wfd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
                 ];
                 let timeout_ms = poll_duration.as_millis() as libc::c_int;
                 unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
@@ -787,9 +802,9 @@ fn run_loop<B: Backend>(
             && !startup_loading
             && !handled_user_events
             && last_view_refresh_request.elapsed() >= app::VIEW_PANE_REFRESH_INTERVAL
-            && app.last_view_activity_at.is_none_or(|last| {
-                last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD
-            })
+            && app
+                .last_view_activity_at
+                .is_none_or(|last| last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD)
         {
             app.request_view_snapshot_refresh();
             last_view_refresh_request = Instant::now();
@@ -808,10 +823,14 @@ fn run_loop<B: Backend>(
                 app.perf
                     .record_duration("sync.statuses", started_at.elapsed());
             }
-            let session_status_started_at = Instant::now();
-            app.sync_session_status();
-            app.perf
-                .record_duration("sync.session_status", session_status_started_at.elapsed());
+            // Kick off a background refresh only when the previous one has
+            // finished; results are applied each tick via poll_session_status_bg.
+            if app.session_status_bg.is_none() {
+                let session_status_started_at = Instant::now();
+                app.sync_session_status_background();
+                app.perf
+                    .record_duration("sync.session_status_bg_start", session_status_started_at.elapsed());
+            }
             let usage_refresh_started_at = Instant::now();
             app.usage.refresh();
             app.perf

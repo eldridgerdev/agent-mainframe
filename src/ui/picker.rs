@@ -509,7 +509,11 @@ pub fn draw_markdown_file_picker(
                 Constraint::Length(2),
             ]
         } else {
-            vec![Constraint::Length(1), Constraint::Min(1), Constraint::Length(2)]
+            vec![
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ]
         })
         .split(inner);
 
@@ -574,7 +578,7 @@ pub fn draw_markdown_file_picker(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(query_text, query_style),
-            ]))
+        ]))
     } else {
         let text = if state.query.is_empty() {
             "  Press / to search".to_string()
@@ -674,7 +678,10 @@ pub fn draw_markdown_file_picker(
             Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::styled(" open  ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled("Backspace", Style::default().fg(theme.warning.to_color())),
-            Span::styled(" clear filter  ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                " clear filter  ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::styled(
                 " back to selection mode",

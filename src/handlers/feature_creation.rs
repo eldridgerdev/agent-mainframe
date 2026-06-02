@@ -51,33 +51,70 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
         CreateFeatureStep::ExistingWorktree => match key {
             KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    state.step = CreateFeatureStep::Source;
+                    if state.worktree_search_active {
+                        state.worktree_search_active = false;
+                    } else {
+                        state.step = CreateFeatureStep::Source;
+                    }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    let len = state.worktrees.len();
-                    if len > 0 {
-                        state.worktree_index = (state.worktree_index + 1) % len;
+                    state.clamp_worktree_selection();
+                    let visible = state.visible_worktree_indices();
+                    if !visible.is_empty() {
+                        let pos = visible
+                            .iter()
+                            .position(|&idx| idx == state.worktree_index)
+                            .unwrap_or(0);
+                        state.worktree_index = visible[(pos + 1) % visible.len()];
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    let len = state.worktrees.len();
-                    if len > 0 {
-                        state.worktree_index = if state.worktree_index == 0 {
-                            len - 1
+                    state.clamp_worktree_selection();
+                    let visible = state.visible_worktree_indices();
+                    if !visible.is_empty() {
+                        let pos = visible
+                            .iter()
+                            .position(|&idx| idx == state.worktree_index)
+                            .unwrap_or(0);
+                        state.worktree_index = if pos == 0 {
+                            *visible.last().unwrap()
                         } else {
-                            state.worktree_index - 1
+                            visible[pos - 1]
                         };
                     }
                 }
             }
+            KeyCode::Char('/') => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    if state.worktree_search_active {
+                        state.worktree_query.push('/');
+                    } else {
+                        state.worktree_search_active = true;
+                        state.worktree_query.clear();
+                    }
+                    state.clamp_worktree_selection();
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode
+                    && state.worktree_search_active
+                {
+                    state.worktree_query.pop();
+                    state.clamp_worktree_selection();
+                }
+            }
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.clamp_worktree_selection();
+                    let visible = state.visible_worktree_indices();
                     if state.worktrees.is_empty() {
                         app.push_toast_warning("No available worktrees");
+                    } else if visible.is_empty() {
+                        app.push_toast_warning("No worktrees match the current filter");
                     } else if let Some(wt) = state.worktrees.get(state.worktree_index) {
                         state.branch = wt.branch.clone().unwrap_or_else(|| {
                             wt.path
@@ -87,6 +124,14 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                         });
                         state.step = CreateFeatureStep::Mode;
                     }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode
+                    && state.worktree_search_active
+                {
+                    state.worktree_query.push(c);
+                    state.clamp_worktree_selection();
                 }
             }
             _ => {}

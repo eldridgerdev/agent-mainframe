@@ -34,6 +34,9 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                         state.task_prompt.push_str(text);
                         state.refresh_prompt_analysis();
                     }
+                    CreateFeatureStep::SessionName => {
+                        state.session_name.push_str(text);
+                    }
                     _ => {}
                 }
             }

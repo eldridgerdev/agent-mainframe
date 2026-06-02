@@ -427,6 +427,12 @@ impl Feature {
     /// Create and append a new session of the given kind.
     pub fn add_session(&mut self, kind: SessionKind) -> &mut FeatureSession {
         let label = self.next_label(&kind);
+        self.add_session_named(kind, label)
+    }
+
+    /// Create and append a new session of the given kind with a
+    /// caller-provided label.
+    pub fn add_session_named(&mut self, kind: SessionKind, label: String) -> &mut FeatureSession {
         let window = self.next_window_name(&kind);
         let session = FeatureSession {
             id: Uuid::new_v4().to_string(),

@@ -677,8 +677,16 @@ fn run_loop<B: Backend>(
         let has_terminal_events = if is_viewing && !startup_loading {
             if let Some(wfd) = wakeup_rx_fd {
                 let mut fds = [
-                    libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 },
-                    libc::pollfd { fd: wfd, events: libc::POLLIN, revents: 0 },
+                    libc::pollfd {
+                        fd: 0,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: wfd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
                 ];
                 let timeout_ms = poll_duration.as_millis() as libc::c_int;
                 unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
@@ -794,9 +802,9 @@ fn run_loop<B: Backend>(
             && !startup_loading
             && !handled_user_events
             && last_view_refresh_request.elapsed() >= app::VIEW_PANE_REFRESH_INTERVAL
-            && app.last_view_activity_at.is_none_or(|last| {
-                last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD
-            })
+            && app
+                .last_view_activity_at
+                .is_none_or(|last| last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD)
         {
             app.request_view_snapshot_refresh();
             last_view_refresh_request = Instant::now();

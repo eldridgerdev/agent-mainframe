@@ -259,6 +259,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::NamingNewSession(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" create  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" back"),
+        ]),
         AppMode::ConfirmingOpencodeSession { .. }
         | AppMode::ConfirmingClaudeSession { .. }
         | AppMode::ConfirmingCodexSession { .. } => Line::from(vec![

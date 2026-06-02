@@ -230,7 +230,7 @@ impl App {
         );
         ensure_review_claude_md(&feature.workdir, feature.review);
 
-        App::initialize_feature_sessions(feature, false);
+        App::initialize_feature_sessions(feature, false, None);
 
         if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());

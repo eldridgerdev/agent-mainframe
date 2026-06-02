@@ -1010,6 +1010,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::picker::draw_session_picker(frame, state, app.config.nerd_font, &app.theme);
     }
 
+    if let AppMode::NamingNewSession(state) = &app.mode {
+        super::dialogs::draw_new_session_name_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::BookmarkPicker(state) = &app.mode {
         let rows = app.bookmark_picker_rows();
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);

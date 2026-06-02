@@ -96,11 +96,6 @@ impl App {
 
         builtin_sessions.extend(vec![
             BuiltinSessionOption {
-                kind: SessionKind::Terminal,
-                label: "Terminal".to_string(),
-                disabled: None,
-            },
-            BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
                 disabled: None,
@@ -193,11 +188,6 @@ impl App {
 
         builtin_sessions.extend(vec![
             BuiltinSessionOption {
-                kind: SessionKind::Terminal,
-                label: "Terminal".to_string(),
-                disabled: None,
-            },
-            BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
                 disabled: None,
@@ -239,6 +229,16 @@ impl App {
         fi: usize,
         config: &crate::extension::CustomSessionConfig,
     ) -> Result<bool> {
+        self.add_custom_session_type_named(pi, fi, config, config.name.clone())
+    }
+
+    pub fn add_custom_session_type_named(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        config: &crate::extension::CustomSessionConfig,
+        label: String,
+    ) -> Result<bool> {
         let window_hint = config
             .window_name
             .clone()
@@ -262,7 +262,7 @@ impl App {
             .unwrap_or_else(|| feature.workdir.clone());
 
         let session = feature.add_custom_session_named(
-            config.name.clone(),
+            label,
             window_hint,
             config.command.clone(),
             config.on_stop.clone(),
@@ -300,11 +300,31 @@ impl App {
     }
 
     pub fn add_builtin_session(&mut self, pi: usize, fi: usize, kind: SessionKind) -> Result<()> {
+        self.add_builtin_session_named(pi, fi, kind, None)
+    }
+
+    pub fn add_builtin_session_with_label(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: String,
+    ) -> Result<()> {
+        self.add_builtin_session_named(pi, fi, kind, Some(label))
+    }
+
+    fn add_builtin_session_named(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        kind: SessionKind,
+        label: Option<String>,
+    ) -> Result<()> {
         match kind {
-            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi),
-            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi),
+            SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, label),
+            SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, label),
             SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex => {
-                self.add_agent_session_for_picker(pi, fi, kind)
+                self.add_agent_session_for_picker(pi, fi, kind, label)
             }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => {
@@ -314,7 +334,12 @@ impl App {
         }
     }
 
-    fn add_terminal_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
+    fn add_terminal_session_for_picker(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: Option<String>,
+    ) -> Result<()> {
         let feature = match self
             .store
             .projects
@@ -332,7 +357,10 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
-        let session = feature.add_session(SessionKind::Terminal);
+        let session = match label {
+            Some(label) => feature.add_session_named(SessionKind::Terminal, label),
+            None => feature.add_session(SessionKind::Terminal),
+        };
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
@@ -347,7 +375,12 @@ impl App {
         Ok(())
     }
 
-    fn add_nvim_session_for_picker(&mut self, pi: usize, fi: usize) -> Result<()> {
+    fn add_nvim_session_for_picker(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: Option<String>,
+    ) -> Result<()> {
         if std::process::Command::new("nvim")
             .arg("--version")
             .stdout(std::process::Stdio::null())
@@ -376,7 +409,10 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
-        let session = feature.add_session(SessionKind::Nvim);
+        let session = match label {
+            Some(label) => feature.add_session_named(SessionKind::Nvim, label),
+            None => feature.add_session(SessionKind::Nvim),
+        };
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
@@ -427,6 +463,7 @@ impl App {
         pi: usize,
         fi: usize,
         kind: SessionKind,
+        label: Option<String>,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
         let Some(agent) = agent_for_session_kind(&kind) else {
@@ -455,7 +492,10 @@ impl App {
         let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
-        let session = feature.add_session(kind.clone());
+        let session = match label {
+            Some(label) => feature.add_session_named(kind.clone(), label),
+            None => feature.add_session(kind.clone()),
+        };
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
@@ -501,7 +541,7 @@ impl App {
         else {
             return Ok(());
         };
-        self.add_agent_session_for_picker(pi, fi, kind)
+        self.add_agent_session_for_picker(pi, fi, kind, None)
     }
 
     pub fn remove_session(&mut self) -> Result<()> {

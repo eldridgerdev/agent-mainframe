@@ -153,7 +153,12 @@ pub fn fuzzy_match_score(candidate: &str, query: &str) -> Option<usize> {
     Some(score)
 }
 
-pub fn markdown_file_picker_score(path: &Path, workdir: &Path, repo_root: Option<&Path>, query: &str) -> Option<usize> {
+pub fn markdown_file_picker_score(
+    path: &Path,
+    workdir: &Path,
+    repo_root: Option<&Path>,
+    query: &str,
+) -> Option<usize> {
     let label = crate::markdown::markdown_view_relative_label(path, workdir, repo_root);
     let basename = path.file_name().and_then(|name| name.to_str());
 
@@ -369,7 +374,10 @@ fn read_prompts_from_claude_sessions(workdir: &Path) -> Vec<PromptEntry> {
                 .and_then(|v| v.as_str())
                 .and_then(parse_prompt_timestamp)
                 .or(file_ts);
-            entries.push(PromptEntry { text, timestamp: ts });
+            entries.push(PromptEntry {
+                text,
+                timestamp: ts,
+            });
         }
         Some(entries)
     }

@@ -13,6 +13,15 @@ use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    pub(crate) fn default_session_name_for_agent(agent: &AgentKind) -> String {
+        match agent {
+            AgentKind::Claude => "Claude 1".to_string(),
+            AgentKind::Opencode => "Opencode 1".to_string(),
+            AgentKind::Codex => "Codex 1".to_string(),
+            AgentKind::Pi => "Pi 1".to_string(),
+        }
+    }
+
     pub(crate) fn feature_audit_details(project_name: &str, feature: &Feature) -> String {
         let nickname = feature.nickname.as_deref().unwrap_or("<none>");
         let summary = feature.summary.as_deref().unwrap_or("<none>");
@@ -136,6 +145,7 @@ impl App {
         let (agent, agent_index) = self.normalize_agent_for_repo(&project_repo, &preferred_agent);
         state.agent = agent;
         state.agent_index = agent_index;
+        state.session_name = Self::default_session_name_for_agent(&state.agent);
 
         self.mode = AppMode::CreatingFeature(state);
         self.message = None;
@@ -159,12 +169,17 @@ impl App {
         let review = state.review;
         let plan_mode = state.plan_mode;
         let create_terminal = state.create_terminal;
+        let session_name = state.session_name.trim().to_string();
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
         let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
             self.message = Some("Error: Branch name cannot be empty".into());
+            return Ok(());
+        }
+        if session_name.is_empty() {
+            self.message = Some("Error: Session name cannot be empty".into());
             return Ok(());
         }
         if !self.allows_agent_for_repo(&project_repo, &state.agent) {
@@ -246,6 +261,7 @@ impl App {
                             create_terminal,
                             enable_chrome,
                             steering_enabled,
+                            session_name,
                         },
                     );
                 } else {
@@ -259,6 +275,7 @@ impl App {
                         plan_mode,
                         state.agent.clone(),
                         create_terminal,
+                        session_name,
                         enable_chrome,
                         steering_enabled,
                         None,
@@ -282,6 +299,7 @@ impl App {
             plan_mode,
             agent: state.agent.clone(),
             create_terminal,
+            session_name,
             enable_chrome,
             steering_enabled,
             hook_succeeded: None,
@@ -335,7 +353,11 @@ impl App {
             );
 
             let mut feature = feature;
-            Self::initialize_feature_sessions(&mut feature, prepared.create_terminal);
+            Self::initialize_feature_sessions(
+                &mut feature,
+                prepared.create_terminal,
+                Some(prepared.session_name.clone()),
+            );
             self.store.add_feature(&prepared.project_name, feature);
         }
 
@@ -410,7 +432,11 @@ impl App {
         Ok(())
     }
 
-    pub(crate) fn initialize_feature_sessions(feature: &mut Feature, create_terminal: bool) {
+    pub(crate) fn initialize_feature_sessions(
+        feature: &mut Feature,
+        create_terminal: bool,
+        session_name: Option<String>,
+    ) {
         if !feature.sessions.is_empty() {
             return;
         }
@@ -421,7 +447,11 @@ impl App {
             AgentKind::Codex => SessionKind::Codex,
             AgentKind::Pi => SessionKind::Pi,
         };
-        feature.add_session(session_kind);
+        if let Some(session_name) = session_name {
+            feature.add_session_named(session_kind, session_name);
+        } else {
+            feature.add_session(session_kind);
+        }
         if create_terminal {
             feature.add_session(SessionKind::Terminal);
         }
@@ -578,7 +608,7 @@ impl App {
         ensure_review_claude_md(&feature.workdir, feature.review);
         ensure_plan_mode_claude_md(&feature.workdir, &repo, feature.plan_mode);
 
-        Self::initialize_feature_sessions(feature, false);
+        Self::initialize_feature_sessions(feature, false, None);
 
         if self.tmux.session_exists(&feature.tmux_session) {
             return Ok(());
@@ -1344,8 +1374,9 @@ impl App {
                         mode,
                         review,
                         plan_mode: false,
-                        agent,
+                        agent: agent.clone(),
                         create_terminal: false,
+                        session_name: Self::default_session_name_for_agent(&agent),
                         enable_chrome,
                         steering_enabled: false,
                     },
@@ -1363,6 +1394,7 @@ impl App {
                 false,
                 agent.clone(),
                 false,
+                Self::default_session_name_for_agent(&agent),
                 enable_chrome,
                 false,
                 None,

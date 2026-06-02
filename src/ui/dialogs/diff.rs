@@ -1599,7 +1599,9 @@ index 0000000..1111111
             deletions: 0,
             is_binary: false,
             old_content: None,
-            new_content: Some(include_str!("../../../docs/syntax-tests/syntax-test-highlight.ts").to_string()),
+            new_content: Some(
+                include_str!("../../../docs/syntax-tests/syntax-test-highlight.ts").to_string(),
+            ),
             patch: "\
 diff --git a/docs/syntax-tests/syntax-test-highlight.ts b/docs/syntax-tests/syntax-test-highlight.ts
 new file mode 100644
@@ -1626,11 +1628,12 @@ index 0000000..1111111
         };
 
         let lines = patch_lines(&file, 120, &theme, false, true);
-        let has_syntax_colored_token = lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
-            !span.content.trim().is_empty()
-                && span.content.contains("JsonPrimitive")
-                && span.style.fg != new_file_added_row_style(&theme).fg
-        });
+        let has_syntax_colored_token =
+            lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
+                !span.content.trim().is_empty()
+                    && span.content.contains("JsonPrimitive")
+                    && span.style.fg != new_file_added_row_style(&theme).fg
+            });
 
         assert!(
             has_syntax_colored_token,

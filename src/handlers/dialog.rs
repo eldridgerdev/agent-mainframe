@@ -822,8 +822,12 @@ mod tests {
     }
 
     fn markdown_app_with_feature(workdir: &std::path::Path, repo_root: &std::path::Path) -> App {
-        let mut project =
-            Project::new("demo".into(), PathBuf::from("/tmp/demo"), true, AgentKind::Claude);
+        let mut project = Project::new(
+            "demo".into(),
+            PathBuf::from("/tmp/demo"),
+            true,
+            AgentKind::Claude,
+        );
         project.features.push(Feature::new(
             "feature".into(),
             "main".into(),
@@ -847,11 +851,7 @@ mod tests {
         worktree
             .expect_repo_root()
             .returning(move |_| Ok(repo_root.clone()));
-        App::new_for_test(
-            store,
-            Box::new(MockTmuxOps::new()),
-            Box::new(worktree),
-        )
+        App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree))
     }
 
     #[test]

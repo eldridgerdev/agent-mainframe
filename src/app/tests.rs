@@ -2275,13 +2275,15 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
     let repo = TempDir::new().unwrap();
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists()
-        .withf(|session| session == "amf-feature-1")
+        .withf(|session| session == "amf-automation-project-feature-1")
         .times(1)
         .return_const(false);
     let expected_repo = repo.path().to_path_buf();
     tmux.expect_create_session_with_window()
         .withf(move |session, window, workdir| {
-            session == "amf-feature-1" && window == "claude" && workdir == expected_repo.as_path()
+            session == "amf-automation-project-feature-1"
+                && window == "claude"
+                && workdir == expected_repo.as_path()
         })
         .times(1)
         .returning(|_, _, _| Ok(()));
@@ -2293,7 +2295,7 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .withf(|session, window, resume_id, extra_args| {
-            session == "amf-feature-1"
+            session == "amf-automation-project-feature-1"
                 && window == "claude"
                 && resume_id.is_none()
                 && extra_args.is_empty()
@@ -2301,7 +2303,9 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .times(1)
         .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
-        .withf(|session, window| session == "amf-feature-1" && window == "claude")
+        .withf(|session, window| {
+            session == "amf-automation-project-feature-1" && window == "claude"
+        })
         .times(1)
         .returning(|_, _| Ok(()));
 
@@ -2317,6 +2321,9 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         project_name: "automation-project".to_string(),
         project_repo: repo.path().to_path_buf(),
         branch: "feature-1".to_string(),
+        branch_error: None,
+        allowed_agents: AgentKind::ALL.to_vec(),
+        feature_presets: Vec::new(),
         step: CreateFeatureStep::SessionName,
         agent: AgentKind::Claude,
         agent_index: 0,
@@ -2361,20 +2368,19 @@ fn create_feature_session_name_enter_surfaces_validation_error() {
 
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
 
-    assert!(matches!(
-        app.mode,
-        AppMode::CreatingFeature(ref state) if state.step == CreateFeatureStep::SessionName
-    ));
-    assert!(
-        app.toasts
-            .iter()
-            .any(|toast| toast.message.contains("already exists")),
-        "toasts: {:?}",
-        app.toasts
-            .iter()
-            .map(|toast| toast.message.as_str())
-            .collect::<Vec<_>>()
-    );
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::Branch);
+            assert!(
+                state
+                    .branch_error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("already exists")
+            );
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
 }
 
 #[test]

@@ -269,62 +269,122 @@ fn draw_create_feature_worktree_picker(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
+
+    let query_line = if state.worktree_search_active {
+        let query_text = if state.worktree_query.is_empty() {
+            "Type to filter worktrees"
+        } else {
+            &state.worktree_query
+        };
+        let query_style = if state.worktree_query.is_empty() {
+            Style::default().fg(theme.text_muted.to_color())
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  / ",
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(query_text, query_style),
+        ]))
+    } else {
+        let text = if state.worktree_query.is_empty() {
+            "  Press / to search".to_string()
+        } else {
+            format!("  Search: {}", state.worktree_query)
+        };
+        Paragraph::new(Line::from(Span::styled(
+            text,
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+    };
+    frame.render_widget(query_line, chunks[0]);
 
     if state.worktrees.is_empty() {
         let empty_msg = Paragraph::new(Line::from(Span::styled(
             "  No available worktrees",
             Style::default().fg(theme.warning.to_color()),
         )));
-        frame.render_widget(empty_msg, chunks[0]);
+        frame.render_widget(empty_msg, chunks[1]);
     } else {
-        let items: Vec<ListItem> = state
-            .worktrees
-            .iter()
-            .enumerate()
-            .map(|(i, wt)| {
-                let is_selected = i == state.worktree_index;
-                let branch_label = wt.branch.as_deref().unwrap_or("(detached)");
-                let path_str = wt.path.display().to_string();
+        let visible_indices = state.visible_worktree_indices();
+        if visible_indices.is_empty() {
+            let empty_msg = Paragraph::new(Line::from(Span::styled(
+                "  No worktrees match the current filter.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )));
+            frame.render_widget(empty_msg, chunks[1]);
+        } else {
+            let items: Vec<ListItem> = visible_indices
+                .iter()
+                .filter_map(|&i| {
+                    let wt = state.worktrees.get(i)?;
+                    let is_selected = i == state.worktree_index;
+                    let branch_label = wt.branch.as_deref().unwrap_or("(detached)");
+                    let path_str = wt.path.display().to_string();
 
-                let line = Line::from(vec![
-                    Span::styled(
-                        if is_selected { "  > " } else { "    " },
-                        Style::default().fg(theme.primary.to_color()),
-                    ),
-                    Span::styled(
-                        branch_label,
-                        if is_selected {
-                            Style::default()
-                                .fg(theme.text.to_color())
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(theme.text.to_color())
-                        },
-                    ),
-                    Span::styled(
-                        format!("  {}", path_str),
-                        Style::default().fg(theme.text_muted.to_color()),
-                    ),
-                ]);
+                    let line = Line::from(vec![
+                        Span::styled(
+                            if is_selected { "  > " } else { "    " },
+                            Style::default().fg(theme.primary.to_color()),
+                        ),
+                        Span::styled(
+                            branch_label,
+                            if is_selected {
+                                Style::default()
+                                    .fg(theme.text.to_color())
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text.to_color())
+                            },
+                        ),
+                        Span::styled(
+                            format!("  {}", path_str),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ),
+                    ]);
 
-                if is_selected {
-                    ListItem::new(line).style(Style::default().bg(theme.effective_selection_bg()))
-                } else {
-                    ListItem::new(line)
-                }
-            })
-            .collect();
+                    Some(if is_selected {
+                        ListItem::new(line)
+                            .style(Style::default().bg(theme.effective_selection_bg()))
+                    } else {
+                        ListItem::new(line)
+                    })
+                })
+                .collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, chunks[0]);
+            let list = List::new(items);
+            frame.render_widget(list, chunks[1]);
+        }
     }
 
     let hints = if state.worktrees.is_empty() {
         Paragraph::new(Line::from(vec![
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back"),
+        ]))
+    } else if state.worktree_search_active {
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " j/k or \u{2191}/\u{2193}",
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" select  "),
+            Span::styled("Backspace", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" clear filter  "),
+            Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" back to selection mode"),
         ]))
     } else {
         Paragraph::new(Line::from(vec![
@@ -335,11 +395,13 @@ fn draw_create_feature_worktree_picker(
             Span::raw(" navigate  "),
             Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
             Span::raw(" select  "),
+            Span::styled("/", Style::default().fg(theme.warning.to_color())),
+            Span::raw(" search  "),
             Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
             Span::raw(" back"),
         ]))
     };
-    frame.render_widget(hints, chunks[1]);
+    frame.render_widget(hints, chunks[2]);
 }
 
 fn draw_create_feature_branch_mode(

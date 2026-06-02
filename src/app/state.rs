@@ -864,6 +864,8 @@ pub struct CreateFeatureState {
     pub source_index: usize,
     pub worktrees: Vec<WorktreeInfo>,
     pub worktree_index: usize,
+    pub worktree_search_active: bool,
+    pub worktree_query: String,
     pub use_worktree: bool,
     pub enable_chrome: bool,
     pub steering_enabled: bool,
@@ -911,6 +913,8 @@ impl CreateFeatureState {
             source_index: 0,
             worktrees,
             worktree_index: 0,
+            worktree_search_active: false,
+            worktree_query: String::new(),
             use_worktree: !is_first_feature,
             enable_chrome: false,
             steering_enabled: false,
@@ -923,6 +927,31 @@ impl CreateFeatureState {
 
     pub fn refresh_prompt_analysis(&mut self) {
         self.prompt_analysis = crate::app::analyze_prompt(&self.task_prompt);
+    }
+
+    pub fn visible_worktree_indices(&self) -> Vec<usize> {
+        let mut matches: Vec<(usize, usize)> = self
+            .worktrees
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, worktree)| {
+                let score =
+                    crate::app::util::worktree_picker_score(worktree, &self.worktree_query)?;
+                Some((idx, score))
+            })
+            .collect();
+
+        matches.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        matches.into_iter().map(|(idx, _)| idx).collect()
+    }
+
+    pub fn clamp_worktree_selection(&mut self) {
+        let visible = self.visible_worktree_indices();
+        if visible.is_empty() {
+            self.worktree_index = 0;
+        } else if !visible.contains(&self.worktree_index) {
+            self.worktree_index = visible[0];
+        }
     }
 }
 

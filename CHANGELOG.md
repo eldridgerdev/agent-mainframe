@@ -19,6 +19,9 @@ are tagged.
 - Starting an additional session now asks for a session name after you
   choose the session type, with the current automatic name filled in by
   default.
+- Existing-worktree feature creation now supports `/` search in the
+  worktree picker, so large worktree lists can be filtered before
+  selecting one.
 
 ### Changed
 

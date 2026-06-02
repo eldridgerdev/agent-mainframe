@@ -171,6 +171,27 @@ pub fn markdown_file_picker_score(
     best
 }
 
+pub fn worktree_picker_score(
+    worktree: &crate::worktree::WorktreeInfo,
+    query: &str,
+) -> Option<usize> {
+    let path = worktree.path.display().to_string();
+    let basename = worktree.path.file_name().and_then(|name| name.to_str());
+
+    let mut best = fuzzy_match_score(&path, query);
+    if let Some(branch) = worktree.branch.as_deref()
+        && let Some(score) = fuzzy_match_score(branch, query)
+    {
+        best = Some(best.map_or(score, |existing| existing.min(score)));
+    }
+    if let Some(name) = basename
+        && let Some(score) = fuzzy_match_score(name, query)
+    {
+        best = Some(best.map_or(score, |existing| existing.min(score)));
+    }
+    best
+}
+
 pub(crate) fn read_latest_prompt_for_session(
     workdir: &Path,
     session_kind: Option<&crate::project::SessionKind>,

@@ -12,6 +12,7 @@ set -euo pipefail
 HOOK_INPUT=$(cat)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty')
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // "unknown"')
+AMF_SESSION_ID="${AMF_SESSION:-}"
 
 if [[ "$TOOL_NAME" != "Edit" && "$TOOL_NAME" != "Write" ]]; then
     exit 0
@@ -45,6 +46,17 @@ IS_NEW_FILE=false
 if [[ ! -f "$FILE_PATH" ]]; then
     IS_NEW_FILE=true
 fi
+
+log_fallback() {
+    local reason="$1"
+    local home_dir="${HOME:-/tmp}"
+    local state_home="${XDG_STATE_HOME:-$home_dir/.local/state}"
+    local log_dir="$state_home/amf"
+    mkdir -p "$log_dir" 2>/dev/null || true
+    printf '[WARN] [diff-review] notify-wait fallback for session=%s amf_session=%s cwd=%s file=%s: %s\n' \
+        "$SESSION_ID" "$AMF_SESSION_ID" "$CWD" "$DISPLAY_PATH" "$reason" \
+        >> "$log_dir/debug.log" 2>/dev/null || true
+}
 
 cleanup() {
     rm -f "$NOTIFICATION_FILE" 2>/dev/null || true
@@ -106,6 +118,7 @@ build_payload() {
     local payload_file="$TEMP_DIR/payload.json"
     jq -n \
         --arg sid "$SESSION_ID" \
+        --arg amf_session "$AMF_SESSION_ID" \
         --arg cwd "$CWD" \
         --arg msg "Review: $DISPLAY_PATH" \
         --arg fp "$FILE_PATH" \
@@ -122,6 +135,7 @@ build_payload() {
         '{
             type: "diff-review",
             session_id: $sid,
+            amf_session: $amf_session,
             cwd: $cwd,
             message: $msg,
             file_path: $fp,
@@ -142,11 +156,16 @@ build_payload() {
 send_notification_wait() {
     local payload_file="$1"
     if ! command -v amf >/dev/null 2>&1; then
+        log_fallback "amf command not found"
         return 1
     fi
 
     local response
-    if ! response=$(cat "$payload_file" | amf notify-wait --timeout-ms 120000 2>/dev/null); then
+    local error_file="$TEMP_DIR/notify-wait.err"
+    if ! response=$(cat "$payload_file" | amf notify-wait --timeout-ms 120000 2>"$error_file"); then
+        local error
+        error=$(tr '\n' ' ' < "$error_file" | sed 's/[[:space:]]\+/ /g' | cut -c1-240)
+        log_fallback "${error:-notify-wait failed}"
         return 1
     fi
 

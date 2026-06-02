@@ -28,6 +28,14 @@ are tagged.
   cannot create the feature, so validation errors such as duplicate
   feature names are visible while the dialog remains open.
 
+### Fixed
+
+- Fixed Vibeless diff reviews that could get stuck on Claude's file
+  update step when Claude reported a working directory that did not
+  match AMF's stored feature path. AMF now identifies the waiting
+  review by its managed tmux session first, so the review dialog opens
+  immediately instead of requiring the manual `V` recovery shortcut.
+
 ### Migration
 
 - No migration is required.

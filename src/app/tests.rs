@@ -4102,6 +4102,61 @@ fn ipc_diff_review_updates_codex_live_review_state() {
 }
 
 #[test]
+fn ipc_diff_review_opens_from_amf_session_when_cwd_does_not_match_feature() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "custom-session");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "custom".to_string(),
+        "Claude".to_string(),
+        SessionKind::Claude,
+        VibeMode::Vibeless,
+        false,
+    ));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "session_id": "claude-hook-session",
+        "amf_session": "amf-my-feat",
+        "cwd": "/tmp/not-the-feature-workdir",
+        "message": "Review: src/main.rs",
+        "file_path": workdir.path().join("src/main.rs").display().to_string(),
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-ipc",
+        "old_snippet": "old",
+        "new_snippet": "new",
+        "response_file": workdir.path().join("response.json").display().to_string(),
+        "proceed_signal": workdir.path().join("proceed").display().to_string(),
+        "request_id": "req-1",
+        "reply_socket": "/tmp/amf-ipc-reply/req-1.sock"
+    }));
+
+    match &app.mode {
+        AppMode::DiffReviewPrompt(state) => {
+            assert_eq!(state.relative_path, "src/main.rs");
+            assert_eq!(state.request_id.as_deref(), Some("req-1"));
+            assert_eq!(
+                state
+                    .return_to_view
+                    .as_ref()
+                    .map(|view| view.feature_name.as_str()),
+                Some("my-feat")
+            );
+        }
+        _ => panic!("expected diff review prompt"),
+    }
+}
+
+#[test]
 fn ipc_tool_activity_temporarily_overrides_older_review_work() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);

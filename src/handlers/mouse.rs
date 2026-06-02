@@ -243,6 +243,7 @@ fn handle_click(
             | AppMode::CodexSessionPicker(_)
             | AppMode::ConfirmingCodexSession { .. }
             | AppMode::SessionPicker(_)
+            | AppMode::NamingNewSession(_)
             | AppMode::BookmarkPicker(_)
             | AppMode::DiffViewer(_)
             | AppMode::SessionSwitcher(_)

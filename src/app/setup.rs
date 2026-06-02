@@ -360,9 +360,15 @@ pub fn ensure_notify_scripts() {
     write_executable_if_changed(&config_dir.join("thinking-stop.sh"), THINKING_STOP_SH);
     write_executable_if_changed(&config_dir.join("tool-start.sh"), TOOL_START_SH);
     write_executable_if_changed(&config_dir.join("tool-stop.sh"), TOOL_STOP_SH);
-    write_executable_if_changed(&config_dir.join("codex-diff-review.sh"), CODEX_DIFF_REVIEW_SH);
+    write_executable_if_changed(
+        &config_dir.join("codex-diff-review.sh"),
+        CODEX_DIFF_REVIEW_SH,
+    );
     write_executable_if_changed(&config_dir.join("codex-notify.sh"), CODEX_NOTIFY_SH);
-    write_executable_if_changed(&config_dir.join("set-session-status.sh"), SET_SESSION_STATUS_SH);
+    write_executable_if_changed(
+        &config_dir.join("set-session-status.sh"),
+        SET_SESSION_STATUS_SH,
+    );
     let plugins_dir = config_dir.join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
     write_if_changed(&plugins_dir.join("input-request.js"), INPUT_REQUEST_JS);

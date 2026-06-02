@@ -213,9 +213,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        6
-                    } else {
                         5
+                    } else {
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -232,9 +232,9 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        6
-                    } else {
                         5
+                    } else {
+                        4
                     };
                     if state.mode_focus < max_focus {
                         state.mode_focus += 1;
@@ -243,7 +243,8 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                         if is_supervibe {
                             state.step = CreateFeatureStep::ConfirmSuperVibe;
                         } else {
-                            app.create_feature()?;
+                            state.session_name = App::default_session_name_for_agent(&state.agent);
+                            state.step = CreateFeatureStep::SessionName;
                         }
                     }
                 }
@@ -267,16 +268,13 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.plan_mode = !state.plan_mode;
                         }
                         4 => {
-                            state.create_terminal = !state.create_terminal;
-                        }
-                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        6 => {
+                        5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
@@ -310,20 +308,48 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                             state.plan_mode = !state.plan_mode;
                         }
                         4 => {
-                            state.create_terminal = !state.create_terminal;
-                        }
-                        5 => {
                             if state.agent == AgentKind::Claude {
                                 state.enable_chrome = !state.enable_chrome;
                             } else {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        6 => {
+                        5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
                     }
+                }
+            }
+            _ => {}
+        },
+        CreateFeatureStep::SessionName => match key {
+            KeyCode::Esc => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.step = CreateFeatureStep::Mode;
+                }
+            }
+            KeyCode::Enter => {
+                let previous_message = app.message.clone();
+                app.create_feature()?;
+                if matches!(
+                    app.mode,
+                    AppMode::CreatingFeature(ref state)
+                        if state.step == CreateFeatureStep::SessionName
+                ) && app.message != previous_message
+                    && let Some(message) = app.message.clone()
+                {
+                    app.push_toast_warning(message);
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.session_name.pop();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.session_name.push(c);
                 }
             }
             _ => {}
@@ -358,8 +384,11 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             _ => {}
         },
         CreateFeatureStep::ConfirmSuperVibe => match key {
-            KeyCode::Char('y') => {
-                app.create_feature()?;
+            KeyCode::Enter | KeyCode::Char('y') => {
+                if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.session_name = App::default_session_name_for_agent(&state.agent);
+                    state.step = CreateFeatureStep::SessionName;
+                }
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {

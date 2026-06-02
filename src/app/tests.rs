@@ -1005,6 +1005,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
         false,
         AgentKind::Claude,
         false,
+        "Claude 1".to_string(),
         false,
         false,
         None,
@@ -1065,6 +1066,7 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
         false,
         AgentKind::Claude,
         false,
+        "Claude 1".to_string(),
         false,
         false,
         None,
@@ -1193,6 +1195,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         plan_mode: false,
         agent: AgentKind::Claude,
         create_terminal: false,
+        session_name: "Claude 1".to_string(),
         enable_chrome: false,
         steering_enabled: false,
         child: None,
@@ -1243,6 +1246,7 @@ fn app_in_creating_feature_mode(
         review: false,
         plan_mode: false,
         create_terminal: true,
+        session_name: "Claude 1".to_string(),
         source_index: 0,
         worktrees: vec![],
         worktree_index: 0,
@@ -1505,6 +1509,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         review: false,
         plan_mode: false,
         create_terminal: false,
+        session_name: "Claude 1".to_string(),
         source_index: 0,
         worktrees: vec![],
         worktree_index: 0,
@@ -1527,6 +1532,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         plan_mode: false,
         agent,
         create_terminal: true,
+        session_name: "Claude 1".to_string(),
         enable_chrome: false,
         steering_enabled: true,
         hook_succeeded: None,
@@ -1706,6 +1712,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         plan_mode: false,
         agent: AgentKind::Claude,
         create_terminal: false,
+        session_name: "Claude 1".to_string(),
         enable_chrome: false,
         steering_enabled: false,
         hook_succeeded: None,
@@ -1764,6 +1771,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         plan_mode: false,
         agent: AgentKind::Opencode,
         create_terminal: false,
+        session_name: "Opencode 1".to_string(),
         enable_chrome: false,
         steering_enabled: false,
         hook_succeeded: None,
@@ -2041,7 +2049,7 @@ fn create_feature_mode_allows_toggling_steering_for_claude() {
     if let AppMode::CreatingFeature(state) = &mut app.mode {
         state.step = CreateFeatureStep::Mode;
         state.agent = AgentKind::Claude;
-        state.mode_focus = 6;
+        state.mode_focus = 5;
         state.steering_enabled = false;
     }
 
@@ -2126,6 +2134,275 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         }
         _ => panic!("expected SessionPicker mode"),
     }
+}
+
+#[test]
+fn create_feature_final_enter_opens_session_name_step() {
+    use crossterm::event::KeyCode;
+
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::Mode;
+        state.agent = AgentKind::Codex;
+        state.mode_focus = 4;
+    }
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::SessionName);
+            assert_eq!(state.session_name, "Codex 1");
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn create_feature_session_name_enter_creates_and_starts_feature() {
+    use crossterm::event::KeyCode;
+
+    let repo = TempDir::new().unwrap();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-feature-1")
+        .times(1)
+        .return_const(false);
+    let expected_repo = repo.path().to_path_buf();
+    tmux.expect_create_session_with_window()
+        .withf(move |session, window, workdir| {
+            session == "amf-feature-1" && window == "claude" && workdir == expected_repo.as_path()
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(0)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|session, window, resume_id, extra_args| {
+            session == "amf-feature-1"
+                && window == "claude"
+                && resume_id.is_none()
+                && extra_args.is_empty()
+        })
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .withf(|session, window| session == "amf-feature-1" && window == "claude")
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_empty_project(repo.path().to_path_buf(), true),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Project(0);
+    app.mode = AppMode::CreatingFeature(CreateFeatureState {
+        project_name: "automation-project".to_string(),
+        project_repo: repo.path().to_path_buf(),
+        branch: "feature-1".to_string(),
+        step: CreateFeatureStep::SessionName,
+        agent: AgentKind::Claude,
+        agent_index: 0,
+        mode: VibeMode::Vibeless,
+        mode_index: 0,
+        mode_focus: 5,
+        review: false,
+        plan_mode: false,
+        create_terminal: false,
+        session_name: "Pairing Claude".to_string(),
+        source_index: 0,
+        worktrees: vec![],
+        worktree_index: 0,
+        use_worktree: false,
+        enable_chrome: false,
+        steering_enabled: false,
+        preset_index: 0,
+        task_prompt: String::new(),
+        prompt_analysis: analyze_prompt(""),
+        prepared_launch: None,
+    });
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.name, "feature-1");
+    assert_eq!(feature.sessions[0].label, "Pairing Claude");
+    assert_eq!(feature.sessions[0].kind, SessionKind::Claude);
+}
+
+#[test]
+fn create_feature_session_name_enter_surfaces_validation_error() {
+    use crossterm::event::KeyCode;
+
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "my-feat", false);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::SessionName;
+        state.session_name = "Claude 1".to_string();
+    }
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert!(matches!(
+        app.mode,
+        AppMode::CreatingFeature(ref state) if state.step == CreateFeatureStep::SessionName
+    ));
+    assert!(
+        app.toasts
+            .iter()
+            .any(|toast| toast.message.contains("already exists")),
+        "toasts: {:?}",
+        app.toasts
+            .iter()
+            .map(|toast| toast.message.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn session_picker_enter_opens_name_step_with_default_label() {
+    let repo = TempDir::new().unwrap();
+    let amf_dir = repo.path().join(".amf");
+    std::fs::create_dir_all(&amf_dir).unwrap();
+    std::fs::write(
+        amf_dir.join("config.json"),
+        serde_json::to_string(&ExtensionConfig {
+            allowed_agents: Some(vec![AgentKind::Claude, AgentKind::Codex]),
+            ..Default::default()
+        })
+        .unwrap(),
+    )
+    .unwrap();
+
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active);
+    store.projects[0].preferred_agent = AgentKind::Codex;
+    store.projects[0].is_git = true;
+    store.projects[0].features[0].sessions.push(FeatureSession {
+        id: "session-1".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex 1".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at: Utc::now(),
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    });
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+
+    crate::handlers::handle_session_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+    match &app.mode {
+        AppMode::NamingNewSession(state) => {
+            assert_eq!(state.input, "Codex 2");
+            assert_eq!(state.project_idx, 0);
+            assert_eq!(state.feature_idx, 0);
+        }
+        _ => panic!("expected NamingNewSession mode"),
+    }
+}
+
+#[test]
+fn session_picker_does_not_offer_terminal() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert!(
+                state
+                    .builtin_sessions
+                    .iter()
+                    .all(|session| session.kind != SessionKind::Terminal)
+            );
+        }
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn new_session_name_escape_returns_to_picker() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+
+    crate::handlers::handle_session_picker_key(&mut app, KeyCode::Enter).unwrap();
+    crate::handlers::handle_new_session_name_key(&mut app, KeyCode::Esc).unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => assert_eq!(state.selected, 0),
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn new_session_name_rejects_empty_input() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+
+    crate::handlers::handle_session_picker_key(&mut app, KeyCode::Enter).unwrap();
+    if let AppMode::NamingNewSession(state) = &mut app.mode {
+        state.input.clear();
+    }
+    crate::handlers::handle_new_session_name_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert!(matches!(app.mode, AppMode::NamingNewSession(_)));
+    assert_eq!(app.message.as_deref(), Some("Name cannot be empty"));
+    assert!(app.store.projects[0].features[0].sessions.is_empty());
+}
+
+#[test]
+fn feature_add_session_named_uses_custom_label_and_default_window() {
+    let mut feature = Feature::new(
+        "my-feat".to_string(),
+        "my-feat".to_string(),
+        PathBuf::from("/tmp/test-workdir"),
+        false,
+        VibeMode::default(),
+        false,
+        false,
+        AgentKind::Claude,
+        false,
+    );
+
+    let session = feature.add_session_named(SessionKind::Claude, "Review Claude".to_string());
+
+    assert_eq!(session.label, "Review Claude");
+    assert_eq!(session.tmux_window, "claude");
 }
 
 #[test]
@@ -4129,7 +4406,11 @@ fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
 fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
-    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Normal;
     app.selection = Selection::Feature(0, 0);

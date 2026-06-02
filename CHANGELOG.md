@@ -10,6 +10,28 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- New feature creation now includes a session naming step before launch,
+  prefilled with the default harness name such as `Claude 1` or
+  `Codex 1`, so you can rename the initial agent session before it
+  starts.
+- Starting an additional session now asks for a session name after you
+  choose the session type, with the current automatic name filled in by
+  default.
+
+### Changed
+
+- The session picker no longer offers `Terminal` as a built-in session
+  type.
+- Feature creation now shows a warning toast when the final naming step
+  cannot create the feature, so validation errors such as duplicate
+  feature names are visible while the dialog remains open.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.19.7] - 2026-05-14
 
 ### Changed

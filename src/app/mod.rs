@@ -397,7 +397,13 @@ impl SnapshotSender {
     fn send(&self, snap: ViewSnapshot) {
         let _ = self.tx.send(snap);
         let byte = 1u8;
-        unsafe { libc::write(self.wakeup_fd.as_raw_fd(), &byte as *const u8 as *const _, 1) };
+        unsafe {
+            libc::write(
+                self.wakeup_fd.as_raw_fd(),
+                &byte as *const u8 as *const _,
+                1,
+            )
+        };
     }
 }
 
@@ -681,7 +687,9 @@ impl App {
     /// Returns the read end of the wakeup pipe so the main loop can use
     /// `libc::poll()` to wake immediately when a snapshot is ready.
     pub fn view_wakeup_rx_fd(&self) -> Option<RawFd> {
-        self.view_snapshot_wakeup_rx.as_ref().map(|fd| fd.as_raw_fd())
+        self.view_snapshot_wakeup_rx
+            .as_ref()
+            .map(|fd| fd.as_raw_fd())
     }
 
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
@@ -2382,10 +2390,7 @@ impl SidebarLoadRequest {
             self.preferred_session_id.as_deref(),
         );
         let opencode_sidebar = if self.preferred_session_kind == Some(SessionKind::Opencode) {
-            opencode_storage::read_sidebar_data(
-                &self.workdir,
-                self.preferred_session_id.as_deref(),
-            )
+            opencode_storage::read_sidebar_data(&self.workdir, self.preferred_session_id.as_deref())
         } else {
             None
         };

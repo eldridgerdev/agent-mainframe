@@ -40,9 +40,9 @@ pub use picker::{
     handle_bookmark_picker_key, handle_claude_session_confirm_key,
     handle_claude_session_picker_key, handle_codex_session_confirm_key,
     handle_codex_session_picker_key, handle_command_picker_key, handle_markdown_file_picker_key,
-    handle_notification_picker_key, handle_opencode_session_confirm_key,
-    handle_opencode_session_picker_key, handle_session_picker_key, handle_session_switcher_key,
-    handle_syntax_language_picker_key,
+    handle_new_session_name_key, handle_notification_picker_key,
+    handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
+    handle_session_picker_key, handle_session_switcher_key, handle_syntax_language_picker_key,
 };
 pub use search::handle_search_key;
 pub use view::handle_view_key;
@@ -70,6 +70,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::CommandPicker(_) => handle_command_picker_key(app, key.code),
         AppMode::MarkdownFilePicker(_) => handle_markdown_file_picker_key(app, key),
         AppMode::Searching(_) => handle_search_key(app, key.code),
+        AppMode::NamingNewSession(_) => handle_new_session_name_key(app, key.code),
         AppMode::OpencodeSessionPicker(_) => handle_opencode_session_picker_key(app, key.code),
         AppMode::ConfirmingOpencodeSession { .. } => {
             handle_opencode_session_confirm_key(app, key.code)

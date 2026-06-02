@@ -41,10 +41,55 @@ pub fn draw_create_feature_dialog(
         CreateFeatureStep::TaskPrompt => {
             draw_create_feature_prompt_coach(frame, state, theme);
         }
+        CreateFeatureStep::SessionName => {
+            draw_create_feature_session_name(frame, state, theme);
+        }
         _ => {
             draw_create_feature_branch_mode(frame, state, allowed_agents, theme);
         }
     }
+}
+
+fn draw_create_feature_session_name(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {
+    let area = centered_rect(50, 25, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let title = format!(" Name Session ({}) ", state.project_name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let name_field = Paragraph::new(Line::from(vec![
+        Span::styled(" Name: ", Style::default().fg(theme.primary.to_color())),
+        Span::styled(
+            &state.session_name,
+            Style::default().fg(theme.text.to_color()),
+        ),
+        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
+    ]));
+    frame.render_widget(name_field, chunks[0]);
+
+    let hints = Paragraph::new(Line::from(vec![
+        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" create  "),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(hints, chunks[2]);
 }
 
 fn draw_create_feature_source(
@@ -332,8 +377,6 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(0),                                  // spacer
             Constraint::Length(1),                                  // plan_mode checkbox
             Constraint::Length(0),                                  // spacer
-            Constraint::Length(1),                                  // terminal checkbox
-            Constraint::Length(0),                                  // spacer
             Constraint::Length(if has_chrome_row { 1 } else { 0 }), // chrome checkbox
             Constraint::Length(0),                                  // spacer
             Constraint::Length(1),                                  // steering coach checkbox
@@ -520,32 +563,9 @@ fn draw_create_feature_branch_mode(
     let plan_widget = Paragraph::new(plan_lines);
     frame.render_widget(plan_widget, chunks[10]);
 
-    let terminal_active = state.step == CreateFeatureStep::Mode && state.mode_focus == 4;
-    let terminal_check = if state.create_terminal { "[x]" } else { "[ ]" };
-    let terminal_lines = vec![Line::from(vec![
-        Span::styled(
-            " Terminal: ",
-            if terminal_active {
-                Style::default().fg(theme.primary.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
-        Span::styled(
-            format!("{} Create extra terminal window", terminal_check),
-            if terminal_active {
-                Style::default().fg(theme.text.to_color())
-            } else {
-                Style::default().fg(theme.text_muted.to_color())
-            },
-        ),
-    ])];
-    let terminal_widget = Paragraph::new(terminal_lines);
-    frame.render_widget(terminal_widget, chunks[12]);
-
-    // Chrome checkbox (chunks[14])
+    // Chrome checkbox (chunks[12])
     let chrome_active = state.step == CreateFeatureStep::Mode
-        && state.mode_focus == 5
+        && state.mode_focus == 4
         && state.agent == AgentKind::Claude;
     let chrome_check = if state.enable_chrome { "[x]" } else { "[ ]" };
     let chrome_style = if chrome_active {
@@ -555,7 +575,7 @@ fn draw_create_feature_branch_mode(
     };
     let chrome_label_style =
         if state.step == CreateFeatureStep::Mode && state.agent == AgentKind::Claude {
-            if state.mode_focus == 5 {
+            if state.mode_focus == 4 {
                 Style::default().fg(theme.primary.to_color())
             } else {
                 Style::default().fg(theme.text_muted.to_color())
@@ -573,13 +593,13 @@ fn draw_create_feature_branch_mode(
             ),
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
-        frame.render_widget(chrome_widget, chunks[14]);
+        frame.render_widget(chrome_widget, chunks[12]);
     }
 
     let steering_focus = if state.agent == AgentKind::Claude {
-        6
-    } else {
         5
+    } else {
+        4
     };
     let steering_active =
         state.step == CreateFeatureStep::Mode && state.mode_focus == steering_focus;
@@ -603,7 +623,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[16]);
+    frame.render_widget(steering_widget, chunks[14]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
@@ -637,7 +657,7 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[19]);
+    frame.render_widget(hints, chunks[17]);
 }
 
 fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {

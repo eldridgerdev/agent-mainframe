@@ -365,7 +365,7 @@ fn draw_create_feature_branch_mode(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),                                  // branch
+            Constraint::Length(3),                                  // branch
             Constraint::Length(1),                                  // spacer
             Constraint::Length(3),                                  // worktree
             Constraint::Length(1),                                  // spacer
@@ -387,22 +387,42 @@ fn draw_create_feature_branch_mode(
         .split(inner);
 
     let branch_active = state.step == CreateFeatureStep::Branch;
-    let branch_label_style = if branch_active {
+    let branch_has_error = state.branch_error.is_some();
+    let branch_label_style = if branch_has_error {
+        Style::default().fg(theme.danger.to_color())
+    } else if branch_active {
         Style::default().fg(theme.primary.to_color())
     } else {
         Style::default().fg(theme.text_muted.to_color())
     };
     let cursor = if branch_active {
-        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color()))
+        let color = if branch_has_error {
+            theme.danger.to_color()
+        } else {
+            theme.primary.to_color()
+        };
+        Span::styled("\u{2588}", Style::default().fg(color))
     } else {
         Span::raw("")
     };
+    let branch_value_style = if branch_has_error {
+        Style::default().fg(theme.danger.to_color())
+    } else {
+        Style::default().fg(theme.text.to_color())
+    };
 
-    let branch_field = Paragraph::new(Line::from(vec![
-        Span::styled(" Branch: ", branch_label_style),
-        Span::styled(&state.branch, Style::default().fg(theme.text.to_color())),
+    let mut branch_lines = vec![Line::from(vec![
+        Span::styled(" Name: ", branch_label_style),
+        Span::styled(&state.branch, branch_value_style),
         cursor,
-    ]));
+    ])];
+    if let Some(error) = &state.branch_error {
+        branch_lines.push(Line::from(Span::styled(
+            format!("   {error}"),
+            Style::default().fg(theme.danger.to_color()),
+        )));
+    }
+    let branch_field = Paragraph::new(branch_lines);
     frame.render_widget(branch_field, chunks[0]);
 
     let wt_active = state.step == CreateFeatureStep::Worktree;

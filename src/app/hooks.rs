@@ -69,7 +69,8 @@ impl App {
             {
                 fi
             } else {
-                let mut feature = Feature::new(
+                let mut feature = Feature::new_for_project(
+                    project_name,
                     branch.to_string(),
                     branch.to_string(),
                     workdir.to_path_buf(),

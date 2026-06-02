@@ -10,6 +10,51 @@ use crate::token_tracking::TokenUsageSource;
 
 pub(crate) const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
+fn slugify_component(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+pub fn normalized_feature_name(name: &str) -> String {
+    slugify_component(name)
+}
+
+pub fn tmux_session_name(project_name: &str, feature_name: &str) -> String {
+    let project = slugify_component(project_name);
+    let feature = slugify_component(feature_name);
+
+    match (project.is_empty(), feature.is_empty()) {
+        (false, false) => format!("amf-{project}-{feature}"),
+        (false, true) => format!("amf-{project}"),
+        (true, false) => format!("amf-{feature}"),
+        (true, true) => "amf-feature".to_string(),
+    }
+}
+
+pub fn worktree_name(project_name: &str, feature_name: &str) -> String {
+    let project = slugify_component(project_name);
+    let feature = slugify_component(feature_name);
+
+    match (project.is_empty(), feature.is_empty()) {
+        (false, false) => format!("{project}-{feature}"),
+        (false, true) => project,
+        (true, false) => feature,
+        (true, true) => "feature".to_string(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectStatus {
@@ -333,6 +378,61 @@ impl Feature {
         enable_chrome: bool,
     ) -> Self {
         let tmux_session = format!("amf-{}", name);
+        Self::new_with_tmux_session(
+            name,
+            branch,
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            tmux_session,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_for_project(
+        project_name: &str,
+        name: String,
+        branch: String,
+        workdir: PathBuf,
+        is_worktree: bool,
+        mode: VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+    ) -> Self {
+        let tmux_session = tmux_session_name(project_name, &name);
+        Self::new_with_tmux_session(
+            name,
+            branch,
+            workdir,
+            is_worktree,
+            mode,
+            review,
+            plan_mode,
+            agent,
+            enable_chrome,
+            tmux_session,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_tmux_session(
+        name: String,
+        branch: String,
+        workdir: PathBuf,
+        is_worktree: bool,
+        mode: VibeMode,
+        review: bool,
+        plan_mode: bool,
+        agent: AgentKind,
+        enable_chrome: bool,
+        tmux_session: String,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4().to_string(),

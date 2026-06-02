@@ -510,6 +510,7 @@ fn zai_explicit_token_limit_overrides_plan() {
 
 use crate::project::{
     AgentKind, Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch,
+    tmux_session_name, worktree_name,
 };
 use crate::token_tracking::{SessionTokenTracker, TokenUsageProvider, TokenUsageSource};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -1237,6 +1238,9 @@ fn app_in_creating_feature_mode(
         project_name: project_name.to_string(),
         project_repo,
         branch: branch.to_string(),
+        branch_error: None,
+        allowed_agents: AgentKind::ALL.to_vec(),
+        feature_presets: Vec::new(),
         step: CreateFeatureStep::Branch,
         agent: AgentKind::default(),
         agent_index: 0,
@@ -1297,6 +1301,107 @@ fn create_feature_duplicate_name_sets_error_no_external_calls() {
 
     let msg = app.message.as_deref().unwrap_or("");
     assert!(msg.contains("already exists"), "got: {msg}");
+}
+
+#[test]
+fn create_feature_duplicate_normalized_name_sets_error_no_external_calls() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "My Feat", false);
+    app.create_feature().unwrap();
+
+    let msg = app.message.as_deref().unwrap_or("");
+    assert!(msg.contains("already exists"), "got: {msg}");
+}
+
+#[test]
+fn create_feature_branch_enter_shows_inline_duplicate_error() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "My Feat", false);
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::Branch);
+            assert!(
+                state
+                    .branch_error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("already exists")
+            );
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn create_feature_branch_edit_after_error_can_continue() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "My Feat", false);
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.branch = "new-feat".to_string();
+    }
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Char('x')).unwrap();
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.branch.pop();
+    }
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::Worktree);
+            assert!(state.branch_error.is_none());
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn create_feature_branch_enter_allows_same_name_in_different_project() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    let now = Utc::now();
+    store.projects.push(Project {
+        id: "proj-2".to_string(),
+        name: "other-project".to_string(),
+        repo: PathBuf::from("/tmp/other-repo"),
+        collapsed: false,
+        features: vec![],
+        created_at: now,
+        preferred_agent: AgentKind::default(),
+        is_git: false,
+    });
+    let mut app = app_in_creating_feature_mode(store, "other-project", "my-feat", false);
+
+    crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::Worktree);
+            assert!(state.branch_error.is_none());
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
+fn feature_tmux_session_names_are_scoped_by_project() {
+    assert_eq!(
+        tmux_session_name("Project One", "main"),
+        "amf-project-one-main"
+    );
+    assert_eq!(
+        tmux_session_name("Project Two", "main"),
+        "amf-project-two-main"
+    );
+}
+
+#[test]
+fn feature_worktree_names_are_scoped_by_project() {
+    assert_eq!(worktree_name("Project One", "tt"), "project-one-tt");
+    assert_eq!(worktree_name("Project Two", "tt"), "project-two-tt");
 }
 
 #[test]
@@ -1418,6 +1523,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
     let repo = TempDir::new().unwrap();
     let workdir = repo.path().join(".worktrees").join("coached");
     std::fs::create_dir_all(&workdir).unwrap();
+    let expected_session = "amf-my-project-coached";
     let mode = if agent == AgentKind::Codex {
         VibeMode::Vibe
     } else {
@@ -1445,7 +1551,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists()
-        .withf(|session| session == "amf-coached")
+        .withf(move |session| session == expected_session)
         .times(2)
         .returning({
             let mut calls = 0;
@@ -1478,7 +1584,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
             tmux.expect_launch_codex()
                 .times(1)
                 .withf(|session, window, resume, extra_args| {
-                    session == "amf-coached"
+                    session == "amf-my-project-coached"
                         && window == "codex"
                         && resume.is_none()
                         && extra_args.iter().any(|arg| arg == "--add-dir")
@@ -1500,6 +1606,9 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         project_name: "my-project".to_string(),
         project_repo: repo.path().to_path_buf(),
         branch: "coached".to_string(),
+        branch_error: None,
+        allowed_agents: AgentKind::ALL.to_vec(),
+        feature_presets: Vec::new(),
         step: CreateFeatureStep::Mode,
         agent: agent.clone(),
         agent_index: 0,
@@ -2166,13 +2275,15 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
     let repo = TempDir::new().unwrap();
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists()
-        .withf(|session| session == "amf-feature-1")
+        .withf(|session| session == "amf-automation-project-feature-1")
         .times(1)
         .return_const(false);
     let expected_repo = repo.path().to_path_buf();
     tmux.expect_create_session_with_window()
         .withf(move |session, window, workdir| {
-            session == "amf-feature-1" && window == "claude" && workdir == expected_repo.as_path()
+            session == "amf-automation-project-feature-1"
+                && window == "claude"
+                && workdir == expected_repo.as_path()
         })
         .times(1)
         .returning(|_, _, _| Ok(()));
@@ -2184,7 +2295,7 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .withf(|session, window, resume_id, extra_args| {
-            session == "amf-feature-1"
+            session == "amf-automation-project-feature-1"
                 && window == "claude"
                 && resume_id.is_none()
                 && extra_args.is_empty()
@@ -2192,7 +2303,9 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .times(1)
         .returning(|_, _, _, _| Ok(()));
     tmux.expect_select_window()
-        .withf(|session, window| session == "amf-feature-1" && window == "claude")
+        .withf(|session, window| {
+            session == "amf-automation-project-feature-1" && window == "claude"
+        })
         .times(1)
         .returning(|_, _| Ok(()));
 
@@ -2208,6 +2321,9 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         project_name: "automation-project".to_string(),
         project_repo: repo.path().to_path_buf(),
         branch: "feature-1".to_string(),
+        branch_error: None,
+        allowed_agents: AgentKind::ALL.to_vec(),
+        feature_presets: Vec::new(),
         step: CreateFeatureStep::SessionName,
         agent: AgentKind::Claude,
         agent_index: 0,
@@ -2252,20 +2368,19 @@ fn create_feature_session_name_enter_surfaces_validation_error() {
 
     crate::handlers::handle_create_feature_key(&mut app, KeyCode::Enter).unwrap();
 
-    assert!(matches!(
-        app.mode,
-        AppMode::CreatingFeature(ref state) if state.step == CreateFeatureStep::SessionName
-    ));
-    assert!(
-        app.toasts
-            .iter()
-            .any(|toast| toast.message.contains("already exists")),
-        "toasts: {:?}",
-        app.toasts
-            .iter()
-            .map(|toast| toast.message.as_str())
-            .collect::<Vec<_>>()
-    );
+    match &app.mode {
+        AppMode::CreatingFeature(state) => {
+            assert_eq!(state.step, CreateFeatureStep::Branch);
+            assert!(
+                state
+                    .branch_error
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("already exists")
+            );
+        }
+        _ => panic!("expected CreatingFeature mode"),
+    }
 }
 
 #[test]
@@ -5242,7 +5357,11 @@ fn create_feature_automation_dry_run_returns_plan_without_mutating_store() {
     assert!(response.dry_run);
     assert_eq!(response.project_name, "automation-project");
     assert_eq!(response.branch, "feature-1");
-    assert_eq!(response.workdir, repo.join(".worktrees").join("feature-1"));
+    assert_eq!(
+        response.workdir,
+        repo.join(".worktrees").join("automation-project-feature-1")
+    );
+    assert_eq!(response.tmux_session, "amf-automation-project-feature-1");
     assert!(response.is_worktree);
     assert!(!response.started);
     assert!(app.store.projects[0].features.is_empty());
@@ -5334,7 +5453,7 @@ fn create_feature_automation_creates_and_starts_feature() {
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
-    let worktree_path = repo.join(".worktrees").join("feature-1");
+    let worktree_path = repo.join(".worktrees").join("automation-project-feature-1");
 
     let mut worktree = MockWorktreeOps::new();
     let repo_for_create = repo.clone();
@@ -5343,7 +5462,9 @@ fn create_feature_automation_creates_and_starts_feature() {
         .expect_create()
         .times(1)
         .withf(move |repo_path, name, branch| {
-            repo_path == repo_for_create.as_path() && name == "feature-1" && branch == "feature-1"
+            repo_path == repo_for_create.as_path()
+                && name == "automation-project-feature-1"
+                && branch == "feature-1"
         })
         .returning(move |_, _, _| Ok(worktree_clone.clone()));
 
@@ -5395,6 +5516,10 @@ fn create_feature_automation_creates_and_starts_feature() {
     assert!(response.started);
     assert_eq!(app.store.projects[0].features.len(), 1);
     assert_eq!(app.store.projects[0].features[0].branch, "feature-1");
+    assert_eq!(
+        app.store.projects[0].features[0].tmux_session,
+        "amf-automation-project-feature-1"
+    );
     assert!(app.store.projects[0].features[0].is_worktree);
     assert!(app.store.projects[0].features[0].review);
     assert_eq!(app.store.projects[0].features[0].sessions.len(), 1);
@@ -5445,7 +5570,7 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
     assert_eq!(response.features[0].branch, "plan-1");
     assert_eq!(
         response.features[0].workdir,
-        repo.join(".worktrees").join("plan-1")
+        repo.join(".worktrees").join("plan-batch-plan-1")
     );
     assert!(app.store.projects.is_empty());
 }
@@ -5502,8 +5627,8 @@ fn batch_feature_automation_creates_project_and_starts_features() {
     let workspace = TempDir::new().unwrap();
     let repo = workspace.path().join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    let worktree_one = repo.join(".worktrees").join("plan-1");
-    let worktree_two = repo.join(".worktrees").join("plan-2");
+    let worktree_one = repo.join(".worktrees").join("plan-batch-plan-1");
+    let worktree_two = repo.join(".worktrees").join("plan-batch-plan-2");
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
 
     let mut worktree = MockWorktreeOps::new();
@@ -5518,7 +5643,9 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .expect_create()
         .times(1)
         .withf(move |repo_path, name, branch| {
-            repo_path == repo_for_first.as_path() && name == "plan-1" && branch == "plan-1"
+            repo_path == repo_for_first.as_path()
+                && name == "plan-batch-plan-1"
+                && branch == "plan-1"
         })
         .returning(move |_, _, _| Ok(worktree_one_clone.clone()));
     let repo_for_second = repo.clone();
@@ -5527,7 +5654,9 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .expect_create()
         .times(1)
         .withf(move |repo_path, name, branch| {
-            repo_path == repo_for_second.as_path() && name == "plan-2" && branch == "plan-2"
+            repo_path == repo_for_second.as_path()
+                && name == "plan-batch-plan-2"
+                && branch == "plan-2"
         })
         .returning(move |_, _, _| Ok(worktree_two_clone.clone()));
 

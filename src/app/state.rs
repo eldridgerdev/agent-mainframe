@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
-use crate::extension::CustomSessionConfig;
+use crate::extension::{CustomSessionConfig, FeaturePreset};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
@@ -848,6 +848,9 @@ pub struct CreateFeatureState {
     pub project_name: String,
     pub project_repo: PathBuf,
     pub branch: String,
+    pub branch_error: Option<String>,
+    pub allowed_agents: Vec<AgentKind>,
+    pub feature_presets: Vec<FeaturePreset>,
     pub step: CreateFeatureStep,
     pub agent: AgentKind,
     pub agent_index: usize,
@@ -892,6 +895,9 @@ impl CreateFeatureState {
             project_name,
             project_repo,
             branch,
+            branch_error: None,
+            allowed_agents: AgentKind::ALL.to_vec(),
+            feature_presets: Vec::new(),
             step,
             agent: AgentKind::default(),
             agent_index: 0,

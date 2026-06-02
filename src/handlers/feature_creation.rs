@@ -2,7 +2,34 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 
 use crate::app::{App, AppMode, CreateFeatureStep};
-use crate::project::{AgentKind, VibeMode};
+use crate::project::{AgentKind, VibeMode, normalized_feature_name};
+
+fn branch_error(app: &App) -> Option<String> {
+    let state = match &app.mode {
+        AppMode::CreatingFeature(state) => state,
+        _ => return None,
+    };
+
+    let branch = state.branch.trim();
+    if branch.is_empty() {
+        return Some("Feature name cannot be empty".to_string());
+    }
+
+    let project = app.store.find_project(&state.project_name)?;
+    let normalized_branch = normalized_feature_name(branch);
+    if project
+        .features
+        .iter()
+        .any(|feature| normalized_feature_name(&feature.name) == normalized_branch)
+    {
+        return Some(format!(
+            "Feature '{}' already exists in '{}'",
+            state.branch, state.project_name
+        ));
+    }
+
+    None
+}
 
 pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
     let step = match &app.mode {
@@ -16,7 +43,10 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             //   0 = new branch
             //   1 = existing worktree
             //   2 = use preset (only if presets exist)
-            let preset_count = app.active_extension.allowed_feature_presets().len();
+            let preset_count = match &app.mode {
+                AppMode::CreatingFeature(state) => state.feature_presets.len(),
+                _ => 0,
+            };
             let source_options = if preset_count > 0 { 3 } else { 2 };
             match key {
                 KeyCode::Esc => {
@@ -98,18 +128,16 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let presets = app.active_extension.allowed_feature_presets();
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    let len = presets.len();
+                    let len = state.feature_presets.len();
                     if len > 0 {
                         state.preset_index = (state.preset_index + 1) % len;
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let presets = app.active_extension.allowed_feature_presets();
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
-                    let len = presets.len();
+                    let len = state.feature_presets.len();
                     if len > 0 {
                         state.preset_index = if state.preset_index == 0 {
                             len - 1
@@ -124,8 +152,12 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     AppMode::CreatingFeature(s) => s.preset_index,
                     _ => return Ok(()),
                 };
-                let presets = app.active_extension.allowed_feature_presets();
-                let preset = presets.get(preset_index).cloned();
+                let preset = match &app.mode {
+                    AppMode::CreatingFeature(state) => {
+                        state.feature_presets.get(preset_index).cloned()
+                    }
+                    _ => None,
+                };
                 if let Some(preset) = preset
                     && let AppMode::CreatingFeature(state) = &mut app.mode
                 {
@@ -158,24 +190,26 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Enter => {
-                let empty = match &app.mode {
-                    AppMode::CreatingFeature(s) => s.branch.is_empty(),
-                    _ => return Ok(()),
-                };
-                if empty {
-                    app.push_toast_warning("Branch name cannot be empty");
+                if let Some(error) = branch_error(app) {
+                    if let AppMode::CreatingFeature(state) = &mut app.mode {
+                        state.branch_error = Some(error.clone());
+                    }
+                    app.push_toast_warning(error);
                 } else if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    state.branch_error = None;
                     state.step = CreateFeatureStep::Worktree;
                 }
             }
             KeyCode::Backspace => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.branch.pop();
+                    state.branch_error = None;
                 }
             }
             KeyCode::Char(c) => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     state.branch.push(c);
+                    state.branch_error = None;
                 }
             }
             _ => {}
@@ -250,12 +284,12 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     match state.mode_focus {
                         0 => {
-                            state.agent_index = (state.agent_index + 1) % allowed_agents.len();
-                            state.agent = allowed_agents[state.agent_index].clone();
+                            state.agent_index =
+                                (state.agent_index + 1) % state.allowed_agents.len();
+                            state.agent = state.allowed_agents[state.agent_index].clone();
                         }
                         1 => {
                             state.mode_index = (state.mode_index + 1) % VibeMode::ALL.len();
@@ -282,16 +316,15 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let allowed_agents = app.active_extension.allowed_agents();
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     match state.mode_focus {
                         0 => {
                             state.agent_index = if state.agent_index == 0 {
-                                allowed_agents.len() - 1
+                                state.allowed_agents.len() - 1
                             } else {
                                 state.agent_index - 1
                             };
-                            state.agent = allowed_agents[state.agent_index].clone();
+                            state.agent = state.allowed_agents[state.agent_index].clone();
                         }
                         1 => {
                             state.mode_index = if state.mode_index == 0 {

@@ -29,6 +29,7 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 match state.step {
                     CreateFeatureStep::Branch => {
                         state.branch.push_str(text);
+                        state.branch_error = None;
                     }
                     CreateFeatureStep::TaskPrompt => {
                         state.task_prompt.push_str(text);

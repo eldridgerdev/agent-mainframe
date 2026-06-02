@@ -8,6 +8,7 @@ use super::*;
 use crate::app::util::read_latest_prompt;
 use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
+use crate::project::{normalized_feature_name, worktree_name};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
@@ -19,6 +20,26 @@ impl App {
             AgentKind::Opencode => "Opencode 1".to_string(),
             AgentKind::Codex => "Codex 1".to_string(),
             AgentKind::Pi => "Pi 1".to_string(),
+        }
+    }
+
+    fn set_create_feature_branch_error(&mut self, error: impl Into<String>) {
+        let error = error.into();
+        if let AppMode::CreatingFeature(state) = &mut self.mode {
+            state.branch_error = Some(error.clone());
+            state.step = CreateFeatureStep::Branch;
+        }
+        self.message = Some(format!("Error: {error}"));
+    }
+
+    fn worktree_create_branch_error(branch: &str, error: &anyhow::Error) -> String {
+        let detail = error.to_string();
+        if detail.contains("Worktree path already exists") {
+            format!("A worktree named '{branch}' already exists for this repo")
+        } else if detail.contains("already checked out") {
+            format!("Branch '{branch}' is already checked out in another worktree")
+        } else {
+            detail
         }
     }
 
@@ -146,6 +167,8 @@ impl App {
         state.agent = agent;
         state.agent_index = agent_index;
         state.session_name = Self::default_session_name_for_agent(&state.agent);
+        state.allowed_agents = available;
+        state.feature_presets = self.active_extension.allowed_feature_presets();
 
         self.mode = AppMode::CreatingFeature(state);
         self.message = None;
@@ -165,6 +188,7 @@ impl App {
         let project_name = state.project_name.clone();
         let project_repo = state.project_repo.clone();
         let branch = state.branch.clone();
+        let worktree_name = worktree_name(&project_name, &branch);
         let mode = state.mode.clone();
         let review = state.review;
         let plan_mode = state.plan_mode;
@@ -175,7 +199,7 @@ impl App {
         let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
-            self.message = Some("Error: Branch name cannot be empty".into());
+            self.set_create_feature_branch_error("Feature name cannot be empty");
             return Ok(());
         }
         if session_name.is_empty() {
@@ -203,9 +227,14 @@ impl App {
                 }
             };
 
-            if project.features.iter().any(|f| f.name == branch) {
-                self.message = Some(format!(
-                    "Error: Feature '{}' already exists in '{}'",
+            let normalized_branch = normalized_feature_name(&branch);
+            if project
+                .features
+                .iter()
+                .any(|f| normalized_feature_name(&f.name) == normalized_branch)
+            {
+                self.set_create_feature_branch_error(format!(
+                    "Feature '{}' already exists in '{}'",
                     branch, project_name
                 ));
                 return Ok(());
@@ -240,7 +269,15 @@ impl App {
         let (workdir, is_worktree) = if let Some(wt) = &selected_worktree {
             (wt.path.clone(), true)
         } else if use_worktree {
-            let wt_path = self.worktree.create(&project_repo, &branch, &branch)?;
+            let wt_path = match self.worktree.create(&project_repo, &worktree_name, &branch) {
+                Ok(path) => path,
+                Err(err) => {
+                    self.set_create_feature_branch_error(Self::worktree_create_branch_error(
+                        &branch, &err,
+                    ));
+                    return Ok(());
+                }
+            };
 
             let ext = merge_project_extension_config(&self.config.extension, &project_repo);
 
@@ -340,7 +377,8 @@ impl App {
                 feature.pending_worktree_script = false;
             }
         } else {
-            let feature = Feature::new(
+            let feature = Feature::new_for_project(
+                &prepared.project_name,
                 prepared.branch.clone(),
                 prepared.branch.clone(),
                 prepared.workdir.clone(),
@@ -1402,7 +1440,8 @@ impl App {
             return Ok(());
         }
 
-        let feature = Feature::new(
+        let feature = Feature::new_for_project(
+            &project_name,
             new_branch.clone(),
             new_branch.clone(),
             workdir,

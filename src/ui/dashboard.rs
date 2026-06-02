@@ -916,13 +916,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             if state.step == CreateFeatureStep::ConfirmSuperVibe {
                 super::dialogs::draw_confirm_supervibe_dialog(frame, &app.theme);
             } else {
-                let presets = app.active_extension.allowed_feature_presets();
-                let allowed_agents = app.allowed_agents_for_repo(&state.project_repo);
                 super::dialogs::draw_create_feature_dialog(
                     frame,
                     state,
-                    presets.as_slice(),
-                    allowed_agents.as_slice(),
+                    state.feature_presets.as_slice(),
+                    state.allowed_agents.as_slice(),
                     &app.theme,
                 );
             }

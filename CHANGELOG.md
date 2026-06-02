@@ -24,9 +24,18 @@ are tagged.
 
 - The session picker no longer offers `Terminal` as a built-in session
   type.
-- Feature creation now shows a warning toast when the final naming step
-  cannot create the feature, so validation errors such as duplicate
-  feature names are visible while the dialog remains open.
+- Feature creation now scopes feature session and worktree names by
+  project, so separate projects can both use names like `main` or `tt`
+  without attaching to the wrong session or colliding on the same
+  worktree path.
+
+### Fixed
+
+- The new feature form now shows duplicate or invalid feature names
+  inline on the `Name` field and lets you correct the name before
+  continuing.
+- Fixed slow typing in the new feature form by avoiding repeated config
+  lookups while the dialog redraws.
 
 ### Migration
 

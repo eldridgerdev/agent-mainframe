@@ -9,6 +9,7 @@ use crate::automation::{
     CreateProjectResponse,
 };
 use crate::extension::merge_project_extension_config;
+use crate::project::{normalized_feature_name, tmux_session_name, worktree_name};
 
 impl App {
     fn planned_batch_feature_results(
@@ -21,8 +22,10 @@ impl App {
                 BatchFeatureAutomationResult {
                     name: branch.clone(),
                     branch: branch.clone(),
-                    workdir: project_repo.join(".worktrees").join(&branch),
-                    tmux_session: format!("amf-{}", branch),
+                    workdir: project_repo
+                        .join(".worktrees")
+                        .join(worktree_name(&request.project_name, &branch)),
+                    tmux_session: tmux_session_name(&request.project_name, &branch),
                     started: !request.dry_run,
                 }
             })
@@ -166,7 +169,12 @@ impl App {
                 .find_project(&request.project_name)
                 .ok_or_else(|| anyhow::anyhow!("Project '{}' not found", request.project_name))?;
 
-            if project.features.iter().any(|f| f.name == request.branch) {
+            let normalized_branch = normalized_feature_name(&request.branch);
+            if project
+                .features
+                .iter()
+                .any(|f| normalized_feature_name(&f.name) == normalized_branch)
+            {
                 bail!(
                     "Feature '{}' already exists in '{}'",
                     request.branch,
@@ -217,7 +225,9 @@ impl App {
         let mut hook_ran = false;
         let mut hook_succeeded = None;
         let workdir = if use_worktree {
-            let planned_workdir = project_repo.join(".worktrees").join(&request.branch);
+            let planned_workdir = project_repo
+                .join(".worktrees")
+                .join(worktree_name(&request.project_name, &request.branch));
             if planned_workdir.exists() {
                 bail!(
                     "Worktree path already exists: {}",
@@ -235,7 +245,7 @@ impl App {
                 request,
                 workdir,
                 use_worktree,
-                format!("amf-{}", request.branch),
+                tmux_session_name(&request.project_name, &request.branch),
                 false,
                 hook_ran,
                 hook_succeeded,
@@ -245,9 +255,10 @@ impl App {
         }
 
         let final_workdir = if use_worktree {
+            let worktree_name = worktree_name(&request.project_name, &request.branch);
             let workdir = self
                 .worktree
-                .create(&project_repo, &request.branch, &request.branch)?;
+                .create(&project_repo, &worktree_name, &request.branch)?;
 
             let ext = merge_project_extension_config(&self.config.extension, &project_repo);
             if let Some(ref hook_cfg) = ext.lifecycle_hooks.on_worktree_created {
@@ -302,7 +313,8 @@ impl App {
             project_repo.clone()
         };
 
-        let feature = Feature::new(
+        let feature = Feature::new_for_project(
+            &request.project_name,
             request.branch.clone(),
             request.branch.clone(),
             final_workdir.clone(),
@@ -351,7 +363,7 @@ impl App {
             request,
             final_workdir,
             use_worktree,
-            format!("amf-{}", request.branch),
+            tmux_session_name(&request.project_name, &request.branch),
             true,
             hook_ran,
             hook_succeeded,
@@ -439,11 +451,13 @@ impl App {
 
         for planned in planned_features {
             let planned_name = planned.name.clone();
+            let worktree_name = worktree_name(&request.project_name, &planned.branch);
             let workdir = self
                 .worktree
-                .create(&project_repo, &planned.branch, &planned.branch)?;
+                .create(&project_repo, &worktree_name, &planned.branch)?;
 
-            let feature = Feature::new(
+            let feature = Feature::new_for_project(
+                &request.project_name,
                 planned.name.clone(),
                 planned.branch.clone(),
                 workdir.clone(),

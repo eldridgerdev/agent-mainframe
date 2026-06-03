@@ -1480,9 +1480,14 @@ impl TmuxManager {
         // Use `env` to set AMF_SESSION so PreToolUse/Stop hooks
         // can identify the session. `env VAR=val cmd` works in
         // all shells including fish (unlike `VAR=val cmd`).
+        // Use the resolved binary path so a broken auto-update can't
+        // cause a crash — resolve_binary() skips any version that
+        // exits non-zero on --version.
+        let claude_bin = crate::claude::ClaudeLauncher::resolve_binary();
         let mut cmd_str = format!(
-            "{} claude",
-            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
+            "{} {}",
+            Self::shell_launch_env_with(&[("AMF_SESSION", session)]),
+            Self::shell_quote(&claude_bin)
         );
         if let Some(sid) = resume_session_id {
             cmd_str.push_str(&format!(" --resume {}", Self::shell_quote(sid)));

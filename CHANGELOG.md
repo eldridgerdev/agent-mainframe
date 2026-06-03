@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.20.0] - 2026-06-03
+
 ### Added
 
 - New feature creation now includes a session naming step before launch,
@@ -39,14 +41,16 @@ are tagged.
   continuing.
 - Fixed slow typing in the new feature form by avoiding repeated config
   lookups while the dialog redraws.
-
-### Fixed
-
 - Fixed Vibeless diff reviews that could get stuck on Claude's file
   update step when Claude reported a working directory that did not
   match AMF's stored feature path. AMF now identifies the waiting
   review by its managed tmux session first, so the review dialog opens
   immediately instead of requiring the manual `V` recovery shortcut.
+- AMF now skips broken Claude Code auto-update binaries when launching
+  Claude sessions or headless Claude commands. If the newest installed
+  Claude binary fails `--version`, AMF tries the next installed version
+  before falling back to `claude` on `PATH`, so a bad Claude update no
+  longer prevents AMF-managed Claude sessions from starting.
 
 ### Migration
 

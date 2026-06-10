@@ -419,10 +419,23 @@ impl App {
         if messages.is_empty() {
             return;
         }
-        self.log_debug("ipc", format!("Draining {} message(s)", messages.len()));
+        self.note_chatty_ipc_messages(messages.len() as u64);
 
         for raw in messages {
             self.handle_ipc_message_value(raw);
+        }
+    }
+
+    /// Routine IPC traffic (thinking/tool phase changes, live events)
+    /// arrives several times per second while agents work; logging each
+    /// message bloats the debug log. Log a count once per 5s window.
+    fn note_chatty_ipc_messages(&mut self, count: u64) {
+        self.ipc_chatty_log_count += count;
+        if self.ipc_chatty_log_window_start.elapsed() >= std::time::Duration::from_secs(5) {
+            let total = self.ipc_chatty_log_count;
+            self.ipc_chatty_log_count = 0;
+            self.ipc_chatty_log_window_start = std::time::Instant::now();
+            self.log_debug("ipc", format!("Handled {total} message(s) in the last 5s"));
         }
     }
 
@@ -441,12 +454,7 @@ impl App {
             let event = raw.get("event").unwrap_or(&raw);
 
             if let Some(session_id) = session_id {
-                if self.apply_codex_live_event(session_id, event) {
-                    self.log_debug(
-                        "ipc",
-                        format!("Applied codex live event for session {session_id}"),
-                    );
-                }
+                self.apply_codex_live_event(session_id, event);
             } else {
                 self.log_warn(
                     "ipc",
@@ -680,7 +688,6 @@ impl App {
             if let Some(sid) = msg.session_id {
                 self.ipc_thinking_sessions.insert(sid.clone());
                 self.touch_feature_for_session(&sid);
-                self.log_debug("ipc", format!("thinking-start for {sid}"));
             }
             return;
         }
@@ -688,7 +695,6 @@ impl App {
         if msg_type == "thinking-stop" {
             if let Some(sid) = msg.session_id {
                 self.ipc_thinking_sessions.remove(&sid);
-                self.log_debug("ipc", format!("thinking-stop for {sid}"));
             }
             return;
         }
@@ -722,7 +728,6 @@ impl App {
                         }),
                     );
                 }
-                self.log_debug("ipc", format!("tool-start for {sid} ({label})"));
             }
             return;
         }
@@ -755,7 +760,7 @@ impl App {
                         }),
                     );
                 }
-                self.log_debug("ipc", format!("tool-stop for {sid}"));
+
             }
             return;
         }

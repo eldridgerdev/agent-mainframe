@@ -71,6 +71,10 @@ pub use steering::{PromptAnalysis, analyze_prompt};
 pub use toast::Toast;
 
 pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
+/// Cadence for the main loop's idle drift-correction reseed. The view
+/// workers are event-driven (control-mode %output / pipe-pane FIFO), so
+/// this only exists to fix rare parser/pane drift — it must stay slow.
+pub const VIEW_DRIFT_RESEED_INTERVAL: Duration = Duration::from_secs(3);
 pub const VIEW_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
 pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
@@ -160,6 +164,7 @@ fn position_parser_cursor(parser: &mut vt100::Parser, cursor: (u16, u16), cols: 
     parser.process(format!("\x1b[{row};{col}H").as_bytes());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn snapshot_from_parser(
     session: &str,
     window: &str,
@@ -167,16 +172,21 @@ fn snapshot_from_parser(
     rows: u16,
     parser: &vt100::Parser,
     cursor_override: Option<(u16, u16)>,
+    include_content: bool,
     capture_duration: Option<Duration>,
     read_duration: Option<Duration>,
 ) -> ViewSnapshot {
     let screen = parser.screen();
-    let formatted = String::from_utf8_lossy(&screen.contents_formatted()).into_owned();
+    // `contents_formatted()` builds the full screen as an escaped string;
+    // it is only consumed by selection mode, so skip it on the hot
+    // incremental path unless explicitly requested.
+    let pane_content = include_content
+        .then(|| String::from_utf8_lossy(&screen.contents_formatted()).into_owned());
 
     ViewSnapshot {
         session: session.to_string(),
         window: window.to_string(),
-        pane_content: Some(formatted),
+        pane_content,
         rendered_lines: Some(render_vt100_screen(screen, cols, rows)),
         cursor: Some(cursor_override.or_else(|| parser_cursor(parser))),
         capture_duration,
@@ -211,6 +221,7 @@ fn reseed_control_view_parser(
         rows,
         parser,
         cursor,
+        true,
         Some(capture_duration),
         None,
     )
@@ -452,6 +463,9 @@ pub struct App {
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
     pub thinking_features: std::collections::HashSet<String>,
+    /// Rate-limits the opencode `capture-pane` thinking fallback: the
+    /// 500ms thinking tick must not spawn a subprocess per feature.
+    pub(crate) opencode_thinking_pane_cache: HashMap<String, (Instant, Option<bool>)>,
     pub ipc_thinking_sessions: std::collections::HashSet<String>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
     pub summary_state: SummaryState,
@@ -465,6 +479,8 @@ pub struct App {
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
     pub ipc: Option<crate::ipc::IpcGuard>,
+    pub(crate) ipc_chatty_log_count: u64,
+    pub(crate) ipc_chatty_log_window_start: Instant,
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
@@ -473,6 +489,7 @@ pub struct App {
     view_snapshot_wakeup_rx: Option<OwnedFd>,
     view_snapshot_stop: Option<Arc<AtomicBool>>,
     view_snapshot_refresh: Option<Arc<AtomicU8>>,
+    view_snapshot_include_content: Option<Arc<AtomicBool>>,
     view_snapshot_condvar: Option<Arc<(StdMutex<()>, StdCondvar)>>,
     view_snapshot_target: Option<(String, String, u16, u16)>,
     pub harness_check_tx: Sender<HarnessCheckResult>,
@@ -668,8 +685,25 @@ impl App {
             cv.1.notify_one();
         }
         self.view_snapshot_refresh = None;
+        self.view_snapshot_include_content = None;
         self.view_snapshot_condvar = None;
         self.view_snapshot_target = None;
+    }
+
+    /// Keep the worker's include-content flag in sync with whether
+    /// selection currently needs `pane_content`. On the rising edge,
+    /// request a refresh so full content arrives promptly.
+    fn sync_view_snapshot_content_flag(&self) {
+        let Some(flag) = &self.view_snapshot_include_content else {
+            return;
+        };
+        let want = match &self.mode {
+            AppMode::Viewing(view) => view.selection.is_selecting || view.selection.has_selection,
+            _ => false,
+        };
+        if flag.swap(want, Ordering::Relaxed) != want && want {
+            self.request_view_snapshot_refresh();
+        }
     }
 
     pub fn request_view_snapshot_refresh(&self) {
@@ -690,6 +724,13 @@ impl App {
         self.view_snapshot_wakeup_rx
             .as_ref()
             .map(|fd| fd.as_raw_fd())
+    }
+
+    /// Write end of the wakeup pipe. Other event sources (e.g. the IPC
+    /// listener) write a byte to it so the main loop's `poll()` returns
+    /// immediately instead of waiting out its timeout.
+    pub fn view_wakeup_tx(&self) -> Arc<OwnedFd> {
+        self.view_snapshot_tx.wakeup_fd.clone()
     }
 
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
@@ -809,6 +850,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_control_mode_view_worker(
         session: &str,
         window: &str,
@@ -816,6 +858,7 @@ impl App {
         rows: u16,
         stop: &AtomicBool,
         refresh: &AtomicU8,
+        include_content: &AtomicBool,
         condvar: &(StdMutex<()>, StdCondvar),
         tx: &SnapshotSender,
     ) -> anyhow::Result<()> {
@@ -880,7 +923,15 @@ impl App {
                     // will deliver the actual pane update shortly and trigger
                     // an incremental parser_changed snapshot below.
                     let _ = tx.send(snapshot_from_parser(
-                        session, window, cols, rows, &parser, None, None, None,
+                        session,
+                        window,
+                        cols,
+                        rows,
+                        &parser,
+                        None,
+                        include_content.load(Ordering::Relaxed),
+                        None,
+                        None,
                     ));
                 }
                 _ => {}
@@ -979,7 +1030,15 @@ impl App {
                 // reflects the current pane state delivered by the control
                 // protocol. Periodic NORMAL reseeds handle any drift.
                 let _ = tx.send(snapshot_from_parser(
-                    session, window, cols, rows, &parser, None, None, None,
+                    session,
+                    window,
+                    cols,
+                    rows,
+                    &parser,
+                    None,
+                    include_content.load(Ordering::Relaxed),
+                    None,
+                    None,
                 ));
             }
         }
@@ -1130,9 +1189,11 @@ impl App {
             } else {
                 VIEW_CURSOR_REFRESH_INTERVAL
             };
+            // Only poll the cursor (a `display-message` subprocess) when a
+            // pane capture happens anyway — cursor and content move
+            // together, and an idle pane must spawn no subprocesses.
             let cursor_due = cursor_refresh_requested
-                || (!pane_refresh_requested
-                    && now.duration_since(next_cursor_refresh) >= cursor_interval);
+                || (pane_due && now.duration_since(next_cursor_refresh) >= cursor_interval);
 
             if pane_due || cursor_due {
                 let mut pane_content = None;
@@ -1196,6 +1257,7 @@ impl App {
         if self.view_snapshot_target.as_ref()
             == Some(&(session.clone(), window.clone(), cols, rows))
         {
+            self.sync_view_snapshot_content_flag();
             return;
         }
 
@@ -1205,6 +1267,7 @@ impl App {
 
         let stop = Arc::new(AtomicBool::new(false));
         let refresh = Arc::new(AtomicU8::new(VIEW_SNAPSHOT_REFRESH_NORMAL));
+        let include_content = Arc::new(AtomicBool::new(true));
         let condvar = Arc::new((StdMutex::new(()), StdCondvar::new()));
         let tx = self.view_snapshot_tx.clone();
         let worker_session = session.clone();
@@ -1213,6 +1276,7 @@ impl App {
         let worker_rows = rows;
         let worker_stop = stop.clone();
         let worker_refresh = refresh.clone();
+        let worker_include_content = include_content.clone();
         let worker_condvar = condvar.clone();
 
         std::thread::spawn(move || {
@@ -1224,6 +1288,7 @@ impl App {
                     worker_rows,
                     &worker_stop,
                     &worker_refresh,
+                    &worker_include_content,
                     &worker_condvar,
                     &tx,
                 );
@@ -1281,8 +1346,10 @@ impl App {
 
         self.view_snapshot_stop = Some(stop);
         self.view_snapshot_refresh = Some(refresh);
+        self.view_snapshot_include_content = Some(include_content);
         self.view_snapshot_condvar = Some(condvar);
         self.view_snapshot_target = Some((session, window, cols, rows));
+        self.sync_view_snapshot_content_flag();
     }
 
     pub fn drain_view_snapshots(&mut self) -> (bool, bool) {
@@ -1371,6 +1438,10 @@ impl App {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
             libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+            // Non-blocking write end too: a wakeup byte lost to a full
+            // pipe is harmless (the pipe being full already wakes poll),
+            // but a blocking write would stall the sending thread.
+            libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
@@ -1426,6 +1497,7 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
@@ -1439,6 +1511,8 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            ipc_chatty_log_count: 0,
+            ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             // Checked asynchronously — defaults to false until confirmed.
@@ -1448,6 +1522,7 @@ impl App {
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
+            view_snapshot_include_content: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
             harness_check_tx,
@@ -1513,6 +1588,10 @@ impl App {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
             libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
+            // Non-blocking write end too: a wakeup byte lost to a full
+            // pipe is harmless (the pipe being full already wakes poll),
+            // but a blocking write would stall the sending thread.
+            libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
@@ -1565,6 +1644,7 @@ impl App {
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
             thinking_features: std::collections::HashSet::new(),
+            opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
@@ -1578,6 +1658,8 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            ipc_chatty_log_count: 0,
+            ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             vscode_available: false,
@@ -1586,6 +1668,7 @@ impl App {
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
+            view_snapshot_include_content: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
             harness_check_tx,
@@ -2251,7 +2334,10 @@ impl App {
         ));
     }
 
-    pub fn flush_token_cache_to_db(&self) {
+    pub fn flush_token_cache_to_db(&mut self) {
+        if !self.token_tracker.take_dirty() {
+            return;
+        }
         if let Some(db) = &self.db {
             let entries = self.token_tracker.all_cache_entries();
             if let Err(e) = db.save_token_cache(&entries) {

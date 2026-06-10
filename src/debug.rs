@@ -1,10 +1,14 @@
 use chrono::{DateTime, Utc};
 use std::any::Any;
 use std::collections::VecDeque;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, Once, OnceLock};
+
+/// Rotate `debug.log` once it exceeds this size; one `.1` generation is
+/// kept. Checked at startup and periodically by the main loop.
+const LOG_ROTATE_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogLevel {
@@ -101,21 +105,15 @@ impl DebugLog {
     }
 
     fn write_to_file(&self, entry: &LogEntry) {
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_file)
-        {
-            let time = entry.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
-            let line = format!(
-                "{} [{:<5}] {}: {}\n",
-                time,
-                entry.level.display(),
-                entry.context,
-                entry.message
-            );
-            let _ = file.write_all(line.as_bytes());
-        }
+        let time = entry.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
+        let line = format!(
+            "{} [{:<5}] {}: {}\n",
+            time,
+            entry.level.display(),
+            entry.context,
+            entry.message
+        );
+        write_line_to_log(&line);
     }
 
     pub fn debug(&mut self, context: &str, message: String) -> LogEntry {
@@ -163,18 +161,72 @@ impl DebugLog {
 /// an `App` instance. Intended for background threads (e.g. IPC
 /// server) that cannot borrow `App`.
 pub fn log_to_file(level: LogLevel, context: &str, message: &str) {
-    let path = global_log_path();
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let line = format!(
-            "{} [{:<5}] {}: {}\n",
-            time,
-            level.display(),
-            context,
-            message,
-        );
-        let _ = file.write_all(line.as_bytes());
+    let time = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    let line = format!("{} [{:<5}] {}: {}\n", time, level.display(), context, message);
+    write_line_to_log(&line);
+}
+
+/// Single shared buffered writer for the on-disk log. Entries used to
+/// open/append/close the file per line, on whichever thread logged —
+/// including the main thread.
+fn log_writer() -> &'static Mutex<Option<BufWriter<File>>> {
+    static WRITER: OnceLock<Mutex<Option<BufWriter<File>>>> = OnceLock::new();
+    WRITER.get_or_init(|| Mutex::new(None))
+}
+
+fn write_line_to_log(line: &str) {
+    let Ok(mut guard) = log_writer().lock() else {
+        return;
+    };
+    if guard.is_none() {
+        let Ok(file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(global_log_path())
+        else {
+            return;
+        };
+        *guard = Some(BufWriter::new(file));
     }
+    if let Some(writer) = guard.as_mut()
+        && writer.write_all(line.as_bytes()).is_err()
+    {
+        // Drop the handle so the next write reopens the file.
+        *guard = None;
+    }
+}
+
+/// Flush buffered log lines to disk. Called on a ~1s cadence by the
+/// main loop, on exit, and from the panic hook.
+pub fn flush_log_writer() {
+    if let Ok(mut guard) = log_writer().lock()
+        && let Some(writer) = guard.as_mut()
+        && writer.flush().is_err()
+    {
+        *guard = None;
+    }
+}
+
+/// Rename `debug.log` to `debug.log.1` (replacing any previous
+/// generation) once it exceeds the size cap. Safe to call at any time;
+/// the shared writer reopens the fresh file on the next write.
+pub fn rotate_log_if_needed() {
+    let path = global_log_path();
+    let Ok(metadata) = fs::metadata(&path) else {
+        return;
+    };
+    if metadata.len() <= LOG_ROTATE_MAX_BYTES {
+        return;
+    }
+
+    let Ok(mut guard) = log_writer().lock() else {
+        return;
+    };
+    if let Some(mut writer) = guard.take() {
+        let _ = writer.flush();
+    }
+    let rotated = path.with_extension("log.1");
+    let _ = fs::rename(&path, &rotated);
 }
 
 fn ui_alert_slot() -> &'static Mutex<Option<String>> {
@@ -222,6 +274,7 @@ pub fn install_panic_hook() {
                 "panic",
                 &format!("thread `{thread}` panicked at {location}: {payload}"),
             );
+            flush_log_writer();
             set_user_alert("Error: AMF hit an internal error. Check debug log for details.".into());
         }));
     });

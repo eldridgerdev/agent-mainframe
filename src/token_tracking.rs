@@ -2,10 +2,16 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// Upper bound on the dedupe-key tail kept in incremental parse state.
+/// Duplicate request ids appear on adjacent or near-adjacent transcript
+/// lines, so a bounded recent tail is sufficient and keeps the state
+/// (and its DB serialization) from growing with session length.
+const DEDUPE_TAIL_CAP: usize = 1024;
 
 use crate::project::SessionKind;
 
@@ -39,6 +45,34 @@ pub struct DbTokenCacheEntry {
     pub source: TokenUsageSource,
     pub signature: Option<u64>,
     pub usage: Option<SessionTokenUsage>,
+    pub parse_state: Option<TranscriptParseState>,
+}
+
+/// Incremental parse state for append-only JSONL transcripts. On each
+/// refresh only bytes past the per-file offset are read and parsed; a
+/// full reparse happens only when a file shrinks (truncation/rotation).
+/// Persisted in the DB token cache so restarts stay cheap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TranscriptParseState {
+    /// Bytes parsed so far per transcript file (through the last
+    /// complete line).
+    #[serde(default)]
+    pub offsets: HashMap<PathBuf, u64>,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    /// Recent dedupe keys (bounded tail, oldest first).
+    #[serde(default)]
+    pub recent_dedupe: VecDeque<String>,
+    #[serde(default)]
+    pub codex_latest_total: Option<CodexUsageSnapshot>,
+    #[serde(default)]
+    pub codex_accumulated: CodexUsageSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +80,7 @@ struct UsageCacheEntry {
     refreshed_at: Instant,
     signature: Option<u64>,
     usage: Option<SessionTokenUsage>,
+    parse_state: TranscriptParseState,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +90,8 @@ pub struct SessionTokenTracker {
     codex_sessions: Option<(Instant, Vec<CodexSessionRecord>)>,
     opencode_sessions: Option<(Instant, Vec<OpencodeSessionMeta>)>,
     usage_cache: HashMap<TokenUsageSource, UsageCacheEntry>,
+    /// Set when a cache entry actually changed since the last DB flush.
+    dirty: bool,
 }
 
 impl Default for SessionTokenTracker {
@@ -65,6 +102,7 @@ impl Default for SessionTokenTracker {
             codex_sessions: None,
             opencode_sessions: None,
             usage_cache: HashMap::new(),
+            dirty: false,
         }
     }
 }
@@ -77,7 +115,14 @@ impl SessionTokenTracker {
             codex_sessions: None,
             opencode_sessions: None,
             usage_cache: HashMap::new(),
+            dirty: false,
         }
+    }
+
+    /// Returns whether any cache entry changed since the last call, and
+    /// resets the flag. Lets the DB flush skip unchanged syncs.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
     }
 
     /// Pre-populate the in-memory cache from DB-persisted entries.
@@ -95,6 +140,7 @@ impl SessionTokenTracker {
                     refreshed_at: stale,
                     signature: entry.signature,
                     usage: entry.usage,
+                    parse_state: entry.parse_state.unwrap_or_default(),
                 },
             );
         }
@@ -108,6 +154,7 @@ impl SessionTokenTracker {
                 source: source.clone(),
                 signature: entry.signature,
                 usage: entry.usage.clone(),
+                parse_state: Some(entry.parse_state.clone()),
             })
             .collect()
     }
@@ -145,10 +192,20 @@ impl SessionTokenTracker {
             return entry.usage.clone();
         }
 
+        // Take the incremental state out so the readers can resume from
+        // the last parsed offset instead of re-reading whole transcripts.
+        let mut parse_state = self
+            .usage_cache
+            .get_mut(source)
+            .map(|entry| std::mem::take(&mut entry.parse_state))
+            .unwrap_or_default();
+
         let usage = match source.provider {
-            TokenUsageProvider::Claude => self.read_claude_usage(workdir, &source.id),
+            TokenUsageProvider::Claude => {
+                self.read_claude_usage(workdir, &source.id, &mut parse_state)
+            }
             TokenUsageProvider::Opencode => self.read_opencode_usage(&source.id),
-            TokenUsageProvider::Codex => self.read_codex_usage(&source.id),
+            TokenUsageProvider::Codex => self.read_codex_usage(&source.id, &mut parse_state),
         };
         self.usage_cache.insert(
             source.clone(),
@@ -156,8 +213,10 @@ impl SessionTokenTracker {
                 refreshed_at: Instant::now(),
                 signature: current_signature,
                 usage: usage.clone(),
+                parse_state,
             },
         );
+        self.dirty = true;
         usage
     }
 
@@ -209,33 +268,43 @@ impl SessionTokenTracker {
         })
     }
 
-    fn read_claude_usage(&self, workdir: &Path, session_id: &str) -> Option<SessionTokenUsage> {
+    fn read_claude_usage(
+        &self,
+        workdir: &Path,
+        session_id: &str,
+        state: &mut TranscriptParseState,
+    ) -> Option<SessionTokenUsage> {
         let projects_dir = self.claude_projects_dir(workdir)?;
         let root = projects_dir.join(format!("{session_id}.jsonl"));
         if !root.exists() {
             return None;
         }
 
-        let mut input_tokens = 0u64;
-        let mut output_tokens = 0u64;
-        let mut cache_read_tokens = 0u64;
-        let mut cache_write_tokens = 0u64;
-        let mut seen_requests = HashSet::new();
         let mut paths = vec![root];
         let subagents_dir = projects_dir.join(session_id).join("subagents");
         collect_jsonl_files(&subagents_dir, &mut paths);
 
+        // A shrunken or vanished file means the offsets no longer
+        // describe the content — recompute everything from scratch.
+        let needs_reset = state.offsets.iter().any(|(path, &offset)| {
+            std::fs::metadata(path)
+                .map(|metadata| metadata.len() < offset)
+                .unwrap_or(true)
+        });
+        if needs_reset {
+            *state = TranscriptParseState::default();
+        }
+
+        let mut seen_requests: HashSet<String> = state.recent_dedupe.iter().cloned().collect();
+
         for path in paths {
-            let Ok(contents) = std::fs::read_to_string(path) else {
+            let offset = state.offsets.get(&path).copied().unwrap_or(0);
+            let Ok((new_offset, bytes)) = read_appended_lines(&path, offset) else {
                 continue;
             };
-            for line in contents.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
 
-                let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            for line in bytes.split(|&byte| byte == b'\n') {
+                let Ok(value) = serde_json::from_slice::<Value>(line) else {
                     continue;
                 };
                 let usage = value
@@ -266,33 +335,46 @@ impl SessionTokenTracker {
                 let Some(dedupe_key) = dedupe_key else {
                     continue;
                 };
-                if !seen_requests.insert(dedupe_key) {
+                if !seen_requests.insert(dedupe_key.clone()) {
                     continue;
                 }
+                state.recent_dedupe.push_back(dedupe_key);
+                if state.recent_dedupe.len() > DEDUPE_TAIL_CAP {
+                    state.recent_dedupe.pop_front();
+                }
 
-                input_tokens = input_tokens.saturating_add(json_u64(usage, "input_tokens"));
-                output_tokens = output_tokens.saturating_add(json_u64(usage, "output_tokens"));
-                cache_read_tokens =
-                    cache_read_tokens.saturating_add(json_u64(usage, "cache_read_input_tokens"));
-                cache_write_tokens = cache_write_tokens
+                state.input_tokens = state
+                    .input_tokens
+                    .saturating_add(json_u64(usage, "input_tokens"));
+                state.output_tokens = state
+                    .output_tokens
+                    .saturating_add(json_u64(usage, "output_tokens"));
+                state.cache_read_tokens = state
+                    .cache_read_tokens
+                    .saturating_add(json_u64(usage, "cache_read_input_tokens"));
+                state.cache_write_tokens = state
+                    .cache_write_tokens
                     .saturating_add(json_u64(usage, "cache_creation_input_tokens"));
             }
+
+            state.offsets.insert(path, new_offset);
         }
 
-        let total_tokens = input_tokens
-            .saturating_add(output_tokens)
-            .saturating_add(cache_read_tokens)
-            .saturating_add(cache_write_tokens);
+        let total_tokens = state
+            .input_tokens
+            .saturating_add(state.output_tokens)
+            .saturating_add(state.cache_read_tokens)
+            .saturating_add(state.cache_write_tokens);
 
         Some(SessionTokenUsage {
             source: TokenUsageSource {
                 provider: TokenUsageProvider::Claude,
                 id: session_id.to_string(),
             },
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
+            input_tokens: state.input_tokens,
+            output_tokens: state.output_tokens,
+            cache_read_tokens: state.cache_read_tokens,
+            cache_write_tokens: state.cache_write_tokens,
             reasoning_tokens: 0,
             total_tokens,
         })
@@ -351,43 +433,54 @@ impl SessionTokenTracker {
         })
     }
 
-    fn read_codex_usage(&mut self, session_id: &str) -> Option<SessionTokenUsage> {
+    fn read_codex_usage(
+        &mut self,
+        session_id: &str,
+        state: &mut TranscriptParseState,
+    ) -> Option<SessionTokenUsage> {
         let session_path = self.codex_session_path(session_id)?;
-        let contents = std::fs::read_to_string(session_path).ok()?;
 
-        let mut latest_total: Option<CodexUsageSnapshot> = None;
-        let mut accumulated_last = CodexUsageSnapshot::default();
-
-        for line in contents.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(event) = serde_json::from_str::<CodexSessionEvent>(trimmed) else {
-                continue;
-            };
-            if event.event_type != "event_msg" {
-                continue;
-            }
-            let Some(payload) = event.payload else {
-                continue;
-            };
-            if payload.payload_type.as_deref() != Some("token_count") {
-                continue;
-            }
-
-            let Some(info) = payload.info else {
-                continue;
-            };
-
-            if let Some(total) = info.total_token_usage {
-                latest_total = Some(total.into());
-            } else if let Some(last) = info.last_token_usage {
-                accumulated_last.saturating_add_assign(&last.into());
-            }
+        let offset = state.offsets.get(&session_path).copied().unwrap_or(0);
+        let shrunk = std::fs::metadata(&session_path)
+            .map(|metadata| metadata.len() < offset)
+            .unwrap_or(true);
+        if shrunk {
+            *state = TranscriptParseState::default();
         }
 
-        let snapshot = latest_total.unwrap_or(accumulated_last);
+        let offset = state.offsets.get(&session_path).copied().unwrap_or(0);
+        if let Ok((new_offset, bytes)) = read_appended_lines(&session_path, offset) {
+            for line in bytes.split(|&byte| byte == b'\n') {
+                let Ok(event) = serde_json::from_slice::<CodexSessionEvent>(line) else {
+                    continue;
+                };
+                if event.event_type != "event_msg" {
+                    continue;
+                }
+                let Some(payload) = event.payload else {
+                    continue;
+                };
+                if payload.payload_type.as_deref() != Some("token_count") {
+                    continue;
+                }
+
+                let Some(info) = payload.info else {
+                    continue;
+                };
+
+                if let Some(total) = info.total_token_usage {
+                    state.codex_latest_total = Some(total.into());
+                } else if let Some(last) = info.last_token_usage {
+                    state.codex_accumulated.saturating_add_assign(&last.into());
+                }
+            }
+            state.offsets.insert(session_path, new_offset);
+        }
+
+        let snapshot = state
+            .codex_latest_total
+            .clone()
+            .unwrap_or_else(|| state.codex_accumulated.clone());
         Some(SessionTokenUsage {
             source: TokenUsageSource {
                 provider: TokenUsageProvider::Codex,
@@ -741,6 +834,33 @@ pub fn format_token_count(tokens: u64) -> String {
     }
 }
 
+/// Read complete lines appended past `offset`. Returns the new offset
+/// (end of the last complete line) and those lines' bytes. A trailing
+/// partial line (mid-append, no newline yet) is left for the next call
+/// so a line is never half-parsed or skipped.
+pub(crate) fn read_appended_lines(path: &Path, offset: u64) -> std::io::Result<(u64, Vec<u8>)> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if len <= offset {
+        return Ok((offset, Vec::new()));
+    }
+
+    file.seek(SeekFrom::Start(offset))?;
+    let mut buf = Vec::with_capacity((len - offset) as usize);
+    file.take(len - offset).read_to_end(&mut buf)?;
+
+    match buf.iter().rposition(|&byte| byte == b'\n') {
+        Some(pos) => {
+            let parsed_through = offset + pos as u64 + 1;
+            buf.truncate(pos + 1);
+            Ok((parsed_through, buf))
+        }
+        None => Ok((offset, Vec::new())),
+    }
+}
+
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     if !is_real_dir(dir) {
         return;
@@ -914,12 +1034,17 @@ struct CodexTokenUsage {
     total_tokens: Option<u64>,
 }
 
-#[derive(Debug, Default)]
-struct CodexUsageSnapshot {
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CodexUsageSnapshot {
+    #[serde(default)]
     input_tokens: u64,
+    #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
     cache_read_tokens: u64,
+    #[serde(default)]
     reasoning_tokens: u64,
+    #[serde(default)]
     total_tokens: u64,
 }
 
@@ -1060,12 +1185,166 @@ mod tests {
         .unwrap();
 
         let tracker = tracker_with_roots(home.path(), data.path());
-        let usage = tracker.read_claude_usage(&workdir, "sess-1").unwrap();
+        let mut state = TranscriptParseState::default();
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
         assert_eq!(usage.input_tokens, 19);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.cache_read_tokens, 3);
         assert_eq!(usage.cache_write_tokens, 1);
         assert_eq!(usage.total_tokens, 28);
+    }
+
+    #[test]
+    fn claude_usage_parses_only_appended_bytes_incrementally() {
+        let home = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/worktree");
+        let encoded = encode_path(&workdir);
+        let project_dir = home.path().join(".claude").join("projects").join(encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let transcript = project_dir.join("sess-1.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"requestId\":\"req-1\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n",
+        )
+        .unwrap();
+
+        let tracker = tracker_with_roots(home.path(), data.path());
+        let mut state = TranscriptParseState::default();
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        let offset_after_first = *state.offsets.get(&transcript).unwrap();
+        assert!(offset_after_first > 0);
+
+        // Append: only the new line should be parsed; the duplicate
+        // request id must still be deduped across calls.
+        let mut contents = std::fs::read(&transcript).unwrap();
+        contents.extend_from_slice(
+            b"{\"requestId\":\"req-1\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n",
+        );
+        contents.extend_from_slice(
+            b"{\"requestId\":\"req-2\",\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":1}}}\n",
+        );
+        std::fs::write(&transcript, contents).unwrap();
+
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
+        assert_eq!(usage.input_tokens, 14);
+        assert_eq!(usage.output_tokens, 3);
+        assert!(*state.offsets.get(&transcript).unwrap() > offset_after_first);
+
+        // Truncation forces a full reparse from scratch.
+        std::fs::write(
+            &transcript,
+            "{\"requestId\":\"req-9\",\"message\":{\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n",
+        )
+        .unwrap();
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
+        assert_eq!(usage.input_tokens, 7);
+        assert_eq!(usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn claude_usage_leaves_partial_trailing_line_for_next_read() {
+        let home = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/worktree");
+        let encoded = encode_path(&workdir);
+        let project_dir = home.path().join(".claude").join("projects").join(encoded);
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let transcript = project_dir.join("sess-1.jsonl");
+        let complete =
+            "{\"requestId\":\"req-1\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n";
+        let partial = "{\"requestId\":\"req-2\",\"message\":{\"usage\":{\"input_tok";
+        std::fs::write(&transcript, format!("{complete}{partial}")).unwrap();
+
+        let tracker = tracker_with_roots(home.path(), data.path());
+        let mut state = TranscriptParseState::default();
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(
+            *state.offsets.get(&transcript).unwrap(),
+            complete.len() as u64
+        );
+
+        // Completing the line later picks it up in full.
+        let mut contents = std::fs::read(&transcript).unwrap();
+        contents.extend_from_slice(b"ens\":4,\"output_tokens\":1}}}\n");
+        std::fs::write(&transcript, contents).unwrap();
+        let usage = tracker
+            .read_claude_usage(&workdir, "sess-1", &mut state)
+            .unwrap();
+        assert_eq!(usage.input_tokens, 14);
+        assert_eq!(usage.output_tokens, 3);
+    }
+
+    #[test]
+    fn codex_usage_resumes_from_offset_and_tracks_latest_total() {
+        let home = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let session_dir = home
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("03")
+            .join("13");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let transcript = session_dir.join("rollout.jsonl");
+        std::fs::write(
+            &transcript,
+            concat!(
+                "{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-1\",\"cwd\":\"/tmp/codex-worktree\"}}\n",
+                "{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":100,\"output_tokens\":7,\"total_tokens\":107}}}}\n"
+            ),
+        )
+        .unwrap();
+
+        let mut tracker = tracker_with_roots(home.path(), data.path());
+        let mut state = TranscriptParseState::default();
+        let usage = tracker.read_codex_usage("codex-1", &mut state).unwrap();
+        assert_eq!(usage.total_tokens, 107);
+
+        let mut contents = std::fs::read(&transcript).unwrap();
+        contents.extend_from_slice(
+            b"{\"timestamp\":\"2026-03-13T14:02:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":180,\"output_tokens\":12,\"total_tokens\":192}}}}\n",
+        );
+        std::fs::write(&transcript, contents).unwrap();
+
+        let usage = tracker.read_codex_usage("codex-1", &mut state).unwrap();
+        assert_eq!(usage.input_tokens, 180);
+        assert_eq!(usage.total_tokens, 192);
+    }
+
+    #[test]
+    fn transcript_parse_state_round_trips_through_json() {
+        let mut state = TranscriptParseState::default();
+        state.offsets.insert(PathBuf::from("/tmp/a.jsonl"), 42);
+        state.input_tokens = 10;
+        state.recent_dedupe.push_back("request:req-1".to_string());
+        state.codex_latest_total = Some(CodexUsageSnapshot {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            reasoning_tokens: 4,
+            total_tokens: 10,
+        });
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: TranscriptParseState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.offsets.get(Path::new("/tmp/a.jsonl")), Some(&42));
+        assert_eq!(restored.input_tokens, 10);
+        assert_eq!(restored.recent_dedupe.len(), 1);
+        assert_eq!(restored.codex_latest_total.unwrap().total_tokens, 10);
     }
 
     #[test]

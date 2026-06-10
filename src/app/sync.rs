@@ -461,52 +461,69 @@ impl App {
         // `tmux capture-pane` across many features.
         self.poll_sidebar_load_results();
 
-        let old_thinking = self.thinking_features.clone();
-        let old_pending_inputs = self.pending_inputs.clone();
-        self.thinking_features.clear();
+        // Opencode features without sidebar cache need a capture-pane
+        // fallback, which requires &mut self — collect probe targets up
+        // front instead of borrowing the store across the loop.
+        struct ThinkingProbe {
+            tmux_session: String,
+            agent: AgentKind,
+            opencode_window: Option<String>,
+        }
+        let probes: Vec<ThinkingProbe> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| {
+                project.features.iter().filter_map(|feature| {
+                    if feature.status == ProjectStatus::Stopped {
+                        return None;
+                    }
+                    Some(ThinkingProbe {
+                        tmux_session: feature.tmux_session.clone(),
+                        agent: feature.agent.clone(),
+                        opencode_window: feature
+                            .sessions
+                            .iter()
+                            .find(|s| s.kind == SessionKind::Opencode)
+                            .map(|s| s.tmux_window.clone()),
+                    })
+                })
+            })
+            .collect();
+
+        let old_thinking = std::mem::take(&mut self.thinking_features);
         let ipc_mode = self.ipc.is_some();
-        for project in &self.store.projects {
-            for feature in &project.features {
-                if feature.status == ProjectStatus::Stopped {
-                    continue;
-                }
-                let thinking = match feature.agent {
-                    AgentKind::Claude => {
-                        if ipc_mode {
-                            self.ipc_thinking_sessions.contains(&feature.tmux_session)
-                                || self.ipc_tool_sessions.contains(&feature.tmux_session)
-                        } else {
-                            Self::is_session_marked_thinking(&feature.tmux_session)
-                        }
+        for probe in &probes {
+            let thinking = match probe.agent {
+                AgentKind::Claude => {
+                    if ipc_mode {
+                        self.ipc_thinking_sessions.contains(&probe.tmux_session)
+                            || self.ipc_tool_sessions.contains(&probe.tmux_session)
+                    } else {
+                        Self::is_session_marked_thinking(&probe.tmux_session)
                     }
-                    AgentKind::Opencode => self
-                        .opencode_sidebar_cache
-                        .get(&feature.tmux_session)
-                        .and_then(opencode_sidebar_thinking_state)
-                        .or_else(|| {
-                            feature
-                                .sessions
-                                .iter()
-                                .find(|s| s.kind == SessionKind::Opencode)
-                                .and_then(|s| {
-                                    TmuxManager::capture_pane(&feature.tmux_session, &s.tmux_window)
-                                        .ok()
-                                })
-                                .map(|content| pane_shows_thinking_hint(&content))
+                }
+                AgentKind::Opencode => self
+                    .opencode_sidebar_cache
+                    .get(&probe.tmux_session)
+                    .and_then(opencode_sidebar_thinking_state)
+                    .or_else(|| {
+                        probe.opencode_window.as_ref().and_then(|window| {
+                            self.opencode_thinking_pane_fallback(&probe.tmux_session, window)
                         })
-                        .unwrap_or(false),
-                    AgentKind::Codex => {
-                        if ipc_mode {
-                            self.ipc_thinking_sessions.contains(&feature.tmux_session)
-                        } else {
-                            Self::is_session_marked_thinking(&feature.tmux_session)
-                        }
+                    })
+                    .unwrap_or(false),
+                AgentKind::Codex => {
+                    if ipc_mode {
+                        self.ipc_thinking_sessions.contains(&probe.tmux_session)
+                    } else {
+                        Self::is_session_marked_thinking(&probe.tmux_session)
                     }
-                    AgentKind::Pi => Self::is_session_marked_thinking(&feature.tmux_session),
-                };
-                if thinking {
-                    self.thinking_features.insert(feature.tmux_session.clone());
                 }
+                AgentKind::Pi => Self::is_session_marked_thinking(&probe.tmux_session),
+            };
+            if thinking {
+                self.thinking_features.insert(probe.tmux_session.clone());
             }
         }
 
@@ -533,6 +550,7 @@ impl App {
             })
             .collect();
 
+        let mut pending_inputs_changed = false;
         for (project_name, feature_name, sid, cwd, agent) in active_features {
             let was_thinking = old_thinking.contains(&sid);
             let is_thinking = self.thinking_features.contains(&sid);
@@ -546,6 +564,7 @@ impl App {
                 });
                 let removed = before.saturating_sub(self.pending_inputs.len());
                 if removed > 0 {
+                    pending_inputs_changed = true;
                     self.log_debug(
                         "sync",
                         format!(
@@ -565,6 +584,7 @@ impl App {
                         && p.feature_name.as_deref() == Some(&feature_name)
                 });
                 if !any_pending_for_feature {
+                    pending_inputs_changed = true;
                     self.pending_inputs.push(PendingInput {
                         session_id: sid.clone(),
                         cwd,
@@ -601,7 +621,30 @@ impl App {
             }
         }
 
-        old_thinking != self.thinking_features || old_pending_inputs != self.pending_inputs
+        old_thinking != self.thinking_features || pending_inputs_changed
+    }
+
+    /// Capture-pane is a subprocess; cache its thinking verdict per
+    /// session so the 500ms thinking tick spawns it at most every 5s.
+    fn opencode_thinking_pane_fallback(
+        &mut self,
+        tmux_session: &str,
+        window: &str,
+    ) -> Option<bool> {
+        const FALLBACK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+        if let Some((checked_at, result)) = self.opencode_thinking_pane_cache.get(tmux_session)
+            && checked_at.elapsed() < FALLBACK_INTERVAL
+        {
+            return *result;
+        }
+
+        let result = TmuxManager::capture_pane(tmux_session, window)
+            .ok()
+            .map(|content| pane_shows_thinking_hint(&content));
+        self.opencode_thinking_pane_cache
+            .insert(tmux_session.to_string(), (Instant::now(), result));
+        result
     }
 
     fn is_session_marked_thinking(tmux_session: &str) -> bool {

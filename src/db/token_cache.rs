@@ -3,6 +3,7 @@ use rusqlite::{Connection, params};
 
 use crate::token_tracking::{
     DbTokenCacheEntry, SessionTokenUsage, TokenUsageProvider, TokenUsageSource,
+    TranscriptParseState,
 };
 
 fn provider_to_str(p: &TokenUsageProvider) -> &'static str {
@@ -26,7 +27,7 @@ pub fn load(conn: &Connection) -> Result<Vec<DbTokenCacheEntry>> {
         "SELECT source_provider, source_id, signature,
                 has_usage, input_tokens, output_tokens,
                 cache_read_tokens, cache_write_tokens,
-                reasoning_tokens, total_tokens
+                reasoning_tokens, total_tokens, parse_state
          FROM token_usage_cache",
     )?;
 
@@ -42,6 +43,7 @@ pub fn load(conn: &Connection) -> Result<Vec<DbTokenCacheEntry>> {
             let cache_write_tokens: i64 = row.get(7)?;
             let reasoning_tokens: i64 = row.get(8)?;
             let total_tokens: i64 = row.get(9)?;
+            let parse_state_json: Option<String> = row.get(10)?;
 
             let source = TokenUsageSource {
                 provider: provider.clone(),
@@ -61,10 +63,15 @@ pub fn load(conn: &Connection) -> Result<Vec<DbTokenCacheEntry>> {
                 None
             };
 
+            let parse_state = parse_state_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<TranscriptParseState>(json).ok());
+
             Ok(DbTokenCacheEntry {
                 source,
                 signature: signature.map(|s| s as u64),
                 usage,
+                parse_state,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -102,12 +109,18 @@ fn do_save(conn: &Connection, entries: &[DbTokenCacheEntry]) -> Result<()> {
                 None => (0i32, 0, 0, 0, 0, 0, 0),
             };
 
+        let parse_state_json = entry
+            .parse_state
+            .as_ref()
+            .and_then(|state| serde_json::to_string(state).ok());
+
         conn.execute(
             "INSERT OR REPLACE INTO token_usage_cache (
                 source_provider, source_id, signature, has_usage,
                 input_tokens, output_tokens, cache_read_tokens,
-                cache_write_tokens, reasoning_tokens, total_tokens, updated_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,datetime('now'))",
+                cache_write_tokens, reasoning_tokens, total_tokens,
+                parse_state, updated_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now'))",
             params![
                 provider_to_str(&entry.source.provider),
                 entry.source.id,
@@ -119,6 +132,7 @@ fn do_save(conn: &Connection, entries: &[DbTokenCacheEntry]) -> Result<()> {
                 cache_write,
                 reasoning,
                 total,
+                parse_state_json,
             ],
         )?;
     }

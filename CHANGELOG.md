@@ -10,6 +10,36 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- AMF now stays fast after running for hours or days. Usage and token
+  statistics are computed in the background and re-read only what
+  changed since the last check, so input no longer stalls as the day's
+  agent transcripts grow.
+- View mode now uses far less CPU while idle. The embedded pane is
+  updated when output actually arrives instead of being re-captured
+  many times per second, with no change to typing echo or streaming
+  responsiveness.
+- Hook and agent notifications now wake AMF immediately instead of
+  waiting for the next poll tick, so toasts and pending-input alerts
+  appear without delay.
+- The debug log (`~/.local/state/amf/debug.log`) is now capped at
+  10 MB with one rotated generation kept, so it no longer grows
+  without bound. Routine per-message IPC chatter is summarized once
+  per 5 seconds instead of logged line by line.
+
+### Fixed
+
+- Fixed periodic input stalls in view mode caused by usage statistics
+  being recalculated on the main thread while agents were streaming.
+- An idle embedded pane no longer spawns background tmux processes
+  several times per second.
+
+### Migration
+
+- No migration is required. The token-usage cache database is upgraded
+  automatically on first launch.
+
 ## [v0.20.0] - 2026-06-03
 
 ### Added

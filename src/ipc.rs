@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
@@ -46,6 +48,13 @@ impl Drop for IpcGuard {
 /// The server thread exits when the listener errors or when the
 /// receiver side is dropped (channel disconnected).
 pub fn start(path: &Path) -> Result<IpcGuard> {
+    start_with_wakeup(path, None)
+}
+
+/// Like [`start`], but writes a byte to `wakeup` after each delivered
+/// message so the main loop's `poll()` unblocks immediately instead of
+/// waiting out its timeout.
+pub fn start_with_wakeup(path: &Path, wakeup: Option<Arc<OwnedFd>>) -> Result<IpcGuard> {
     // Remove stale socket from a previous run.
     let _ = std::fs::remove_file(path);
 
@@ -65,6 +74,7 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
                 Ok(s) => {
                     log_to_file(LogLevel::Debug, "ipc", "Accepted connection");
                     let tx = tx.clone();
+                    let wakeup = wakeup.clone();
                     std::thread::spawn(move || {
                         use std::io::BufRead;
                         for line in std::io::BufReader::new(s).lines() {
@@ -76,6 +86,16 @@ pub fn start(path: &Path) -> Result<IpcGuard> {
                                             // App is shutting down.
                                             if tx.send(v).is_err() {
                                                 return;
+                                            }
+                                            if let Some(fd) = &wakeup {
+                                                let byte = 1u8;
+                                                unsafe {
+                                                    libc::write(
+                                                        fd.as_raw_fd(),
+                                                        &byte as *const u8 as *const _,
+                                                        1,
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(e) => {

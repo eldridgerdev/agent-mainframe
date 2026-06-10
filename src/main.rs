@@ -222,6 +222,7 @@ fn main() -> Result<()> {
     }
 
     debug::install_panic_hook();
+    debug::rotate_log_if_needed();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -267,7 +268,7 @@ fn main() -> Result<()> {
 
         // Start IPC socket server for push-based hook notifications.
         let socket = ipc::socket_path();
-        match ipc::start(&socket) {
+        match ipc::start_with_wakeup(&socket, Some(app.view_wakeup_tx())) {
             Ok(guard) => {
                 app.log_info("ipc", format!("Socket listening at {}", socket.display()));
                 app.ipc = Some(guard);
@@ -288,6 +289,7 @@ fn main() -> Result<()> {
         loop_result
     }));
 
+    debug::flush_log_writer();
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -551,6 +553,8 @@ fn run_loop<B: Backend>(
 ) -> Result<()> {
     let mut last_sync = std::time::Instant::now();
     let mut last_thinking_sync = std::time::Instant::now();
+    let mut last_file_log_flush = std::time::Instant::now();
+    let mut last_log_rotation_check = std::time::Instant::now();
     let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
     let mut last_claude_usage_debug: Option<String> = None;
     let mut last_resize: Option<(u16, u16, String, String)> = None;
@@ -567,9 +571,12 @@ fn run_loop<B: Backend>(
     const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
     let mut last_view_refresh_request = Instant::now();
+    let mut last_redraw_signature = app.redraw_signature();
 
     loop {
-        let loop_state_signature = app.redraw_signature();
+        // Carried over from the end of the previous iteration so the
+        // signature is hashed only once per loop.
+        let loop_state_signature = last_redraw_signature;
         let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
         let animating = app.has_visible_animation();
 
@@ -661,12 +668,29 @@ fn run_loop<B: Backend>(
 
         let poll_duration = if startup_loading {
             Duration::ZERO
-        } else if is_viewing {
-            Duration::from_millis(1)
         } else if animating {
             ANIMATED_REDRAW_INTERVAL
         } else {
-            Duration::from_millis(250)
+            // Sleep until the next periodic task is due. stdin, the snapshot
+            // wakeup pipe, and IPC wakeups all interrupt the poll, so a long
+            // timeout never delays input echo or pane updates. The floor
+            // guards against a busy spin when a due task is deferred
+            // (e.g. background sync during active view input).
+            let now = Instant::now();
+            let mut next_due = last_sync + Duration::from_secs(5);
+            let thinking_due = last_thinking_sync + Duration::from_millis(500);
+            if thinking_due < next_due {
+                next_due = thinking_due;
+            }
+            if is_viewing {
+                let drift_due = last_view_refresh_request + app::VIEW_DRIFT_RESEED_INTERVAL;
+                if drift_due < next_due {
+                    next_due = drift_due;
+                }
+            }
+            next_due
+                .saturating_duration_since(now)
+                .clamp(Duration::from_millis(50), Duration::from_millis(250))
         };
         let mut handled_user_events = false;
 
@@ -676,25 +700,37 @@ fn run_loop<B: Backend>(
         // available) fall back to the standard crossterm path.
         let has_terminal_events = if is_viewing && !startup_loading {
             if let Some(wfd) = wakeup_rx_fd {
-                let mut fds = [
-                    libc::pollfd {
-                        fd: 0,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: wfd,
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                ];
-                let timeout_ms = poll_duration.as_millis() as libc::c_int;
-                unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
-                if fds[1].revents & libc::POLLIN != 0 {
-                    let mut buf = [0u8; 64];
-                    unsafe { libc::read(wfd, buf.as_mut_ptr() as *mut _, 64) };
+                // crossterm may already hold buffered events internally, in
+                // which case fd 0 shows no data — never sleep in libc::poll
+                // while events are pending.
+                if event::poll(Duration::ZERO)? {
+                    true
+                } else {
+                    let mut fds = [
+                        libc::pollfd {
+                            fd: 0,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: wfd,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                    ];
+                    let timeout_ms = poll_duration.as_millis() as libc::c_int;
+                    unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) };
+                    if fds[1].revents & libc::POLLIN != 0 {
+                        // Drain fully (read end is non-blocking) so bytes
+                        // accumulated while not polling can't keep the
+                        // pipe permanently readable.
+                        let mut buf = [0u8; 1024];
+                        while unsafe { libc::read(wfd, buf.as_mut_ptr() as *mut _, buf.len()) } > 0
+                        {
+                        }
+                    }
+                    event::poll(Duration::ZERO)?
                 }
-                event::poll(Duration::ZERO)?
             } else {
                 event::poll(poll_duration)?
             }
@@ -801,7 +837,7 @@ fn run_loop<B: Backend>(
         if is_viewing
             && !startup_loading
             && !handled_user_events
-            && last_view_refresh_request.elapsed() >= app::VIEW_PANE_REFRESH_INTERVAL
+            && last_view_refresh_request.elapsed() >= app::VIEW_DRIFT_RESEED_INTERVAL
             && app
                 .last_view_activity_at
                 .is_none_or(|last| last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD)
@@ -892,12 +928,14 @@ fn run_loop<B: Backend>(
             force_redraw |= thinking_changed;
         }
 
-        let summary_poll_started_at = Instant::now();
-        if let Err(e) = app.poll_summary_result() {
-            app.show_error(e);
+        if app.summary_rx.is_some() {
+            let summary_poll_started_at = Instant::now();
+            if let Err(e) = app.poll_summary_result() {
+                app.show_error(e);
+            }
+            app.perf
+                .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
         }
-        app.perf
-            .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
 
         if app.has_active_sidebar() {
             force_redraw |= app.poll_sidebar_load_results();
@@ -905,6 +943,15 @@ fn run_loop<B: Backend>(
 
         if app.should_flush_pending_debug_log_entries() {
             app.flush_pending_debug_log_entries();
+        }
+
+        if last_file_log_flush.elapsed() >= Duration::from_secs(1) {
+            debug::flush_log_writer();
+            last_file_log_flush = Instant::now();
+            if last_log_rotation_check.elapsed() >= Duration::from_secs(3600) {
+                debug::rotate_log_if_needed();
+                last_log_rotation_check = Instant::now();
+            }
         }
         let startup_grace_active = is_viewing && Instant::now() < startup_grace_until;
         let can_run_startup_task = startup_tasks_pending
@@ -1000,7 +1047,9 @@ fn run_loop<B: Backend>(
         app.ensure_view_snapshot_worker();
         let (pane_refreshed, cursor_refreshed) = app.drain_view_snapshots();
 
-        let state_changed = app.redraw_signature() != loop_state_signature;
+        let current_redraw_signature = app.redraw_signature();
+        let state_changed = current_redraw_signature != loop_state_signature;
+        last_redraw_signature = current_redraw_signature;
         let needs_redraw = force_redraw
             || handled_user_events && !is_viewing
             || pane_refreshed

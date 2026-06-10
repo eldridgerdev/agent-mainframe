@@ -3,6 +3,10 @@ use std::time::{Duration, Instant};
 
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Defensive cap: a metric that is recorded but never drained must not
+/// accumulate samples without bound.
+const MAX_INTERVAL_SAMPLES: usize = 100_000;
+
 #[derive(Default)]
 struct LatencyMetric {
     total_count: u64,
@@ -13,7 +17,9 @@ impl LatencyMetric {
     fn record(&mut self, duration: Duration) {
         let micros = duration.as_micros().min(u64::MAX as u128) as u64;
         self.total_count += 1;
-        self.interval_samples_us.push(micros);
+        if self.interval_samples_us.len() < MAX_INTERVAL_SAMPLES {
+            self.interval_samples_us.push(micros);
+        }
     }
 
     fn take_snapshot(&mut self) -> Option<LatencySnapshot> {
@@ -127,28 +133,10 @@ impl PerfCollector {
 
         let mut lines = Vec::new();
 
-        for name in [
-            "view.capture_pane_ansi",
-            "view.pipe_read",
-            "view.render_snapshot_lines",
-            "view.cursor_position",
-            "view.send_literal",
-            "view.send_key_name",
-            "ui.draw",
-            "ui.input_to_draw",
-            "main.handle_key",
-            "main.handle_mouse",
-            "main.handle_paste",
-            "sync.statuses",
-            "sync.session_status",
-            "sync.thinking_status",
-            "scan.notifications",
-            "usage.refresh",
-            "summary.poll_result",
-        ] {
-            if let Some(metric) = self.latencies.get_mut(name)
-                && let Some(snapshot) = metric.take_snapshot()
-            {
+        // Drain every recorded metric so none can accumulate samples
+        // forever just because it isn't on a curated list.
+        for (name, metric) in self.latencies.iter_mut() {
+            if let Some(snapshot) = metric.take_snapshot() {
                 lines.push(snapshot.format(name));
             }
         }

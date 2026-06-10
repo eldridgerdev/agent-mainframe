@@ -356,23 +356,39 @@ pub(crate) fn draw_with_lines(
         );
         frame.render_widget(paragraph, content_area);
     } else {
-        let text = if view.selection.has_selection || pane_lines.is_empty() {
-            ansi_to_ratatui_text_with_selection(
+        let pane_style = Style::default()
+            .fg(theme.text.to_color())
+            .bg(theme.effective_bg());
+        if view.selection.has_selection || pane_lines.is_empty() {
+            let text = ansi_to_ratatui_text_with_selection(
                 pane_content,
                 main_content_area.width,
                 main_content_area.height,
                 &view.selection,
                 theme,
-            )
+            );
+            let paragraph = Paragraph::new(text).style(pane_style);
+            frame.render_widget(paragraph, main_content_area);
         } else {
-            pane_lines.to_vec()
-        };
-        let paragraph = Paragraph::new(text).style(
-            Style::default()
-                .fg(theme.text.to_color())
-                .bg(theme.effective_bg()),
-        );
-        frame.render_widget(paragraph, main_content_area);
+            // Write the already-rendered lines straight into the frame
+            // buffer instead of cloning every line per draw
+            // (`pane_lines.to_vec()` was a per-frame allocation of the
+            // whole screen's spans).
+            let buf = frame.buffer_mut();
+            buf.set_style(main_content_area, pane_style);
+            for (i, line) in pane_lines
+                .iter()
+                .take(main_content_area.height as usize)
+                .enumerate()
+            {
+                buf.set_line(
+                    main_content_area.x,
+                    main_content_area.y + i as u16,
+                    line,
+                    main_content_area.width,
+                );
+            }
+        }
 
         if !view.scroll_mode
             && let Some((cursor_x, cursor_y)) = tmux_cursor

@@ -1,12 +1,15 @@
 use crate::debug::{LogLevel, log_to_file, set_user_alert};
 use crate::http_client;
+use crate::token_tracking::read_appended_lines;
 use chrono::{Datelike, TimeZone};
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,8 +281,31 @@ pub struct UsageManager {
     zai_monthly_limit: Option<u64>,
     zai_weekly_limit: Option<u64>,
     zai_five_hour_limit: Option<u64>,
+    stats_state: Arc<Mutex<StatsRefreshState>>,
+    stats_refresh_inflight: Arc<AtomicBool>,
+}
+
+/// Change-detection state owned by the background stats refresh so the
+/// main thread never has to walk the filesystem to compute signatures.
+#[derive(Default)]
+struct StatsRefreshState {
     last_claude_today_signature: Option<u64>,
     last_codex_usage_signature: Option<u64>,
+    claude_today: ClaudeTodayCache,
+}
+
+/// Per-file incremental tallies for today's Claude token count, so each
+/// refresh parses only bytes appended since the previous one.
+#[derive(Default)]
+struct ClaudeTodayCache {
+    day: String,
+    files: HashMap<PathBuf, ClaudeTodayFileTally>,
+}
+
+#[derive(Default)]
+struct ClaudeTodayFileTally {
+    parsed_through: u64,
+    tokens: u64,
 }
 
 impl UsageManager {
@@ -304,8 +330,8 @@ impl UsageManager {
             zai_monthly_limit,
             zai_weekly_limit,
             zai_five_hour_limit,
-            last_claude_today_signature: None,
-            last_codex_usage_signature: None,
+            stats_state: Arc::new(Mutex::new(StatsRefreshState::default())),
+            stats_refresh_inflight: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -343,10 +369,40 @@ impl UsageManager {
             .map(|t| now.duration_since(t).as_secs() >= 30)
             .unwrap_or(true);
 
-        if should_refresh_stats {
-            self.refresh_claude_stats();
-            self.refresh_codex_stats();
+        // refresh() runs on the main thread every tick: it must only decide
+        // whether to spawn, never touch the filesystem. The stats refresh
+        // (signature walks + JSONL parsing) grows with the day's transcript
+        // volume and used to stall input handling here.
+        if should_refresh_stats && !self.stats_refresh_inflight.swap(true, Ordering::SeqCst) {
             self.last_stats_refresh = Some(now);
+            let data = Arc::clone(&self.data);
+            let state = Arc::clone(&self.stats_state);
+            let inflight = Arc::clone(&self.stats_refresh_inflight);
+            let spawn = std::thread::Builder::new()
+                .name("usage-stats".to_string())
+                .spawn(move || {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        refresh_claude_stats(&data, &state);
+                        refresh_codex_stats(&data, &state);
+                    }));
+                    inflight.store(false, Ordering::SeqCst);
+                    if result.is_err() {
+                        log_to_file(
+                            LogLevel::Error,
+                            "usage",
+                            "usage-stats thread panicked; see panic log entry for details",
+                        );
+                    }
+                });
+
+            if let Err(err) = spawn {
+                self.stats_refresh_inflight.store(false, Ordering::SeqCst);
+                log_to_file(
+                    LogLevel::Error,
+                    "usage",
+                    &format!("failed to spawn usage-stats thread: {err}"),
+                );
+            }
         }
 
         let should_refresh_oauth = self
@@ -399,100 +455,6 @@ impl UsageManager {
         }
     }
 
-    fn refresh_claude_stats(&mut self) {
-        let Some(claude_dir) = dirs::home_dir().map(|h| h.join(".claude")) else {
-            return;
-        };
-
-        let stats_path = claude_dir.join("stats-cache.json");
-        let Ok(contents) = std::fs::read_to_string(&stats_path) else {
-            return;
-        };
-
-        let Ok(cache) = serde_json::from_str::<StatsCache>(&contents) else {
-            return;
-        };
-
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let today_stats = cache.daily_activity.iter().find(|d| d.date == today);
-
-        {
-            let mut data = self.data.lock().unwrap();
-            if let Some(stats) = today_stats {
-                data.claude.today_messages = stats.message_count;
-                data.claude.today_sessions = stats.session_count;
-                data.claude.today_tool_calls = stats.tool_call_count;
-            } else {
-                data.claude.today_messages = 0;
-                data.claude.today_sessions = 0;
-                data.claude.today_tool_calls = 0;
-            }
-        }
-
-        // Token counting reads every JSONL modified today across all projects
-        // directories. Run it in a background thread so it never blocks the
-        // startup path or the periodic sync tick.
-        let today_signature = claude_today_signature(&today);
-        if self.last_claude_today_signature != Some(today_signature) {
-            self.last_claude_today_signature = Some(today_signature);
-            let data = Arc::clone(&self.data);
-            let _ = std::thread::Builder::new()
-                .name("usage-today-tokens".to_string())
-                .spawn(move || {
-                    let tokens = calculate_claude_today_tokens(&today);
-                    data.lock().unwrap().claude.today_tokens = tokens;
-                });
-        }
-    }
-
-    fn refresh_codex_stats(&mut self) {
-        // Compute outside the lock — file I/O can be slow and must not hold
-        // the mutex (doing so freezes the draw path on every 30-second refresh).
-        let codex_signature = codex_usage_signature();
-        let stats = if self.last_codex_usage_signature == Some(codex_signature) {
-            self.data.lock().unwrap().codex.clone()
-        } else {
-            let stats = calculate_codex_usage();
-            self.last_codex_usage_signature = Some(codex_signature);
-            stats
-        };
-
-        let sessions_path = codex_sessions_root()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "<none>".to_string());
-        let summary = format!(
-            "codex refresh path={} 5h_pct={:?} 7d_pct={:?} 5h_reset={:?} 7d_reset={:?} plan={:?} today_tokens={} five_hour_tokens={} calls={}",
-            sessions_path,
-            stats.five_hour_usage_pct,
-            stats.weekly_usage_pct,
-            stats.five_hour_resets,
-            stats.weekly_resets,
-            stats.plan_type,
-            stats.today_tokens,
-            stats.five_hour_tokens,
-            stats.today_calls
-        );
-        log_to_file(LogLevel::Debug, "usage", &summary);
-
-        if stats.five_hour_usage_pct.is_none() && stats.weekly_usage_pct.is_none() {
-            log_to_file(
-                LogLevel::Debug,
-                "usage",
-                "codex refresh: no rate-limit percentages found, using token fallback display",
-            );
-        }
-
-        let mut data = self.data.lock().unwrap();
-        data.codex.today_tokens = stats.today_tokens;
-        data.codex.today_calls = stats.today_calls;
-        data.codex.five_hour_tokens = stats.five_hour_tokens;
-        data.codex.five_hour_usage_pct = stats.five_hour_usage_pct;
-        data.codex.weekly_usage_pct = stats.weekly_usage_pct;
-        data.codex.five_hour_resets = stats.five_hour_resets.clone();
-        data.codex.weekly_resets = stats.weekly_resets.clone();
-        data.codex.plan_type = stats.plan_type.clone();
-    }
-
     fn model_enabled(&self, model: Model) -> bool {
         match model {
             Model::Claude => true,
@@ -500,6 +462,112 @@ impl UsageManager {
             Model::Zai => self.zai_enabled,
         }
     }
+}
+
+/// Runs on the `usage-stats` background thread only — reads the Claude
+/// stats cache, walks today's transcripts for a change signature, and
+/// recounts tokens when the signature moved.
+fn refresh_claude_stats(data: &Arc<Mutex<UsageData>>, state: &Arc<Mutex<StatsRefreshState>>) {
+    let Some(claude_dir) = dirs::home_dir().map(|h| h.join(".claude")) else {
+        return;
+    };
+
+    let stats_path = claude_dir.join("stats-cache.json");
+    let Ok(contents) = std::fs::read_to_string(&stats_path) else {
+        return;
+    };
+
+    let Ok(cache) = serde_json::from_str::<StatsCache>(&contents) else {
+        return;
+    };
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let today_stats = cache.daily_activity.iter().find(|d| d.date == today);
+
+    {
+        let mut data = data.lock().unwrap();
+        if let Some(stats) = today_stats {
+            data.claude.today_messages = stats.message_count;
+            data.claude.today_sessions = stats.session_count;
+            data.claude.today_tool_calls = stats.tool_call_count;
+        } else {
+            data.claude.today_messages = 0;
+            data.claude.today_sessions = 0;
+            data.claude.today_tool_calls = 0;
+        }
+    }
+
+    let today_signature = claude_today_signature(&today);
+    let signature_changed = {
+        let mut state = state.lock().unwrap();
+        if state.last_claude_today_signature == Some(today_signature) {
+            false
+        } else {
+            state.last_claude_today_signature = Some(today_signature);
+            true
+        }
+    };
+    if signature_changed {
+        // Take the per-file cache out for the duration of the parse;
+        // only one usage-stats refresh runs at a time (inflight guard).
+        let mut cache = std::mem::take(&mut state.lock().unwrap().claude_today);
+        let tokens = calculate_claude_today_tokens(&today, &mut cache);
+        state.lock().unwrap().claude_today = cache;
+        data.lock().unwrap().claude.today_tokens = tokens;
+    }
+}
+
+/// Runs on the `usage-stats` background thread only — re-parses today's
+/// (and yesterday's) Codex transcripts when their signature moved.
+fn refresh_codex_stats(data: &Arc<Mutex<UsageData>>, state: &Arc<Mutex<StatsRefreshState>>) {
+    let codex_signature = codex_usage_signature();
+    let unchanged = state.lock().unwrap().last_codex_usage_signature == Some(codex_signature);
+    let stats = if unchanged {
+        data.lock().unwrap().codex.clone()
+    } else {
+        let stats = calculate_codex_usage();
+        state.lock().unwrap().last_codex_usage_signature = Some(codex_signature);
+        stats
+    };
+
+    let sessions_path = codex_sessions_root()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    let summary = format!(
+        "codex refresh path={} 5h_pct={:?} 7d_pct={:?} 5h_reset={:?} 7d_reset={:?} plan={:?} today_tokens={} five_hour_tokens={} calls={}",
+        sessions_path,
+        stats.five_hour_usage_pct,
+        stats.weekly_usage_pct,
+        stats.five_hour_resets,
+        stats.weekly_resets,
+        stats.plan_type,
+        stats.today_tokens,
+        stats.five_hour_tokens,
+        stats.today_calls
+    );
+    log_to_file(LogLevel::Debug, "usage", &summary);
+
+    if stats.five_hour_usage_pct.is_none() && stats.weekly_usage_pct.is_none() {
+        log_to_file(
+            LogLevel::Debug,
+            "usage",
+            "codex refresh: no rate-limit percentages found, using token fallback display",
+        );
+    }
+
+    if unchanged {
+        return;
+    }
+
+    let mut data = data.lock().unwrap();
+    data.codex.today_tokens = stats.today_tokens;
+    data.codex.today_calls = stats.today_calls;
+    data.codex.five_hour_tokens = stats.five_hour_tokens;
+    data.codex.five_hour_usage_pct = stats.five_hour_usage_pct;
+    data.codex.weekly_usage_pct = stats.weekly_usage_pct;
+    data.codex.five_hour_resets = stats.five_hour_resets.clone();
+    data.codex.weekly_resets = stats.weekly_resets.clone();
+    data.codex.plan_type = stats.plan_type.clone();
 }
 
 fn fetch_rate_limits(data: &Arc<Mutex<UsageData>>) {
@@ -640,7 +708,12 @@ fn fetch_zai_usage(
 ) {
 }
 
-fn calculate_claude_today_tokens(today: &str) -> u64 {
+fn calculate_claude_today_tokens(today: &str, cache: &mut ClaudeTodayCache) -> u64 {
+    if cache.day != today {
+        cache.files.clear();
+        cache.day = today.to_string();
+    }
+
     let Some(projects_dir) = dirs::home_dir().map(|h| h.join(".claude").join("projects")) else {
         return 0;
     };
@@ -688,29 +761,37 @@ fn calculate_claude_today_tokens(today: &str) -> u64 {
                 continue;
             }
 
-            let Ok(contents) = std::fs::read_to_string(&file_path) else {
-                continue;
-            };
-
-            for line in contents.lines() {
-                let Ok(entry) = serde_json::from_str::<ConversationEntry>(line) else {
-                    continue;
-                };
-                let Some(ref ts) = entry.timestamp else {
-                    continue;
-                };
-                if !ts.starts_with(today) {
-                    continue;
-                }
-                if let Some(msg) = entry.message
-                    && let Some(usage) = msg.usage
-                {
-                    total += usage.input_tokens
-                        + usage.output_tokens
-                        + usage.cache_read_input_tokens
-                        + usage.cache_creation_input_tokens;
-                }
+            let tally = cache.files.entry(file_path.clone()).or_default();
+            if meta.len() < tally.parsed_through {
+                // Truncated/rotated: recount this file from scratch.
+                *tally = ClaudeTodayFileTally::default();
             }
+
+            if let Ok((new_offset, bytes)) = read_appended_lines(&file_path, tally.parsed_through)
+            {
+                for line in bytes.split(|&byte| byte == b'\n') {
+                    let Ok(entry) = serde_json::from_slice::<ConversationEntry>(line) else {
+                        continue;
+                    };
+                    let Some(ref ts) = entry.timestamp else {
+                        continue;
+                    };
+                    if !ts.starts_with(today) {
+                        continue;
+                    }
+                    if let Some(msg) = entry.message
+                        && let Some(usage) = msg.usage
+                    {
+                        tally.tokens += usage.input_tokens
+                            + usage.output_tokens
+                            + usage.cache_read_input_tokens
+                            + usage.cache_creation_input_tokens;
+                    }
+                }
+                tally.parsed_through = new_offset;
+            }
+
+            total += tally.tokens;
         }
     }
 
@@ -910,15 +991,20 @@ fn calculate_codex_usage() -> CodexUsageData {
             };
 
             for line in contents.lines() {
-                if let Some((dt_utc, rate_limits)) = extract_rate_limits_from_json_line(line) {
-                    if latest_rate_limits_ts.is_none_or(|latest| dt_utc > latest) {
-                        apply_codex_rate_limits(&mut stats, &rate_limits);
-                        latest_rate_limits_ts = Some(dt_utc);
+                // Parse each line once: typed first, raw-Value extraction
+                // only when the typed parse fails (schema drift).
+                let event = match serde_json::from_str::<CodexSessionEvent>(line) {
+                    Ok(event) => event,
+                    Err(_) => {
+                        if let Some((dt_utc, rate_limits)) =
+                            extract_rate_limits_from_json_line(line)
+                            && latest_rate_limits_ts.is_none_or(|latest| dt_utc > latest)
+                        {
+                            apply_codex_rate_limits(&mut stats, &rate_limits);
+                            latest_rate_limits_ts = Some(dt_utc);
+                        }
+                        continue;
                     }
-                }
-
-                let Ok(event) = serde_json::from_str::<CodexSessionEvent>(line) else {
-                    continue;
                 };
                 if event.event_type != "event_msg" {
                     continue;
@@ -965,10 +1051,11 @@ fn calculate_codex_usage() -> CodexUsageData {
         }
     }
 
-    if stats.five_hour_usage_pct.is_none() && stats.weekly_usage_pct.is_none() {
-        if let Some(limits) = find_latest_codex_rate_limits(&sessions_root) {
-            apply_codex_rate_limits(&mut stats, &limits);
-        }
+    if stats.five_hour_usage_pct.is_none()
+        && stats.weekly_usage_pct.is_none()
+        && let Some(limits) = find_latest_codex_rate_limits(&sessions_root)
+    {
+        apply_codex_rate_limits(&mut stats, &limits);
     }
 
     stats
@@ -1071,47 +1158,26 @@ fn format_unix_reset(epoch_seconds: i64) -> Option<String> {
     Some(dt.to_rfc3339())
 }
 
+/// How many of the most recent day-directories the rate-limit fallback
+/// walk may scan. The session tree spans years and hundreds of MB; an
+/// unbounded walk here used to re-read all of it.
+const CODEX_FALLBACK_WALK_MAX_DAYS: usize = 7;
+
+/// Fallback when today's/yesterday's transcripts contain no rate-limit
+/// lines: scan the most recent day-directories (newest first, bounded)
+/// for the latest one. The result — even a miss — is cached for the
+/// process lifetime; rate limits older than a week are stale anyway.
 fn find_latest_codex_rate_limits(sessions_root: &std::path::Path) -> Option<CodexRateLimits> {
-    let mut newest: Option<(chrono::DateTime<chrono::Utc>, CodexRateLimits)> = None;
-
-    let Ok(year_dirs) = std::fs::read_dir(sessions_root) else {
-        return None;
-    };
-
-    for year in year_dirs.flatten() {
-        if !year
-            .file_type()
-            .map(|file_type| file_type.is_dir())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-        let year_path = year.path();
-        let Ok(month_dirs) = std::fs::read_dir(&year_path) else {
-            continue;
-        };
-        for month in month_dirs.flatten() {
-            if !month
-                .file_type()
-                .map(|file_type| file_type.is_dir())
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let month_path = month.path();
-            let Ok(day_dirs) = std::fs::read_dir(&month_path) else {
-                continue;
-            };
-            for day in day_dirs.flatten() {
-                if !day
-                    .file_type()
-                    .map(|file_type| file_type.is_dir())
-                    .unwrap_or(false)
-                {
-                    continue;
-                }
-                let day_path = day.path();
-                let Ok(files) = std::fs::read_dir(&day_path) else {
+    static FALLBACK_RATE_LIMITS: OnceLock<Option<CodexRateLimits>> = OnceLock::new();
+    FALLBACK_RATE_LIMITS
+        .get_or_init(|| {
+            let mut day_dirs = collect_codex_day_dirs(sessions_root);
+            // YYYY/MM/DD components are zero-padded, so the
+            // lexicographic path order is chronological.
+            day_dirs.sort();
+            for day_dir in day_dirs.into_iter().rev().take(CODEX_FALLBACK_WALK_MAX_DAYS) {
+                let mut newest: Option<(chrono::DateTime<chrono::Utc>, CodexRateLimits)> = None;
+                let Ok(files) = std::fs::read_dir(&day_dir) else {
                     continue;
                 };
                 for file in files.flatten() {
@@ -1123,47 +1189,87 @@ fn find_latest_codex_rate_limits(sessions_root: &std::path::Path) -> Option<Code
                         continue;
                     };
                     for line in contents.lines() {
-                        if let Some((dt_utc, rate_limits)) =
-                            extract_rate_limits_from_json_line(line)
+                        if let Some((dt_utc, rate_limits)) = rate_limits_from_codex_line(line)
+                            && newest.as_ref().is_none_or(|(prev, _)| dt_utc > *prev)
                         {
-                            if newest.as_ref().is_none_or(|(prev, _)| dt_utc > *prev) {
-                                newest = Some((dt_utc, rate_limits));
-                            }
-                            continue;
-                        }
-
-                        let Ok(event) = serde_json::from_str::<CodexSessionEvent>(line) else {
-                            continue;
-                        };
-                        if event.event_type != "event_msg" {
-                            continue;
-                        }
-                        let Some(payload) = event.payload else {
-                            continue;
-                        };
-                        if payload.payload_type.as_deref() != Some("token_count") {
-                            continue;
-                        }
-                        let Some(rate_limits) = payload.rate_limits else {
-                            continue;
-                        };
-                        let Some(ts) = event.timestamp else {
-                            continue;
-                        };
-                        let Ok(dt_fixed) = chrono::DateTime::parse_from_rfc3339(&ts) else {
-                            continue;
-                        };
-                        let dt_utc = dt_fixed.with_timezone(&chrono::Utc);
-                        if newest.as_ref().is_none_or(|(prev, _)| dt_utc > *prev) {
                             newest = Some((dt_utc, rate_limits));
                         }
                     }
                 }
+                // Any hit in a newer day beats everything in older days.
+                if let Some((_, limits)) = newest {
+                    return Some(limits);
+                }
+            }
+            None
+        })
+        .clone()
+}
+
+fn collect_codex_day_dirs(sessions_root: &std::path::Path) -> Vec<PathBuf> {
+    let mut day_dirs = Vec::new();
+    let Ok(year_dirs) = std::fs::read_dir(sessions_root) else {
+        return day_dirs;
+    };
+    for year in year_dirs.flatten() {
+        if !year
+            .file_type()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Ok(month_dirs) = std::fs::read_dir(year.path()) else {
+            continue;
+        };
+        for month in month_dirs.flatten() {
+            if !month
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Ok(dirs) = std::fs::read_dir(month.path()) else {
+                continue;
+            };
+            for day in dirs.flatten() {
+                if day
+                    .file_type()
+                    .map(|file_type| file_type.is_dir())
+                    .unwrap_or(false)
+                {
+                    day_dirs.push(day.path());
+                }
             }
         }
     }
+    day_dirs
+}
 
-    newest.map(|(_, limits)| limits)
+/// Single-parse rate-limit extraction: typed first, raw-`Value` fallback
+/// only when the typed parse fails.
+fn rate_limits_from_codex_line(
+    line: &str,
+) -> Option<(chrono::DateTime<chrono::Utc>, CodexRateLimits)> {
+    match serde_json::from_str::<CodexSessionEvent>(line) {
+        Ok(event) => {
+            if event.event_type != "event_msg" {
+                return None;
+            }
+            let payload = event.payload?;
+            if payload.payload_type.as_deref() != Some("token_count") {
+                return None;
+            }
+            let rate_limits = payload.rate_limits?;
+            let ts = event.timestamp?;
+            let dt_utc = chrono::DateTime::parse_from_rfc3339(&ts)
+                .ok()?
+                .with_timezone(&chrono::Utc);
+            Some((dt_utc, rate_limits))
+        }
+        Err(_) => extract_rate_limits_from_json_line(line),
+    }
 }
 
 fn codex_sessions_root() -> Option<std::path::PathBuf> {

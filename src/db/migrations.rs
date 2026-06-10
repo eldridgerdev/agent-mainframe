@@ -36,6 +36,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add file_mtime_nanos to session_status for cache invalidation",
             MIGRATION_005,
         ),
+        (
+            "Add incremental parse state to token usage cache",
+            MIGRATION_006,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -104,6 +108,10 @@ CREATE INDEX IF NOT EXISTS idx_session_status_feature
 
 const MIGRATION_005: &str = "
 ALTER TABLE session_status ADD COLUMN file_mtime_nanos INTEGER;
+";
+
+const MIGRATION_006: &str = "
+ALTER TABLE token_usage_cache ADD COLUMN parse_state TEXT;
 ";
 
 const MIGRATION_001: &str = "

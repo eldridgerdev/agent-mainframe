@@ -10,12 +10,25 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- Pending input requests can now surface sooner when AMF starts in an
+  embedded session view. The default input-request startup wait is now
+  1.5 seconds, and you can tune it with
+  `input_request_wait_seconds` in `~/.config/amf/config.json`.
+
 ### Fixed
 
 - The Terminal option is back in the new-session picker. It was
   accidentally dropped in v0.20.0 alongside an intentional change to
   the new-feature dialog, so adding a plain terminal to a running
   feature was impossible. The new-feature dialog is unchanged.
+
+### Migration
+
+- No migration is required. To override the new default, set
+  `"input_request_wait_seconds": 1.5` in
+  `~/.config/amf/config.json` and adjust the value as needed.
 
 ## [v0.21.0] - 2026-06-11
 

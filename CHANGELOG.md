@@ -22,6 +22,11 @@ are tagged.
   embedded session view. The default input-request startup wait is now
   1.5 seconds, and you can tune it with
   `input_request_wait_seconds` in `~/.config/amf/config.json`.
+- Diff-review prompts now only open automatically while you are viewing
+  the feature that requested the review. From the dashboard or another
+  feature's view, the review is added to the pending input requests and
+  announced with a toast instead of stealing focus; open it from the
+  input picker, by entering the feature view, or with `V`.
 
 ### Fixed
 

@@ -2492,7 +2492,7 @@ fn session_picker_enter_opens_name_step_with_default_label() {
 }
 
 #[test]
-fn session_picker_does_not_offer_terminal() {
+fn session_picker_offers_terminal() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),
         Box::new(MockTmuxOps::new()),
@@ -2508,7 +2508,7 @@ fn session_picker_does_not_offer_terminal() {
                 state
                     .builtin_sessions
                     .iter()
-                    .all(|session| session.kind != SessionKind::Terminal)
+                    .any(|session| session.kind == SessionKind::Terminal)
             );
         }
         _ => panic!("expected SessionPicker mode"),

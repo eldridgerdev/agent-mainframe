@@ -10,6 +10,13 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- The Terminal option is back in the new-session picker. It was
+  accidentally dropped in v0.20.0 alongside an intentional change to
+  the new-feature dialog, so adding a plain terminal to a running
+  feature was impossible. The new-feature dialog is unchanged.
+
 ## [v0.21.0] - 2026-06-11
 
 ### Changed

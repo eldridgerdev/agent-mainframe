@@ -407,7 +407,9 @@ impl App {
     /// Drain all pending IPC socket messages, converting them into
     /// `pending_inputs` entries or removing them for "clear" messages.
     /// Call this every event loop iteration instead of polling files.
-    pub fn drain_ipc_messages(&mut self) {
+    /// Returns whether any message was handled (the caller uses this to
+    /// run thinking sync promptly instead of waiting for its fallback).
+    pub fn drain_ipc_messages(&mut self) -> bool {
         // Collect first to avoid holding a borrow on self.ipc
         // while mutating other self fields below.
         let mut messages = Vec::new();
@@ -417,13 +419,14 @@ impl App {
             }
         }
         if messages.is_empty() {
-            return;
+            return false;
         }
         self.note_chatty_ipc_messages(messages.len() as u64);
 
         for raw in messages {
             self.handle_ipc_message_value(raw);
         }
+        true
     }
 
     /// Routine IPC traffic (thinking/tool phase changes, live events)

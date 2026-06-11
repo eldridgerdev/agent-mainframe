@@ -104,6 +104,55 @@ fn drain_view_snapshots_updates_rendered_lines_when_content_is_unchanged() {
     assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("A  D")]);
 }
 
+#[test]
+fn snapshot_mailbox_merges_cursor_only_update_with_pending_content() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "terminal".to_string(),
+        "Terminal".to_string(),
+        SessionKind::Terminal,
+        VibeMode::default(),
+        false,
+    ));
+    app.pane_content_cols = 4;
+    app.pane_content_rows = 1;
+
+    let base = |content: Option<&str>, cursor: Option<Option<(u16, u16)>>| ViewSnapshot {
+        session: "amf-my-feat".to_string(),
+        window: "terminal".to_string(),
+        pane_content: content.map(|c| c.to_string()),
+        rendered_lines: content.map(|_| vec![ratatui::text::Line::from("ABCD")]),
+        cursor,
+        capture_duration: None,
+        render_duration: None,
+        cursor_duration: None,
+        pipe_read_duration: None,
+    };
+
+    // Content snapshot followed by a cursor-only snapshot before the
+    // main loop drains: the merged slot must keep both.
+    app.view_snapshot_tx.send(base(Some("hello"), None));
+    app.view_snapshot_tx.send(base(None, Some(Some((2, 0)))));
+
+    let (pane_changed, cursor_changed) = app.drain_view_snapshots();
+    assert!(pane_changed);
+    assert!(cursor_changed);
+    assert_eq!(app.pane_content, "hello");
+    assert_eq!(app.tmux_cursor, Some((2, 0)));
+
+    // Slot is now empty.
+    let (pane_changed, cursor_changed) = app.drain_view_snapshots();
+    assert!(!pane_changed);
+    assert!(!cursor_changed);
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]

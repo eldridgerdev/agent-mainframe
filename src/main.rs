@@ -10,6 +10,7 @@ mod debug;
 mod diff;
 mod editor;
 mod extension;
+mod fswatch;
 mod handlers;
 mod highlight;
 mod http_client;
@@ -21,6 +22,7 @@ mod project;
 mod summary;
 mod theme;
 mod tmux;
+mod tmux_observer;
 mod token_tracking;
 mod traits;
 mod transcript;
@@ -546,6 +548,40 @@ pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
     }
 }
 
+/// Minimal deadline registry for the event loop: every periodic
+/// subsystem contributes its next-due instant and the loop sleeps in
+/// `poll()` until the earliest one (or an fd event: stdin, snapshot
+/// wakeup, IPC wakeup). New periodic work must register here, making
+/// its scheduling cost explicit — zero work while idle is the default.
+#[derive(Default)]
+struct LoopDeadlines {
+    next: Option<Instant>,
+}
+
+impl LoopDeadlines {
+    fn register(&mut self, due_at: Instant) {
+        self.next = Some(match self.next {
+            Some(current) => current.min(due_at),
+            None => due_at,
+        });
+    }
+
+    fn register_after(&mut self, since: Instant, interval: Duration) {
+        self.register(since + interval);
+    }
+
+    /// Time to sleep until the earliest deadline. The floor guards
+    /// against a busy spin when a due task is deferred (e.g. background
+    /// sync during active view input); the cap bounds how stale
+    /// anything not represented by a deadline or fd can get.
+    fn sleep_duration(&self, now: Instant, floor: Duration, cap: Duration) -> Duration {
+        self.next
+            .map(|due_at| due_at.saturating_duration_since(now))
+            .unwrap_or(cap)
+            .clamp(floor, cap)
+    }
+}
+
 fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -569,8 +605,15 @@ fn run_loop<B: Backend>(
     let mut startup_sidebar_warm_pending = true;
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
     const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
+    // Thinking sync is event-driven via the filesystem watcher; this
+    // is only the safety-net cadence when the watcher is running.
+    const THINKING_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(2);
+    // Status sync is event-driven via the tmux observer; this is only
+    // the safety-net cadence when the observer is running.
+    const STATUSES_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
     let mut last_view_refresh_request = Instant::now();
+    let mut last_statuses_sync = std::time::Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
 
     loop {
@@ -668,29 +711,47 @@ fn run_loop<B: Backend>(
 
         let poll_duration = if startup_loading {
             Duration::ZERO
-        } else if animating {
-            ANIMATED_REDRAW_INTERVAL
         } else {
-            // Sleep until the next periodic task is due. stdin, the snapshot
-            // wakeup pipe, and IPC wakeups all interrupt the poll, so a long
-            // timeout never delays input echo or pane updates. The floor
-            // guards against a busy spin when a due task is deferred
-            // (e.g. background sync during active view input).
             let now = Instant::now();
-            let mut next_due = last_sync + Duration::from_secs(5);
-            let thinking_due = last_thinking_sync + Duration::from_millis(500);
-            if thinking_due < next_due {
-                next_due = thinking_due;
+            let mut deadlines = LoopDeadlines::default();
+            deadlines.register_after(last_sync, Duration::from_secs(5));
+            let thinking_fallback = if app.fs_watcher.is_some() {
+                THINKING_SYNC_FALLBACK_INTERVAL
+            } else {
+                Duration::from_millis(500)
+            };
+            deadlines.register_after(last_thinking_sync, thinking_fallback);
+            deadlines.register_after(last_file_log_flush, Duration::from_secs(1));
+            if !is_viewing {
+                let statuses_fallback = if app.tmux_observer.is_some() {
+                    STATUSES_SYNC_FALLBACK_INTERVAL
+                } else {
+                    Duration::from_secs(5)
+                };
+                deadlines.register_after(last_statuses_sync, statuses_fallback);
             }
             if is_viewing {
-                let drift_due = last_view_refresh_request + app::VIEW_DRIFT_RESEED_INTERVAL;
-                if drift_due < next_due {
-                    next_due = drift_due;
-                }
+                deadlines
+                    .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
             }
-            next_due
-                .saturating_duration_since(now)
-                .clamp(Duration::from_millis(50), Duration::from_millis(250))
+            if animating {
+                deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
+            }
+            if app.leader_active && let Some(activated_at) = app.leader_activated_at {
+                deadlines.register(
+                    activated_at
+                        + Duration::from_secs(app.config.leader_timeout_seconds.max(1)),
+                );
+            }
+            // The view-mode resize check is not fd-driven (libc::poll cannot
+            // observe SIGWINCH), so keep its worst-case latency at 250ms;
+            // outside view mode crossterm's own poll wakes on resize.
+            let cap = if is_viewing {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_millis(500)
+            };
+            deadlines.sleep_duration(now, Duration::from_millis(50), cap)
         };
         let mut handled_user_events = false;
 
@@ -848,17 +909,32 @@ fn run_loop<B: Backend>(
 
         let defer_background_sync = app.should_defer_view_background_sync();
 
+        // Feature-status reconciliation is event-driven via the tmux
+        // observer (%sessions-changed); the interval is only a fallback.
+        // Without an observer, keep the legacy 5s cadence.
+        let statuses_fallback = if app.tmux_observer.is_some() {
+            STATUSES_SYNC_FALLBACK_INTERVAL
+        } else {
+            Duration::from_secs(5)
+        };
+        if !handled_user_events
+            && !is_viewing
+            && !startup_tasks_pending
+            && (app.take_sessions_dirty() || last_statuses_sync.elapsed() >= statuses_fallback)
+        {
+            let started_at = Instant::now();
+            app.sync_statuses();
+            app.perf
+                .record_duration("sync.statuses", started_at.elapsed());
+            last_statuses_sync = Instant::now();
+            force_redraw = true;
+        }
+
         if !handled_user_events
             && last_sync.elapsed() >= Duration::from_secs(5)
             && !defer_background_sync
             && !startup_tasks_pending
         {
-            if !is_viewing {
-                let started_at = Instant::now();
-                app.sync_statuses();
-                app.perf
-                    .record_duration("sync.statuses", started_at.elapsed());
-            }
             // Kick off a background refresh only when the previous one has
             // finished; results are applied each tick via poll_session_status_bg.
             if app.session_status_bg.is_none() {
@@ -867,8 +943,10 @@ fn run_loop<B: Backend>(
                 app.perf
                     .record_duration("sync.session_status_bg_start", session_status_started_at.elapsed());
             }
+            app.refresh_fs_watch_paths();
             let usage_refresh_started_at = Instant::now();
-            app.usage.refresh();
+            let usage_stats_hint = app.usage_stats_hint();
+            app.usage.refresh(usage_stats_hint);
             app.perf
                 .record_duration("usage.refresh", usage_refresh_started_at.elapsed());
             let usage = app.usage.get_data();
@@ -914,12 +992,27 @@ fn run_loop<B: Backend>(
             force_redraw = true;
         }
 
+        let mut ipc_activity = false;
         if app.ipc.is_some() {
             // Drain all buffered socket messages each iteration.
-            app.drain_ipc_messages();
+            ipc_activity = app.drain_ipc_messages();
         }
 
-        if !handled_user_events && last_thinking_sync.elapsed() >= Duration::from_millis(500) {
+        force_redraw |= app.handle_prompt_file_events();
+
+        // With the filesystem watcher running, thinking sync is driven
+        // by marker-file events and IPC activity; the interval is only
+        // a fallback. Without a watcher, keep the legacy 500ms cadence.
+        let thinking_fallback = if app.fs_watcher.is_some() {
+            THINKING_SYNC_FALLBACK_INTERVAL
+        } else {
+            Duration::from_millis(500)
+        };
+        if !handled_user_events
+            && (app.take_thinking_dirty()
+                || ipc_activity
+                || last_thinking_sync.elapsed() >= thinking_fallback)
+        {
             let started_at = Instant::now();
             let thinking_changed = app.sync_thinking_status();
             app.perf
@@ -977,7 +1070,7 @@ fn run_loop<B: Backend>(
                 // Results applied asynchronously via poll_session_status_bg().
             } else if startup_usage_pending {
                 let started_at = Instant::now();
-                app.usage.refresh();
+                app.usage.refresh(None);
                 app.perf
                     .record_duration("startup.usage_refresh", started_at.elapsed());
                 startup_usage_pending = false;

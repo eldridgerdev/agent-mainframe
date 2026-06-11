@@ -396,17 +396,22 @@ impl Default for AppConfig {
     }
 }
 
-/// Wraps the view snapshot channel sender with a Unix pipe write-end so that
-/// every snapshot delivery also wakes the main loop out of `libc::poll()`.
+/// Latest-wins snapshot mailbox: the renderer only ever needs the newest
+/// frame, so a single merged slot replaces an unbounded channel — backlog
+/// cannot form if the main thread stalls. Every delivery also writes to
+/// the wakeup pipe so the main loop leaves `poll()` immediately.
 #[derive(Clone)]
 struct SnapshotSender {
-    tx: Sender<ViewSnapshot>,
+    slot: Arc<StdMutex<Option<ViewSnapshot>>>,
     wakeup_fd: Arc<OwnedFd>,
 }
 
 impl SnapshotSender {
     fn send(&self, snap: ViewSnapshot) {
-        let _ = self.tx.send(snap);
+        {
+            let mut slot = self.slot.lock().unwrap();
+            merge_snapshot_into_slot(&mut slot, snap);
+        }
         let byte = 1u8;
         unsafe {
             libc::write(
@@ -415,6 +420,38 @@ impl SnapshotSender {
                 1,
             )
         };
+    }
+}
+
+/// Merge an undelivered snapshot with a newer one for the same pane:
+/// newest value wins per field, so a cursor-only update cannot wipe out
+/// pane content the main loop has not consumed yet.
+fn merge_snapshot_into_slot(slot: &mut Option<ViewSnapshot>, new: ViewSnapshot) {
+    match slot {
+        Some(old) if old.session == new.session && old.window == new.window => {
+            if new.pane_content.is_some() {
+                old.pane_content = new.pane_content;
+            }
+            if new.rendered_lines.is_some() {
+                old.rendered_lines = new.rendered_lines;
+            }
+            if new.cursor.is_some() {
+                old.cursor = new.cursor;
+            }
+            if new.capture_duration.is_some() {
+                old.capture_duration = new.capture_duration;
+            }
+            if new.render_duration.is_some() {
+                old.render_duration = new.render_duration;
+            }
+            if new.cursor_duration.is_some() {
+                old.cursor_duration = new.cursor_duration;
+            }
+            if new.pipe_read_duration.is_some() {
+                old.pipe_read_duration = new.pipe_read_duration;
+            }
+        }
+        _ => *slot = Some(new),
     }
 }
 
@@ -479,13 +516,18 @@ pub struct App {
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
     pub ipc: Option<crate::ipc::IpcGuard>,
+    /// Single inotify worker replacing periodic filesystem scans;
+    /// None when the watcher could not start (timers remain fallbacks).
+    pub fs_watcher: Option<crate::fswatch::FsWatcher>,
+    /// Persistent tmux control-mode client observing session lifecycle;
+    /// None in tests (status polling falls back to its interval).
+    pub tmux_observer: Option<crate::tmux_observer::TmuxObserver>,
     pub(crate) ipc_chatty_log_count: u64,
     pub(crate) ipc_chatty_log_window_start: Instant,
     pub last_file_notification_count: usize,
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
     view_snapshot_tx: SnapshotSender,
-    view_snapshot_rx: Receiver<ViewSnapshot>,
     view_snapshot_wakeup_rx: Option<OwnedFd>,
     view_snapshot_stop: Option<Arc<AtomicBool>>,
     view_snapshot_refresh: Option<Arc<AtomicU8>>,
@@ -731,6 +773,77 @@ impl App {
     /// immediately instead of waiting out its timeout.
     pub fn view_wakeup_tx(&self) -> Arc<OwnedFd> {
         self.view_snapshot_tx.wakeup_fd.clone()
+    }
+
+    /// Consume the watcher's thinking-dirty flag. False when no watcher
+    /// is running (callers then rely on their interval fallback).
+    pub fn take_thinking_dirty(&self) -> bool {
+        self.fs_watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.flags.take_thinking_dirty())
+    }
+
+    /// Usage-stats refresh hint: `None` when no watcher is running
+    /// (interval-only behavior), otherwise whether transcripts changed
+    /// since the last check.
+    pub fn usage_stats_hint(&self) -> Option<bool> {
+        self.fs_watcher
+            .as_ref()
+            .map(|watcher| watcher.flags.take_usage_dirty())
+    }
+
+    /// Schedule sidebar reloads for features whose latest-prompt file
+    /// changed on disk. Returns whether any reload was scheduled.
+    pub fn handle_prompt_file_events(&mut self) -> bool {
+        let Some(watcher) = &self.fs_watcher else {
+            return false;
+        };
+        let paths = watcher.flags.take_prompt_paths();
+        if paths.is_empty() {
+            return false;
+        }
+
+        let mut handled = false;
+        for path in paths {
+            // {workdir}/.claude/latest-prompt.txt → workdir
+            let Some(workdir) = path.parent().and_then(|dir| dir.parent()) else {
+                continue;
+            };
+            let target = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .position(|feature| feature.workdir == workdir)
+                    .map(|fi| (pi, fi))
+            });
+            if let Some((pi, fi)) = target {
+                self.schedule_sidebar_load_for_feature(pi, fi);
+                handled = true;
+            }
+        }
+        handled
+    }
+
+    /// Consume the tmux observer's sessions-dirty flag. False when no
+    /// observer is running (status sync then uses its legacy interval).
+    pub fn take_sessions_dirty(&self) -> bool {
+        self.tmux_observer
+            .as_ref()
+            .is_some_and(|observer| observer.flags.take_sessions_dirty())
+    }
+
+    /// Reconcile per-feature prompt-file watches with the current store.
+    pub fn refresh_fs_watch_paths(&mut self) {
+        let Some(watcher) = &mut self.fs_watcher else {
+            return;
+        };
+        let workdirs: Vec<PathBuf> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter().map(|f| f.workdir.clone()))
+            .collect();
+        watcher.sync_prompt_watches(workdirs);
     }
 
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
@@ -1357,7 +1470,9 @@ impl App {
         let mut pane_changed = false;
         let mut cursor_changed = false;
 
-        while let Ok(snapshot) = self.view_snapshot_rx.try_recv() {
+        // Latest-wins mailbox: at most one (merged) snapshot is pending.
+        let pending = self.view_snapshot_tx.slot.lock().unwrap().take();
+        if let Some(snapshot) = pending {
             if current_target.as_ref()
                 != Some(&(
                     snapshot.session.clone(),
@@ -1366,7 +1481,7 @@ impl App {
                     self.pane_content_rows,
                 ))
             {
-                continue;
+                return (false, false);
             }
 
             if let Some(duration) = snapshot.capture_duration {
@@ -1433,7 +1548,7 @@ impl App {
             .unwrap_or(global_ext);
         let sidebar_plan_cache = HashMap::new();
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let view_snapshot_slot = Arc::new(StdMutex::new(None));
         let (wakeup_rx, wakeup_tx) = unsafe {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
@@ -1445,7 +1560,7 @@ impl App {
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
-            tx: view_snapshot_inner_tx,
+            slot: view_snapshot_slot,
             wakeup_fd: Arc::new(wakeup_tx),
         };
         let (harness_check_tx, harness_check_rx) = channel();
@@ -1511,6 +1626,8 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            fs_watcher: None,
+            tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
@@ -1518,7 +1635,6 @@ impl App {
             // Checked asynchronously — defaults to false until confirmed.
             vscode_available: false,
             view_snapshot_tx,
-            view_snapshot_rx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
@@ -1528,6 +1644,21 @@ impl App {
             harness_check_tx,
             harness_check_rx,
         };
+
+        match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
+            Ok(watcher) => app.fs_watcher = Some(watcher),
+            Err(e) => {
+                crate::debug::log_to_file(
+                    crate::debug::LogLevel::Warn,
+                    "fswatch",
+                    &format!("watcher unavailable, falling back to scan timers: {e}"),
+                );
+            }
+        }
+        app.refresh_fs_watch_paths();
+        app.tmux_observer = Some(crate::tmux_observer::TmuxObserver::start(
+            app.view_wakeup_tx(),
+        ));
 
         // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
@@ -1583,7 +1714,7 @@ impl App {
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let view_snapshot_slot = Arc::new(StdMutex::new(None));
         let (wakeup_rx, wakeup_tx) = unsafe {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
@@ -1595,7 +1726,7 @@ impl App {
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
-            tx: view_snapshot_inner_tx,
+            slot: view_snapshot_slot,
             wakeup_fd: Arc::new(wakeup_tx),
         };
         let (harness_check_tx, harness_check_rx) = channel();
@@ -1658,13 +1789,14 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            fs_watcher: None,
+            tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
             last_file_notification_fingerprint: None,
             vscode_available: false,
             view_snapshot_tx,
-            view_snapshot_rx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,

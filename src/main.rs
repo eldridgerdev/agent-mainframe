@@ -546,6 +546,40 @@ pub fn cleanup_hooks_at(settings_path: &std::path::Path, extra_cmds: &[&str]) {
     }
 }
 
+/// Minimal deadline registry for the event loop: every periodic
+/// subsystem contributes its next-due instant and the loop sleeps in
+/// `poll()` until the earliest one (or an fd event: stdin, snapshot
+/// wakeup, IPC wakeup). New periodic work must register here, making
+/// its scheduling cost explicit — zero work while idle is the default.
+#[derive(Default)]
+struct LoopDeadlines {
+    next: Option<Instant>,
+}
+
+impl LoopDeadlines {
+    fn register(&mut self, due_at: Instant) {
+        self.next = Some(match self.next {
+            Some(current) => current.min(due_at),
+            None => due_at,
+        });
+    }
+
+    fn register_after(&mut self, since: Instant, interval: Duration) {
+        self.register(since + interval);
+    }
+
+    /// Time to sleep until the earliest deadline. The floor guards
+    /// against a busy spin when a due task is deferred (e.g. background
+    /// sync during active view input); the cap bounds how stale
+    /// anything not represented by a deadline or fd can get.
+    fn sleep_duration(&self, now: Instant, floor: Duration, cap: Duration) -> Duration {
+        self.next
+            .map(|due_at| due_at.saturating_duration_since(now))
+            .unwrap_or(cap)
+            .clamp(floor, cap)
+    }
+}
+
 fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -668,29 +702,34 @@ fn run_loop<B: Backend>(
 
         let poll_duration = if startup_loading {
             Duration::ZERO
-        } else if animating {
-            ANIMATED_REDRAW_INTERVAL
         } else {
-            // Sleep until the next periodic task is due. stdin, the snapshot
-            // wakeup pipe, and IPC wakeups all interrupt the poll, so a long
-            // timeout never delays input echo or pane updates. The floor
-            // guards against a busy spin when a due task is deferred
-            // (e.g. background sync during active view input).
             let now = Instant::now();
-            let mut next_due = last_sync + Duration::from_secs(5);
-            let thinking_due = last_thinking_sync + Duration::from_millis(500);
-            if thinking_due < next_due {
-                next_due = thinking_due;
-            }
+            let mut deadlines = LoopDeadlines::default();
+            deadlines.register_after(last_sync, Duration::from_secs(5));
+            deadlines.register_after(last_thinking_sync, Duration::from_millis(500));
+            deadlines.register_after(last_file_log_flush, Duration::from_secs(1));
             if is_viewing {
-                let drift_due = last_view_refresh_request + app::VIEW_DRIFT_RESEED_INTERVAL;
-                if drift_due < next_due {
-                    next_due = drift_due;
-                }
+                deadlines
+                    .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
             }
-            next_due
-                .saturating_duration_since(now)
-                .clamp(Duration::from_millis(50), Duration::from_millis(250))
+            if animating {
+                deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
+            }
+            if app.leader_active && let Some(activated_at) = app.leader_activated_at {
+                deadlines.register(
+                    activated_at
+                        + Duration::from_secs(app.config.leader_timeout_seconds.max(1)),
+                );
+            }
+            // The view-mode resize check is not fd-driven (libc::poll cannot
+            // observe SIGWINCH), so keep its worst-case latency at 250ms;
+            // outside view mode crossterm's own poll wakes on resize.
+            let cap = if is_viewing {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_millis(500)
+            };
+            deadlines.sleep_duration(now, Duration::from_millis(50), cap)
         };
         let mut handled_user_events = false;
 

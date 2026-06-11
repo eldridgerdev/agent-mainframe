@@ -396,17 +396,22 @@ impl Default for AppConfig {
     }
 }
 
-/// Wraps the view snapshot channel sender with a Unix pipe write-end so that
-/// every snapshot delivery also wakes the main loop out of `libc::poll()`.
+/// Latest-wins snapshot mailbox: the renderer only ever needs the newest
+/// frame, so a single merged slot replaces an unbounded channel — backlog
+/// cannot form if the main thread stalls. Every delivery also writes to
+/// the wakeup pipe so the main loop leaves `poll()` immediately.
 #[derive(Clone)]
 struct SnapshotSender {
-    tx: Sender<ViewSnapshot>,
+    slot: Arc<StdMutex<Option<ViewSnapshot>>>,
     wakeup_fd: Arc<OwnedFd>,
 }
 
 impl SnapshotSender {
     fn send(&self, snap: ViewSnapshot) {
-        let _ = self.tx.send(snap);
+        {
+            let mut slot = self.slot.lock().unwrap();
+            merge_snapshot_into_slot(&mut slot, snap);
+        }
         let byte = 1u8;
         unsafe {
             libc::write(
@@ -415,6 +420,38 @@ impl SnapshotSender {
                 1,
             )
         };
+    }
+}
+
+/// Merge an undelivered snapshot with a newer one for the same pane:
+/// newest value wins per field, so a cursor-only update cannot wipe out
+/// pane content the main loop has not consumed yet.
+fn merge_snapshot_into_slot(slot: &mut Option<ViewSnapshot>, new: ViewSnapshot) {
+    match slot {
+        Some(old) if old.session == new.session && old.window == new.window => {
+            if new.pane_content.is_some() {
+                old.pane_content = new.pane_content;
+            }
+            if new.rendered_lines.is_some() {
+                old.rendered_lines = new.rendered_lines;
+            }
+            if new.cursor.is_some() {
+                old.cursor = new.cursor;
+            }
+            if new.capture_duration.is_some() {
+                old.capture_duration = new.capture_duration;
+            }
+            if new.render_duration.is_some() {
+                old.render_duration = new.render_duration;
+            }
+            if new.cursor_duration.is_some() {
+                old.cursor_duration = new.cursor_duration;
+            }
+            if new.pipe_read_duration.is_some() {
+                old.pipe_read_duration = new.pipe_read_duration;
+            }
+        }
+        _ => *slot = Some(new),
     }
 }
 
@@ -485,7 +522,6 @@ pub struct App {
     pub last_file_notification_fingerprint: Option<u64>,
     pub vscode_available: bool,
     view_snapshot_tx: SnapshotSender,
-    view_snapshot_rx: Receiver<ViewSnapshot>,
     view_snapshot_wakeup_rx: Option<OwnedFd>,
     view_snapshot_stop: Option<Arc<AtomicBool>>,
     view_snapshot_refresh: Option<Arc<AtomicU8>>,
@@ -1357,7 +1393,9 @@ impl App {
         let mut pane_changed = false;
         let mut cursor_changed = false;
 
-        while let Ok(snapshot) = self.view_snapshot_rx.try_recv() {
+        // Latest-wins mailbox: at most one (merged) snapshot is pending.
+        let pending = self.view_snapshot_tx.slot.lock().unwrap().take();
+        if let Some(snapshot) = pending {
             if current_target.as_ref()
                 != Some(&(
                     snapshot.session.clone(),
@@ -1366,7 +1404,7 @@ impl App {
                     self.pane_content_rows,
                 ))
             {
-                continue;
+                return (false, false);
             }
 
             if let Some(duration) = snapshot.capture_duration {
@@ -1433,7 +1471,7 @@ impl App {
             .unwrap_or(global_ext);
         let sidebar_plan_cache = HashMap::new();
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let view_snapshot_slot = Arc::new(StdMutex::new(None));
         let (wakeup_rx, wakeup_tx) = unsafe {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
@@ -1445,7 +1483,7 @@ impl App {
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
-            tx: view_snapshot_inner_tx,
+            slot: view_snapshot_slot,
             wakeup_fd: Arc::new(wakeup_tx),
         };
         let (harness_check_tx, harness_check_rx) = channel();
@@ -1518,7 +1556,6 @@ impl App {
             // Checked asynchronously — defaults to false until confirmed.
             vscode_available: false,
             view_snapshot_tx,
-            view_snapshot_rx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,
@@ -1583,7 +1620,7 @@ impl App {
         let latest_prompt_cache = Self::build_latest_prompt_cache(&store);
         let sidebar_plan_cache = Self::build_sidebar_plan_cache(&store);
         let (codex_sidebar_metadata_tx, codex_sidebar_metadata_rx) = std::sync::mpsc::channel();
-        let (view_snapshot_inner_tx, view_snapshot_rx) = channel();
+        let view_snapshot_slot = Arc::new(StdMutex::new(None));
         let (wakeup_rx, wakeup_tx) = unsafe {
             let mut fds = [0i32; 2];
             libc::pipe(fds.as_mut_ptr());
@@ -1595,7 +1632,7 @@ impl App {
             (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))
         };
         let view_snapshot_tx = SnapshotSender {
-            tx: view_snapshot_inner_tx,
+            slot: view_snapshot_slot,
             wakeup_fd: Arc::new(wakeup_tx),
         };
         let (harness_check_tx, harness_check_rx) = channel();
@@ -1664,7 +1701,6 @@ impl App {
             last_file_notification_fingerprint: None,
             vscode_available: false,
             view_snapshot_tx,
-            view_snapshot_rx,
             view_snapshot_wakeup_rx: Some(wakeup_rx),
             view_snapshot_stop: None,
             view_snapshot_refresh: None,

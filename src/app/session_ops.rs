@@ -96,6 +96,11 @@ impl App {
 
         builtin_sessions.extend(vec![
             BuiltinSessionOption {
+                kind: SessionKind::Terminal,
+                label: "Terminal".to_string(),
+                disabled: None,
+            },
+            BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),
                 disabled: None,
@@ -187,6 +192,11 @@ impl App {
             .collect();
 
         builtin_sessions.extend(vec![
+            BuiltinSessionOption {
+                kind: SessionKind::Terminal,
+                label: "Terminal".to_string(),
+                disabled: None,
+            },
             BuiltinSessionOption {
                 kind: SessionKind::Nvim,
                 label: "Neovim".to_string(),

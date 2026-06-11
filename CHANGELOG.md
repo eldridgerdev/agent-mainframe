@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.21.0] - 2026-06-11
+
 ### Changed
 
 - AMF now stays fast after running for hours or days. Usage and token

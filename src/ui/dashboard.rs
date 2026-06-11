@@ -96,6 +96,7 @@ fn build_opencode_sidebar_data(
         feature.summary.as_deref(),
         opencode_sidebar,
     );
+    let model_text = app.sidebar_model_cache.get(&feature.tmux_session).cloned();
     let activity_line = if pending_diff_review_work_text(app, project, feature).is_some() {
         "Waiting for diff review".to_string()
     } else if opencode_sidebar
@@ -113,7 +114,11 @@ fn build_opencode_sidebar_data(
 
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Opencode,
-        status_text: opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
+        status_text: append_model_status_line(
+            opencode_sidebar_status_text(activity_line, usage_line, opencode_sidebar),
+            model_text.as_deref(),
+        ),
+        model_text,
         prompt_text,
         work_text: pending_diff_review_work_text(app, project, feature)
             .or(work_text)
@@ -145,7 +150,11 @@ fn build_claude_sidebar_data(
         .or_else(|| fallback_sidebar_work_text(app, project, feature, view));
     let summary_text = compose_sidebar_summary_text(None, summary_text);
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
-    let status_text = compose_sidebar_status_text(activity_line, usage_line, None);
+    let model_text = app.sidebar_model_cache.get(&feature.tmux_session).cloned();
+    let status_text = append_model_status_line(
+        compose_sidebar_status_text(activity_line, usage_line, None),
+        model_text.as_deref(),
+    );
     let claude_session_id = session.and_then(|s| s.claude_session_id.as_deref());
     let todos_text = read_claude_task_state(&feature.workdir, claude_session_id)
         .as_ref()
@@ -154,6 +163,7 @@ fn build_claude_sidebar_data(
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Claude,
         status_text,
+        model_text,
         prompt_text,
         work_text,
         todos_text,
@@ -192,16 +202,43 @@ fn build_codex_sidebar_data(
     );
     let activity_line = sidebar_status_activity_text(work_text.is_some(), status_line);
     let usage_confidence = format_codex_usage_source_confidence(&SessionKind::Codex, session);
-    let status_text = compose_sidebar_status_text(activity_line, usage_line, usage_confidence);
+    let model_text = codex_sidebar_source(&SessionKind::Codex, session)
+        .and_then(|source| app.cached_codex_session_model(&feature.workdir, &source.id))
+        .map(ToOwned::to_owned)
+        .or_else(|| app.sidebar_model_cache.get(&feature.tmux_session).cloned())
+        .or_else(codex_configured_model_text);
+    let status_text = append_model_status_line(
+        compose_sidebar_status_text(activity_line, usage_line, usage_confidence),
+        model_text.as_deref(),
+    );
 
     Some(super::pane::AgentSidebarData {
         agent_kind: SessionKind::Codex,
         status_text,
+        model_text,
         prompt_text,
         work_text,
         todos_text: None,
         summary_text,
     })
+}
+
+fn append_model_status_line(mut status_text: String, model_text: Option<&str>) -> String {
+    let Some(model_text) = model_text.map(str::trim).filter(|line| !line.is_empty()) else {
+        return status_text;
+    };
+    if !status_text.is_empty() {
+        status_text.push('\n');
+    }
+    status_text.push_str(model_text);
+    status_text
+}
+
+fn codex_configured_model_text() -> Option<String> {
+    crate::codex_config::configured_model()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .map(|model| format!("Model: {model}"))
 }
 
 fn opencode_sidebar_status_text(
@@ -1297,6 +1334,18 @@ mod tests {
     }
 
     #[test]
+    fn append_model_status_line_adds_model_when_present() {
+        assert_eq!(
+            append_model_status_line("Activity: Ready".into(), Some("Model: gpt-5.5")),
+            "Activity: Ready\nModel: gpt-5.5"
+        );
+        assert_eq!(
+            append_model_status_line("Activity: Ready".into(), None),
+            "Activity: Ready"
+        );
+    }
+
+    #[test]
     fn compose_sidebar_summary_text_omits_missing_summary() {
         assert_eq!(compose_sidebar_summary_text(None, None), "");
         assert_eq!(
@@ -1772,6 +1821,8 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
+        app.sidebar_model_cache
+            .insert("amf-feature".into(), "Model: gpt-5.5".into());
         app.sidebar_plan_cache
             .insert("amf-feature".into(), "Plan\n1. Inspect\n2. Patch".into());
         app.apply_codex_live_event(
@@ -1795,5 +1846,6 @@ mod tests {
 
         let sidebar = build_agent_sidebar_data(&app, &view).unwrap();
         assert_eq!(sidebar.agent_kind, SessionKind::Codex);
+        assert!(sidebar.status_text.contains("Model: gpt-5.5"));
     }
 }

@@ -835,7 +835,9 @@ impl App {
             self.codex_session_title_cache
                 .insert(result.cache_key.clone(), result.title);
             self.codex_session_prompt_cache
-                .insert(result.cache_key, result.prompt);
+                .insert(result.cache_key.clone(), result.prompt);
+            self.codex_session_model_cache
+                .insert(result.cache_key, result.model_text);
         }
         changed
     }

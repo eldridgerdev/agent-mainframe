@@ -248,6 +248,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
             signature: 7,
             changed: true,
             latest_prompt: Some("lazy prompt".to_string()),
+            model_text: Some("Model: openai/gpt-5.5".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
                 title: Some("Loaded later".to_string()),
@@ -260,6 +261,8 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 last_error: None,
                 lsp_summary: Some("ready".to_string()),
                 live_summary: Some("live summary".to_string()),
+                model: Some("gpt-5.5".to_string()),
+                provider: Some("openai".to_string()),
                 reasoning_tokens: Some(12),
                 additions: Some(3),
                 deletions: Some(1),
@@ -279,6 +282,12 @@ fn poll_sidebar_load_results_updates_feature_caches() {
             .get("amf-my-feat")
             .and_then(|data| data.title.as_deref()),
         Some("Loaded later")
+    );
+    assert_eq!(
+        app.sidebar_model_cache
+            .get("amf-my-feat")
+            .map(String::as_str),
+        Some("Model: openai/gpt-5.5")
     );
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
@@ -789,6 +798,8 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -843,6 +854,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
             signature: 9,
             changed: true,
             latest_prompt: Some("warm prompt".to_string()),
+            model_text: None,
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
                 title: Some("Warm cache".to_string()),
@@ -855,6 +867,8 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
                 last_error: None,
                 lsp_summary: None,
                 live_summary: None,
+                model: None,
+                provider: None,
                 reasoning_tokens: None,
                 additions: None,
                 deletions: None,
@@ -1132,6 +1146,8 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -2715,6 +2731,8 @@ fn stop_feature_transitions_idle_to_stopped() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -2765,6 +2783,8 @@ fn complete_deleting_feature_clears_sidebar_caches() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -4069,6 +4089,7 @@ fn poll_codex_sidebar_metadata_updates_caches() {
             cache_key: cache_key.clone(),
             title: Some("Sidebar title".into()),
             prompt: Some("Sidebar prompt".into()),
+            model_text: Some("Model: gpt-5.5".into()),
         })
         .unwrap();
 
@@ -4081,6 +4102,10 @@ fn poll_codex_sidebar_metadata_updates_caches() {
     assert_eq!(
         app.cached_codex_session_prompt(workdir.path(), "sess-current"),
         Some("Sidebar prompt")
+    );
+    assert_eq!(
+        app.cached_codex_session_model(workdir.path(), "sess-current"),
+        Some("Model: gpt-5.5")
     );
     assert!(!app.codex_sidebar_metadata_inflight.contains(&cache_key));
 }
@@ -5152,6 +5177,8 @@ fn status_file_cleanup_during_remove() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,

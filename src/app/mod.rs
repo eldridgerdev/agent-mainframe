@@ -516,6 +516,9 @@ pub struct App {
     pub background_deletions: HashMap<String, BackgroundDeletion>,
     pub background_hooks: HashMap<String, BackgroundHook>,
     pub ipc: Option<crate::ipc::IpcGuard>,
+    /// Single inotify worker replacing periodic filesystem scans;
+    /// None when the watcher could not start (timers remain fallbacks).
+    pub fs_watcher: Option<crate::fswatch::FsWatcher>,
     pub(crate) ipc_chatty_log_count: u64,
     pub(crate) ipc_chatty_log_window_start: Instant,
     pub last_file_notification_count: usize,
@@ -767,6 +770,69 @@ impl App {
     /// immediately instead of waiting out its timeout.
     pub fn view_wakeup_tx(&self) -> Arc<OwnedFd> {
         self.view_snapshot_tx.wakeup_fd.clone()
+    }
+
+    /// Consume the watcher's thinking-dirty flag. False when no watcher
+    /// is running (callers then rely on their interval fallback).
+    pub fn take_thinking_dirty(&self) -> bool {
+        self.fs_watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.flags.take_thinking_dirty())
+    }
+
+    /// Usage-stats refresh hint: `None` when no watcher is running
+    /// (interval-only behavior), otherwise whether transcripts changed
+    /// since the last check.
+    pub fn usage_stats_hint(&self) -> Option<bool> {
+        self.fs_watcher
+            .as_ref()
+            .map(|watcher| watcher.flags.take_usage_dirty())
+    }
+
+    /// Schedule sidebar reloads for features whose latest-prompt file
+    /// changed on disk. Returns whether any reload was scheduled.
+    pub fn handle_prompt_file_events(&mut self) -> bool {
+        let Some(watcher) = &self.fs_watcher else {
+            return false;
+        };
+        let paths = watcher.flags.take_prompt_paths();
+        if paths.is_empty() {
+            return false;
+        }
+
+        let mut handled = false;
+        for path in paths {
+            // {workdir}/.claude/latest-prompt.txt → workdir
+            let Some(workdir) = path.parent().and_then(|dir| dir.parent()) else {
+                continue;
+            };
+            let target = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
+                project
+                    .features
+                    .iter()
+                    .position(|feature| feature.workdir == workdir)
+                    .map(|fi| (pi, fi))
+            });
+            if let Some((pi, fi)) = target {
+                self.schedule_sidebar_load_for_feature(pi, fi);
+                handled = true;
+            }
+        }
+        handled
+    }
+
+    /// Reconcile per-feature prompt-file watches with the current store.
+    pub fn refresh_fs_watch_paths(&mut self) {
+        let Some(watcher) = &mut self.fs_watcher else {
+            return;
+        };
+        let workdirs: Vec<PathBuf> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter().map(|f| f.workdir.clone()))
+            .collect();
+        watcher.sync_prompt_watches(workdirs);
     }
 
     fn request_view_snapshot_refresh_kind(&self, kind: u8) {
@@ -1549,6 +1615,7 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            fs_watcher: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
@@ -1565,6 +1632,18 @@ impl App {
             harness_check_tx,
             harness_check_rx,
         };
+
+        match crate::fswatch::FsWatcher::start(app.view_wakeup_tx()) {
+            Ok(watcher) => app.fs_watcher = Some(watcher),
+            Err(e) => {
+                crate::debug::log_to_file(
+                    crate::debug::LogLevel::Warn,
+                    "fswatch",
+                    &format!("watcher unavailable, falling back to scan timers: {e}"),
+                );
+            }
+        }
+        app.refresh_fs_watch_paths();
 
         // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
@@ -1695,6 +1774,7 @@ impl App {
             background_deletions: HashMap::new(),
             background_hooks: HashMap::new(),
             ipc: None,
+            fs_watcher: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,

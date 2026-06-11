@@ -10,6 +10,7 @@ mod debug;
 mod diff;
 mod editor;
 mod extension;
+mod fswatch;
 mod handlers;
 mod highlight;
 mod http_client;
@@ -603,6 +604,9 @@ fn run_loop<B: Backend>(
     let mut startup_sidebar_warm_pending = true;
     const ANIMATED_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
     const VIEW_IDLE_REFRESH_QUIET_PERIOD: Duration = Duration::from_millis(150);
+    // Thinking sync is event-driven via the filesystem watcher; this
+    // is only the safety-net cadence when the watcher is running.
+    const THINKING_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(2);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
     let mut last_view_refresh_request = Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
@@ -706,7 +710,12 @@ fn run_loop<B: Backend>(
             let now = Instant::now();
             let mut deadlines = LoopDeadlines::default();
             deadlines.register_after(last_sync, Duration::from_secs(5));
-            deadlines.register_after(last_thinking_sync, Duration::from_millis(500));
+            let thinking_fallback = if app.fs_watcher.is_some() {
+                THINKING_SYNC_FALLBACK_INTERVAL
+            } else {
+                Duration::from_millis(500)
+            };
+            deadlines.register_after(last_thinking_sync, thinking_fallback);
             deadlines.register_after(last_file_log_flush, Duration::from_secs(1));
             if is_viewing {
                 deadlines
@@ -906,8 +915,10 @@ fn run_loop<B: Backend>(
                 app.perf
                     .record_duration("sync.session_status_bg_start", session_status_started_at.elapsed());
             }
+            app.refresh_fs_watch_paths();
             let usage_refresh_started_at = Instant::now();
-            app.usage.refresh();
+            let usage_stats_hint = app.usage_stats_hint();
+            app.usage.refresh(usage_stats_hint);
             app.perf
                 .record_duration("usage.refresh", usage_refresh_started_at.elapsed());
             let usage = app.usage.get_data();
@@ -953,12 +964,27 @@ fn run_loop<B: Backend>(
             force_redraw = true;
         }
 
+        let mut ipc_activity = false;
         if app.ipc.is_some() {
             // Drain all buffered socket messages each iteration.
-            app.drain_ipc_messages();
+            ipc_activity = app.drain_ipc_messages();
         }
 
-        if !handled_user_events && last_thinking_sync.elapsed() >= Duration::from_millis(500) {
+        force_redraw |= app.handle_prompt_file_events();
+
+        // With the filesystem watcher running, thinking sync is driven
+        // by marker-file events and IPC activity; the interval is only
+        // a fallback. Without a watcher, keep the legacy 500ms cadence.
+        let thinking_fallback = if app.fs_watcher.is_some() {
+            THINKING_SYNC_FALLBACK_INTERVAL
+        } else {
+            Duration::from_millis(500)
+        };
+        if !handled_user_events
+            && (app.take_thinking_dirty()
+                || ipc_activity
+                || last_thinking_sync.elapsed() >= thinking_fallback)
+        {
             let started_at = Instant::now();
             let thinking_changed = app.sync_thinking_status();
             app.perf
@@ -1016,7 +1042,7 @@ fn run_loop<B: Backend>(
                 // Results applied asynchronously via poll_session_status_bg().
             } else if startup_usage_pending {
                 let started_at = Instant::now();
-                app.usage.refresh();
+                app.usage.refresh(None);
                 app.perf
                     .record_duration("startup.usage_refresh", started_at.elapsed());
                 startup_usage_pending = false;

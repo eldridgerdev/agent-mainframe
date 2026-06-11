@@ -283,6 +283,9 @@ pub struct UsageManager {
     zai_five_hour_limit: Option<u64>,
     stats_state: Arc<Mutex<StatsRefreshState>>,
     stats_refresh_inflight: Arc<AtomicBool>,
+    /// Set when the filesystem watcher reported transcript changes that
+    /// have not been folded into a stats refresh yet.
+    stats_dirty_pending: bool,
 }
 
 /// Change-detection state owned by the background stats refresh so the
@@ -332,6 +335,7 @@ impl UsageManager {
             zai_five_hour_limit,
             stats_state: Arc::new(Mutex::new(StatsRefreshState::default())),
             stats_refresh_inflight: Arc::new(AtomicBool::new(false)),
+            stats_dirty_pending: false,
         }
     }
 
@@ -356,7 +360,12 @@ impl UsageManager {
         enabled_models > 1 && self.last_cycle.elapsed().as_secs() >= self.cycle_interval_secs
     }
 
-    pub fn refresh(&mut self) {
+    /// `stats_hint` comes from the filesystem watcher: `None` means no
+    /// watcher is running (refresh on the legacy 30s interval);
+    /// `Some(dirty)` means transcripts did/did not change since the
+    /// last check, so the interval becomes a long fallback and work
+    /// only happens when something actually changed.
+    pub fn refresh(&mut self, stats_hint: Option<bool>) {
         let now = Instant::now();
 
         if self.should_cycle() {
@@ -364,10 +373,21 @@ impl UsageManager {
             self.last_cycle = now;
         }
 
-        let should_refresh_stats = self
-            .last_stats_refresh
-            .map(|t| now.duration_since(t).as_secs() >= 30)
-            .unwrap_or(true);
+        if stats_hint == Some(true) {
+            self.stats_dirty_pending = true;
+        }
+        let watcher_active = stats_hint.is_some();
+        let should_refresh_stats = match self.last_stats_refresh {
+            None => true,
+            Some(t) => {
+                let elapsed = now.duration_since(t).as_secs();
+                if watcher_active {
+                    (self.stats_dirty_pending && elapsed >= 15) || elapsed >= 300
+                } else {
+                    elapsed >= 30
+                }
+            }
+        };
 
         // refresh() runs on the main thread every tick: it must only decide
         // whether to spawn, never touch the filesystem. The stats refresh
@@ -375,6 +395,7 @@ impl UsageManager {
         // volume and used to stall input handling here.
         if should_refresh_stats && !self.stats_refresh_inflight.swap(true, Ordering::SeqCst) {
             self.last_stats_refresh = Some(now);
+            self.stats_dirty_pending = false;
             let data = Arc::clone(&self.data);
             let state = Arc::clone(&self.stats_state);
             let inflight = Arc::clone(&self.stats_refresh_inflight);

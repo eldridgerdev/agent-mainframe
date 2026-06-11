@@ -27,6 +27,17 @@ are tagged.
   10 MB with one rotated generation kept, so it no longer grows
   without bound. Routine per-message IPC chatter is summarized once
   per 5 seconds instead of logged line by line.
+- The dashboard now reacts immediately when agent sessions start or
+  stop: AMF listens for tmux session events instead of polling every
+  5 seconds, so a feature that finishes or dies shows its new status
+  right away.
+- Agent activity indicators and sidebar prompts now update from
+  filesystem events instead of timed scans. Thinking status appears
+  as soon as an agent reports it, and an idle AMF does close to zero
+  background work regardless of how many features exist.
+- AMF now keeps a small hidden tmux session (`_amf-observer`) while
+  running so it can receive those session events. It never appears in
+  AMF's pickers and is removed when AMF exits.
 
 ### Fixed
 

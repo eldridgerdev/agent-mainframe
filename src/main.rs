@@ -22,6 +22,7 @@ mod project;
 mod summary;
 mod theme;
 mod tmux;
+mod tmux_observer;
 mod token_tracking;
 mod traits;
 mod transcript;
@@ -607,8 +608,12 @@ fn run_loop<B: Backend>(
     // Thinking sync is event-driven via the filesystem watcher; this
     // is only the safety-net cadence when the watcher is running.
     const THINKING_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(2);
+    // Status sync is event-driven via the tmux observer; this is only
+    // the safety-net cadence when the observer is running.
+    const STATUSES_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
     let mut last_view_refresh_request = Instant::now();
+    let mut last_statuses_sync = std::time::Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
 
     loop {
@@ -717,6 +722,14 @@ fn run_loop<B: Backend>(
             };
             deadlines.register_after(last_thinking_sync, thinking_fallback);
             deadlines.register_after(last_file_log_flush, Duration::from_secs(1));
+            if !is_viewing {
+                let statuses_fallback = if app.tmux_observer.is_some() {
+                    STATUSES_SYNC_FALLBACK_INTERVAL
+                } else {
+                    Duration::from_secs(5)
+                };
+                deadlines.register_after(last_statuses_sync, statuses_fallback);
+            }
             if is_viewing {
                 deadlines
                     .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
@@ -896,17 +909,32 @@ fn run_loop<B: Backend>(
 
         let defer_background_sync = app.should_defer_view_background_sync();
 
+        // Feature-status reconciliation is event-driven via the tmux
+        // observer (%sessions-changed); the interval is only a fallback.
+        // Without an observer, keep the legacy 5s cadence.
+        let statuses_fallback = if app.tmux_observer.is_some() {
+            STATUSES_SYNC_FALLBACK_INTERVAL
+        } else {
+            Duration::from_secs(5)
+        };
+        if !handled_user_events
+            && !is_viewing
+            && !startup_tasks_pending
+            && (app.take_sessions_dirty() || last_statuses_sync.elapsed() >= statuses_fallback)
+        {
+            let started_at = Instant::now();
+            app.sync_statuses();
+            app.perf
+                .record_duration("sync.statuses", started_at.elapsed());
+            last_statuses_sync = Instant::now();
+            force_redraw = true;
+        }
+
         if !handled_user_events
             && last_sync.elapsed() >= Duration::from_secs(5)
             && !defer_background_sync
             && !startup_tasks_pending
         {
-            if !is_viewing {
-                let started_at = Instant::now();
-                app.sync_statuses();
-                app.perf
-                    .record_duration("sync.statuses", started_at.elapsed());
-            }
             // Kick off a background refresh only when the previous one has
             // finished; results are applied each tick via poll_session_status_bg.
             if app.session_status_bg.is_none() {

@@ -519,6 +519,9 @@ pub struct App {
     /// Single inotify worker replacing periodic filesystem scans;
     /// None when the watcher could not start (timers remain fallbacks).
     pub fs_watcher: Option<crate::fswatch::FsWatcher>,
+    /// Persistent tmux control-mode client observing session lifecycle;
+    /// None in tests (status polling falls back to its interval).
+    pub tmux_observer: Option<crate::tmux_observer::TmuxObserver>,
     pub(crate) ipc_chatty_log_count: u64,
     pub(crate) ipc_chatty_log_window_start: Instant,
     pub last_file_notification_count: usize,
@@ -819,6 +822,14 @@ impl App {
             }
         }
         handled
+    }
+
+    /// Consume the tmux observer's sessions-dirty flag. False when no
+    /// observer is running (status sync then uses its legacy interval).
+    pub fn take_sessions_dirty(&self) -> bool {
+        self.tmux_observer
+            .as_ref()
+            .is_some_and(|observer| observer.flags.take_sessions_dirty())
     }
 
     /// Reconcile per-feature prompt-file watches with the current store.
@@ -1616,6 +1627,7 @@ impl App {
             background_hooks: HashMap::new(),
             ipc: None,
             fs_watcher: None,
+            tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,
@@ -1644,6 +1656,9 @@ impl App {
             }
         }
         app.refresh_fs_watch_paths();
+        app.tmux_observer = Some(crate::tmux_observer::TmuxObserver::start(
+            app.view_wakeup_tx(),
+        ));
 
         // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
@@ -1775,6 +1790,7 @@ impl App {
             background_hooks: HashMap::new(),
             ipc: None,
             fs_watcher: None,
+            tmux_observer: None,
             ipc_chatty_log_count: 0,
             ipc_chatty_log_window_start: Instant::now(),
             last_file_notification_count: 0,

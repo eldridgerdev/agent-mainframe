@@ -4385,6 +4385,99 @@ fn ipc_diff_review_opens_from_amf_session_when_cwd_does_not_match_feature() {
 }
 
 #[test]
+fn ipc_diff_review_queues_with_toast_from_normal_mode() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "custom-session");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Normal;
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "session_id": "claude-hook-session",
+        "amf_session": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/main.rs",
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-ipc",
+        "request_id": "req-1"
+    }));
+
+    // From the dashboard the review must not steal focus; it is queued
+    // as a pending input and announced with a toast.
+    assert!(
+        matches!(app.mode, AppMode::Normal),
+        "expected to stay on the dashboard"
+    );
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review from my-feat"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
+}
+
+#[test]
+fn ipc_diff_review_queues_when_viewing_a_different_feature() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "custom-session");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Viewing(ViewState::new(
+        "other-project".to_string(),
+        "other-feat".to_string(),
+        "amf-other-feat".to_string(),
+        "custom".to_string(),
+        "Claude".to_string(),
+        SessionKind::Claude,
+        VibeMode::Vibeless,
+        false,
+    ));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "session_id": "claude-hook-session",
+        "amf_session": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/main.rs",
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-ipc",
+        "request_id": "req-1"
+    }));
+
+    // Viewing a different feature: stay in that view, queue the review,
+    // and announce it with a toast.
+    match &app.mode {
+        AppMode::Viewing(view) => assert_eq!(view.feature_name, "other-feat"),
+        _ => panic!("expected to stay in the other feature's view"),
+    }
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review from my-feat"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
+}
+
+#[test]
 fn ipc_tool_activity_temporarily_overrides_older_review_work() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -4637,7 +4730,7 @@ fn custom_diff_review_notification_marks_new_files_as_added() {
 }
 
 #[test]
-fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
+fn custom_diff_review_notification_queues_with_toast_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
     let mut app = App::new_for_test(
@@ -4674,26 +4767,32 @@ fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
 
     app.scan_notifications();
 
-    // Non-Codex: diff-review opens immediately from the dashboard.
-    match &app.mode {
-        AppMode::DiffReviewPrompt(state) => {
-            assert_eq!(state.relative_path, "src/lib.rs");
-            assert!(state.return_to_view.is_none());
-        }
-        _ => panic!("expected diff review prompt to open immediately from Normal mode"),
-    }
-    assert!(app.pending_inputs.is_empty());
+    // From the dashboard the review is queued as a pending input and
+    // announced with a toast instead of stealing focus.
+    assert!(
+        matches!(app.mode, AppMode::Normal),
+        "expected to stay on the dashboard"
+    );
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
 }
 
 #[test]
 fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    // The V flow enters the feature view, which checks the session.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Normal;
     app.selection = Selection::Feature(0, 0);
@@ -4720,8 +4819,8 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     )
     .unwrap();
 
-    // scan_notifications (called inside check_pending_diff_review) opens the
-    // prompt immediately for non-Codex features in Normal mode.
+    // The scan inside check_pending_diff_review queues the review; the
+    // V flow then enters the feature view, which opens the prompt.
     app.check_pending_diff_review().unwrap();
 
     match &app.mode {
@@ -4734,8 +4833,10 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     assert!(
         app.toasts
             .last()
-            .map(|toast| toast.message.contains("already open"))
-            .unwrap_or(false)
+            .map(|toast| toast.message.contains("Opened pending diff review"))
+            .unwrap_or(false),
+        "expected an opened-review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
     );
 }
 

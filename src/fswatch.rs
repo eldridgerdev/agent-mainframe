@@ -8,6 +8,9 @@
 //! - `~/.codex/sessions` — codex transcripts (usage stats)
 //! - `~/.claude/projects` — claude transcripts (usage stats)
 //! - per-feature `.claude` / `.codex` dirs — `latest-prompt.txt`
+//! - per-feature `.claude/notifications` dirs and the global
+//!   notifications dir — fallback files written by hook scripts when
+//!   IPC delivery fails (e.g. the vibeless diff-review popup)
 //!
 //! Events set dirty flags consumed by the main loop. Latency-sensitive
 //! events (thinking, prompts) also write a byte to the wakeup pipe so
@@ -20,7 +23,7 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashSet;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -28,18 +31,35 @@ use crate::debug::{LogLevel, log_to_file};
 
 const PROMPT_FILE_NAME: &str = "latest-prompt.txt";
 
+/// Whether an event path belongs to a notification dir: the global
+/// notifications dir, a per-feature `.claude/notifications` dir, or a
+/// file directly inside one (per-feature dirs are watched
+/// non-recursively, so events are at most one level deep).
+fn is_notification_path(path: &Path, global_root: &Path) -> bool {
+    path.starts_with(global_root)
+        || path.ends_with(".claude/notifications")
+        || path
+            .parent()
+            .is_some_and(|dir| dir.ends_with(".claude/notifications"))
+}
+
 /// Dirty state shared between the notify callback thread and the main
 /// loop. Consumed (reset) by the `take_*` accessors.
 #[derive(Default)]
 pub struct FsWatchFlags {
     thinking_dirty: AtomicBool,
     usage_dirty: AtomicBool,
+    notifications_dirty: AtomicBool,
     prompt_paths: Mutex<HashSet<PathBuf>>,
 }
 
 impl FsWatchFlags {
     pub fn take_thinking_dirty(&self) -> bool {
         self.thinking_dirty.swap(false, Ordering::Relaxed)
+    }
+
+    pub fn take_notifications_dirty(&self) -> bool {
+        self.notifications_dirty.swap(false, Ordering::Relaxed)
     }
 
     pub fn take_usage_dirty(&self) -> bool {
@@ -71,11 +91,13 @@ impl FsWatcher {
         let thinking_root = PathBuf::from("/tmp/amf-thinking");
         let codex_root = dirs::home_dir().map(|home| home.join(".codex").join("sessions"));
         let claude_root = dirs::home_dir().map(|home| home.join(".claude").join("projects"));
+        let notification_root = crate::project::amf_config_dir().join("notifications");
 
         let handler_flags = flags.clone();
         let handler_thinking_root = thinking_root.clone();
         let handler_codex_root = codex_root.clone();
         let handler_claude_root = claude_root.clone();
+        let handler_notification_root = notification_root.clone();
 
         let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
             let Ok(event) = result else {
@@ -91,6 +113,11 @@ impl FsWatcher {
             for path in &event.paths {
                 if path.starts_with(&handler_thinking_root) {
                     handler_flags.thinking_dirty.store(true, Ordering::Relaxed);
+                    wake = true;
+                } else if is_notification_path(path, &handler_notification_root) {
+                    handler_flags
+                        .notifications_dirty
+                        .store(true, Ordering::Relaxed);
                     wake = true;
                 } else if path
                     .file_name()
@@ -123,15 +150,18 @@ impl FsWatcher {
             }
         })?;
 
-        // The thinking dir may not exist yet; create it so the watch
-        // sticks (hook scripts create files inside it later).
-        let _ = std::fs::create_dir_all(&thinking_root);
-        if let Err(e) = watcher.watch(&thinking_root, RecursiveMode::NonRecursive) {
-            log_to_file(
-                LogLevel::Warn,
-                "fswatch",
-                &format!("failed to watch {}: {e}", thinking_root.display()),
-            );
+        // The thinking and notification dirs may not exist yet; create
+        // them so the watches stick (hook scripts create files inside
+        // them later).
+        for root in [&thinking_root, &notification_root] {
+            let _ = std::fs::create_dir_all(root);
+            if let Err(e) = watcher.watch(root, RecursiveMode::NonRecursive) {
+                log_to_file(
+                    LogLevel::Warn,
+                    "fswatch",
+                    &format!("failed to watch {}: {e}", root.display()),
+                );
+            }
         }
         for root in [&codex_root, &claude_root].into_iter().flatten() {
             if root.is_dir()
@@ -154,16 +184,27 @@ impl FsWatcher {
         })
     }
 
-    /// Reconcile the per-feature prompt-dir watches with the current
-    /// feature set. Cheap to call periodically: it only touches the
-    /// watcher when the set actually changed.
+    /// Reconcile the per-feature prompt-dir and notification-dir
+    /// watches with the current feature set. Cheap to call
+    /// periodically: it only touches the watcher when the set actually
+    /// changed.
     pub fn sync_prompt_watches<I>(&mut self, feature_workdirs: I)
     where
         I: IntoIterator<Item = PathBuf>,
     {
         let desired: HashSet<PathBuf> = feature_workdirs
             .into_iter()
-            .flat_map(|workdir| [workdir.join(".claude"), workdir.join(".codex")])
+            .flat_map(|workdir| {
+                let claude_dir = workdir.join(".claude");
+                let notif_dir = claude_dir.join("notifications");
+                if claude_dir.is_dir() {
+                    // Hook scripts only mkdir this right before writing
+                    // a fallback file; create it up front so the watch
+                    // is in place before the first notification lands.
+                    let _ = std::fs::create_dir_all(&notif_dir);
+                }
+                [claude_dir, notif_dir, workdir.join(".codex")]
+            })
             .filter(|dir| dir.is_dir())
             .collect();
 
@@ -184,5 +225,54 @@ impl FsWatcher {
             }
         }
         self.watched_prompt_dirs = desired;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_paths_are_classified() {
+        let global = PathBuf::from("/home/u/.config/amf/notifications");
+
+        // File in the global notifications dir.
+        assert!(is_notification_path(&global.join("abc.json"), &global));
+        // The global dir itself (e.g. creation event).
+        assert!(is_notification_path(&global, &global));
+        // File in a per-feature notifications dir.
+        assert!(is_notification_path(
+            Path::new("/repo/.claude/notifications/s1-diff-42.json"),
+            &global
+        ));
+        // The per-feature dir itself.
+        assert!(is_notification_path(
+            Path::new("/repo/.claude/notifications"),
+            &global
+        ));
+
+        // Other .claude content must not match.
+        assert!(!is_notification_path(
+            Path::new("/repo/.claude/latest-prompt.txt"),
+            &global
+        ));
+        assert!(!is_notification_path(
+            Path::new("/repo/.claude/settings.local.json"),
+            &global
+        ));
+        // A repo dir merely named "notifications" must not match.
+        assert!(!is_notification_path(
+            Path::new("/repo/notifications/file.json"),
+            &global
+        ));
+    }
+
+    #[test]
+    fn notifications_dirty_flag_is_consumed_on_take() {
+        let flags = FsWatchFlags::default();
+        assert!(!flags.take_notifications_dirty());
+        flags.notifications_dirty.store(true, Ordering::Relaxed);
+        assert!(flags.take_notifications_dirty());
+        assert!(!flags.take_notifications_dirty());
     }
 }

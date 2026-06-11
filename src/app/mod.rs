@@ -803,6 +803,15 @@ impl App {
             .is_some_and(|watcher| watcher.flags.take_thinking_dirty())
     }
 
+    /// Consume the watcher's notifications-dirty flag. False when no
+    /// watcher is running (file-based fallback notifications are then
+    /// only surfaced manually via the V keybind).
+    pub fn take_notifications_dirty(&self) -> bool {
+        self.fs_watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.flags.take_notifications_dirty())
+    }
+
     /// Usage-stats refresh hint: `None` when no watcher is running
     /// (interval-only behavior), otherwise whether transcripts changed
     /// since the last check.

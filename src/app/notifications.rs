@@ -355,6 +355,27 @@ impl App {
             .3
     }
 
+    fn feature_agent_is_codex(
+        &self,
+        project_name: Option<&str>,
+        feature_name: Option<&str>,
+    ) -> bool {
+        let (Some(project_name), Some(feature_name)) = (project_name, feature_name) else {
+            return false;
+        };
+        self.store
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == feature_name)
+            })
+            .is_some_and(|feature| feature.agent == AgentKind::Codex)
+    }
+
     pub fn check_pending_diff_review(&mut self) -> Result<()> {
         self.scan_notifications();
 
@@ -825,23 +846,18 @@ impl App {
         let is_structured_diff_review = notification_type == "change-reason"
             || (notification_type == "diff-review" && self.use_custom_diff_review_viewer());
 
-        // change-reason/diff-review while on dashboard or viewing the feature
-        // -> enter diff review mode immediately. Without this, IPC times out
-        // (120s) before the user navigates into the feature view.
-        // Codex features are excluded: they surface pending reviews via the
-        // sidebar live state instead of the diff-review prompt.
-        let (found_project_name_for_open, found_feature_name_for_open, _, found_indices) =
+        // change-reason/diff-review while viewing the requesting feature
+        // -> enter diff review mode immediately. From the dashboard or a
+        // different feature the review is queued as a pending input (with
+        // a toast) instead, so it never steals focus; entering the feature
+        // view or selecting it from the picker opens it from there.
+        let (found_project_name_for_open, found_feature_name_for_open, _, _) =
             self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
-        let feature_is_codex = found_indices
-            .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
-            .unwrap_or(false);
         let open_diff_review_now = is_structured_diff_review
-            && found_feature_name_for_open.is_some()
             && match &self.mode {
                 AppMode::Viewing(view) => {
                     found_feature_name_for_open.as_deref() == Some(&view.feature_name)
                 }
-                AppMode::Normal => !feature_is_codex,
                 _ => false,
             };
         if open_diff_review_now {
@@ -992,7 +1008,13 @@ impl App {
             request_id: msg.request_id,
             reply_socket: msg.reply_socket,
         };
-        if pending_input.notification_type == "input-request"
+        // Toast queued reviews too, except for Codex features whose
+        // reviews surface via the sidebar live state instead.
+        let feature_is_codex = indices
+            .map(|(pi, fi)| self.store.projects[pi].features[fi].agent == AgentKind::Codex)
+            .unwrap_or(false);
+        if (pending_input.notification_type == "input-request"
+            || (is_structured_diff_review && !feature_is_codex))
             && !self
                 .pending_inputs
                 .iter()
@@ -1001,6 +1023,17 @@ impl App {
             self.push_toast_warning(input_request_toast_message(&pending_input));
         }
         self.pending_inputs.push(pending_input);
+    }
+
+    /// Scan ignoring the dir-mtime fingerprint. Used for watcher-driven
+    /// scans: hook scripts mkdir + copy in quick succession, so a scan
+    /// triggered by the create event can read a partially-written file
+    /// while the dir mtime (and thus the fingerprint) never changes
+    /// again. Forcing the re-read lets the follow-up write event
+    /// pick the notification up.
+    pub fn scan_notifications_forced(&mut self) -> bool {
+        self.last_file_notification_fingerprint = None;
+        self.scan_notifications()
     }
 
     pub fn scan_notifications(&mut self) -> bool {
@@ -1067,10 +1100,12 @@ impl App {
                     let is_structured_diff_review = notification_type == "change-reason"
                         || (notification_type == "diff-review"
                             && self.use_custom_diff_review_viewer());
+                    // Only open immediately while viewing the requesting
+                    // feature; from anywhere else the review is queued as
+                    // a pending input and announced with a toast below.
                     let open_diff_review_now = is_structured_diff_review
                         && match &self.mode {
                             AppMode::Viewing(view) => feature.name == view.feature_name,
-                            AppMode::Normal => feature.agent != AgentKind::Codex,
                             _ => false,
                         };
                     if open_diff_review_now {
@@ -1230,12 +1265,17 @@ impl App {
 
         // Preserve IPC-origin pending inputs (which use an empty
         // file_path sentinel) when refreshing from file-based sources.
+        // A matching change_id also counts as a duplicate: when a hook's
+        // notify-wait times out it rewrites the same payload as a file
+        // (minus request_id), and the file copy must win because the
+        // IPC entry's reply socket is gone by then.
         for existing in self.pending_inputs.clone() {
             if existing.file_path.as_os_str().is_empty()
                 && !inputs.iter().any(|i| {
                     i.session_id == existing.session_id
                         && i.notification_type == existing.notification_type
-                        && i.request_id == existing.request_id
+                        && (i.request_id == existing.request_id
+                            || (i.change_id.is_some() && i.change_id == existing.change_id))
                 })
             {
                 inputs.push(existing);
@@ -1261,8 +1301,25 @@ impl App {
             .pending_inputs
             .iter()
             .filter(|input| {
-                input.notification_type == "input-request"
-                    && !old_pending_inputs.iter().any(|existing| existing == *input)
+                let wants_toast = match input.notification_type.as_str() {
+                    "input-request" => true,
+                    // Queued diff reviews get a toast too, except for
+                    // Codex features whose reviews surface via the
+                    // sidebar live state instead.
+                    "change-reason" => !self.feature_agent_is_codex(
+                        input.project_name.as_deref(),
+                        input.feature_name.as_deref(),
+                    ),
+                    "diff-review" => {
+                        self.use_custom_diff_review_viewer()
+                            && !self.feature_agent_is_codex(
+                                input.project_name.as_deref(),
+                                input.feature_name.as_deref(),
+                            )
+                    }
+                    _ => false,
+                };
+                wants_toast && !old_pending_inputs.iter().any(|existing| existing == *input)
             })
             .collect();
         if let Some(first) = new_input_requests.first() {

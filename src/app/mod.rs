@@ -180,8 +180,8 @@ fn snapshot_from_parser(
     // `contents_formatted()` builds the full screen as an escaped string;
     // it is only consumed by selection mode, so skip it on the hot
     // incremental path unless explicitly requested.
-    let pane_content = include_content
-        .then(|| String::from_utf8_lossy(&screen.contents_formatted()).into_owned());
+    let pane_content =
+        include_content.then(|| String::from_utf8_lossy(&screen.contents_formatted()).into_owned());
 
     ViewSnapshot {
         session: session.to_string(),
@@ -346,6 +346,7 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
+    pub input_request_wait_seconds: f64,
     pub tmux_control_mode: bool,
     pub diff_review_viewer: DiffReviewViewer,
     pub diff_viewer_layout: DiffViewerLayout,
@@ -381,6 +382,7 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             leader_timeout_seconds: 5,
+            input_request_wait_seconds: 1.5,
             tmux_control_mode: true,
             diff_review_viewer: DiffReviewViewer::default(),
             diff_viewer_layout: DiffViewerLayout::Unified,
@@ -393,6 +395,20 @@ impl Default for AppConfig {
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn input_request_wait_duration(&self) -> Duration {
+        let seconds = if self.input_request_wait_seconds.is_finite()
+            && self.input_request_wait_seconds >= 0.0
+        {
+            self.input_request_wait_seconds
+        } else {
+            AppConfig::default().input_request_wait_seconds
+        };
+
+        Duration::from_secs_f64(seconds)
     }
 }
 
@@ -809,13 +825,18 @@ impl App {
             let Some(workdir) = path.parent().and_then(|dir| dir.parent()) else {
                 continue;
             };
-            let target = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
-                project
-                    .features
-                    .iter()
-                    .position(|feature| feature.workdir == workdir)
-                    .map(|fi| (pi, fi))
-            });
+            let target = self
+                .store
+                .projects
+                .iter()
+                .enumerate()
+                .find_map(|(pi, project)| {
+                    project
+                        .features
+                        .iter()
+                        .position(|feature| feature.workdir == workdir)
+                        .map(|fi| (pi, fi))
+                });
             if let Some((pi, fi)) = target {
                 self.schedule_sidebar_load_for_feature(pi, fi);
                 handled = true;

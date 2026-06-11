@@ -595,7 +595,7 @@ fn run_loop<B: Backend>(
     let mut last_claude_usage_debug: Option<String> = None;
     let mut last_resize: Option<(u16, u16, String, String)> = None;
     let mut force_redraw = true;
-    let startup_grace_until = Instant::now() + Duration::from_secs(3);
+    let startup_grace_until = Instant::now() + app.config.input_request_wait_duration();
     let mut startup_task_spacing_until = Instant::now();
     let mut startup_sync_statuses_pending = true;
     let mut startup_session_status_pending = true;
@@ -737,10 +737,11 @@ fn run_loop<B: Backend>(
             if animating {
                 deadlines.register_after(now, ANIMATED_REDRAW_INTERVAL);
             }
-            if app.leader_active && let Some(activated_at) = app.leader_activated_at {
+            if app.leader_active
+                && let Some(activated_at) = app.leader_activated_at
+            {
                 deadlines.register(
-                    activated_at
-                        + Duration::from_secs(app.config.leader_timeout_seconds.max(1)),
+                    activated_at + Duration::from_secs(app.config.leader_timeout_seconds.max(1)),
                 );
             }
             // The view-mode resize check is not fd-driven (libc::poll cannot
@@ -940,8 +941,10 @@ fn run_loop<B: Backend>(
             if app.session_status_bg.is_none() {
                 let session_status_started_at = Instant::now();
                 app.sync_session_status_background();
-                app.perf
-                    .record_duration("sync.session_status_bg_start", session_status_started_at.elapsed());
+                app.perf.record_duration(
+                    "sync.session_status_bg_start",
+                    session_status_started_at.elapsed(),
+                );
             }
             app.refresh_fs_watch_paths();
             let usage_refresh_started_at = Instant::now();

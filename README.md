@@ -479,6 +479,7 @@ automatically with defaults on first run.
 | --- | --- | --- | --- |
 | `nerd_font` | bool | `true` | Enable Nerd Font icons. Set to `false` to use ASCII fallbacks. |
 | `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
+| `input_request_wait_seconds` | number | `1.5` | Startup grace period before AMF refreshes background input-request state while viewing a session. Increase it if startup refreshes interfere with the embedded pane; decrease it for faster pending-input updates. |
 | `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
 | `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI: `"amf"` uses the in-app reviewer and `"nvim"` uses the legacy tmux/neovim popup. Older `"custom"` and `"legacy"` values are still accepted. |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
@@ -486,6 +487,15 @@ automatically with defaults on first run.
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
 | `zai` | object? | `null` | Optional ZAI usage limits for the status bar. |
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
+
+To customize input-request startup waiting, edit
+`~/.config/amf/config.json`:
+
+```json
+{
+  "input_request_wait_seconds": 1.5
+}
+```
 
 ### `zai` — token usage limits (optional)
 (This is pretty busted as of now. Until ZAI gives more useful info in their API you can guess some hard coded limits until it somewhat matches the dashboard. or just keep it disabled)

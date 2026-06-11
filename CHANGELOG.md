@@ -28,6 +28,15 @@ are tagged.
 - Codex sidebar model details now remain visible after usage and
   activity lines appear by letting the Status section grow to fit its
   contents.
+- The vibeless diff-review popup now appears on macOS. The hook's
+  `amf notify-wait` call bound its reply socket under `$TMPDIR`, whose
+  long per-user path on macOS exceeds the Unix socket path limit, so
+  IPC delivery silently failed on every review. Reply sockets now live
+  in the short state directory used by the main AMF socket.
+- Fallback notification files (written when IPC delivery fails) now
+  open the diff-review popup automatically instead of waiting for a
+  manual `V` refresh. The existing filesystem watcher picks them up
+  the moment they are written; no polling was added.
 - The Terminal option is back in the new-session picker. It was
   accidentally dropped in v0.20.0 alongside an intentional change to
   the new-feature dialog, so adding a plain terminal to a running

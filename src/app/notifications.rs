@@ -1003,6 +1003,17 @@ impl App {
         self.pending_inputs.push(pending_input);
     }
 
+    /// Scan ignoring the dir-mtime fingerprint. Used for watcher-driven
+    /// scans: hook scripts mkdir + copy in quick succession, so a scan
+    /// triggered by the create event can read a partially-written file
+    /// while the dir mtime (and thus the fingerprint) never changes
+    /// again. Forcing the re-read lets the follow-up write event
+    /// pick the notification up.
+    pub fn scan_notifications_forced(&mut self) -> bool {
+        self.last_file_notification_fingerprint = None;
+        self.scan_notifications()
+    }
+
     pub fn scan_notifications(&mut self) -> bool {
         let fingerprint = self.notification_dirs_fingerprint();
         if self.last_file_notification_fingerprint == Some(fingerprint) {

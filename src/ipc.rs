@@ -17,8 +17,15 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Directory used for temporary reply sockets for `notify-wait`.
+/// Lives next to the main socket instead of under `std::env::temp_dir()`:
+/// on macOS `$TMPDIR` is a ~50-char `/var/folders/...` path, which pushes
+/// the reply socket path past the 104-byte `sun_path` limit and makes
+/// `bind` fail, silently breaking the diff-review popup.
 pub fn reply_dir() -> PathBuf {
-    std::env::temp_dir().join("amf-ipc-reply")
+    dirs::state_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("amf")
+        .join("reply")
 }
 
 /// Owns the IPC socket lifetime. Removes the socket file on drop

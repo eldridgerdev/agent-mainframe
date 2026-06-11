@@ -20,6 +20,20 @@ pub fn launch_override_args(workdir: &Path) -> Vec<String> {
     launch_override_args_for(&user_config_path, &hook_path, workdir)
 }
 
+pub fn configured_model() -> Option<String> {
+    let config_path = dirs::home_dir()?.join(".codex").join("config.toml");
+    configured_model_for(&config_path)
+}
+
+fn configured_model_for(config_path: &Path) -> Option<String> {
+    read_launch_config(config_path)?
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn launch_override_args_for(config_path: &Path, hook_path: &Path, workdir: &Path) -> Vec<String> {
     let user_config = read_launch_config(config_path).unwrap_or_default();
     let launch_config = build_launch_config(&user_config, hook_path);
@@ -164,5 +178,17 @@ mod tests {
         assert_eq!(args[3], dir.path().to_string_lossy());
         assert_eq!(args[4], "-c");
         assert!(args[5].contains("amf-codex-notify.sh"));
+    }
+
+    #[test]
+    fn configured_model_reads_top_level_model() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, "model = \"gpt-5.5\"\n").unwrap();
+
+        assert_eq!(
+            super::configured_model_for(&config_path).as_deref(),
+            Some("gpt-5.5")
+        );
     }
 }

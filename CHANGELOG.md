@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Agent sidebars now show the active model when AMF can determine it
+  for Claude, Codex, and OpenCode sessions, making it easier to confirm
+  which model a running agent is using.
+
 ### Changed
 
 - Pending input requests can now surface sooner when AMF starts in an
@@ -19,6 +25,9 @@ are tagged.
 
 ### Fixed
 
+- Codex sidebar model details now remain visible after usage and
+  activity lines appear by letting the Status section grow to fit its
+  contents.
 - The Terminal option is back in the new-session picker. It was
   accidentally dropped in v0.20.0 alongside an intentional change to
   the new-feature dialog, so adding a plain terminal to a running

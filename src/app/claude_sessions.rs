@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::fs::File;
+use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,11 @@ pub struct ClaudeSessionInfo {
     pub id: String,
     pub title: String,
     pub updated: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeSidebarMetadata {
+    pub model: Option<String>,
 }
 
 pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
@@ -65,10 +71,81 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
     Ok(sessions)
 }
 
+pub fn sidebar_metadata_for_session_id(
+    workdir: &Path,
+    session_id: &str,
+) -> Result<Option<ClaudeSidebarMetadata>> {
+    let home = std::env::var("HOME")?;
+    let path = PathBuf::from(&home)
+        .join(".claude")
+        .join("projects")
+        .join(encode_path(workdir))
+        .join(format!("{session_id}.jsonl"));
+
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    Ok(Some(ClaudeSidebarMetadata {
+        model: extract_latest_model(&path),
+    }))
+}
+
+pub(crate) fn sidebar_input_signature(workdir: &Path, session_id: Option<&str>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    workdir.hash(&mut hasher);
+    session_id.hash(&mut hasher);
+
+    if let (Ok(home), Some(session_id)) = (std::env::var("HOME"), session_id) {
+        hash_metadata(
+            &mut hasher,
+            PathBuf::from(home)
+                .join(".claude")
+                .join("projects")
+                .join(encode_path(workdir))
+                .join(format!("{session_id}.jsonl")),
+        );
+    }
+
+    hasher.finish()
+}
+
 fn is_real_dir(path: &Path) -> bool {
     std::fs::symlink_metadata(path)
         .map(|metadata| metadata.is_dir())
         .unwrap_or(false)
+}
+
+fn extract_latest_model(jsonl_path: &Path) -> Option<String> {
+    let file = File::open(jsonl_path).ok()?;
+    let reader = BufReader::new(file);
+    let mut latest = None;
+
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        if entry["type"] == "assistant"
+            && let Some(model) = entry["message"]["model"]
+                .as_str()
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+        {
+            latest = Some(model.to_string());
+        }
+    }
+
+    latest
 }
 
 fn extract_session_title(jsonl_path: &Path) -> Option<String> {
@@ -115,6 +192,24 @@ fn encode_path(path: &Path) -> String {
         .collect()
 }
 
+fn hash_metadata(hasher: &mut impl std::hash::Hasher, path: impl AsRef<Path>) {
+    let path = path.as_ref();
+    path.hash(hasher);
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            true.hash(hasher);
+            metadata.len().hash(hasher);
+            metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .hash(hasher);
+        }
+        Err(_) => false.hash(hasher),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +230,26 @@ mod tests {
         assert_eq!(
             extract_session_title(&path).as_deref(),
             Some("actual request")
+        );
+    }
+
+    #[test]
+    fn extracts_latest_assistant_model() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4-6\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_latest_model(&path).as_deref(),
+            Some("claude-opus-4-6")
         );
     }
 }

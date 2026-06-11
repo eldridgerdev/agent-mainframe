@@ -247,6 +247,31 @@ function extractSessionStatus(event) {
   return null
 }
 
+function extractStringField(value, keys) {
+  if (!value || typeof value !== "object") return null
+  for (const key of keys) {
+    const field = value[key]
+    if (typeof field === "string" && field.trim().length > 0) {
+      return field.trim()
+    }
+  }
+  return (
+    extractStringField(value.properties, keys) ||
+    extractStringField(value.event, keys) ||
+    extractStringField(value.info, keys) ||
+    extractStringField(value.message, keys) ||
+    null
+  )
+}
+
+function extractModel(event) {
+  return extractStringField(event, ["model", "modelID", "modelId", "model_id"])
+}
+
+function extractProvider(event) {
+  return extractStringField(event, ["provider", "providerID", "providerId", "provider_id"])
+}
+
 function extractPermission(event) {
   return (
     event?.tool ||
@@ -321,6 +346,8 @@ function writeSidebarState(directory, sessionId) {
     last_error: state.lastError || null,
     lsp_summary: state.lspSummary || null,
     live_summary: state.liveSummary || null,
+    model: state.model || null,
+    provider: state.provider || null,
     additions: state.diff?.additions ?? null,
     deletions: state.diff?.deletions ?? null,
     files: state.diff?.files ?? null,
@@ -357,9 +384,20 @@ function pruneSidebarFiles(dir, activeSessionId) {
 function mutateState(directory, sessionId, updater) {
   if (!sessionId) return
   const current = stateBySession.get(sessionId) || {}
+  const model = extractModel(current)
+  const provider = extractProvider(current)
+  if (model) current.model = model
+  if (provider) current.provider = provider
   updater(current)
   stateBySession.set(sessionId, current)
   writeSidebarState(directory, sessionId)
+}
+
+function updateModelState(state, value) {
+  const model = extractModel(value)
+  const provider = extractProvider(value)
+  if (model) state.model = model
+  if (provider) state.provider = provider
 }
 
 export const SidebarStatePlugin = async ({ directory }) => {
@@ -368,6 +406,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
     "tool.execute.before": async (input) => {
       const sessionId = sessionIdFrom(input)
       mutateState(directory, sessionId, (state) => {
+        updateModelState(state, input)
         state.lastTool =
           input?.tool || input?.toolName || input?.name || input?.tool_name || null
         state.lastError = null
@@ -377,6 +416,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
       const sessionId = sessionIdFrom(input)
       const lastError = extractError(input)
       mutateState(directory, sessionId, (state) => {
+        updateModelState(state, input)
         state.lastTool =
           input?.tool || input?.toolName || input?.name || input?.tool_name || state.lastTool || null
         state.lastError = lastError
@@ -388,6 +428,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
         case "session.status": {
           const sessionId = sessionIdFrom(payload)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.status = extractSessionStatus(payload)
           })
           return
@@ -397,6 +438,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
           const summary = extractDiffSummary(payload)
           if (!summary) return
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.diff = summary
           })
           return
@@ -406,6 +448,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
           const todoCount = extractOpenTodoCount(payload)
           const todoPreview = extractTodoPreview(payload)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.todoCount = todoCount
             state.todoPreview = todoPreview
           })
@@ -414,6 +457,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
         case "permission.asked": {
           const sessionId = sessionIdFrom(payload)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.pendingPermission = extractPermission(payload)
           })
           return
@@ -421,6 +465,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
         case "permission.replied": {
           const sessionId = sessionIdFrom(payload)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.pendingPermission = null
           })
           return
@@ -430,6 +475,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
           const sessionId = sessionIdFrom(message)
           const role = extractMessageRole(message)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, message)
             if (role === "user") {
               const prompt = extractPrompt(message)
               if (prompt) {
@@ -454,6 +500,7 @@ export const SidebarStatePlugin = async ({ directory }) => {
           const sessionId = sessionIdFrom(payload)
           const summary = extractLspSummary(payload)
           mutateState(directory, sessionId, (state) => {
+            updateModelState(state, payload)
             state.lspSummary = summary
           })
           return

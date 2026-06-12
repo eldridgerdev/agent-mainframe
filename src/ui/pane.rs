@@ -45,6 +45,7 @@ pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
+    pub model_text: Option<String>,
     pub prompt_text: String,
     pub work_text: Option<String>,
     pub todos_text: Option<String>,
@@ -453,6 +454,7 @@ fn draw_agent_sidebar(
     let fallback = AgentSidebarData {
         agent_kind,
         status_text: String::new(),
+        model_text: None,
         prompt_text: String::new(),
         work_text: None,
         todos_text: None,
@@ -506,12 +508,7 @@ fn sidebar_sections<'a>(data: &'a AgentSidebarData, section_width: u16) -> Vec<S
         sections.push(SidebarSection {
             title: "Status",
             body: data.status_text.as_str(),
-            constraint: Constraint::Length(sidebar_section_height(
-                &data.status_text,
-                section_width,
-                2,
-                4,
-            )),
+            constraint: Constraint::Length(status_section_height(&data.status_text, section_width)),
         });
     }
 
@@ -606,6 +603,10 @@ fn sidebar_section_height(
 
 fn prompt_section_height(body: &str, section_width: u16) -> u16 {
     sidebar_section_height(body, section_width, 1, 3)
+}
+
+fn status_section_height(body: &str, section_width: u16) -> u16 {
+    sidebar_section_height(body, section_width, 1, 8)
 }
 
 fn summary_section_height(body: &str, section_width: u16) -> u16 {
@@ -1112,9 +1113,21 @@ mod tests {
 
     #[test]
     fn status_section_height_is_compact_for_short_status_text() {
+        assert_eq!(status_section_height("Activity: Ready", 30), 3);
         assert_eq!(
-            sidebar_section_height("Activity: Ready\nInput: 1.2K tokens", 30, 2, 4),
+            status_section_height("Activity: Ready\nInput: 1.2K tokens", 30),
             4
+        );
+    }
+
+    #[test]
+    fn status_section_height_grows_for_model_line() {
+        assert_eq!(
+            status_section_height(
+                "Activity: Ready\nInput: 1.2K tokens\nOutput: 2.4K tokens\nModel: gpt-5.5",
+                30,
+            ),
+            6
         );
     }
 
@@ -1131,6 +1144,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
@@ -1151,6 +1165,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
                 "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
@@ -1198,6 +1213,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Claude,
             status_text: "Waiting for input\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Resume the task.".into(),
             work_text: None,
             todos_text: None,
@@ -1238,6 +1254,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nInput: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: None,
             todos_text: None,
@@ -1276,6 +1293,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
@@ -1334,6 +1352,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
@@ -1375,6 +1394,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: running tool\nTool: cargo test".into()),
             todos_text: None,
@@ -1417,6 +1437,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Thinking\nUsage: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some(
                 "State: waiting for input\nRequest: Codex finished and is waiting for review on parser wiring.\nQueue: 2 pending\nTool: cargo test codex_sidebar -- --nocapture\nFile: src/ui/pane.rs"
@@ -1458,6 +1479,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: String::new(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
@@ -1496,6 +1518,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: "Preview: Continue the refactor.".into(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,
@@ -1534,6 +1557,7 @@ mod tests {
         let sidebar = AgentSidebarData {
             agent_kind: crate::project::SessionKind::Codex,
             status_text: "Input: 1.2K tokens".into(),
+            model_text: None,
             prompt_text: String::new(),
             work_text: Some("State: waiting for input\nRequest: Need approval.".into()),
             todos_text: None,

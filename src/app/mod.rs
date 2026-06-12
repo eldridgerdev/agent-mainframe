@@ -99,6 +99,7 @@ pub struct CodexSidebarMetadataResult {
     pub cache_key: String,
     pub title: Option<String>,
     pub prompt: Option<String>,
+    pub model_text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -325,6 +326,7 @@ impl ZaiPlanConfig {
 pub struct AppConfig {
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
+    pub input_request_wait_seconds: f64,
     pub tmux_control_mode: bool,
     pub diff_review_viewer: DiffReviewViewer,
     pub diff_viewer_layout: DiffViewerLayout,
@@ -360,6 +362,7 @@ impl Default for AppConfig {
         Self {
             nerd_font: true,
             leader_timeout_seconds: 5,
+            input_request_wait_seconds: 1.5,
             tmux_control_mode: true,
             diff_review_viewer: DiffReviewViewer::default(),
             diff_viewer_layout: DiffViewerLayout::Unified,
@@ -372,6 +375,20 @@ impl Default for AppConfig {
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn input_request_wait_duration(&self) -> Duration {
+        let seconds = if self.input_request_wait_seconds.is_finite()
+            && self.input_request_wait_seconds >= 0.0
+        {
+            self.input_request_wait_seconds
+        } else {
+            AppConfig::default().input_request_wait_seconds
+        };
+
+        Duration::from_secs_f64(seconds)
     }
 }
 
@@ -464,9 +481,11 @@ pub struct App {
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
     pub latest_prompt_cache: HashMap<String, String>,
+    pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
     pub codex_session_title_cache: HashMap<String, Option<String>>,
     pub codex_session_prompt_cache: HashMap<String, Option<String>>,
+    pub codex_session_model_cache: HashMap<String, Option<String>>,
     pub codex_live_threads: HashMap<String, CodexLiveThreadState>,
     pub codex_sidebar_metadata_tx: std::sync::mpsc::Sender<CodexSidebarMetadataResult>,
     pub codex_sidebar_metadata_rx: std::sync::mpsc::Receiver<CodexSidebarMetadataResult>,
@@ -531,6 +550,7 @@ struct SidebarLoadResult {
     signature: u64,
     changed: bool,
     latest_prompt: Option<String>,
+    model_text: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
 }
 
@@ -764,6 +784,15 @@ impl App {
         self.fs_watcher
             .as_ref()
             .is_some_and(|watcher| watcher.flags.take_thinking_dirty())
+    }
+
+    /// Consume the watcher's notifications-dirty flag. False when no
+    /// watcher is running (file-based fallback notifications are then
+    /// only surfaced manually via the V keybind).
+    pub fn take_notifications_dirty(&self) -> bool {
+        self.fs_watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.flags.take_notifications_dirty())
     }
 
     /// Usage-stats refresh hint: `None` when no watcher is running
@@ -1573,9 +1602,11 @@ impl App {
             view_input_batch: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
+            codex_session_model_cache: HashMap::new(),
             codex_live_threads: HashMap::new(),
             codex_sidebar_metadata_tx,
             codex_sidebar_metadata_rx,
@@ -1748,9 +1779,11 @@ impl App {
             view_input_batch: None,
             pending_inputs: Vec::new(),
             latest_prompt_cache,
+            sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
             codex_session_title_cache: HashMap::new(),
             codex_session_prompt_cache: HashMap::new(),
+            codex_session_model_cache: HashMap::new(),
             codex_live_threads: HashMap::new(),
             codex_sidebar_metadata_tx,
             codex_sidebar_metadata_rx,
@@ -1955,6 +1988,18 @@ impl App {
                 self.latest_prompt_cache.remove(&result.tmux_session);
             }
 
+            if let Some(model_text) = result.model_text {
+                let model_text = model_text.trim().to_string();
+                if model_text.is_empty() {
+                    self.sidebar_model_cache.remove(&result.tmux_session);
+                } else {
+                    self.sidebar_model_cache
+                        .insert(result.tmux_session.clone(), model_text);
+                }
+            } else {
+                self.sidebar_model_cache.remove(&result.tmux_session);
+            }
+
             if let Some(data) = result.opencode_sidebar {
                 self.opencode_sidebar_cache
                     .insert(result.tmux_session, data);
@@ -1969,6 +2014,7 @@ impl App {
         self.pending_sidebar_loads.remove(tmux_session);
         self.sidebar_load_signatures.remove(tmux_session);
         self.latest_prompt_cache.remove(tmux_session);
+        self.sidebar_model_cache.remove(tmux_session);
         self.sidebar_plan_cache.remove(tmux_session);
         self.codex_live_threads.remove(tmux_session);
         self.opencode_sidebar_cache.remove(tmux_session);
@@ -2040,6 +2086,7 @@ impl App {
         if self.codex_sidebar_metadata_inflight.contains(&cache_key)
             || (self.codex_session_title_cache.contains_key(&cache_key)
                 && self.codex_session_prompt_cache.contains_key(&cache_key))
+                && self.codex_session_model_cache.contains_key(&cache_key)
         {
             return;
         }
@@ -2058,7 +2105,15 @@ impl App {
                 title: metadata
                     .as_ref()
                     .and_then(|metadata| metadata.title.clone()),
-                prompt: metadata.and_then(|metadata| metadata.latest_prompt),
+                prompt: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.latest_prompt.clone()),
+                model_text: metadata.and_then(|metadata| {
+                    model_line(
+                        metadata.model.as_deref(),
+                        metadata.model_provider.as_deref(),
+                    )
+                }),
             };
             let _ = tx.send(result);
         });
@@ -2121,6 +2176,13 @@ impl App {
         self.codex_session_prompt_cache
             .get(&cache_key)
             .and_then(|prompt| prompt.as_deref())
+    }
+
+    pub fn cached_codex_session_model(&self, workdir: &Path, session_id: &str) -> Option<&str> {
+        let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
+        self.codex_session_model_cache
+            .get(&cache_key)
+            .and_then(|model| model.as_deref())
     }
 
     pub fn codex_live_thread(&self, tmux_session: &str) -> Option<&CodexLiveThreadState> {
@@ -2585,6 +2647,18 @@ impl SidebarLoadRequest {
             )
             .hash(&mut hasher);
         }
+        if self.preferred_session_kind == Some(SessionKind::Claude) {
+            claude_sessions::sidebar_input_signature(
+                &self.workdir,
+                self.preferred_session_id.as_deref(),
+            )
+            .hash(&mut hasher);
+        }
+        if self.preferred_session_kind == Some(SessionKind::Codex)
+            && let Some(home) = dirs::home_dir()
+        {
+            hash_path_metadata(&mut hasher, home.join(".codex").join("config.toml"));
+        }
 
         hasher.finish()
     }
@@ -2599,6 +2673,7 @@ impl SidebarLoadRequest {
                 signature,
                 changed,
                 latest_prompt: None,
+                model_text: None,
                 opencode_sidebar: None,
             };
         }
@@ -2613,15 +2688,43 @@ impl SidebarLoadRequest {
         } else {
             None
         };
+        let model_text = match self.preferred_session_kind {
+            Some(SessionKind::Claude) => self.preferred_session_id.as_deref().and_then(|id| {
+                claude_sessions::sidebar_metadata_for_session_id(&self.workdir, id)
+                    .ok()
+                    .flatten()
+                    .and_then(|metadata| model_line(metadata.model.as_deref(), None))
+            }),
+            Some(SessionKind::Opencode) => opencode_sidebar.as_ref().and_then(|sidebar| {
+                model_line(sidebar.model.as_deref(), sidebar.provider.as_deref())
+            }),
+            Some(SessionKind::Codex) => {
+                let configured_model = crate::codex_config::configured_model();
+                model_line(configured_model.as_deref(), None)
+            }
+            _ => None,
+        };
 
         SidebarLoadResult {
             tmux_session: self.tmux_session,
             signature,
             changed,
             latest_prompt,
+            model_text,
             opencode_sidebar,
         }
     }
+}
+
+fn model_line(model: Option<&str>, provider: Option<&str>) -> Option<String> {
+    let model = model.map(str::trim).filter(|model| !model.is_empty())?;
+    let provider = provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty() && !provider.eq_ignore_ascii_case(model));
+    Some(match provider {
+        Some(provider) => format!("Model: {provider}/{model}"),
+        None => format!("Model: {model}"),
+    })
 }
 
 fn session_kind_signature(session_kind: Option<&SessionKind>) -> u8 {

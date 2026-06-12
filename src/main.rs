@@ -595,7 +595,7 @@ fn run_loop<B: Backend>(
     let mut last_claude_usage_debug: Option<String> = None;
     let mut last_resize: Option<(u16, u16, String, String)> = None;
     let mut force_redraw = true;
-    let startup_grace_until = Instant::now() + Duration::from_secs(3);
+    let startup_grace_until = Instant::now() + app.config.input_request_wait_duration();
     let mut startup_task_spacing_until = Instant::now();
     let mut startup_sync_statuses_pending = true;
     let mut startup_session_status_pending = true;
@@ -1069,6 +1069,18 @@ fn run_loop<B: Backend>(
         }
 
         force_redraw |= app.handle_prompt_file_events();
+
+        // Event-driven scan of fallback notification files: only runs
+        // when the watcher saw a change inside a notifications dir
+        // (e.g. a diff-review hook fell back to file delivery because
+        // IPC was unavailable). No polling happens otherwise.
+        if app.take_notifications_dirty() {
+            let started_at = Instant::now();
+            let notifications_changed = app.scan_notifications_forced();
+            app.perf
+                .record_duration("scan.notifications", started_at.elapsed());
+            force_redraw |= notifications_changed;
+        }
 
         // With the filesystem watcher running, thinking sync is driven
         // by marker-file events and IPC activity; the interval is only

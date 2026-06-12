@@ -248,6 +248,7 @@ fn poll_sidebar_load_results_updates_feature_caches() {
             signature: 7,
             changed: true,
             latest_prompt: Some("lazy prompt".to_string()),
+            model_text: Some("Model: openai/gpt-5.5".to_string()),
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
                 title: Some("Loaded later".to_string()),
@@ -260,6 +261,8 @@ fn poll_sidebar_load_results_updates_feature_caches() {
                 last_error: None,
                 lsp_summary: Some("ready".to_string()),
                 live_summary: Some("live summary".to_string()),
+                model: Some("gpt-5.5".to_string()),
+                provider: Some("openai".to_string()),
                 reasoning_tokens: Some(12),
                 additions: Some(3),
                 deletions: Some(1),
@@ -279,6 +282,12 @@ fn poll_sidebar_load_results_updates_feature_caches() {
             .get("amf-my-feat")
             .and_then(|data| data.title.as_deref()),
         Some("Loaded later")
+    );
+    assert_eq!(
+        app.sidebar_model_cache
+            .get("amf-my-feat")
+            .map(String::as_str),
+        Some("Model: openai/gpt-5.5")
     );
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
@@ -300,6 +309,15 @@ fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
 fn app_config_default_leader_timeout_is_five_seconds() {
     let config = AppConfig::default();
     assert_eq!(config.leader_timeout_seconds, 5);
+}
+
+#[test]
+fn app_config_default_input_request_wait_is_one_point_five_seconds() {
+    let config = AppConfig::default();
+    assert_eq!(
+        config.input_request_wait_duration(),
+        std::time::Duration::from_millis(1500)
+    );
 }
 
 #[test]
@@ -325,6 +343,30 @@ fn app_config_missing_leader_timeout_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
     assert_eq!(config.leader_timeout_seconds, 5);
     assert!(!config.nerd_font);
+}
+
+#[test]
+fn app_config_missing_input_request_wait_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert_eq!(config.input_request_wait_seconds, 1.5);
+}
+
+#[test]
+fn app_config_input_request_wait_can_be_configured() {
+    let config: AppConfig = serde_json::from_str(r#"{"input_request_wait_seconds":0.75}"#).unwrap();
+    assert_eq!(
+        config.input_request_wait_duration(),
+        std::time::Duration::from_millis(750)
+    );
+}
+
+#[test]
+fn app_config_invalid_input_request_wait_falls_back_to_default_duration() {
+    let config: AppConfig = serde_json::from_str(r#"{"input_request_wait_seconds":-1.0}"#).unwrap();
+    assert_eq!(
+        config.input_request_wait_duration(),
+        std::time::Duration::from_millis(1500)
+    );
 }
 
 #[test]
@@ -756,6 +798,8 @@ fn sync_statuses_active_becomes_stopped_when_session_gone() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -810,6 +854,7 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
             signature: 9,
             changed: true,
             latest_prompt: Some("warm prompt".to_string()),
+            model_text: None,
             opencode_sidebar: Some(crate::app::opencode_storage::OpencodeSidebarData {
                 session_id: "ses-1".to_string(),
                 title: Some("Warm cache".to_string()),
@@ -822,6 +867,8 @@ fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
                 last_error: None,
                 lsp_summary: None,
                 live_summary: None,
+                model: None,
+                provider: None,
                 reasoning_tokens: None,
                 additions: None,
                 deletions: None,
@@ -1099,6 +1146,8 @@ fn start_worktree_hook_clears_sidebar_state_for_reused_feature() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -2683,6 +2732,8 @@ fn stop_feature_transitions_idle_to_stopped() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -2733,6 +2784,8 @@ fn complete_deleting_feature_clears_sidebar_caches() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,
@@ -4037,6 +4090,7 @@ fn poll_codex_sidebar_metadata_updates_caches() {
             cache_key: cache_key.clone(),
             title: Some("Sidebar title".into()),
             prompt: Some("Sidebar prompt".into()),
+            model_text: Some("Model: gpt-5.5".into()),
         })
         .unwrap();
 
@@ -4049,6 +4103,10 @@ fn poll_codex_sidebar_metadata_updates_caches() {
     assert_eq!(
         app.cached_codex_session_prompt(workdir.path(), "sess-current"),
         Some("Sidebar prompt")
+    );
+    assert_eq!(
+        app.cached_codex_session_model(workdir.path(), "sess-current"),
+        Some("Model: gpt-5.5")
     );
     assert!(!app.codex_sidebar_metadata_inflight.contains(&cache_key));
 }
@@ -4328,6 +4386,99 @@ fn ipc_diff_review_opens_from_amf_session_when_cwd_does_not_match_feature() {
 }
 
 #[test]
+fn ipc_diff_review_queues_with_toast_from_normal_mode() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "custom-session");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Normal;
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "session_id": "claude-hook-session",
+        "amf_session": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/main.rs",
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-ipc",
+        "request_id": "req-1"
+    }));
+
+    // From the dashboard the review must not steal focus; it is queued
+    // as a pending input and announced with a toast.
+    assert!(
+        matches!(app.mode, AppMode::Normal),
+        "expected to stay on the dashboard"
+    );
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review from my-feat"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
+}
+
+#[test]
+fn ipc_diff_review_queues_when_viewing_a_different_feature() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_custom_session(workdir.path(), "custom-session");
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.diff_review_viewer = DiffReviewViewer::Amf;
+    app.mode = AppMode::Viewing(ViewState::new(
+        "other-project".to_string(),
+        "other-feat".to_string(),
+        "amf-other-feat".to_string(),
+        "custom".to_string(),
+        "Claude".to_string(),
+        SessionKind::Claude,
+        VibeMode::Vibeless,
+        false,
+    ));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "diff-review",
+        "session_id": "claude-hook-session",
+        "amf_session": "amf-my-feat",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Review: src/main.rs",
+        "relative_path": "src/main.rs",
+        "tool": "edit",
+        "change_id": "chg-ipc",
+        "request_id": "req-1"
+    }));
+
+    // Viewing a different feature: stay in that view, queue the review,
+    // and announce it with a toast.
+    match &app.mode {
+        AppMode::Viewing(view) => assert_eq!(view.feature_name, "other-feat"),
+        _ => panic!("expected to stay in the other feature's view"),
+    }
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review from my-feat"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
+}
+
+#[test]
 fn ipc_tool_activity_temporarily_overrides_older_review_work() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -4580,7 +4731,7 @@ fn custom_diff_review_notification_marks_new_files_as_added() {
 }
 
 #[test]
-fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
+fn custom_diff_review_notification_queues_with_toast_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
     let mut app = App::new_for_test(
@@ -4617,26 +4768,32 @@ fn custom_diff_review_notification_opens_immediately_from_normal_mode() {
 
     app.scan_notifications();
 
-    // Non-Codex: diff-review opens immediately from the dashboard.
-    match &app.mode {
-        AppMode::DiffReviewPrompt(state) => {
-            assert_eq!(state.relative_path, "src/lib.rs");
-            assert!(state.return_to_view.is_none());
-        }
-        _ => panic!("expected diff review prompt to open immediately from Normal mode"),
-    }
-    assert!(app.pending_inputs.is_empty());
+    // From the dashboard the review is queued as a pending input and
+    // announced with a toast instead of stealing focus.
+    assert!(
+        matches!(app.mode, AppMode::Normal),
+        "expected to stay on the dashboard"
+    );
+    assert_eq!(app.pending_inputs.len(), 1);
+    assert_eq!(app.pending_inputs[0].notification_type, "diff-review");
+    assert!(
+        app.toasts
+            .last()
+            .map(|toast| toast.message.contains("New diff review"))
+            .unwrap_or(false),
+        "expected a diff review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
+    );
 }
 
 #[test]
 fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_custom_session(workdir.path(), "amf-my-feat");
-    let mut app = App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    );
+    // The V flow enters the feature view, which checks the session.
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.config.diff_review_viewer = DiffReviewViewer::Amf;
     app.mode = AppMode::Normal;
     app.selection = Selection::Feature(0, 0);
@@ -4663,8 +4820,8 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     )
     .unwrap();
 
-    // scan_notifications (called inside check_pending_diff_review) opens the
-    // prompt immediately for non-Codex features in Normal mode.
+    // The scan inside check_pending_diff_review queues the review; the
+    // V flow then enters the feature view, which opens the prompt.
     app.check_pending_diff_review().unwrap();
 
     match &app.mode {
@@ -4677,8 +4834,10 @@ fn check_pending_diff_review_opens_pending_review_from_normal_mode() {
     assert!(
         app.toasts
             .last()
-            .map(|toast| toast.message.contains("already open"))
-            .unwrap_or(false)
+            .map(|toast| toast.message.contains("Opened pending diff review"))
+            .unwrap_or(false),
+        "expected an opened-review toast, got: {:?}",
+        app.toasts.last().map(|toast| toast.message.clone())
     );
 }
 
@@ -5120,6 +5279,8 @@ fn status_file_cleanup_during_remove() {
             last_error: None,
             lsp_summary: None,
             live_summary: None,
+            model: None,
+            provider: None,
             reasoning_tokens: None,
             additions: None,
             deletions: None,

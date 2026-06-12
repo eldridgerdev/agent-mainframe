@@ -17,6 +17,21 @@ are tagged.
   on the wrong line while it streams — a Claude Code rendering bug,
   not an AMF one), one keystroke forces a full redraw instead of
   waiting for it to fix itself.
+- Agent sidebars now show the active model when AMF can determine it
+  for Claude, Codex, and OpenCode sessions, making it easier to confirm
+  which model a running agent is using.
+
+### Changed
+
+- Pending input requests can now surface sooner when AMF starts in an
+  embedded session view. The default input-request startup wait is now
+  1.5 seconds, and you can tune it with
+  `input_request_wait_seconds` in `~/.config/amf/config.json`.
+- Diff-review prompts now only open automatically while you are viewing
+  the feature that requested the review. From the dashboard or another
+  feature's view, the review is added to the pending input requests and
+  announced with a toast instead of stealing focus; open it from the
+  input picker, by entering the feature view, or with `V`.
 
 ### Fixed
 
@@ -45,10 +60,28 @@ are tagged.
 - Session status events now arrive from the tmux server AMF actually
   uses. They were being watched on the wrong server, so status changes
   silently fell back to slow polling for everyone.
+- Codex sidebar model details now remain visible after usage and
+  activity lines appear by letting the Status section grow to fit its
+  contents.
+- The vibeless diff-review popup now appears on macOS. The hook's
+  `amf notify-wait` call bound its reply socket under `$TMPDIR`, whose
+  long per-user path on macOS exceeds the Unix socket path limit, so
+  IPC delivery silently failed on every review. Reply sockets now live
+  in the short state directory used by the main AMF socket.
+- Fallback notification files (written when IPC delivery fails) now
+  open the diff-review popup automatically instead of waiting for a
+  manual `V` refresh. The existing filesystem watcher picks them up
+  the moment they are written; no polling was added.
 - The Terminal option is back in the new-session picker. It was
   accidentally dropped in v0.20.0 alongside an intentional change to
   the new-feature dialog, so adding a plain terminal to a running
   feature was impossible. The new-feature dialog is unchanged.
+
+### Migration
+
+- No migration is required. To override the new default, set
+  `"input_request_wait_seconds": 1.5` in
+  `~/.config/amf/config.json` and adjust the value as needed.
 
 ## [v0.21.0] - 2026-06-11
 

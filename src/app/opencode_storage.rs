@@ -18,6 +18,8 @@ pub struct OpencodeSidebarData {
     pub last_error: Option<String>,
     pub lsp_summary: Option<String>,
     pub live_summary: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
     pub reasoning_tokens: Option<u64>,
     pub additions: Option<u64>,
     pub deletions: Option<u64>,
@@ -128,6 +130,8 @@ fn read_sidebar_data_from_roots_at_time(
         reasoning_tokens: read_reasoning_tokens(storage_root, &session.id),
         session_id: session.id,
         title: session.title,
+        model: session.model,
+        provider: session.provider,
         status: None,
         last_tool: None,
         todo_count: None,
@@ -176,6 +180,12 @@ fn read_sidebar_data_from_roots_at_time(
         }
         if sidecar.live_summary.is_some() {
             merged.live_summary = sidecar.live_summary;
+        }
+        if sidecar.model.is_some() {
+            merged.model = sidecar.model;
+        }
+        if sidecar.provider.is_some() {
+            merged.provider = sidecar.provider;
         }
         if sidecar.additions.is_some() {
             merged.additions = sidecar.additions;
@@ -373,6 +383,14 @@ fn parse_session_file(path: &Path) -> Option<OpencodeSessionRecord> {
         updated: session.time.updated,
         title: session.title.map(|title| title.trim().to_string()),
         summary: session.summary,
+        model: session
+            .model
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty()),
+        provider: session
+            .provider
+            .map(|provider| provider.trim().to_string())
+            .filter(|provider| !provider.is_empty()),
     })
 }
 
@@ -446,6 +464,8 @@ fn parse_sidecar_file(path: &Path) -> Option<(i64, OpencodeSidebarData)> {
             last_error: sidecar.last_error,
             lsp_summary: sidecar.lsp_summary,
             live_summary: sidecar.live_summary,
+            model: sidecar.model,
+            provider: sidecar.provider,
             reasoning_tokens: None,
             additions: sidecar.additions,
             deletions: sidecar.deletions,
@@ -461,6 +481,8 @@ struct OpencodeSessionRecord {
     updated: i64,
     title: Option<String>,
     summary: Option<OpencodeSessionSummary>,
+    model: Option<String>,
+    provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,6 +494,10 @@ struct OpencodeSessionFile {
     title: Option<String>,
     #[serde(default)]
     summary: Option<OpencodeSessionSummary>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,6 +569,10 @@ struct OpencodeSidebarSidecar {
     lsp_summary: Option<String>,
     #[serde(default)]
     live_summary: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
     #[serde(default)]
     additions: Option<u64>,
     #[serde(default)]
@@ -738,7 +768,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             sidecar.join("ses-1.json"),
-            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"last_error\":\"patch failed\",\"lsp_summary\":\"ready · 2 warnings\",\"live_summary\":\"Applied patch and updated tests\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
+            "{\"session_id\":\"ses-1\",\"status\":\"busy\",\"last_tool\":\"edit\",\"latest_prompt\":\"live prompt\",\"todo_count\":3,\"pending_permission\":\"edit\",\"last_error\":\"patch failed\",\"lsp_summary\":\"ready · 2 warnings\",\"live_summary\":\"Applied patch and updated tests\",\"model\":\"gpt-5.5\",\"provider\":\"openai\",\"additions\":8,\"deletions\":2,\"files\":5,\"updated_at\":\"2026-03-25T12:00:00Z\"}",
         )
         .unwrap();
 
@@ -765,6 +795,8 @@ mod tests {
             data.live_summary.as_deref(),
             Some("Applied patch and updated tests")
         );
+        assert_eq!(data.model.as_deref(), Some("gpt-5.5"));
+        assert_eq!(data.provider.as_deref(), Some("openai"));
         assert_eq!(data.additions, Some(8));
         assert_eq!(data.files, Some(5));
     }

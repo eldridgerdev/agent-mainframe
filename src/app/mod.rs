@@ -84,6 +84,11 @@ pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(16)
 pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
 
+/// Minimum spacing between control-mode streaming snapshots (keystroke
+/// bursts bypass this); each snapshot costs a full-frame redraw on the
+/// main thread.
+const VIEW_CONTROL_SNAPSHOT_MIN_INTERVAL: Duration = Duration::from_millis(150);
+
 const VIEW_SNAPSHOT_REFRESH_NONE: u8 = 0;
 const VIEW_SNAPSHOT_REFRESH_NORMAL: u8 = 1;
 const VIEW_SNAPSHOT_REFRESH_BURST: u8 = 2;
@@ -126,32 +131,6 @@ fn parse_tmux_output_notification(line: &str) -> Option<(&str, &str)> {
     Some((pane_id, payload))
 }
 
-fn decode_tmux_control_payload(payload: &str) -> Vec<u8> {
-    let bytes = payload.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'\\'
-            && i + 3 < bytes.len()
-            && (b'0'..=b'7').contains(&bytes[i + 1])
-            && (b'0'..=b'7').contains(&bytes[i + 2])
-            && (b'0'..=b'7').contains(&bytes[i + 3])
-        {
-            let value =
-                ((bytes[i + 1] - b'0') << 6) | ((bytes[i + 2] - b'0') << 3) | (bytes[i + 3] - b'0');
-            decoded.push(value);
-            i += 4;
-            continue;
-        }
-
-        decoded.push(bytes[i]);
-        i += 1;
-    }
-
-    decoded
-}
-
 fn parser_cursor(parser: &vt100::Parser) -> Option<(u16, u16)> {
     let (row, col) = parser.screen().cursor_position();
     Some((col, row))
@@ -180,8 +159,8 @@ fn snapshot_from_parser(
     // `contents_formatted()` builds the full screen as an escaped string;
     // it is only consumed by selection mode, so skip it on the hot
     // incremental path unless explicitly requested.
-    let pane_content = include_content
-        .then(|| String::from_utf8_lossy(&screen.contents_formatted()).into_owned());
+    let pane_content =
+        include_content.then(|| String::from_utf8_lossy(&screen.contents_formatted()).into_owned());
 
     ViewSnapshot {
         session: session.to_string(),
@@ -207,7 +186,7 @@ fn reseed_control_view_parser(
     let capture_started_at = Instant::now();
     let captured = TmuxManager::capture_pane_ansi(session, window).unwrap_or_default();
     let capture_duration = capture_started_at.elapsed();
-    let normalized = captured.replace('\n', "\r\n");
+    let normalized = crate::ui::normalize_captured_pane(&captured);
     parser.process(normalized.as_bytes());
     let cursor = TmuxManager::cursor_position(session, window).ok();
     if let Some(cursor) = cursor {
@@ -474,6 +453,10 @@ pub struct App {
     pub pane_content_rows: u16,
     pub viewport_cols: u16,
     pub viewport_rows: u16,
+    /// Full terminal height; viewport_rows is the dashboard list area
+    /// (height minus chrome), while the view content area is
+    /// viewport_total_rows - 1 (header only).
+    pub viewport_total_rows: u16,
     pub tmux_cursor: Option<(u16, u16)>,
     pub leader_active: bool,
     pub leader_activated_at: Option<Instant>,
@@ -809,13 +792,18 @@ impl App {
             let Some(workdir) = path.parent().and_then(|dir| dir.parent()) else {
                 continue;
             };
-            let target = self.store.projects.iter().enumerate().find_map(|(pi, project)| {
-                project
-                    .features
-                    .iter()
-                    .position(|feature| feature.workdir == workdir)
-                    .map(|fi| (pi, fi))
-            });
+            let target = self
+                .store
+                .projects
+                .iter()
+                .enumerate()
+                .find_map(|(pi, project)| {
+                    project
+                        .features
+                        .iter()
+                        .position(|feature| feature.workdir == workdir)
+                        .map(|fi| (pi, fi))
+                });
             if let Some((pi, fi)) = target {
                 self.schedule_sidebar_load_for_feature(pi, fi);
                 handled = true;
@@ -971,7 +959,7 @@ impl App {
         rows: u16,
         stop: &AtomicBool,
         refresh: &AtomicU8,
-        include_content: &AtomicBool,
+        _include_content: &AtomicBool,
         condvar: &(StdMutex<()>, StdCondvar),
         tx: &SnapshotSender,
     ) -> anyhow::Result<()> {
@@ -1018,10 +1006,23 @@ impl App {
             &mut parser,
         ));
 
+        // The control stream is used purely as a change notifier;
+        // content always comes from capture-pane reseeds. Feeding
+        // %output into a persistent parser drifts whenever the agent
+        // emits sequences vt100 interprets differently than tmux
+        // (scroll regions, insert/delete line), which lands typed echo
+        // on the wrong row. A reseed costs ~5ms in this worker thread,
+        // so correctness wins: keystroke bursts reseed immediately for
+        // low-latency echo, streaming output is coalesced so the main
+        // thread is not saturated with full-frame redraws.
+        let mut burst_until = Instant::now();
+        let mut last_snapshot = Instant::now();
+        let mut pane_dirty = false;
+
         while !stop.load(Ordering::Relaxed) {
             match refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed) {
                 VIEW_SNAPSHOT_REFRESH_NORMAL => {
-                    // Periodic full reseed to fix any parser/pane drift.
+                    // Periodic drift-correction reseed.
                     let _ = tx.send(reseed_control_view_parser(
                         session,
                         window,
@@ -1029,23 +1030,12 @@ impl App {
                         rows,
                         &mut parser,
                     ));
+                    pane_dirty = false;
+                    last_snapshot = Instant::now();
                 }
                 VIEW_SNAPSHOT_REFRESH_BURST | VIEW_SNAPSHOT_REFRESH_PANE_BURST => {
-                    // Keypress burst: send the current parser state immediately
-                    // with zero subprocess overhead. The control-protocol stream
-                    // will deliver the actual pane update shortly and trigger
-                    // an incremental parser_changed snapshot below.
-                    let _ = tx.send(snapshot_from_parser(
-                        session,
-                        window,
-                        cols,
-                        rows,
-                        &parser,
-                        None,
-                        include_content.load(Ordering::Relaxed),
-                        None,
-                        None,
-                    ));
+                    burst_until = Instant::now() + VIEW_BURST_DURATION;
+                    pane_dirty = true;
                 }
                 _ => {}
             }
@@ -1053,106 +1043,95 @@ impl App {
             // Non-blocking recv first; wait on condvar so burst signals from
             // request_view_snapshot_refresh_kind() wake this loop immediately.
             let line = match client.try_recv()? {
-                Some(line) => line,
+                Some(line) => Some(line),
                 None => {
                     let guard = condvar.0.lock().unwrap();
                     let _ = condvar.1.wait_timeout(guard, Duration::from_millis(5));
-                    match client.try_recv()? {
-                        Some(line) => line,
-                        None => continue,
-                    }
+                    client.try_recv()?
                 }
             };
 
-            let mut pending_lines = vec![line];
-            while let Some(extra_line) = client.try_recv()? {
-                pending_lines.push(extra_line);
-            }
-
-            let mut parser_changed = false;
-            let mut reseed_needed = false;
-
-            for raw_line in pending_lines {
-                let line = sanitize_tmux_control_line(&raw_line);
-                if line.is_empty() {
-                    continue;
-                }
-                if debug_lines_remaining > 0 {
-                    crate::debug::log_to_file(
-                        crate::debug::LogLevel::Debug,
-                        "tmux",
-                        &format!("control view recv: {line:?}"),
-                    );
-                    debug_lines_remaining -= 1;
+            if let Some(line) = line {
+                let mut pending_lines = vec![line];
+                while let Some(extra_line) = client.try_recv()? {
+                    pending_lines.push(extra_line);
                 }
 
-                if let Some((pane_id, payload)) = parse_tmux_output_notification(line) {
-                    if pane_id == target_pane_id {
-                        let decoded = decode_tmux_control_payload(payload);
-                        if !decoded.is_empty() {
-                            parser.process(&decoded);
-                            parser_changed = true;
+                for raw_line in pending_lines {
+                    let line = sanitize_tmux_control_line(&raw_line);
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if debug_lines_remaining > 0 {
+                        crate::debug::log_to_file(
+                            crate::debug::LogLevel::Debug,
+                            "tmux",
+                            &format!("control view recv: {line:?}"),
+                        );
+                        debug_lines_remaining -= 1;
+                    }
+
+                    if let Some((pane_id, payload)) = parse_tmux_output_notification(line) {
+                        if pane_id == target_pane_id && !payload.is_empty() {
+                            pane_dirty = true;
                         }
+                        continue;
                     }
-                    continue;
-                }
 
-                if let Some(rest) = line.strip_prefix("%window-pane-changed ") {
-                    let mut parts = rest.split_whitespace();
-                    if parts.next() == Some(target_window_id.as_str())
-                        && let Some(new_pane_id) = parts.next()
+                    if let Some(rest) = line.strip_prefix("%window-pane-changed ") {
+                        let mut parts = rest.split_whitespace();
+                        if parts.next() == Some(target_window_id.as_str())
+                            && let Some(new_pane_id) = parts.next()
+                        {
+                            target_pane_id = new_pane_id.to_string();
+                            pane_dirty = true;
+                        }
+                        continue;
+                    }
+
+                    // The window was resized (by us or by another client).
+                    if let Some(rest) = line.strip_prefix("%layout-change ") {
+                        if rest.split_whitespace().next() == Some(target_window_id.as_str()) {
+                            pane_dirty = true;
+                        }
+                        continue;
+                    }
+
+                    if let Some(rest) = line.strip_prefix("%pane-mode-changed ")
+                        && rest.trim() == target_pane_id
                     {
-                        target_pane_id = new_pane_id.to_string();
-                        reseed_needed = true;
+                        pane_dirty = true;
+                        continue;
                     }
-                    continue;
-                }
 
-                if let Some(rest) = line.strip_prefix("%pane-mode-changed ")
-                    && rest.trim() == target_pane_id
+                    if let Some(rest) = line.strip_prefix("%pause ") {
+                        let paused_pane = rest.trim();
+                        if paused_pane == target_pane_id {
+                            let _ = client.send_command(&format!(
+                                "refresh-client -A {paused_pane}:continue\n"
+                            ));
+                            pane_dirty = true;
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            if pane_dirty {
+                let now = Instant::now();
+                if now < burst_until
+                    || now.duration_since(last_snapshot) >= VIEW_CONTROL_SNAPSHOT_MIN_INTERVAL
                 {
-                    reseed_needed = true;
-                    continue;
+                    let _ = tx.send(reseed_control_view_parser(
+                        session,
+                        window,
+                        cols,
+                        rows,
+                        &mut parser,
+                    ));
+                    pane_dirty = false;
+                    last_snapshot = Instant::now();
                 }
-
-                if let Some(rest) = line.strip_prefix("%pause ") {
-                    let paused_pane = rest.trim();
-                    if paused_pane == target_pane_id {
-                        let _ = client
-                            .send_command(&format!("refresh-client -A {paused_pane}:continue\n"));
-                        reseed_needed = true;
-                    }
-                    continue;
-                }
-            }
-
-            if reseed_needed {
-                let _ = tx.send(reseed_control_view_parser(
-                    session,
-                    window,
-                    cols,
-                    rows,
-                    &mut parser,
-                ));
-                continue;
-            }
-
-            if parser_changed {
-                // Send a snapshot directly from the incrementally-updated
-                // parser — no subprocess needed. The vt100 parser already
-                // reflects the current pane state delivered by the control
-                // protocol. Periodic NORMAL reseeds handle any drift.
-                let _ = tx.send(snapshot_from_parser(
-                    session,
-                    window,
-                    cols,
-                    rows,
-                    &parser,
-                    None,
-                    include_content.load(Ordering::Relaxed),
-                    None,
-                    None,
-                ));
             }
         }
 
@@ -1586,6 +1565,7 @@ impl App {
             pane_content_rows: 0,
             viewport_cols: 0,
             viewport_rows: 0,
+            viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
@@ -1656,9 +1636,20 @@ impl App {
             }
         }
         app.refresh_fs_watch_paths();
-        app.tmux_observer = Some(crate::tmux_observer::TmuxObserver::start(
-            app.view_wakeup_tx(),
-        ));
+        // A version-mismatched -C client hangs without delivering any
+        // events; leaving the observer unset keeps the faster 5s
+        // status-sync polling instead of trusting a dead event stream.
+        if TmuxManager::control_clients_compatible() {
+            app.tmux_observer = Some(crate::tmux_observer::TmuxObserver::start(
+                app.view_wakeup_tx(),
+            ));
+        } else {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Warn,
+                "tmux",
+                "tmux observer disabled (client/server version mismatch); using status polling",
+            );
+        }
 
         // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
@@ -1749,6 +1740,7 @@ impl App {
             pane_content_rows: 0,
             viewport_cols: 0,
             viewport_rows: 0,
+            viewport_total_rows: 0,
             tmux_cursor: None,
             leader_active: false,
             leader_activated_at: None,
@@ -2147,6 +2139,15 @@ impl App {
         match (self.viewport_cols, self.viewport_rows) {
             (0, _) | (_, 0) => None,
             dims => Some(dims),
+        }
+    }
+
+    /// Size session windows will have when shown in the embedded view:
+    /// full terminal width by full height minus the 1-row view header.
+    pub(crate) fn view_pane_viewport(&self) -> Option<(u16, u16)> {
+        match (self.viewport_cols, self.viewport_total_rows) {
+            (0, _) | (_, 0) => None,
+            (cols, total_rows) => Some((cols, total_rows.saturating_sub(1))),
         }
     }
 

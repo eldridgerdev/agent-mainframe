@@ -18,7 +18,7 @@
 
 use std::io::BufRead;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -82,7 +82,7 @@ impl Drop for TmuxObserver {
         // Best-effort, non-blocking removal of the hidden session so an
         // AMF-started tmux server does not outlive AMF. A concurrently
         // running AMF instance simply recreates it on its next retry.
-        let _ = Command::new("tmux")
+        let _ = crate::tmux::TmuxManager::command()
             .args(["kill-session", "-t", OBSERVER_SESSION])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -133,8 +133,10 @@ fn run_observer_client(
 ) -> anyhow::Result<()> {
     // -A attaches if the hidden session already exists (e.g. a second
     // AMF instance). The inert command keeps the window alive without
-    // a shell.
-    let mut command = Command::new("tmux");
+    // a shell. Must go through TmuxManager::command() so the client
+    // talks to AMF's managed socket (and bundled binary), not the
+    // user's default tmux server.
+    let mut command = crate::tmux::TmuxManager::command();
     command
         .args([
             "-C",

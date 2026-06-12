@@ -939,9 +939,19 @@ pub(crate) fn render_vt100_screen(
     lines
 }
 
+/// Normalize captured tmux pane text for vt100 parsing. capture-pane
+/// output terminates the last line with a newline; processing that
+/// final newline in a parser whose height equals the pane scrolls the
+/// whole screen up one row, so strip it before converting line
+/// endings.
+pub(crate) fn normalize_captured_pane(raw: &str) -> String {
+    let raw = raw.strip_suffix('\n').unwrap_or(raw);
+    raw.replace('\n', "\r\n")
+}
+
 pub(crate) fn render_ansi_lines(raw: &str, cols: u16, rows: u16) -> Vec<Line<'static>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    let normalized = raw.replace('\n', "\r\n");
+    let normalized = normalize_captured_pane(raw);
     parser.process(normalized.as_bytes());
     render_vt100_screen(parser.screen(), cols, rows)
 }
@@ -954,7 +964,7 @@ fn ansi_to_ratatui_text_with_selection<'a>(
     theme: &Theme,
 ) -> Vec<Line<'a>> {
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    let normalized = raw.replace('\n', "\r\n");
+    let normalized = normalize_captured_pane(raw);
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
 
@@ -1640,6 +1650,22 @@ mod tests {
         let lines = scroll_content_to_lines_with_selection("😊", 0, 1, 1, &selection, &theme);
 
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn full_pane_capture_with_trailing_newline_does_not_scroll() {
+        // capture-pane terminates the last line with '\n'; when the
+        // capture fills the parser exactly, that newline must not
+        // scroll the screen (it would shift content one row above the
+        // separately-reported cursor position).
+        let lines = render_ansi_lines("top\nmid\nbottom\n", 10, 3);
+
+        assert_eq!(lines.len(), 3);
+        let row_text =
+            |line: &Line<'_>| -> String { line.spans.iter().map(|s| s.content.clone()).collect() };
+        assert_eq!(row_text(&lines[0]), "top");
+        assert_eq!(row_text(&lines[1]), "mid");
+        assert_eq!(row_text(&lines[2]), "bottom");
     }
 
     #[test]

@@ -203,7 +203,7 @@ impl App {
         claude_session_id: &str,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
-        let viewport = self.viewport_size();
+        let viewport = self.view_pane_viewport();
         let feature = match self
             .store
             .projects

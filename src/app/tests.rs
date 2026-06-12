@@ -1822,6 +1822,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
     app.selection = Selection::Feature(0, 0);
     app.viewport_cols = 120;
     app.viewport_rows = 40;
+    app.viewport_total_rows = 41;
     app.mode = AppMode::ConfirmingClaudeSession {
         session_id: "claude-session-123".to_string(),
         workdir,

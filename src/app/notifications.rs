@@ -666,17 +666,15 @@ impl App {
                             if session.id != sid {
                                 continue;
                             }
-                            session.status_text =
-                                if text.is_empty() { None } else { Some(text.clone()) };
+                            session.status_text = if text.is_empty() {
+                                None
+                            } else {
+                                Some(text.clone())
+                            };
                             // Write through to DB with no mtime so the next
                             // file-based poll re-validates against the file.
                             if let Some(db) = &self.db {
-                                let _ = db.upsert_session_status(
-                                    sid,
-                                    &feature.id,
-                                    &text,
-                                    None,
-                                );
+                                let _ = db.upsert_session_status(sid, &feature.id, &text, None);
                             }
                             break 'status_outer;
                         }
@@ -763,7 +761,6 @@ impl App {
                         }),
                     );
                 }
-
             }
             return;
         }

@@ -10,8 +10,41 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Leader → Shift-R in view mode now repaints the agent's screen on
+  demand. If an agent's display ever desyncs mid-turn (text appearing
+  on the wrong line while it streams — a Claude Code rendering bug,
+  not an AMF one), one keystroke forces a full redraw instead of
+  waiting for it to fix itself.
+
 ### Fixed
 
+- The embedded view no longer corrupts permanently when something else
+  resizes an agent's pane behind AMF's back (a second AMF instance,
+  attaching the session directly in another terminal). AMF now
+  notices the size drift within a few seconds and restores it, and it
+  backs off instead of fighting if another instance keeps resizing.
+- The embedded pane now fills the full view area (it was always two
+  rows short), and typing echo lands on the correct row. A subtle
+  capture quirk shifted the whole frame up one line whenever the
+  screen was exactly full, leaving the cursor floating below the text.
+- Typing into an agent no longer turns sluggish while it is streaming
+  output. Screen updates from fast agent output are now paced so
+  keystrokes keep priority, and keystroke echo is never delayed behind
+  a backlog of redraws.
+- Dragging or re-tiling the AMF window now resizes the agent's pane
+  once, after the size settles, instead of once per animation frame.
+  Repeated mid-stream resizes were the main way garbled "ghost" rows
+  got baked into an agent's scrollback.
+- AMF now detects when its tmux server was started by a different AMF
+  build with a different bundled tmux version. Previously this
+  mismatch silently broke the fast view path and session-event
+  updates; both now fall back cleanly, with a clear note in the debug
+  log.
+- Session status events now arrive from the tmux server AMF actually
+  uses. They were being watched on the wrong server, so status changes
+  silently fell back to slow polling for everyone.
 - The Terminal option is back in the new-session picker. It was
   accidentally dropped in v0.20.0 alongside an intentional change to
   the new-feature dialog, so adding a plain terminal to a running

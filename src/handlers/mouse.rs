@@ -463,7 +463,7 @@ fn extract_selected_text(
     }
 
     let mut parser = vt100::Parser::new(rows, cols, 0);
-    let normalized = content.replace('\n', "\r\n");
+    let normalized = crate::ui::normalize_captured_pane(content);
     parser.process(normalized.as_bytes());
     let screen = parser.screen();
 

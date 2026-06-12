@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.22.0] - 2026-06-12
+
 ### Added
 
 - The startup loading screen now shows short tips for easy-to-miss

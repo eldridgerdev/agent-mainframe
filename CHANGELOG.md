@@ -12,6 +12,9 @@ are tagged.
 
 ### Added
 
+- The startup loading screen now shows short tips for easy-to-miss
+  commands, including the view refresh shortcut for fixing visual
+  glitches in embedded sessions.
 - Agent sidebars now show the active model when AMF can determine it
   for Claude, Codex, and OpenCode sessions, making it easier to confirm
   which model a running agent is using.

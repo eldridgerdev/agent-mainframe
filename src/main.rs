@@ -237,7 +237,13 @@ fn main() -> Result<()> {
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    terminal.draw(|frame| draw_loading(frame, "Loading AMF..."))?;
+    terminal.draw(|frame| {
+        draw_loading(
+            frame,
+            "Loading AMF...",
+            startup_loading_hint(Duration::ZERO),
+        )
+    })?;
 
     let mut should_switch = None;
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
@@ -342,12 +348,24 @@ fn startup_loading_message(
     }
 }
 
-fn draw_loading(frame: &mut Frame, message: &str) {
+fn startup_loading_hint(elapsed: Duration) -> &'static str {
+    const HINT_ROTATION_SECS: u64 = 4;
+    const HINTS: &[&str] = &[
+        "Tip: Ctrl+Space then R refreshes pane sizing if the view looks wrong.",
+        "Tip: Press D on the dashboard to open the debug log.",
+        "Tip: Ctrl+Space opens view-mode commands while inside a session.",
+    ];
+
+    let index = (elapsed.as_secs() / HINT_ROTATION_SECS) as usize % HINTS.len();
+    HINTS[index]
+}
+
+fn draw_loading(frame: &mut Frame, message: &str, hint: &str) {
     let area = frame.area();
     frame.render_widget(Block::default(), area);
 
     let width = area.width.min(48);
-    let height = 5u16.min(area.height);
+    let height = 7u16.min(area.height);
     let rect = Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -366,6 +384,11 @@ fn draw_loading(frame: &mut Frame, message: &str) {
         Line::from(Span::styled(
             message.to_string(),
             Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            hint.to_string(),
+            Style::default().fg(Color::DarkGray),
         )),
     ];
     let paragraph = Paragraph::new(text).alignment(Alignment::Center);
@@ -612,6 +635,7 @@ fn run_loop<B: Backend>(
     // the safety-net cadence when the observer is running.
     const STATUSES_SYNC_FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
+    let startup_loading_started_at = Instant::now();
     let mut last_view_refresh_request = Instant::now();
     // Backoff for pane-size drift corrections: if drift reappears right
     // after we fixed it, something else (another AMF instance, a user
@@ -1262,7 +1286,8 @@ fn run_loop<B: Backend>(
                     startup_sidebar_warm_pending,
                     app.session_status_bg.is_some(),
                 );
-                terminal.draw(|frame| draw_loading(frame, message))?;
+                let hint = startup_loading_hint(startup_loading_started_at.elapsed());
+                terminal.draw(|frame| draw_loading(frame, message, hint))?;
             } else {
                 terminal.draw(|frame| ui::draw(frame, app))?;
             }

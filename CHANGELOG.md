@@ -10,8 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.22.0] - 2026-06-12
+
 ### Added
 
+- The startup loading screen now shows short tips for easy-to-miss
+  commands, including the view refresh shortcut for fixing visual
+  glitches in embedded sessions.
 - Leader → Shift-R in view mode now repaints the agent's screen on
   demand. If an agent's display ever desyncs mid-turn (text appearing
   on the wrong line while it streams — a Claude Code rendering bug,

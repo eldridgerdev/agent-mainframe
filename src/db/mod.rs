@@ -112,7 +112,13 @@ impl AmfDb {
         status_text: &str,
         file_mtime_nanos: Option<u64>,
     ) -> Result<()> {
-        session_status::upsert(&self.conn, session_id, feature_id, status_text, file_mtime_nanos)
+        session_status::upsert(
+            &self.conn,
+            session_id,
+            feature_id,
+            status_text,
+            file_mtime_nanos,
+        )
     }
 
     pub fn delete_session_status(&self, session_id: &str) -> Result<()> {

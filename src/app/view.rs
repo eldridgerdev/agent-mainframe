@@ -254,10 +254,14 @@ impl App {
     }
 
     pub fn refresh_view_sizing(&mut self) -> Result<()> {
-        let Some((viewport_cols, viewport_rows)) = self.viewport_size() else {
+        // Must match the sizing in the main loop: view content area is
+        // the full terminal minus the 1-row header.
+        let viewport_cols = self.viewport_cols;
+        let content_rows = self.viewport_total_rows.saturating_sub(1);
+        if viewport_cols == 0 || content_rows == 0 {
             self.message = Some("Sizing unavailable".into());
             return Ok(());
-        };
+        }
 
         let (session, window, content_cols) = match &self.mode {
             AppMode::Viewing(view) => (
@@ -268,9 +272,21 @@ impl App {
             _ => return Ok(()),
         };
 
+        // Bounce the pane height by one row and back: the agent gets a
+        // SIGWINCH pair and performs a full repaint. This recovers from
+        // agent-side renderer desync (incremental updates drawn at a
+        // stale anchor row), which AMF cannot fix by re-capturing — the
+        // corruption is in the pane grid itself.
+        self.tmux.resize_pane(
+            &session,
+            &window,
+            content_cols,
+            content_rows.saturating_sub(1).max(1),
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(50));
         self.tmux
-            .resize_pane(&session, &window, content_cols, viewport_rows)?;
-        self.message = Some("Refreshed pane sizing".into());
+            .resize_pane(&session, &window, content_cols, content_rows)?;
+        self.message = Some("Repainted agent pane".into());
         Ok(())
     }
 

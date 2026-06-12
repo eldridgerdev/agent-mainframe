@@ -637,6 +637,20 @@ fn run_loop<B: Backend>(
     let wakeup_rx_fd: Option<RawFd> = app.view_wakeup_rx_fd();
     let startup_loading_started_at = Instant::now();
     let mut last_view_refresh_request = Instant::now();
+    // Backoff for pane-size drift corrections: if drift reappears right
+    // after we fixed it, something else (another AMF instance, a user
+    // attached elsewhere) is also resizing the pane, and fighting it
+    // every few seconds garbles the agent's screen on each SIGWINCH.
+    const DRIFT_CORRECTION_BACKOFF: Duration = Duration::from_secs(30);
+    let mut last_drift_correction: Option<Instant> = None;
+    // Terminal resizes arrive as a stream while a window is dragged or
+    // re-tiled; forwarding each one to tmux lands a SIGWINCH mid-frame
+    // in the agent pane, and every reflow can bake blended rows into
+    // its scrollback. Wait for the viewport to hold still before
+    // resizing the pane.
+    const VIEWPORT_RESIZE_DEBOUNCE: Duration = Duration::from_millis(250);
+    let mut last_viewport_dims: Option<(u16, u16)> = None;
+    let mut viewport_stable_since = Instant::now();
     let mut last_statuses_sync = std::time::Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
 
@@ -651,6 +665,11 @@ fn run_loop<B: Backend>(
         let visible_rows = size.height.saturating_sub(3);
         app.viewport_cols = size.width;
         app.viewport_rows = visible_rows;
+        app.viewport_total_rows = size.height;
+        if last_viewport_dims != Some((size.width, size.height)) {
+            last_viewport_dims = Some((size.width, size.height));
+            viewport_stable_since = Instant::now();
+        }
 
         app.throbber_state.calc_next();
         if app.tick_toasts() {
@@ -928,6 +947,54 @@ fn run_loop<B: Backend>(
                 .last_view_activity_at
                 .is_none_or(|last| last.elapsed() >= VIEW_IDLE_REFRESH_QUIET_PERIOD)
         {
+            // The pane can be resized behind our back (another client
+            // attaching to the session, a second AMF instance, etc.).
+            // last_resize only tracks sizes we set ourselves, so
+            // reconcile against the actual pane size here; otherwise
+            // every snapshot is parsed at the wrong geometry and the
+            // view stays garbled until restart.
+            let drift_target = match &app.mode {
+                app::AppMode::Viewing(view) => Some((
+                    view.session.clone(),
+                    view.window.clone(),
+                    ui::viewing_main_width(view, size.width),
+                )),
+                _ => None,
+            };
+            if let Some((session, window, expected_cols)) = drift_target {
+                let expected_rows = size.height.saturating_sub(1);
+                if let Ok(actual) = TmuxManager::pane_size(&session, &window)
+                    && actual != (expected_cols, expected_rows)
+                    && !TmuxManager::has_attached_client(&session)
+                {
+                    let in_backoff = last_drift_correction
+                        .is_some_and(|at| at.elapsed() < DRIFT_CORRECTION_BACKOFF);
+                    if in_backoff {
+                        app.log_debug(
+                            "tmux",
+                            format!(
+                                "pane size drift for {session}:{window} (actual {}x{}, expected {expected_cols}x{expected_rows}) within correction backoff; leaving it alone",
+                                actual.0, actual.1
+                            ),
+                        );
+                    } else {
+                        app.log_warn(
+                            "tmux",
+                            format!(
+                                "pane size drift for {session}:{window} (actual {}x{}, expected {expected_cols}x{expected_rows}), resizing",
+                                actual.0, actual.1
+                            ),
+                        );
+                        let _ = TmuxManager::resize_pane(
+                            &session,
+                            &window,
+                            expected_cols,
+                            expected_rows,
+                        );
+                        last_drift_correction = Some(Instant::now());
+                    }
+                }
+            }
             app.request_view_snapshot_refresh();
             last_view_refresh_request = Instant::now();
         }
@@ -1150,7 +1217,11 @@ fn run_loop<B: Backend>(
         }
 
         if let app::AppMode::Viewing(ref view) = app.mode {
-            let content_rows = visible_rows;
+            // The view content area is the full terminal minus the
+            // 1-row header (see ui/pane.rs); the pane, the vt100
+            // parser, and the rendered area must all share these
+            // dimensions or captured output reflows incorrectly.
+            let content_rows = size.height.saturating_sub(1);
             let content_cols = ui::viewing_main_width(view, size.width);
             let current_resize = (
                 content_cols,
@@ -1159,22 +1230,36 @@ fn run_loop<B: Backend>(
                 view.window.clone(),
             );
 
-            if last_resize.as_ref() != Some(&current_resize) {
-                let _ = TmuxManager::resize_pane(
-                    &view.session,
-                    &view.window,
-                    content_cols,
-                    content_rows,
-                );
-                last_resize = Some(current_resize);
-                app.request_view_snapshot_refresh();
-                force_redraw = true;
+            let mut dims_applied = last_resize.as_ref() == Some(&current_resize);
+            if !dims_applied {
+                // Resize immediately when switching to a different
+                // session/window; debounce when only the dimensions
+                // changed (mid-drag) so the agent pane gets a single
+                // SIGWINCH once the viewport settles.
+                let same_target = last_resize.as_ref().is_some_and(|(_, _, session, window)| {
+                    session == &view.session && window == &view.window
+                });
+                if !same_target || viewport_stable_since.elapsed() >= VIEWPORT_RESIZE_DEBOUNCE {
+                    let _ = TmuxManager::resize_pane(
+                        &view.session,
+                        &view.window,
+                        content_cols,
+                        content_rows,
+                    );
+                    last_resize = Some(current_resize);
+                    app.request_view_snapshot_refresh();
+                    force_redraw = true;
+                    dims_applied = true;
+                }
             }
-            // Store the rendering dimensions (content area in pane.rs),
-            // not the tmux capture dimensions, so mouse selection
-            // coordinates align correctly.
-            app.pane_content_cols = content_cols;
-            app.pane_content_rows = size.height.saturating_sub(1);
+            // Store the rendering dimensions (content area in pane.rs)
+            // for mouse selection alignment — but only once the pane has
+            // actually been resized to them, so the snapshot worker is
+            // not restarted for every intermediate drag size.
+            if dims_applied {
+                app.pane_content_cols = content_cols;
+                app.pane_content_rows = content_rows;
+            }
         }
         app.ensure_view_snapshot_worker();
         let (pane_refreshed, cursor_refreshed) = app.drain_view_snapshots();

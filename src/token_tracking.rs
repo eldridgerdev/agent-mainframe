@@ -1260,8 +1260,7 @@ mod tests {
         let project_dir = home.path().join(".claude").join("projects").join(encoded);
         std::fs::create_dir_all(&project_dir).unwrap();
         let transcript = project_dir.join("sess-1.jsonl");
-        let complete =
-            "{\"requestId\":\"req-1\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n";
+        let complete = "{\"requestId\":\"req-1\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}\n";
         let partial = "{\"requestId\":\"req-2\",\"message\":{\"usage\":{\"input_tok";
         std::fs::write(&transcript, format!("{complete}{partial}")).unwrap();
 

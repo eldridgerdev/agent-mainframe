@@ -620,7 +620,7 @@ impl App {
 
     pub(crate) fn ensure_feature_running(&mut self, pi: usize, fi: usize) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
-        let viewport = self.viewport_size();
+        let viewport = self.view_pane_viewport();
         let (agent, mode) = match self.store.projects.get(pi).and_then(|p| p.features.get(fi)) {
             Some(feature) => (feature.agent.clone(), feature.mode.clone()),
             None => return Ok(()),

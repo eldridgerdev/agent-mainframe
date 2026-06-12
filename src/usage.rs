@@ -788,8 +788,7 @@ fn calculate_claude_today_tokens(today: &str, cache: &mut ClaudeTodayCache) -> u
                 *tally = ClaudeTodayFileTally::default();
             }
 
-            if let Ok((new_offset, bytes)) = read_appended_lines(&file_path, tally.parsed_through)
-            {
+            if let Ok((new_offset, bytes)) = read_appended_lines(&file_path, tally.parsed_through) {
                 for line in bytes.split(|&byte| byte == b'\n') {
                     let Ok(entry) = serde_json::from_slice::<ConversationEntry>(line) else {
                         continue;
@@ -1196,7 +1195,11 @@ fn find_latest_codex_rate_limits(sessions_root: &std::path::Path) -> Option<Code
             // YYYY/MM/DD components are zero-padded, so the
             // lexicographic path order is chronological.
             day_dirs.sort();
-            for day_dir in day_dirs.into_iter().rev().take(CODEX_FALLBACK_WALK_MAX_DAYS) {
+            for day_dir in day_dirs
+                .into_iter()
+                .rev()
+                .take(CODEX_FALLBACK_WALK_MAX_DAYS)
+            {
                 let mut newest: Option<(chrono::DateTime<chrono::Utc>, CodexRateLimits)> = None;
                 let Ok(files) = std::fs::read_dir(&day_dir) else {
                     continue;

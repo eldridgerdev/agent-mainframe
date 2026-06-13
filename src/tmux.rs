@@ -374,7 +374,9 @@ impl TmuxManager {
             return TmuxInputTransportMode::ControlPty;
         }
 
-        if TMUX_CONTROL_MODE_ENABLED.load(AtomicOrdering::Relaxed) {
+        if TMUX_CONTROL_MODE_ENABLED.load(AtomicOrdering::Relaxed)
+            && Self::control_mode_compatible()
+        {
             TmuxInputTransportMode::ControlPty
         } else {
             TmuxInputTransportMode::Direct
@@ -385,12 +387,87 @@ impl TmuxManager {
         Self::input_transport_mode() == TmuxInputTransportMode::ControlPty
     }
 
+    /// tmux version reported by the client binary (`tmux -V`).
+    #[cfg(not(test))]
+    fn client_version() -> Option<String> {
+        let output = Self::command().arg("-V").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version = stdout.trim().trim_start_matches("tmux").trim();
+        (!version.is_empty()).then(|| version.to_string())
+    }
+
+    /// tmux version of the server currently running on our socket, if any.
+    #[cfg(not(test))]
+    fn server_version() -> Option<String> {
+        let output = Self::command()
+            .args(["display-message", "-p", "#{version}"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!version.is_empty()).then_some(version)
+    }
+
+    fn versions_compatible(client: Option<&str>, server: Option<&str>) -> bool {
+        match (client, server) {
+            (Some(client), Some(server)) => client == server,
+            // No running server: this process will start one with its
+            // own binary, so the versions will match.
+            _ => true,
+        }
+    }
+
+    /// A `-CC attach` from a tmux client whose version differs from the
+    /// server hangs without producing any output (e.g. a 3.6a client
+    /// against a bundled 3.4 server), so every control-mode spawn would
+    /// burn its readiness timeout and fall back. Detect the mismatch
+    /// once and skip control mode entirely.
+    #[cfg(not(test))]
+    fn control_mode_compatible() -> bool {
+        static COMPAT: OnceLock<bool> = OnceLock::new();
+        *COMPAT.get_or_init(|| {
+            let client = Self::client_version();
+            let server = Self::server_version();
+            let compatible = Self::versions_compatible(client.as_deref(), server.as_deref());
+            if !compatible {
+                log_to_file(
+                    LogLevel::Warn,
+                    "tmux",
+                    &format!(
+                        "tmux client version {} does not match server version {} on this socket; disabling control-mode transport (falling back to direct tmux commands)",
+                        client.as_deref().unwrap_or("?"),
+                        server.as_deref().unwrap_or("?")
+                    ),
+                );
+            }
+            compatible
+        })
+    }
+
+    /// Tests must not depend on the host's running tmux server.
+    #[cfg(test)]
+    fn control_mode_compatible() -> bool {
+        true
+    }
+
+    /// Whether long-lived control-mode clients (`-C`/`-CC`) can talk to
+    /// the server on our socket. Used by the observer as well as the
+    /// input/view transports.
+    pub(crate) fn control_clients_compatible() -> bool {
+        Self::control_mode_compatible()
+    }
+
     fn runtime() -> &'static TmuxRuntime {
         static RUNTIME: OnceLock<TmuxRuntime> = OnceLock::new();
         RUNTIME.get_or_init(TmuxRuntime::detect)
     }
 
-    fn command() -> Command {
+    pub(crate) fn command() -> Command {
         let runtime = Self::runtime();
         let mut command = Command::new(&runtime.binary);
         if let Some(socket) = &runtime.socket {
@@ -1775,6 +1852,52 @@ impl TmuxManager {
         }
     }
 
+    /// Get the current size (cols, rows) of a window's active pane.
+    pub fn pane_size(session: &str, window: &str) -> Result<(u16, u16)> {
+        let target = format!("{}:{}", session, window);
+        let output = Self::command()
+            .args([
+                "display-message",
+                "-t",
+                &target,
+                "-p",
+                "#{pane_width} #{pane_height}",
+            ])
+            .output()
+            .context("Failed to get pane size")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let parts: Vec<&str> = stdout.split_whitespace().collect();
+        if parts.len() == 2
+            && let (Ok(w), Ok(h)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>())
+        {
+            return Ok((w, h));
+        }
+        bail!("tmux did not return pane size for {target}");
+    }
+
+    /// True if a regular (non-control-mode) client is attached to the
+    /// session. AMF's own view/input clients attach in control mode, so
+    /// they are excluded.
+    pub fn has_attached_client(session: &str) -> bool {
+        Self::command()
+            .args([
+                "list-clients",
+                "-t",
+                session,
+                "-F",
+                "#{client_control_mode}",
+            ])
+            .output()
+            .map(|o| {
+                o.status.success()
+                    && String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|line| line.trim() == "0")
+            })
+            .unwrap_or(false)
+    }
+
     /// Start piping pane output to a FIFO path.
     /// Returns Ok(()) if the pipe-pane command succeeds.
     pub fn start_pipe_pane(session: &str, window: &str, fifo_path: &Path) -> Result<()> {
@@ -2204,6 +2327,16 @@ mod tests {
         };
 
         assert!(runtime.owns_tmux_env_client(Some("/tmp/amf-managed.sock,1,0")));
+    }
+
+    #[test]
+    fn control_mode_version_compatibility() {
+        assert!(TmuxManager::versions_compatible(Some("3.6a"), Some("3.6a")));
+        assert!(!TmuxManager::versions_compatible(Some("3.6a"), Some("3.4")));
+        // No running server or unknown client version: assume compatible.
+        assert!(TmuxManager::versions_compatible(Some("3.6a"), None));
+        assert!(TmuxManager::versions_compatible(None, Some("3.4")));
+        assert!(TmuxManager::versions_compatible(None, None));
     }
 
     #[test]

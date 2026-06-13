@@ -38,6 +38,27 @@ are tagged.
   box; the next keystroke in that session restores them. Submissions
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
+
+### Migration
+
+- The compose input is on by default for Claude Code sessions, so
+  typing in a Claude view now opens the AMF composer instead of going
+  straight to Claude Code. If you prefer the old behavior for a
+  session, press `leader+e` (or Ctrl+E inside the composer) to switch
+  that session to direct input.
+
+## [v0.22.0] - 2026-06-12
+
+### Added
+
+- The startup loading screen now shows short tips for easy-to-miss
+  commands, including the view refresh shortcut for fixing visual
+  glitches in embedded sessions.
+- Leader → Shift-R in view mode now repaints the agent's screen on
+  demand. If an agent's display ever desyncs mid-turn (text appearing
+  on the wrong line while it streams — a Claude Code rendering bug,
+  not an AMF one), one keystroke forces a full redraw instead of
+  waiting for it to fix itself.
 - Agent sidebars now show the active model when AMF can determine it
   for Claude, Codex, and OpenCode sessions, making it easier to confirm
   which model a running agent is using.
@@ -56,6 +77,31 @@ are tagged.
 
 ### Fixed
 
+- The embedded view no longer corrupts permanently when something else
+  resizes an agent's pane behind AMF's back (a second AMF instance,
+  attaching the session directly in another terminal). AMF now
+  notices the size drift within a few seconds and restores it, and it
+  backs off instead of fighting if another instance keeps resizing.
+- The embedded pane now fills the full view area (it was always two
+  rows short), and typing echo lands on the correct row. A subtle
+  capture quirk shifted the whole frame up one line whenever the
+  screen was exactly full, leaving the cursor floating below the text.
+- Typing into an agent no longer turns sluggish while it is streaming
+  output. Screen updates from fast agent output are now paced so
+  keystrokes keep priority, and keystroke echo is never delayed behind
+  a backlog of redraws.
+- Dragging or re-tiling the AMF window now resizes the agent's pane
+  once, after the size settles, instead of once per animation frame.
+  Repeated mid-stream resizes were the main way garbled "ghost" rows
+  got baked into an agent's scrollback.
+- AMF now detects when its tmux server was started by a different AMF
+  build with a different bundled tmux version. Previously this
+  mismatch silently broke the fast view path and session-event
+  updates; both now fall back cleanly, with a clear note in the debug
+  log.
+- Session status events now arrive from the tmux server AMF actually
+  uses. They were being watched on the wrong server, so status changes
+  silently fell back to slow polling for everyone.
 - Codex sidebar model details now remain visible after usage and
   activity lines appear by letting the Status section grow to fit its
   contents.
@@ -78,11 +124,6 @@ are tagged.
 - No migration is required. To override the new default, set
   `"input_request_wait_seconds": 1.5` in
   `~/.config/amf/config.json` and adjust the value as needed.
-- The compose input is on by default for Claude Code sessions, so
-  typing in a Claude view now opens the AMF composer instead of going
-  straight to Claude Code. If you prefer the old behavior for a
-  session, press `leader+e` (or Ctrl+E inside the composer) to switch
-  that session to direct input.
 
 ## [v0.21.0] - 2026-06-11
 

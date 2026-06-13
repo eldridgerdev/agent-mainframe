@@ -989,12 +989,23 @@ mod tests {
     }
 
     #[test]
-    fn leader_shift_r_refreshes_view_sizing() {
+    fn leader_shift_r_repaints_pane_with_resize_bounce() {
         let repo = TempDir::new().unwrap();
         let mut app = app_for_viewing_repo(repo.path());
         let mut tmux = MockTmuxOps::new();
+        let mut seq = mockall::Sequence::new();
+        // Bounce: one row shorter first, then back to the real size,
+        // forcing the agent to fully repaint.
         tmux.expect_resize_pane()
             .times(1)
+            .in_sequence(&mut seq)
+            .withf(|session, window, cols, rows| {
+                session == "amf-feature" && window == "claude" && *cols == 88 && *rows == 23
+            })
+            .returning(|_, _, _, _| Ok(()));
+        tmux.expect_resize_pane()
+            .times(1)
+            .in_sequence(&mut seq)
             .withf(|session, window, cols, rows| {
                 session == "amf-feature" && window == "claude" && *cols == 88 && *rows == 24
             })
@@ -1002,12 +1013,13 @@ mod tests {
         app.tmux = Box::new(tmux);
         app.viewport_cols = 120;
         app.viewport_rows = 24;
+        app.viewport_total_rows = 25;
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('R')), 24).unwrap();
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
-        assert_eq!(app.message.as_deref(), Some("Refreshed pane sizing"));
+        assert_eq!(app.message.as_deref(), Some("Repainted agent pane"));
     }
 
     #[test]

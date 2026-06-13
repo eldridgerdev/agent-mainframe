@@ -39,6 +39,26 @@ are tagged.
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
 
+### Fixed
+
+- Claude Code panes could garble in the embedded view: the input box
+  drifted up a row and bled its text into the divider above it, and a
+  repaint (leader-R) only cleared it until the next update. The garble
+  is in the real tmux grid — Claude Code's incremental renderer draws
+  its input box at a stale anchor row and leaves the vacated cells
+  behind — so AMF was faithfully showing corrupted pane content rather
+  than mis-rendering. AMF now re-anchors a live Claude pane every few
+  seconds with a one-row SIGWINCH bounce, forcing Claude Code to fully
+  repaint and clear the stale cells. The bounce is hidden: the display
+  holds its last good frame while the shrink/restore and repaint happen
+  off-screen, so a clean pane shows no wobble and a garbled one just
+  resolves in place. Other harnesses fully repaint on their own and are
+  left untouched.
+- The control-mode view worker also re-captures the full pane on a
+  ~250ms self-heal floor instead of only on detected output, so any
+  frame the change-notifier misses no longer lingers until the 3s drift
+  reseed.
+
 ### Migration
 
 - The compose input is on by default for Claude Code sessions, so

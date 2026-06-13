@@ -651,6 +651,12 @@ fn run_loop<B: Backend>(
     const VIEWPORT_RESIZE_DEBOUNCE: Duration = Duration::from_millis(250);
     let mut last_viewport_dims: Option<(u16, u16)> = None;
     let mut viewport_stable_since = Instant::now();
+    // Periodic re-anchor bounce for Claude panes. Two-phase so the main
+    // thread never sleeps: shrink the pane one row, then restore it a
+    // later iteration once `VIEW_REANCHOR_BOUNCE_DWELL` has passed. The
+    // restore tuple is `(session, window, cols, full_rows, shrunk_at)`.
+    let mut last_reanchor_bounce = Instant::now();
+    let mut pending_reanchor_restore: Option<(String, String, u16, u16, Instant)> = None;
     let mut last_statuses_sync = std::time::Instant::now();
     let mut last_redraw_signature = app.redraw_signature();
 
@@ -1268,6 +1274,52 @@ fn run_loop<B: Backend>(
                 app.pane_content_rows = content_rows;
             }
         }
+
+        // Periodic re-anchor bounce for live Claude panes. Claude Code's
+        // incremental renderer drifts its input-box anchor over time and
+        // leaves stale cells in the real tmux grid (input text bleeds into
+        // the divider above it); AMF can only display that grid
+        // faithfully, so the fix is to force a full agent repaint. A
+        // SIGWINCH pair (shrink one row, then restore) does it. Two-phase
+        // so the main thread never sleeps: shrink now, restore a later
+        // iteration once the dwell has elapsed and tmux has delivered the
+        // first SIGWINCH. See VIEW_REANCHOR_BOUNCE_INTERVAL.
+        if let Some((session, window, cols, full_rows, shrunk_at)) =
+            pending_reanchor_restore.clone()
+        {
+            if shrunk_at.elapsed() >= app::VIEW_REANCHOR_BOUNCE_DWELL {
+                let _ = TmuxManager::resize_pane(&session, &window, cols, full_rows);
+                app.request_view_snapshot_refresh();
+                // Reveal the repainted pane only after Claude Code has had
+                // time to redraw at full height; until then keep showing
+                // the last good frame so the bounce stays invisible.
+                app.freeze_view_display(app::VIEW_REANCHOR_REVEAL_DELAY);
+                pending_reanchor_restore = None;
+                last_reanchor_bounce = Instant::now();
+            }
+        } else if pane_live
+            && !app.has_pending_view_input()
+            && viewport_stable_since.elapsed() >= VIEWPORT_RESIZE_DEBOUNCE
+            && last_reanchor_bounce.elapsed() >= app::VIEW_REANCHOR_BOUNCE_INTERVAL
+            && let Some((session, window, cols, full_rows)) = app.reanchor_bounce_target()
+        {
+            let _ = TmuxManager::resize_pane(
+                &session,
+                &window,
+                cols,
+                full_rows.saturating_sub(1).max(1),
+            );
+            // Freeze the display through the shrink and until the restore
+            // phase re-freezes for the precise reveal. Generous bound so a
+            // delayed restore still can't strand the freeze.
+            app.freeze_view_display(
+                app::VIEW_REANCHOR_BOUNCE_DWELL
+                    + app::VIEW_REANCHOR_REVEAL_DELAY
+                    + Duration::from_millis(250),
+            );
+            pending_reanchor_restore = Some((session, window, cols, full_rows, Instant::now()));
+        }
+
         app.ensure_view_snapshot_worker();
         let (pane_refreshed, cursor_refreshed) = app.drain_view_snapshots();
 

@@ -88,6 +88,10 @@ pub const VIEW_REANCHOR_BOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 /// Minimum dwell at the shrunk height before restoring, so tmux delivers
 /// two distinct SIGWINCHes instead of coalescing them into a no-op.
 pub const VIEW_REANCHOR_BOUNCE_DWELL: Duration = Duration::from_millis(60);
+/// How long to keep the displayed pane frozen after the restore SIGWINCH
+/// so Claude Code's full repaint lands before the first frame is
+/// revealed — this is what hides the bounce's flicker.
+pub const VIEW_REANCHOR_REVEAL_DELAY: Duration = Duration::from_millis(140);
 pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
 pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 pub const VIEW_STARTUP_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(350);
@@ -564,6 +568,13 @@ pub struct App {
     view_snapshot_include_content: Option<Arc<AtomicBool>>,
     view_snapshot_condvar: Option<Arc<(StdMutex<()>, StdCondvar)>>,
     view_snapshot_target: Option<(String, String, u16, u16)>,
+    /// While set and in the future, `drain_view_snapshots` leaves the
+    /// displayed pane frozen on its last good frame. Used to hide the
+    /// re-anchor bounce: the shrink/restore SIGWINCH pair and Claude
+    /// Code's full repaint happen off-screen, and only the first clean
+    /// frame after the pane is back to full height is revealed — so a
+    /// clean pane shows no wobble and a corrupted one just resolves.
+    view_display_frozen_until: Option<Instant>,
     pub harness_check_tx: Sender<HarnessCheckResult>,
     harness_check_rx: Receiver<HarnessCheckResult>,
 }
@@ -1431,6 +1442,7 @@ impl App {
         }
 
         self.stop_view_snapshot_worker();
+        self.view_display_frozen_until = None;
         self.drain_view_snapshots();
         self.pane_lines.clear();
 
@@ -1521,7 +1533,24 @@ impl App {
         self.sync_view_snapshot_content_flag();
     }
 
+    /// Freeze the displayed pane on its current frame for `dur`. Incoming
+    /// snapshots keep merging in the latest-wins mailbox but are not
+    /// applied until the freeze lapses, at which point the freshest frame
+    /// is revealed. Used to hide the re-anchor bounce.
+    pub fn freeze_view_display(&mut self, dur: Duration) {
+        self.view_display_frozen_until = Some(Instant::now() + dur);
+    }
+
     pub fn drain_view_snapshots(&mut self) -> (bool, bool) {
+        // Hold the last good frame while a re-anchor bounce is in flight
+        // so the shrink/restore and Claude Code's repaint stay off-screen.
+        if let Some(until) = self.view_display_frozen_until {
+            if Instant::now() < until {
+                return (false, false);
+            }
+            self.view_display_frozen_until = None;
+        }
+
         let current_target = self.current_view_snapshot_target();
         let mut pane_changed = false;
         let mut cursor_changed = false;
@@ -1702,6 +1731,7 @@ impl App {
             view_snapshot_include_content: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
+            view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
         };
@@ -1880,6 +1910,7 @@ impl App {
             view_snapshot_include_content: None,
             view_snapshot_condvar: None,
             view_snapshot_target: None,
+            view_display_frozen_until: None,
             harness_check_tx,
             harness_check_rx,
         }

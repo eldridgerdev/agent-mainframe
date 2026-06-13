@@ -49,8 +49,11 @@ are tagged.
   behind — so AMF was faithfully showing corrupted pane content rather
   than mis-rendering. AMF now re-anchors a live Claude pane every few
   seconds with a one-row SIGWINCH bounce, forcing Claude Code to fully
-  repaint and clear the stale cells. Other harnesses fully repaint on
-  their own and are left untouched.
+  repaint and clear the stale cells. The bounce is hidden: the display
+  holds its last good frame while the shrink/restore and repaint happen
+  off-screen, so a clean pane shows no wobble and a garbled one just
+  resolves in place. Other harnesses fully repaint on their own and are
+  left untouched.
 - The control-mode view worker also re-captures the full pane on a
   ~250ms self-heal floor instead of only on detected output, so any
   frame the change-notifier misses no longer lingers until the 3s drift

@@ -1290,6 +1290,10 @@ fn run_loop<B: Backend>(
             if shrunk_at.elapsed() >= app::VIEW_REANCHOR_BOUNCE_DWELL {
                 let _ = TmuxManager::resize_pane(&session, &window, cols, full_rows);
                 app.request_view_snapshot_refresh();
+                // Reveal the repainted pane only after Claude Code has had
+                // time to redraw at full height; until then keep showing
+                // the last good frame so the bounce stays invisible.
+                app.freeze_view_display(app::VIEW_REANCHOR_REVEAL_DELAY);
                 pending_reanchor_restore = None;
                 last_reanchor_bounce = Instant::now();
             }
@@ -1304,6 +1308,14 @@ fn run_loop<B: Backend>(
                 &window,
                 cols,
                 full_rows.saturating_sub(1).max(1),
+            );
+            // Freeze the display through the shrink and until the restore
+            // phase re-freezes for the precise reveal. Generous bound so a
+            // delayed restore still can't strand the freeze.
+            app.freeze_view_display(
+                app::VIEW_REANCHOR_BOUNCE_DWELL
+                    + app::VIEW_REANCHOR_REVEAL_DELAY
+                    + Duration::from_millis(250),
             );
             pending_reanchor_restore = Some((session, window, cols, full_rows, Instant::now()));
         }

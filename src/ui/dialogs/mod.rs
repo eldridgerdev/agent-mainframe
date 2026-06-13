@@ -1,7 +1,9 @@
 mod batch_creation;
 mod browse;
+mod compose;
 mod debug;
 mod diff;
+mod editor_view;
 mod feature;
 mod harness;
 mod help;
@@ -14,6 +16,7 @@ mod theme;
 
 pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
+pub use compose::draw_compose_dialog;
 pub use debug::draw_debug_log;
 pub use diff::draw_diff_viewer;
 pub use feature::{

@@ -5,6 +5,7 @@ mod codex_live;
 mod codex_session_picker;
 mod codex_sessions;
 pub mod commands;
+mod compose;
 mod diff;
 mod feature_ops;
 mod harpoon;
@@ -497,6 +498,11 @@ pub struct App {
     pub last_view_activity_at: Option<Instant>,
     pub view_input_batch: Option<ViewInputBatch>,
     pub pending_inputs: Vec<PendingInput>,
+    /// Tmux "session:window" targets where compose interception is
+    /// disabled and keys pass straight through to Claude Code.
+    pub compose_direct_targets: std::collections::HashSet<String>,
+    /// Unsent compose drafts keyed by tmux "session:window" target.
+    pub compose_drafts: HashMap<String, ComposeDraft>,
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
@@ -725,17 +731,24 @@ impl App {
     }
 
     fn current_view_snapshot_target(&self) -> Option<(String, String, u16, u16)> {
-        match &self.mode {
-            AppMode::Viewing(view) if self.pane_content_cols > 0 && self.pane_content_rows > 0 => {
-                Some((
-                    view.session.clone(),
-                    view.window.clone(),
-                    self.pane_content_cols,
-                    self.pane_content_rows,
-                ))
-            }
-            _ => None,
+        // The compose box keeps the live pane visible above it, so the
+        // snapshot worker must stay on the viewed session while typing.
+        let view = match &self.mode {
+            AppMode::Viewing(view) => view,
+            AppMode::Compose(state) => &state.view,
+            _ => return None,
+        };
+
+        if self.pane_content_cols == 0 || self.pane_content_rows == 0 {
+            return None;
         }
+
+        Some((
+            view.session.clone(),
+            view.window.clone(),
+            self.pane_content_cols,
+            self.pane_content_rows,
+        ))
     }
 
     fn stop_view_snapshot_worker(&mut self) {
@@ -1626,6 +1639,8 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            compose_direct_targets: std::collections::HashSet::new(),
+            compose_drafts: HashMap::new(),
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
@@ -1791,6 +1806,8 @@ impl App {
             last_view_activity_at: None,
             view_input_batch: None,
             pending_inputs: Vec::new(),
+            compose_direct_targets: std::collections::HashSet::new(),
+            compose_drafts: HashMap::new(),
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,

@@ -621,6 +621,9 @@ fn run_loop<B: Backend>(
         // signature is hashed only once per loop.
         let loop_state_signature = last_redraw_signature;
         let is_viewing = matches!(app.mode, app::AppMode::Viewing(_));
+        // The compose box keeps the live pane visible behind it, so the
+        // pane-refresh paths must stay active while composing too.
+        let pane_live = is_viewing || matches!(app.mode, app::AppMode::Compose(_));
         let animating = app.has_visible_animation();
 
         let size = terminal.size()?;
@@ -730,7 +733,7 @@ fn run_loop<B: Backend>(
                 };
                 deadlines.register_after(last_statuses_sync, statuses_fallback);
             }
-            if is_viewing {
+            if pane_live {
                 deadlines
                     .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
             }
@@ -760,7 +763,7 @@ fn run_loop<B: Backend>(
         // unblock the moment a new frame arrives rather than waiting for the
         // full poll_duration.  Outside view mode (or when no pipe is
         // available) fall back to the standard crossterm path.
-        let has_terminal_events = if is_viewing && !startup_loading {
+        let has_terminal_events = if pane_live && !startup_loading {
             if let Some(wfd) = wakeup_rx_fd {
                 // crossterm may already hold buffered events internally, in
                 // which case fd 0 shows no data — never sleep in libc::poll
@@ -803,7 +806,10 @@ fn run_loop<B: Backend>(
         if has_terminal_events {
             let mut events = vec![event::read()?];
 
-            if is_viewing || startup_loading {
+            // Drain all pending events before drawing once — without
+            // this, fast typing or key repeat in compose mode pays a
+            // full frame draw per keystroke and falls behind.
+            if pane_live || startup_loading {
                 while event::poll(Duration::ZERO)? {
                     events.push(event::read()?);
                 }
@@ -839,7 +845,7 @@ fn run_loop<B: Backend>(
                         if key.kind == KeyEventKind::Release {
                             continue;
                         }
-                        if is_viewing {
+                        if pane_live {
                             app.note_view_activity();
                         }
                         app.perf.increment_counter("event.key");
@@ -852,7 +858,7 @@ fn run_loop<B: Backend>(
                             .record_duration("main.handle_key", started_at.elapsed());
                     }
                     Event::Mouse(mouse) => {
-                        if is_viewing {
+                        if pane_live {
                             app.note_view_activity();
                         }
                         app.perf.increment_counter("event.mouse");
@@ -864,7 +870,7 @@ fn run_loop<B: Backend>(
                             .record_duration("main.handle_mouse", started_at.elapsed());
                     }
                     Event::Paste(text) => {
-                        if is_viewing {
+                        if pane_live {
                             app.note_view_activity();
                         }
                         app.perf.increment_counter("event.paste");
@@ -896,7 +902,7 @@ fn run_loop<B: Backend>(
             }
         }
 
-        if is_viewing
+        if pane_live
             && !startup_loading
             && !handled_user_events
             && last_view_refresh_request.elapsed() >= app::VIEW_DRIFT_RESEED_INTERVAL

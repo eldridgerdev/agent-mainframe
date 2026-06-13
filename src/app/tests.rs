@@ -2126,6 +2126,292 @@ fn submit_steering_prompt_pastes_into_running_session() {
     );
 }
 
+fn compose_test_view() -> ViewState {
+    ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "claude".to_string(),
+        "Claude 1".to_string(),
+        SessionKind::Claude,
+        VibeMode::Vibeless,
+        false,
+    )
+}
+
+fn compose_command(name: &str, interactive: bool) -> ComposeCommandEntry {
+    ComposeCommandEntry {
+        name: name.to_string(),
+        description: String::new(),
+        source: ComposeCommandSource::BuiltIn,
+        interactive,
+    }
+}
+
+#[test]
+fn submit_compose_pastes_prose_into_session() {
+    let repo = TempDir::new().unwrap();
+    let workdir = repo.path().to_path_buf();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_paste_text()
+        .withf(|session, window, text| {
+            session == "amf-my-feat" && window == "claude" && text == "Fix the flaky timer test."
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-my-feat" && window == "claude" && key == "C-u"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|session, window, key| {
+            session == "amf-my-feat" && window == "claude" && key == "Enter"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::Compose(ComposeState::new(
+        compose_test_view(),
+        workdir.clone(),
+        "Fix the flaky timer test.".to_string(),
+        Vec::new(),
+    ));
+
+    app.submit_compose().unwrap();
+
+    assert!(matches!(&app.mode, AppMode::Viewing(view) if view.session == "amf-my-feat"));
+    assert_eq!(
+        std::fs::read_to_string(workdir.join(".claude").join("latest-prompt.txt")).unwrap(),
+        "Fix the flaky timer test."
+    );
+}
+
+#[test]
+fn submit_compose_types_slash_command_literally() {
+    let repo = TempDir::new().unwrap();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_send_literal()
+        .withf(|session, window, text| {
+            session == "amf-my-feat" && window == "claude" && text == "/compact"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "C-u")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "Enter")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::Compose(ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        "/compact".to_string(),
+        vec![compose_command("compact", false)],
+    ));
+
+    app.submit_compose().unwrap();
+
+    assert!(matches!(&app.mode, AppMode::Viewing(_)));
+    assert!(app.compose_direct_targets.is_empty());
+}
+
+#[test]
+fn submit_compose_interactive_command_enables_direct_input() {
+    let repo = TempDir::new().unwrap();
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_send_literal()
+        .withf(|_, _, text| text == "/model")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "C-u")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "Enter")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::Compose(ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        "/model".to_string(),
+        vec![compose_command("model", true)],
+    ));
+
+    app.submit_compose().unwrap();
+
+    assert!(matches!(&app.mode, AppMode::Viewing(_)));
+    assert!(app.compose_direct_targets.contains("amf-my-feat:claude"));
+}
+
+#[test]
+fn submit_compose_rejects_empty_buffer() {
+    let repo = TempDir::new().unwrap();
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.store_path = tmp.path().to_path_buf();
+    app.mode = AppMode::Compose(ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        "   ".to_string(),
+        Vec::new(),
+    ));
+
+    app.submit_compose().unwrap();
+
+    assert!(matches!(&app.mode, AppMode::Compose(_)));
+}
+
+#[test]
+fn compose_suggestions_filter_by_prefix_and_complete() {
+    let catalog = vec![
+        compose_command("clear", false),
+        compose_command("compact", false),
+        compose_command("config", true),
+        compose_command("model", true),
+    ];
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        "/c".to_string(),
+        catalog,
+    );
+
+    let names: Vec<&str> = state
+        .suggestions
+        .iter()
+        .filter_map(|idx| state.catalog.get(*idx))
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["clear", "compact", "config"]);
+
+    state.select_next_suggestion();
+    assert!(state.complete_selected_suggestion());
+    assert_eq!(state.editor.text(), "/compact");
+    assert!(state.exact_command_match().is_some());
+}
+
+#[test]
+fn compose_parts_interleave_text_and_images() {
+    use super::compose::{ComposePart, split_compose_parts};
+
+    let image = |placeholder: &str| ComposeImage {
+        placeholder: placeholder.to_string(),
+        data: vec![1, 2, 3],
+        mime: "image/png".to_string(),
+    };
+    let images = vec![image("[Image 1]"), image("[Image 2]")];
+
+    let parts = split_compose_parts("look at [Image 1] and [Image 2] please", &images);
+    assert_eq!(
+        parts,
+        vec![
+            ComposePart::Text("look at ".to_string()),
+            ComposePart::Image(0),
+            ComposePart::Text(" and ".to_string()),
+            ComposePart::Image(1),
+            ComposePart::Text(" please".to_string()),
+        ]
+    );
+
+    // A deleted placeholder drops its image from delivery.
+    let parts = split_compose_parts("only [Image 2] remains", &images);
+    assert_eq!(
+        parts,
+        vec![
+            ComposePart::Text("only ".to_string()),
+            ComposePart::Image(1),
+            ComposePart::Text(" remains".to_string()),
+        ]
+    );
+
+    // No placeholders: one text part.
+    let parts = split_compose_parts("plain prose", &images);
+    assert_eq!(parts, vec![ComposePart::Text("plain prose".to_string())]);
+
+    // Image-only submission.
+    let parts = split_compose_parts("[Image 1]", &images);
+    assert_eq!(parts, vec![ComposePart::Image(0)]);
+}
+
+#[test]
+fn compose_add_image_numbers_placeholders() {
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        String::new(),
+        Vec::new(),
+    );
+
+    assert_eq!(
+        state.add_image(vec![0], "image/png".to_string()),
+        "[Image 1]"
+    );
+    assert_eq!(
+        state.add_image(vec![1], "image/jpeg".to_string()),
+        "[Image 2]"
+    );
+    assert_eq!(state.images.len(), 2);
+
+    assert!(state.clear_prompt());
+    assert!(state.images.is_empty());
+}
+
+#[test]
+fn compose_slash_detection_rules() {
+    let state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        "/compact keep recent context".to_string(),
+        Vec::new(),
+    );
+    assert!(state.is_slash_command());
+    // Arguments present: the popup should no longer filter.
+    assert!(state.pending_command_prefix().is_none());
+
+    let multiline = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        "/not a command\njust prose".to_string(),
+        Vec::new(),
+    );
+    assert!(!multiline.is_slash_command());
+}
+
 #[test]
 fn inject_latest_prompt_pastes_into_running_session() {
     let repo = TempDir::new().unwrap();

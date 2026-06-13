@@ -1,5 +1,6 @@
 mod batch_creation;
 mod browse;
+mod compose;
 mod dialog;
 mod diff;
 mod diff_review;
@@ -21,6 +22,7 @@ use crate::app::App;
 
 pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
+pub use compose::handle_compose_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -61,6 +63,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::Viewing(_) => handle_view_key(app, key, visible_rows),
         AppMode::Help(_) => handle_help_key(app, key),
         AppMode::SteeringPrompt(_) => handle_steering_prompt_key(app, key),
+        AppMode::Compose(_) => handle_compose_key(app, key),
         AppMode::NotificationPicker(_, _) => handle_notification_picker_key(app, key.code),
         AppMode::SessionSwitcher(_) => handle_session_switcher_key(app, key.code),
         AppMode::RenamingSession(_) => handle_rename_session_key(app, key.code),

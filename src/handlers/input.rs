@@ -6,9 +6,20 @@ use crate::tmux::TmuxManager;
 pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
     match &app.mode {
         AppMode::Viewing(view) => {
-            let session = view.session.clone();
-            let window = view.window.clone();
-            TmuxManager::paste_text(&session, &window, text)?;
+            if app.compose_intercept_active(view) {
+                app.open_compose_from_view(None)?;
+                if let AppMode::Compose(state) = &mut app.mode {
+                    let outcome = state.editor.insert_str(text);
+                    if outcome.text_changed {
+                        state.refresh_suggestions();
+                        state.request_cursor_scroll();
+                    }
+                }
+            } else {
+                let session = view.session.clone();
+                let window = view.window.clone();
+                TmuxManager::paste_text(&session, &window, text)?;
+            }
         }
         AppMode::CreatingProject(_) => {
             if let AppMode::CreatingProject(state) = &mut app.mode {
@@ -63,6 +74,15 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 let outcome = state.editor.insert_str(text);
                 if outcome.text_changed {
                     state.refresh_prompt_analysis();
+                }
+            }
+        }
+        AppMode::Compose(_) => {
+            if let AppMode::Compose(state) = &mut app.mode {
+                let outcome = state.editor.insert_str(text);
+                if outcome.text_changed {
+                    state.refresh_suggestions();
+                    state.request_cursor_scroll();
                 }
             }
         }

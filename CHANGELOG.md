@@ -39,6 +39,18 @@ are tagged.
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
 
+### Fixed
+
+- Embedded agent views could stay garbled for up to three seconds after
+  a glitch. The control-mode view worker is a change-notifier, so a
+  missed or coalesced redraw (scroll regions, another client
+  repainting, a dropped tmux `%output`, copy-mode) left a stale frame on
+  screen until the slow drift reseed. The worker now re-captures the
+  full pane on a steady self-heal floor (~250ms), restoring the fast
+  recovery the view had before the performance rework. Typing latency no
+  longer needs the view to stay purely event-driven now that the
+  composer batches input.
+
 ### Migration
 
 - The compose input is on by default for Claude Code sessions, so

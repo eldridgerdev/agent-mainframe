@@ -90,6 +90,17 @@ pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(
 /// main thread.
 const VIEW_CONTROL_SNAPSHOT_MIN_INTERVAL: Duration = Duration::from_millis(150);
 
+/// Unconditional self-heal cadence for the control-mode view worker. The
+/// control stream is only a change-notifier, so a missed or coalesced
+/// redraw (scroll regions, another client repainting, a dropped %output,
+/// copy-mode) would otherwise leave a stale/garbled frame on screen until
+/// the 3s drift reseed. Re-capturing the full pane on this floor — even
+/// when no %output arrived — restores the pre-perf behavior where the
+/// view healed almost immediately. Typing latency is no longer a reason
+/// to stay event-driven now that the composer batches input, so
+/// correctness wins over idle subprocess savings while a pane is open.
+const VIEW_CONTROL_HEAL_INTERVAL: Duration = Duration::from_millis(250);
+
 const VIEW_SNAPSHOT_REFRESH_NONE: u8 = 0;
 const VIEW_SNAPSHOT_REFRESH_NORMAL: u8 = 1;
 const VIEW_SNAPSHOT_REFRESH_BURST: u8 = 2;
@@ -1174,6 +1185,19 @@ impl App {
                     pane_dirty = false;
                     last_snapshot = Instant::now();
                 }
+            } else if Instant::now().duration_since(last_snapshot) >= VIEW_CONTROL_HEAL_INTERVAL {
+                // Unconditional self-heal: the change-notifier can miss a
+                // redraw, so re-capture the full pane on a steady floor to
+                // keep a stale frame from persisting until the 3s drift
+                // reseed. See VIEW_CONTROL_HEAL_INTERVAL.
+                let _ = tx.send(reseed_control_view_parser(
+                    session,
+                    window,
+                    cols,
+                    rows,
+                    &mut parser,
+                ));
+                last_snapshot = Instant::now();
             }
         }
 

@@ -1023,6 +1023,29 @@ mod tests {
     }
 
     #[test]
+    fn reanchor_bounce_target_only_for_claude_panes() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        app.viewport_cols = 120;
+        app.viewport_rows = 24;
+        app.viewport_total_rows = 25;
+
+        // Claude pane: target is the live pane minus the sidebar (cols)
+        // and the header (rows), matching the leader-R bounce dimensions.
+        assert_eq!(
+            app.reanchor_bounce_target(),
+            Some(("amf-feature".to_string(), "claude".to_string(), 88, 24)),
+        );
+
+        // Other harnesses fully repaint and must be excluded so they
+        // never take the bounce's flicker.
+        if let AppMode::Viewing(view) = &mut app.mode {
+            view.session_kind = crate::project::SessionKind::Codex;
+        }
+        assert_eq!(app.reanchor_bounce_target(), None);
+    }
+
+    #[test]
     fn scroll_mode_ctrl_j_scrolls_faster() {
         let repo = TempDir::new().unwrap();
         let mut app = app_for_viewing_repo(repo.path());

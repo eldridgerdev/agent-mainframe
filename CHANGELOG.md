@@ -41,15 +41,20 @@ are tagged.
 
 ### Fixed
 
-- Embedded agent views could stay garbled for up to three seconds after
-  a glitch. The control-mode view worker is a change-notifier, so a
-  missed or coalesced redraw (scroll regions, another client
-  repainting, a dropped tmux `%output`, copy-mode) left a stale frame on
-  screen until the slow drift reseed. The worker now re-captures the
-  full pane on a steady self-heal floor (~250ms), restoring the fast
-  recovery the view had before the performance rework. Typing latency no
-  longer needs the view to stay purely event-driven now that the
-  composer batches input.
+- Claude Code panes could garble in the embedded view: the input box
+  drifted up a row and bled its text into the divider above it, and a
+  repaint (leader-R) only cleared it until the next update. The garble
+  is in the real tmux grid — Claude Code's incremental renderer draws
+  its input box at a stale anchor row and leaves the vacated cells
+  behind — so AMF was faithfully showing corrupted pane content rather
+  than mis-rendering. AMF now re-anchors a live Claude pane every few
+  seconds with a one-row SIGWINCH bounce, forcing Claude Code to fully
+  repaint and clear the stale cells. Other harnesses fully repaint on
+  their own and are left untouched.
+- The control-mode view worker also re-captures the full pane on a
+  ~250ms self-heal floor instead of only on detected output, so any
+  frame the change-notifier misses no longer lingers until the 3s drift
+  reseed.
 
 ### Migration
 

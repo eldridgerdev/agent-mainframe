@@ -77,6 +77,17 @@ pub const VIEW_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(75);
 /// this only exists to fix rare parser/pane drift — it must stay slow.
 pub const VIEW_DRIFT_RESEED_INTERVAL: Duration = Duration::from_secs(3);
 pub const VIEW_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
+/// How often AMF re-anchors a live Claude pane with a SIGWINCH bounce.
+/// Claude Code's incremental renderer drifts its input-box anchor over
+/// time and leaves stale cells in the real tmux grid (the input box
+/// bleeds into the divider above it), which AMF can only display
+/// faithfully — the corruption is in the pane grid, not our render. A
+/// height bounce forces a full agent repaint. Runs on a timer regardless
+/// of activity (user-chosen mitigation); the brief flicker is the cost.
+pub const VIEW_REANCHOR_BOUNCE_INTERVAL: Duration = Duration::from_secs(3);
+/// Minimum dwell at the shrunk height before restoring, so tmux delivers
+/// two distinct SIGWINCHes instead of coalescing them into a no-op.
+pub const VIEW_REANCHOR_BOUNCE_DWELL: Duration = Duration::from_millis(60);
 pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
 pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 pub const VIEW_STARTUP_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(350);

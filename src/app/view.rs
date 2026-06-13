@@ -253,6 +253,35 @@ impl App {
         }
     }
 
+    /// Target for the periodic re-anchor bounce: `(session, window,
+    /// content_cols, content_rows)` for the live pane, but only for
+    /// Claude sessions, whose incremental renderer drifts its input-box
+    /// anchor and leaves stale cells in the real tmux grid. Other
+    /// harnesses fully repaint and never need this, so they are excluded
+    /// to avoid the bounce's flicker. Returns `None` unless a Claude pane
+    /// is live and sized.
+    pub fn reanchor_bounce_target(&self) -> Option<(String, String, u16, u16)> {
+        let view = match &self.mode {
+            AppMode::Viewing(view) => view,
+            AppMode::Compose(state) => &state.view,
+            _ => return None,
+        };
+        if view.session_kind != crate::project::SessionKind::Claude {
+            return None;
+        }
+        let content_cols = crate::ui::viewing_main_width(view, self.viewport_cols);
+        let content_rows = self.viewport_total_rows.saturating_sub(1);
+        if content_cols == 0 || content_rows <= 1 {
+            return None;
+        }
+        Some((
+            view.session.clone(),
+            view.window.clone(),
+            content_cols,
+            content_rows,
+        ))
+    }
+
     pub fn refresh_view_sizing(&mut self) -> Result<()> {
         // Must match the sizing in the main loop: view content area is
         // the full terminal minus the 1-row header.

@@ -144,6 +144,7 @@ fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     frame: &mut Frame,
     view: &ViewState,
@@ -152,6 +153,7 @@ pub fn draw(
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
+    compose_intercept: Option<bool>,
     theme: &Theme,
 ) {
     draw_with_lines(
@@ -163,10 +165,12 @@ pub fn draw(
         leader_active,
         pending_count,
         tmux_cursor,
+        compose_intercept,
         theme,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_with_lines(
     frame: &mut Frame,
     view: &ViewState,
@@ -176,6 +180,7 @@ pub(crate) fn draw_with_lines(
     leader_active: bool,
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
+    compose_intercept: Option<bool>,
     theme: &Theme,
 ) {
     let area = frame.area();
@@ -408,7 +413,7 @@ pub(crate) fn draw_with_lines(
     }
 
     if leader_active {
-        draw_leader_menu(frame, main_content_area, theme);
+        draw_leader_menu(frame, main_content_area, theme, compose_intercept);
     }
 }
 
@@ -742,23 +747,43 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
     style
 }
 
-fn draw_leader_menu(frame: &mut Frame, content_area: Rect, theme: &Theme) {
+fn draw_leader_menu(
+    frame: &mut Frame,
+    content_area: Rect,
+    theme: &Theme,
+    compose_intercept: Option<bool>,
+) {
     if content_area.width < 30 || content_area.height < 8 {
         return;
     }
 
-    let longest_label = LEADER_COMMANDS
+    let mut commands: Vec<(&str, &str)> = LEADER_COMMANDS.to_vec();
+    if let Some(active) = compose_intercept {
+        let entry = if active {
+            ("e", "Direct input (compose off)")
+        } else {
+            ("e", "Enable compose input")
+        };
+        let pos = commands
+            .iter()
+            .position(|(key, _)| *key == "s")
+            .map(|pos| pos + 1)
+            .unwrap_or(commands.len());
+        commands.insert(pos, entry);
+    }
+
+    let longest_label = commands
         .iter()
         .map(|(key, desc)| key.len() + desc.len() + 4)
         .max()
         .unwrap_or(24) as u16;
     let width = (longest_label + 4).clamp(30, content_area.width.saturating_sub(2));
-    let height = (LEADER_COMMANDS.len() as u16 + 2).min(content_area.height.saturating_sub(1));
+    let height = (commands.len() as u16 + 2).min(content_area.height.saturating_sub(1));
     let x = content_area.x + content_area.width.saturating_sub(width + 1);
     let y = content_area.y + content_area.height.saturating_sub(height + 1);
     let area = Rect::new(x, y, width, height);
 
-    let lines: Vec<Line<'static>> = LEADER_COMMANDS
+    let lines: Vec<Line<'static>> = commands
         .iter()
         .map(|(key, desc)| {
             Line::from(vec![
@@ -1230,6 +1255,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1271,6 +1297,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1310,6 +1337,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1331,7 +1359,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "hello", None, true, 0, None, &theme);
+                draw(frame, &view, "hello", None, true, 0, None, Some(false), &theme);
             })
             .unwrap();
 
@@ -1341,6 +1369,9 @@ mod tests {
         assert!(rendered.contains("Ctrl+Space commands"));
         assert!(rendered.contains("Show / hide sidebar"));
         assert!(rendered.contains("Check pending diff revie"));
+        // compose_intercept is Some(false): the menu offers the way
+        // back out of direct mode.
+        assert!(rendered.contains("Enable compose input"));
     }
 
     #[test]
@@ -1368,6 +1399,7 @@ mod tests {
                     Some(&sidebar),
                     false,
                     0,
+                    None,
                     None,
                     &theme,
                 );
@@ -1410,6 +1442,7 @@ mod tests {
                     Some(&sidebar),
                     false,
                     0,
+                    None,
                     None,
                     &theme,
                 );
@@ -1457,6 +1490,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1495,6 +1529,7 @@ mod tests {
                     Some(&sidebar),
                     false,
                     0,
+                    None,
                     None,
                     &theme,
                 );
@@ -1535,6 +1570,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1574,6 +1610,7 @@ mod tests {
                     false,
                     0,
                     None,
+                    None,
                     &theme,
                 );
             })
@@ -1596,7 +1633,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "hello", None, false, 0, None, &theme);
+                draw(frame, &view, "hello", None, false, 0, None, None, &theme);
             })
             .unwrap();
 
@@ -1657,7 +1694,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "", None, false, 0, None, &theme);
+                draw(frame, &view, "", None, false, 0, None, None, &theme);
             })
             .unwrap();
 

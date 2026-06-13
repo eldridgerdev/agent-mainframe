@@ -141,6 +141,20 @@ pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Resul
         return handle_scroll_key(app, key, visible_rows);
     }
 
+    // Compose interception: printable keys in a Claude view open the
+    // local compose box instead of typing into Claude Code's input.
+    // Navigation, Enter, Esc, and modified keys still pass through so
+    // CC's own dialogs stay drivable.
+    if let AppMode::Viewing(view) = &app.mode
+        && app.compose_intercept_active(view)
+        && let KeyCode::Char(c) = key.code
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+    {
+        flush_view_input_batch(app)?;
+        return app.open_compose_from_view(Some(c));
+    }
+
     let (session, window) = match &app.mode {
         AppMode::Viewing(view) => (view.session.clone(), view.window.clone()),
         _ => return Ok(()),
@@ -311,6 +325,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('s') => {
             app.open_steering_prompt_from_view()?;
+        }
+        KeyCode::Char('e') => {
+            app.toggle_compose_intercept();
         }
         KeyCode::Char('g') => {
             app.trigger_summary_for_selected()?;
@@ -630,6 +647,150 @@ mod tests {
     }
 
     #[test]
+    fn typing_printable_char_opens_compose_seeded() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::Compose(state) => {
+                assert_eq!(state.editor.text(), "h");
+                assert_eq!(state.view.session, "amf-feature");
+                assert_eq!(state.workdir, repo.path());
+            }
+            _ => panic!("expected Compose mode"),
+        }
+    }
+
+    #[test]
+    fn compose_draft_survives_close_and_reopen() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+        crate::handlers::handle_compose_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        crate::handlers::handle_compose_key(&mut app, key(KeyCode::Esc)).unwrap();
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+
+        handle_view_key(&mut app, key(KeyCode::Char('!')), 20).unwrap();
+        match &app.mode {
+            AppMode::Compose(state) => assert_eq!(state.editor.text(), "hi!"),
+            _ => panic!("expected Compose mode"),
+        }
+    }
+
+    #[test]
+    fn ctrl_e_in_compose_switches_to_direct_input_and_keeps_draft() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+        crate::handlers::handle_compose_key(&mut app, ctrl(KeyCode::Char('e'))).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert!(app.compose_direct_targets.contains("amf-feature:claude"));
+
+        // leader+e re-enables compose; the draft comes back.
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+        assert!(!app.compose_direct_targets.contains("amf-feature:claude"));
+
+        handle_view_key(&mut app, key(KeyCode::Char('i')), 20).unwrap();
+        match &app.mode {
+            AppMode::Compose(state) => assert_eq!(state.editor.text(), "hi"),
+            _ => panic!("expected Compose mode"),
+        }
+    }
+
+    #[test]
+    fn ctrl_space_in_compose_opens_leader_menu_and_keeps_draft() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+        crate::handlers::handle_compose_key(&mut app, key(KeyCode::Char('i'))).unwrap();
+        crate::handlers::handle_compose_key(&mut app, ctrl(KeyCode::Char(' '))).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert!(app.leader_active);
+
+        // Leader command runs against the view, then typing restores
+        // the draft.
+        handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+        assert!(app.compose_direct_targets.contains("amf-feature:claude"));
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+
+        handle_view_key(&mut app, key(KeyCode::Char('!')), 20).unwrap();
+        match &app.mode {
+            AppMode::Compose(state) => assert_eq!(state.editor.text(), "hi!"),
+            _ => panic!("expected Compose mode"),
+        }
+    }
+
+    #[test]
+    fn enter_passes_through_to_tmux_with_intercept_on() {
+        let repo = TempDir::new().unwrap();
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_send_key_name()
+            .withf(|session, window, name| {
+                session == "amf-feature" && window == "claude" && name == "Enter"
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let mut app = app_for_viewing_repo(repo.path());
+        app.tmux = Box::new(tmux);
+
+        handle_view_key(&mut app, key(KeyCode::Enter), 20).unwrap();
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn terminal_sessions_are_not_intercepted() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        if let AppMode::Viewing(view) = &mut app.mode {
+            view.session_kind = SessionKind::Terminal;
+        }
+
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.pending_view_input_len(), 1);
+    }
+
+    #[test]
+    fn leader_e_toggles_direct_input_for_claude_view() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        // Re-activating the leader flushes the buffered "h" below.
+        let mut tmux = MockTmuxOps::new();
+        tmux.expect_send_literal()
+            .withf(|session, window, text| {
+                session == "amf-feature" && window == "claude" && text == "h"
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+        app.tmux = Box::new(tmux);
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+        assert!(app.compose_direct_targets.contains("amf-feature:claude"));
+
+        // With direct input on, printable keys forward (buffer) again.
+        handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert_eq!(app.pending_view_input_len(), 1);
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+        assert!(!app.compose_direct_targets.contains("amf-feature:claude"));
+    }
+
+    #[test]
     fn leader_l_opens_latest_prompt_dialog_with_saved_prompt() {
         let repo = init_repo_with_branch_change();
         let claude_dir = repo.path().join(".claude");
@@ -776,6 +937,10 @@ mod tests {
 
         let mut app = app_for_viewing_repo(repo.path());
         app.tmux = Box::new(tmux);
+        // Literal forwarding only happens in direct mode; compose
+        // interception would otherwise capture these keys.
+        app.compose_direct_targets
+            .insert("amf-feature:claude".to_string());
 
         handle_view_key(&mut app, key(KeyCode::Char('a')), 20).unwrap();
         handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();
@@ -811,6 +976,10 @@ mod tests {
 
         let mut app = app_for_viewing_repo(repo.path());
         app.tmux = Box::new(tmux);
+        // Literal forwarding only happens in direct mode; compose
+        // interception would otherwise capture these keys.
+        app.compose_direct_targets
+            .insert("amf-feature:claude".to_string());
 
         handle_view_key(&mut app, key(KeyCode::Char('a')), 20).unwrap();
         handle_view_key(&mut app, key(KeyCode::Char('b')), 20).unwrap();

@@ -1022,3 +1022,142 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
         "No clipboard utility found (wl-copy or xclip)"
     ))
 }
+
+pub enum ClipboardContent {
+    Text(String),
+    Image { data: Vec<u8>, mime: String },
+}
+
+/// Read the system clipboard, preferring image content over text so a
+/// copied screenshot pastes as an image rather than a file path.
+pub fn read_clipboard() -> anyhow::Result<ClipboardContent> {
+    if let Some(content) = read_clipboard_wayland() {
+        return Ok(content);
+    }
+    if let Some(content) = read_clipboard_x11() {
+        return Ok(content);
+    }
+    Err(anyhow::anyhow!(
+        "No clipboard utility found (wl-paste or xclip)"
+    ))
+}
+
+fn clipboard_image_mime(types: &str) -> Option<String> {
+    // Prefer png; otherwise take the first image type offered.
+    let mut first_image = None;
+    for line in types.lines() {
+        let mime = line.trim();
+        if mime == "image/png" {
+            return Some(mime.to_string());
+        }
+        if mime.starts_with("image/") && first_image.is_none() {
+            first_image = Some(mime.to_string());
+        }
+    }
+    first_image
+}
+
+fn read_clipboard_wayland() -> Option<ClipboardContent> {
+    let types = std::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .ok()?;
+    if !types.status.success() {
+        return None;
+    }
+
+    let types = String::from_utf8_lossy(&types.stdout);
+    if let Some(mime) = clipboard_image_mime(&types) {
+        let output = std::process::Command::new("wl-paste")
+            .args(["--type", &mime])
+            .output()
+            .ok()?;
+        if output.status.success() && !output.stdout.is_empty() {
+            return Some(ClipboardContent::Image {
+                data: output.stdout,
+                mime,
+            });
+        }
+    }
+
+    let output = std::process::Command::new("wl-paste")
+        .arg("--no-newline")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        return Some(ClipboardContent::Text(
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ));
+    }
+    None
+}
+
+fn read_clipboard_x11() -> Option<ClipboardContent> {
+    let types = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
+        .output()
+        .ok()?;
+    if !types.status.success() {
+        return None;
+    }
+
+    let types = String::from_utf8_lossy(&types.stdout);
+    if let Some(mime) = clipboard_image_mime(&types) {
+        let output = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard", "-t", &mime, "-o"])
+            .output()
+            .ok()?;
+        if output.status.success() && !output.stdout.is_empty() {
+            return Some(ClipboardContent::Image {
+                data: output.stdout,
+                mime,
+            });
+        }
+    }
+
+    let output = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-o"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        return Some(ClipboardContent::Text(
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        ));
+    }
+    None
+}
+
+/// Put image bytes on the system clipboard so Claude Code can ingest
+/// them via its own Ctrl+V image paste.
+pub fn copy_image_to_clipboard(data: &[u8], mime: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    if let Ok(mut child) = std::process::Command::new("wl-copy")
+        .args(["--type", mime])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(data);
+        }
+        let status = child.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    if let Ok(mut child) = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", mime])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(data);
+        }
+        let status = child.wait()?;
+        if status.success() {
+            return Ok(());
+        }
+    }
+    Err(anyhow::anyhow!(
+        "No clipboard utility found (wl-copy or xclip)"
+    ))
+}

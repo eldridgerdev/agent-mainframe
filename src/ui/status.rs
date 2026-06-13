@@ -186,6 +186,39 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(spans)
             }
         }
+        AppMode::Compose(state) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" send  "),
+            Span::styled("Alt+Enter", key_style()),
+            Span::raw(" newline  "),
+            Span::styled("Tab", key_style()),
+            Span::raw(" complete  "),
+            Span::styled(
+                if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                    "i / a / o"
+                } else {
+                    "Esc"
+                },
+                key_style(),
+            ),
+            Span::raw(
+                if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
+                    " edit  "
+                } else {
+                    " close  "
+                },
+            ),
+            Span::styled("Ctrl+V", key_style()),
+            Span::raw(" paste  "),
+            Span::styled("Ctrl+T", key_style()),
+            Span::raw(if state.editor.vim_mode().is_some() {
+                " vim off  "
+            } else {
+                " vim on  "
+            }),
+            Span::styled("Ctrl+Q", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::SteeringPrompt(state) => Line::from(vec![
             Span::styled("Tab", key_style()),
             Span::raw(" inject  "),
@@ -315,13 +348,27 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 ])
             }
         }
-        AppMode::Viewing(_) => {
-            let mut spans = vec![
+        AppMode::Viewing(view) => {
+            let mut spans = Vec::new();
+            if view.session_kind == SessionKind::Claude {
+                if app.compose_intercept_active(view) {
+                    spans.push(Span::styled(
+                        "[compose] ",
+                        Style::default().fg(theme.success.to_color()),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        "[direct] ",
+                        Style::default().fg(theme.warning.to_color()),
+                    ));
+                }
+            }
+            spans.extend(vec![
                 Span::styled("Ctrl+Space", key_style()),
                 Span::raw(" commands  "),
                 Span::styled("Ctrl+Q", key_style()),
                 Span::raw(" exit view"),
-            ];
+            ]);
             let labels = app.bookmark_status_labels();
             if !labels.is_empty() {
                 spans.push(Span::raw("  "));

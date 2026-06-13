@@ -738,6 +738,8 @@ fn draw_view_pane(
     } else {
         None
     };
+    let compose_intercept =
+        (view.session_kind == SessionKind::Claude).then(|| app.compose_intercept_active(view));
 
     super::pane::draw_with_lines(
         frame,
@@ -748,6 +750,7 @@ fn draw_view_pane(
         leader_active,
         app.pending_inputs.len(),
         tmux_cursor,
+        compose_intercept,
         &app.theme,
     );
 }
@@ -762,6 +765,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         draw_view_pane(frame, app, view, app.leader_active, true);
+        // Direct-input badge: typing goes straight to Claude Code
+        // instead of opening the compose box.
+        if view.session_kind == SessionKind::Claude && !app.compose_intercept_active(view) {
+            let label = " [direct input — leader+e: compose] ";
+            let label_width = (label.chars().count() as u16).min(area.width);
+            let badge_area = Rect::new(
+                area.x + area.width.saturating_sub(label_width),
+                area.y,
+                label_width,
+                1,
+            );
+            let badge = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
+                label,
+                ratatui::style::Style::default()
+                    .fg(app.theme.warning.to_color())
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            frame.render_widget(badge, badge_area);
+        }
         // Show transient message (e.g. "Copied N chars") on the bottom line
         if let Some(ref msg) = app.message {
             let msg_area = Rect::new(
@@ -846,6 +868,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
         return;
     }
+    let compose_from_view = if let AppMode::Compose(state) = &app.mode {
+        Some(state.view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = compose_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false, false);
+    }
+    if let AppMode::Compose(state) = &mut app.mode {
+        super::dialogs::draw_compose_dialog(frame, state, &app.theme);
+        return;
+    }
+
     let steering_from_view = if let AppMode::SteeringPrompt(state) = &app.mode {
         Some(state.view.clone())
     } else {

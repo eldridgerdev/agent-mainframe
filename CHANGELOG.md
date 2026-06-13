@@ -10,7 +10,42 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- New compose input for Claude Code sessions that sidesteps Claude
+  Code's input-box rendering glitches. Start typing in a Claude view
+  and an AMF-drawn input opens over Claude Code's own input box; press
+  Enter to send the finished text in one shot (Alt+Enter inserts a
+  newline). Claude Code's output stays visible and live above the box
+  while you type.
+- Typing `/` in the compose input opens a slash-command menu listing
+  Claude Code built-ins, your global and project custom commands, and
+  skills, with descriptions. Arrows or Ctrl+P/N select, Tab completes,
+  Enter runs. Commands that open Claude Code's own dialogs (such as
+  `/model` or `/config`) automatically hand control back so you can
+  drive them directly.
+- Images can be pasted into the compose input with Ctrl+V. They show
+  as `[Image 1]` placeholders and are delivered to Claude Code as real
+  image attachments on send, so the agent can see them. Text on the
+  clipboard pastes as usual.
+- A direct-input escape hatch for when you want keys to go straight to
+  Claude Code again: press Ctrl+E in the composer (or `leader+e` in
+  the view) to disable the compose input per session, shown with a
+  `[direct input]` badge; `leader+e` — also listed in the Ctrl+Space
+  menu — turns it back on. Ctrl+Space inside the composer opens the
+  leader menu directly.
+- Unsent compose drafts (text and attached images) survive closing the
+  box; the next keystroke in that session restores them. Submissions
+  also clear any leftover text in Claude Code's input first, so stray
+  typed characters can no longer merge into your prompt.
+
+### Migration
+
+- The compose input is on by default for Claude Code sessions, so
+  typing in a Claude view now opens the AMF composer instead of going
+  straight to Claude Code. If you prefer the old behavior for a
+  session, press `leader+e` (or Ctrl+E inside the composer) to switch
+  that session to direct input.
 
 ## [v0.22.0] - 2026-06-12
 

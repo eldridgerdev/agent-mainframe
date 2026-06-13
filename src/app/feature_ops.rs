@@ -495,7 +495,7 @@ impl App {
         }
     }
 
-    fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
+    pub(crate) fn persist_startup_prompt(&mut self, workdir: &std::path::Path, prompt: &str) {
         let claude_dir = workdir.join(".claude");
         if let Err(err) = std::fs::create_dir_all(&claude_dir) {
             self.log_warn(

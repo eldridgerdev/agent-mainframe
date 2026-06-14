@@ -39,6 +39,14 @@ are tagged.
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
 
+### Fixed
+
+- The toast shown when the composer switches a session to direct input
+  (after running an interactive command like `/model`, or via
+  `leader+e`/Ctrl+E) was too long and got truncated, hiding the part
+  that told you how to get back. It now clearly reads "Composer off —
+  leader+e to re-enable" as a warning so the state change stands out.
+
 ### Migration
 
 - The compose input is on by default for Claude Code sessions, so

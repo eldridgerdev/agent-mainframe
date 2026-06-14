@@ -41,6 +41,11 @@ are tagged.
 
 ### Fixed
 
+- The toast shown when the composer switches a session to direct input
+  (after running an interactive command like `/model`, or via
+  `leader+e`/Ctrl+E) was too long and got truncated, hiding the part
+  that told you how to get back. It now clearly reads "Composer off —
+  leader+e to re-enable" as a warning so the state change stands out.
 - Claude Code panes could garble in the embedded view: the input box
   drifted up a row and bled its text into the divider above it, and a
   repaint (leader-R) only cleared it until the next update. The garble

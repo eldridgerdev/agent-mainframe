@@ -114,16 +114,16 @@ impl App {
         };
 
         if kind != SessionKind::Claude {
-            self.push_toast_warning("Compose input is only available for Claude Code sessions");
+            self.push_toast_warning("Compose is only for Claude Code sessions");
             return;
         }
 
         let key = compose_target_key(&session, &window);
         if self.compose_direct_targets.remove(&key) {
-            self.push_toast_success("Compose input enabled — typing opens the compose box");
+            self.push_toast_success("Composer on — typing opens the compose box");
         } else {
             self.compose_direct_targets.insert(key);
-            self.push_toast_success("Direct input enabled — keys go straight to Claude Code");
+            self.push_toast_warning("Composer off — leader+e to re-enable");
         }
     }
 
@@ -184,7 +184,7 @@ impl App {
         };
         self.cancel_compose();
         self.compose_direct_targets.insert(target);
-        self.push_toast_success("Direct input enabled — leader+e to re-enable compose");
+        self.push_toast_warning("Composer off — leader+e to re-enable");
     }
 
     /// Close the compose box, keeping any unsent text as a draft for
@@ -253,9 +253,7 @@ impl App {
 
             if interactive {
                 self.compose_direct_targets.insert(key.clone());
-                self.push_toast_success(format!(
-                    "Sent {text} — direct input on (leader+e for compose)"
-                ));
+                self.push_toast_warning("Composer off — leader+e to re-enable");
             } else {
                 self.push_toast_success(format!("Sent {text}"));
             }

@@ -153,6 +153,53 @@ fn snapshot_mailbox_merges_cursor_only_update_with_pending_content() {
     assert!(!cursor_changed);
 }
 
+#[test]
+fn frozen_display_holds_last_frame_until_freeze_lapses() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "terminal".to_string(),
+        "Terminal".to_string(),
+        SessionKind::Terminal,
+        VibeMode::default(),
+        false,
+    ));
+    app.pane_content_cols = 4;
+    app.pane_content_rows = 1;
+    app.pane_lines = vec![ratatui::text::Line::from("OLD ")];
+
+    app.view_snapshot_tx.send(ViewSnapshot {
+        session: "amf-my-feat".to_string(),
+        window: "terminal".to_string(),
+        pane_content: Some("new".to_string()),
+        rendered_lines: Some(vec![ratatui::text::Line::from("NEW ")]),
+        cursor: None,
+        capture_duration: None,
+        render_duration: None,
+        cursor_duration: None,
+        pipe_read_duration: None,
+    });
+
+    // While frozen, the pending frame is held back and the display keeps
+    // the previous frame (this is what hides the re-anchor bounce).
+    app.freeze_view_display(std::time::Duration::from_secs(30));
+    let (pane_changed, _) = app.drain_view_snapshots();
+    assert!(!pane_changed);
+    assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("OLD ")]);
+
+    // Once the freeze lapses, the freshest frame is revealed.
+    app.view_display_frozen_until = Some(std::time::Instant::now());
+    let (pane_changed, _) = app.drain_view_snapshots();
+    assert!(pane_changed);
+    assert_eq!(app.pane_lines, vec![ratatui::text::Line::from("NEW ")]);
+}
+
 // ── slugify ───────────────────────────────────────────────
 
 #[test]

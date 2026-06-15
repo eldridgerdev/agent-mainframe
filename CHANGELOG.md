@@ -10,12 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- Review mode, final review, plan mode, and the steering coach now show
+  an experimental label in the UI, so users can tell these workflows are
+  still being refined before they opt into them.
+
 ### Fixed
 
 - Opening the branch diff viewer and Markdown viewer now shows a
   loading indicator while AMF gathers files or reads content, so slower
   startups and large worktrees no longer look like the app ignored the
   command.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.23.0] - 2026-06-15
 

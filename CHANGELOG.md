@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.23.0] - 2026-06-15
+
 ### Added
 
 - New compose input for Claude Code sessions that sidesteps Claude

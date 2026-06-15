@@ -330,8 +330,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     line_spans.extend(mode_badge_spans);
                     if feature.review {
                         line_spans.push(Span::styled(
-                            " [review]",
+                            " [review experimental]",
                             Style::default().fg(theme.mode_review.to_color()),
+                        ));
+                    }
+                    if feature.plan_mode {
+                        line_spans.push(Span::styled(
+                            " [plan experimental]",
+                            Style::default().fg(theme.info.to_color()),
                         ));
                     }
                     if is_being_deleted {

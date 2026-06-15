@@ -411,6 +411,7 @@ fn draw_create_feature_branch_mode(
     let area = centered_rect(60, 90, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
     let has_chrome_row = state.agent == AgentKind::Claude;
+    let has_rc_row = state.agent == AgentKind::Claude;
 
     let title = format!(" New Feature ({}) ", state.project_name);
     let block = Block::default()
@@ -425,24 +426,26 @@ fn draw_create_feature_branch_mode(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),                                  // branch
-            Constraint::Length(1),                                  // spacer
-            Constraint::Length(3),                                  // worktree
-            Constraint::Length(1),                                  // spacer
-            Constraint::Length(4),                                  // agent
-            Constraint::Length(1),                                  // spacer
-            Constraint::Length(5),                                  // mode
-            Constraint::Length(1),                                  // spacer
-            Constraint::Length(1),                                  // review checkbox
-            Constraint::Length(0),                                  // spacer
-            Constraint::Length(1),                                  // plan_mode checkbox
-            Constraint::Length(0),                                  // spacer
-            Constraint::Length(if has_chrome_row { 1 } else { 0 }), // chrome checkbox
-            Constraint::Length(0),                                  // spacer
-            Constraint::Length(1),                                  // steering coach checkbox
-            Constraint::Length(0),                                  // extra space
+            Constraint::Length(3),                                  // [0] branch
+            Constraint::Length(1),                                  // [1] spacer
+            Constraint::Length(3),                                  // [2] worktree
+            Constraint::Length(1),                                  // [3] spacer
+            Constraint::Length(4),                                  // [4] agent
+            Constraint::Length(1),                                  // [5] spacer
+            Constraint::Length(5),                                  // [6] mode
+            Constraint::Length(1),                                  // [7] spacer
+            Constraint::Length(1),                                  // [8] review checkbox
+            Constraint::Length(0),                                  // [9] spacer
+            Constraint::Length(1),                                  // [10] plan_mode checkbox
+            Constraint::Length(0),                                  // [11] spacer
+            Constraint::Length(if has_chrome_row { 1 } else { 0 }), // [12] chrome checkbox
+            Constraint::Length(0),                                  // [13] spacer
+            Constraint::Length(if has_rc_row { 1 } else { 0 }),    // [14] remote_control
+            Constraint::Length(0),                                  // [15] spacer
+            Constraint::Length(1),                                  // [16] steering coach checkbox
+            Constraint::Length(0),                                  // [17] extra space
             Constraint::Min(0),
-            Constraint::Length(1), // hints
+            Constraint::Length(1), // [19] hints
         ])
         .split(inner);
 
@@ -674,10 +677,49 @@ fn draw_create_feature_branch_mode(
         ])];
         let chrome_widget = Paragraph::new(chrome_lines);
         frame.render_widget(chrome_widget, chunks[12]);
+
+        // Remote Control checkbox (chunks[14]) — Claude only.
+        // Requires claude.ai OAuth; unavailable for z.ai / third-party
+        // provider sessions, in which case it renders disabled with a reason.
+        let rc_available = state.remote_control_available;
+        let rc_active = rc_available
+            && state.step == CreateFeatureStep::Mode
+            && state.mode_focus == 5;
+        let rc_check = if state.remote_control && rc_available {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        let rc_label_style = if rc_active {
+            Style::default().fg(theme.primary.to_color())
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        };
+        let rc_value_style = if rc_active {
+            Style::default().fg(theme.text.to_color())
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        };
+        let rc_value = if rc_available {
+            format!("{} Enable claude.ai/mobile sync", rc_check)
+        } else {
+            let reason = state
+                .remote_control_block_reason
+                .as_deref()
+                .unwrap_or("Unavailable");
+            format!("{} {}", rc_check, reason)
+        };
+        let rc_lines = vec![Line::from(vec![
+            Span::styled(" Remote Control: ", rc_label_style),
+            Span::styled(rc_value, rc_value_style),
+        ])];
+        let rc_widget = Paragraph::new(rc_lines);
+        frame.render_widget(rc_widget, chunks[14]);
     }
 
+    // Steering coach — focus 6 for Claude, 4 for others.
     let steering_focus = if state.agent == AgentKind::Claude {
-        5
+        6
     } else {
         4
     };
@@ -703,7 +745,7 @@ fn draw_create_feature_branch_mode(
         ),
     ])];
     let steering_widget = Paragraph::new(steering_lines);
-    frame.render_widget(steering_widget, chunks[14]);
+    frame.render_widget(steering_widget, chunks[16]);
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![
@@ -737,7 +779,7 @@ fn draw_create_feature_branch_mode(
             Span::raw(" cancel"),
         ]))
     };
-    frame.render_widget(hints, chunks[17]);
+    frame.render_widget(hints, chunks[19]);
 }
 
 fn draw_create_feature_prompt_coach(frame: &mut Frame, state: &CreateFeatureState, theme: &Theme) {

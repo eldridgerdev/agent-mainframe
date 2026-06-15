@@ -334,6 +334,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(theme.mode_review.to_color()),
                         ));
                     }
+                    if feature.remote_control {
+                        line_spans.push(Span::styled(
+                            " [remote]",
+                            Style::default().fg(theme.info.to_color()),
+                        ));
+                    }
                     if is_being_deleted {
                         line_spans.push(Span::styled(
                             " [deleting...]",

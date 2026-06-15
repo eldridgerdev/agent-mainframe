@@ -526,6 +526,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Codex,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,

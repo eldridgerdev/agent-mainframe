@@ -8,12 +8,22 @@ use super::*;
 use crate::app::util::read_latest_prompt;
 use crate::automation::CreateBatchFeaturesRequest;
 use crate::extension::{load_global_extension_config, merge_project_extension_config};
-use crate::project::{normalized_feature_name, worktree_name};
+use crate::project::{LaunchOpts, normalized_feature_name, worktree_name};
 use crate::tmux::TmuxManager;
 use crate::worktree::WorktreeManager;
 use state::{BackgroundDeletion, DeleteStage, ForkFeatureState, ForkFeatureStep};
 
 impl App {
+    /// Whether Remote Control may be enabled for a launch given the current
+    /// config and environment (z.ai / third-party provider, Claude Code
+    /// version). Mirrors the wizard's availability check so a feature flagged
+    /// for Remote Control never passes `--remote-control` to an
+    /// incompatible session.
+    pub(crate) fn remote_control_allowed(&self) -> bool {
+        crate::claude::ClaudeLauncher::remote_control_block_reason(self.config.zai.is_some())
+            .is_none()
+    }
+
     pub(crate) fn default_session_name_for_agent(agent: &AgentKind) -> String {
         match agent {
             AgentKind::Claude => "Claude 1".to_string(),
@@ -169,6 +179,16 @@ impl App {
         state.session_name = Self::default_session_name_for_agent(&state.agent);
         state.allowed_agents = available;
         state.feature_presets = self.active_extension.allowed_feature_presets();
+        // Remote Control requires claude.ai OAuth and a recent Claude Code.
+        // Resolve the reason it's blocked (z.ai / third-party provider /
+        // version) so the wizard can show the toggle disabled with context.
+        let rc_reason = crate::claude::ClaudeLauncher::remote_control_block_reason(
+            self.config.zai.is_some(),
+        );
+        state.remote_control_available = rc_reason.is_none();
+        state.remote_control_block_reason = rc_reason;
+        // Apply the global default, but never enable when unavailable.
+        state.remote_control = self.config.remote_control_default && state.remote_control_available;
 
         self.mode = AppMode::CreatingFeature(state);
         self.message = None;
@@ -196,6 +216,7 @@ impl App {
         let session_name = state.session_name.trim().to_string();
         let use_worktree = state.use_worktree;
         let enable_chrome = state.enable_chrome;
+        let remote_control = state.remote_control;
         let steering_enabled = state.steering_enabled;
 
         if branch.is_empty() {
@@ -297,6 +318,7 @@ impl App {
                             agent: state.agent.clone(),
                             create_terminal,
                             enable_chrome,
+                            remote_control,
                             steering_enabled,
                             session_name,
                         },
@@ -314,6 +336,7 @@ impl App {
                         create_terminal,
                         session_name,
                         enable_chrome,
+                        remote_control,
                         steering_enabled,
                         None,
                     );
@@ -338,6 +361,7 @@ impl App {
             create_terminal,
             session_name,
             enable_chrome,
+            remote_control,
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
@@ -374,6 +398,7 @@ impl App {
                 feature.plan_mode = prepared.plan_mode;
                 feature.agent = prepared.agent.clone();
                 feature.enable_chrome = prepared.enable_chrome;
+                feature.remote_control = prepared.remote_control;
                 feature.pending_worktree_script = false;
             }
         } else {
@@ -388,6 +413,7 @@ impl App {
                 prepared.plan_mode,
                 prepared.agent,
                 prepared.enable_chrome,
+                prepared.remote_control,
             );
 
             let mut feature = feature;
@@ -626,6 +652,8 @@ impl App {
             None => return Ok(()),
         };
         self.ensure_agent_mode_supported(&agent, &mode)?;
+        // Resolve before the mutable borrow of `feature` below.
+        let rc_allowed = self.remote_control_allowed();
         let feature = match self
             .store
             .projects
@@ -681,7 +709,20 @@ impl App {
             &windows,
         )?;
 
-        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
+        // Remote Control requires claude.ai OAuth and is incompatible with
+        // z.ai / third-party provider sessions and pre-v2.1.51 Claude Code.
+        // Suppress the flag when it can't be used.
+        let use_remote_control = feature.remote_control && rc_allowed;
+        let launch_opts = LaunchOpts {
+            enable_chrome: feature.enable_chrome,
+            remote_control: use_remote_control,
+            session_name: if use_remote_control {
+                Some(feature.name.clone())
+            } else {
+                None
+            },
+        };
+        let extra_args: Vec<String> = feature.mode.cli_flags(launch_opts);
         for session in &feature.sessions {
             match session.kind {
                 SessionKind::Claude => {
@@ -1317,6 +1358,7 @@ impl App {
             mode: feature.mode.clone(),
             review: feature.review,
             enable_chrome: feature.enable_chrome,
+            remote_control: feature.remote_control,
             include_context: true,
         };
 
@@ -1338,6 +1380,7 @@ impl App {
         let review = state.review;
         let agent = state.agent.clone();
         let enable_chrome = state.enable_chrome;
+        let remote_control = state.remote_control;
         let include_context = state.include_context;
         let source_workdir = self
             .store
@@ -1416,6 +1459,7 @@ impl App {
                         create_terminal: false,
                         session_name: Self::default_session_name_for_agent(&agent),
                         enable_chrome,
+                        remote_control,
                         steering_enabled: false,
                     },
                 );
@@ -1434,6 +1478,7 @@ impl App {
                 false,
                 Self::default_session_name_for_agent(&agent),
                 enable_chrome,
+                remote_control,
                 false,
                 None,
             );
@@ -1451,6 +1496,7 @@ impl App {
             false,
             agent,
             enable_chrome,
+            remote_control,
         );
 
         self.store.add_feature(&project_name, feature);

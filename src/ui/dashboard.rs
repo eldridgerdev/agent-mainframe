@@ -765,24 +765,47 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         draw_view_pane(frame, app, view, app.leader_active, true);
-        // Direct-input badge: typing goes straight to Claude Code
-        // instead of opening the compose box.
-        if view.session_kind == SessionKind::Claude && !app.compose_intercept_active(view) {
-            let label = " [direct input — leader+e: compose] ";
-            let label_width = (label.chars().count() as u16).min(area.width);
-            let badge_area = Rect::new(
-                area.x + area.width.saturating_sub(label_width),
-                area.y,
-                label_width,
-                1,
-            );
-            let badge = ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(
-                label,
-                ratatui::style::Style::default()
-                    .fg(app.theme.warning.to_color())
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ));
-            frame.render_widget(badge, badge_area);
+        // Top-right status badges for Claude sessions: a Remote Control
+        // indicator (when the session is bridged to claude.ai) and the
+        // direct-input hint (when typing goes straight to Claude rather than
+        // the compose box). Both are right-aligned on the top row.
+        if view.session_kind == SessionKind::Claude {
+            use ratatui::style::{Modifier, Style};
+            use ratatui::text::{Line, Span};
+            let mut badge_spans: Vec<Span> = Vec::new();
+            if crate::app::remote_control::detect_remote_control(&app.pane_content).active {
+                badge_spans.push(Span::styled(
+                    " [remote ●] ",
+                    Style::default()
+                        .fg(app.theme.success.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if !app.compose_intercept_active(view) {
+                badge_spans.push(Span::styled(
+                    " [direct input — leader+e: compose] ",
+                    Style::default()
+                        .fg(app.theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if !badge_spans.is_empty() {
+                let total: u16 = badge_spans
+                    .iter()
+                    .map(|s| s.content.chars().count() as u16)
+                    .sum();
+                let label_width = total.min(area.width);
+                let badge_area = Rect::new(
+                    area.x + area.width.saturating_sub(label_width),
+                    area.y,
+                    label_width,
+                    1,
+                );
+                frame.render_widget(
+                    ratatui::widgets::Paragraph::new(Line::from(badge_spans)),
+                    badge_area,
+                );
+            }
         }
         // Show transient message (e.g. "Copied N chars") on the bottom line
         if let Some(ref msg) = app.message {
@@ -1426,6 +1449,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Codex,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,
@@ -1527,6 +1551,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Claude,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,
@@ -1631,6 +1656,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Claude,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,
@@ -1735,6 +1761,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Opencode,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,
@@ -1826,6 +1853,7 @@ mod tests {
             plan_mode: false,
             agent: AgentKind::Codex,
             enable_chrome: false,
+            remote_control: false,
             pending_worktree_script: false,
             ready: false,
             status: ProjectStatus::Idle,

@@ -426,6 +426,15 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
             app.exit_view();
             app.open_harness_setup(false);
         }
+        KeyCode::Char('c') => {
+            app.copy_remote_control_url()?;
+        }
+        KeyCode::Char('C') => {
+            app.toggle_remote_control_in_view()?;
+        }
+        KeyCode::Char('O') => {
+            app.open_remote_control_url()?;
+        }
         _ => {}
     }
 
@@ -644,6 +653,24 @@ mod tests {
             }
             _ => panic!("expected SteeringPrompt mode"),
         }
+    }
+
+    #[test]
+    fn leader_toggle_remote_control_blocked_by_zai_does_not_send() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        // z.ai sessions can't use Remote Control; the toggle must short
+        // circuit before sending anything to tmux. The MockTmuxOps has no
+        // send expectations, so any tmux send here would panic the test.
+        app.config.zai = Some(crate::app::ZaiPlanConfig {
+            plan: "coding".to_string(),
+            ..Default::default()
+        });
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('C')), 20).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
     }
 
     #[test]
@@ -1125,6 +1152,7 @@ mod tests {
             false,
             false,
             AgentKind::Claude,
+            false,
             false,
         );
         feature.status = ProjectStatus::Active;

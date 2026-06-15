@@ -19,6 +19,10 @@ are tagged.
   with a motion (`dw`, `db`, `de`, `d$`, `d0`, `dh`, `dl`), line
   deletes (`dd`, and `dj`/`dk` for multiple lines), `D` to delete to
   end of line, and the `e` motion to jump to the end of a word.
+- Vim normal mode now supports yank and paste: `y` with a motion
+  (`yw`, `y$`, …), `yy`/`Y` to yank a line, and `p`/`P` to paste after
+  or before the cursor (charwise or linewise). Deletes and `x` feed the
+  same register, so `ddp` and `xp` work as in vim.
 
 ### Changed
 

@@ -27,14 +27,13 @@ impl App {
 
         let mut state = DiffViewerState::new(view, workdir);
         state.layout = self.preferred_diff_viewer_layout();
-        self.populate_diff_viewer_state(&mut state);
-        self.mode = AppMode::DiffViewer(state);
+        self.mode = AppMode::DiffViewerLoading(state);
         Ok(())
     }
 
     pub fn close_diff_viewer(&mut self) {
         let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
-            AppMode::DiffViewer(state) => state.from_view,
+            AppMode::DiffViewer(state) | AppMode::DiffViewerLoading(state) => state.from_view,
             other => {
                 self.mode = other;
                 return;
@@ -44,45 +43,60 @@ impl App {
     }
 
     pub fn refresh_diff_viewer(&mut self) {
-        let Some((workdir, selected_path, selected_index)) = (match &self.mode {
-            AppMode::DiffViewer(state) => Some((
-                state.workdir.clone(),
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffViewer(mut state) => {
+                state.error = None;
                 state
-                    .files
-                    .get(state.selected_file)
-                    .map(|file| file.path.clone()),
-                state.selected_file,
-            )),
-            _ => None,
-        }) else {
-            return;
+            }
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.mode = AppMode::DiffViewerLoading(state);
+    }
+
+    pub fn complete_diff_viewer_loading(&mut self) {
+        let mut state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffViewerLoading(state) => state,
+            other => {
+                self.mode = other;
+                return;
+            }
         };
 
-        let snapshot = crate::diff::load_snapshot(&workdir);
-        if let AppMode::DiffViewer(state) = &mut self.mode {
-            match snapshot {
-                Ok(snapshot) => {
-                    state.branch = snapshot.branch;
-                    state.base_ref = snapshot.base_ref;
-                    state.base_commit = snapshot.base_commit;
-                    state.error = None;
-                    state.files = snapshot.files;
-                    state.selected_file = selected_path
-                        .and_then(|path| state.files.iter().position(|file| file.path == path))
-                        .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
-                    state.patch_scroll = 0;
-                }
-                Err(err) => {
-                    state.branch.clear();
-                    state.base_ref.clear();
-                    state.base_commit.clear();
-                    state.files.clear();
-                    state.selected_file = 0;
-                    state.patch_scroll = 0;
-                    state.error = Some(err.to_string());
-                }
+        let selected_path = state
+            .files
+            .get(state.selected_file)
+            .map(|file| file.path.clone());
+        let selected_index = state.selected_file;
+        match crate::diff::load_snapshot(&state.workdir) {
+            Ok(snapshot) => {
+                state.branch = snapshot.branch;
+                state.base_ref = snapshot.base_ref;
+                state.base_commit = snapshot.base_commit;
+                state.error = None;
+                state.files = snapshot.files;
+                state.selected_file = selected_path
+                    .and_then(|path| state.files.iter().position(|file| file.path == path))
+                    .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
+                state.patch_scroll = 0;
+            }
+            Err(err) => {
+                state.branch.clear();
+                state.base_ref.clear();
+                state.base_commit.clear();
+                state.files.clear();
+                state.selected_file = 0;
+                state.patch_scroll = 0;
+                state.error = Some(err.to_string());
             }
         }
+        self.mode = AppMode::DiffViewer(state);
+    }
+
+    pub fn diff_viewer_loading(&self) -> bool {
+        matches!(self.mode, AppMode::DiffViewerLoading(_))
     }
 
     pub fn diff_viewer_select_next_file(&mut self) {

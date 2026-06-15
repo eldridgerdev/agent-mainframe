@@ -60,6 +60,54 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Them
     draw_footer(frame, chunks[2], state, theme);
 }
 
+pub fn draw_diff_viewer_loading(
+    frame: &mut Frame,
+    state: &DiffViewerState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = centered_rect(54, 28, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Branch Diff ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+    let branch = if state.branch.is_empty() {
+        state.from_view.feature_name.as_str()
+    } else {
+        state.branch.as_str()
+    };
+
+    let loading = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            spinner,
+            Span::styled(
+                " Loading branch diff...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Comparing changes for {branch}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+
+    frame.render_widget(loading, inner);
+}
+
 fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
     let branch = if state.branch.is_empty() {
         "(unknown branch)"

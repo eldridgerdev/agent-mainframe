@@ -10,7 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Opening the branch diff viewer and Markdown viewer now shows a
+  loading indicator while AMF gathers files or reads content, so slower
+  startups and large worktrees no longer look like the app ignored the
+  command.
 
 ## [v0.23.0] - 2026-06-15
 

@@ -15,6 +15,10 @@ are tagged.
 - Vim mode in the compose and steering-prompt inputs now supports undo
   and redo: press `u` in normal mode to undo and `Ctrl+R` to redo.
   Everything typed during a single insert session is undone in one step.
+- Vim normal mode now supports operator + motion editing: `d` combined
+  with a motion (`dw`, `db`, `de`, `d$`, `d0`, `dh`, `dl`), line
+  deletes (`dd`, and `dj`/`dk` for multiple lines), `D` to delete to
+  end of line, and the `e` motion to jump to the end of a word.
 
 ### Changed
 

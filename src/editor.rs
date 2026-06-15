@@ -12,6 +12,14 @@ pub enum VimMode {
     Normal,
 }
 
+/// A pending vim operator awaiting a motion or text object (the `d` in
+/// `dw`). The framework is operator-generic; today only delete is wired
+/// up, with change/yank to follow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Operator {
+    Delete,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EditorOutcome {
     pub handled: bool,
@@ -78,6 +86,8 @@ pub struct TextEditor {
     /// Snapshot staged when an insert session begins; flushed into the
     /// undo stack by the first mutation so the whole session is one step.
     pending: Option<Snapshot>,
+    /// Operator awaiting a motion (e.g. `d` pressed, waiting for `w`).
+    pending_op: Option<Operator>,
 }
 
 impl TextEditor {
@@ -92,6 +102,7 @@ impl TextEditor {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             pending: None,
+            pending_op: None,
         }
     }
 
@@ -136,6 +147,7 @@ impl TextEditor {
                 self.keymap = EditorKeymap::Plain;
                 self.vim_mode = VimMode::Insert;
                 self.pending = None;
+                self.pending_op = None;
             }
         }
         self.preferred_col = None;
@@ -304,6 +316,12 @@ impl TextEditor {
     }
 
     fn handle_vim_normal_key(&mut self, key: KeyEvent) -> EditorOutcome {
+        // A pending operator (e.g. `d`) consumes the next key as its
+        // motion/text-object before any normal-mode binding runs.
+        if let Some(op) = self.pending_op {
+            return self.apply_pending_operator(op, key);
+        }
+
         match key.code {
             KeyCode::Esc => EditorOutcome::handled(),
             KeyCode::Char('i') if key.modifiers.is_empty() => {
@@ -349,6 +367,19 @@ impl TextEditor {
             KeyCode::End => self.move_end(),
             KeyCode::Char('w') if key.modifiers.is_empty() => self.move_word_forward(),
             KeyCode::Char('b') if key.modifiers.is_empty() => self.move_word_backward(),
+            KeyCode::Char('e') if key.modifiers.is_empty() => self.move_word_end(),
+            KeyCode::Char('d') if key.modifiers.is_empty() => {
+                self.pending_op = Some(Operator::Delete);
+                EditorOutcome::handled()
+            }
+            KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let end = self.line_end(self.cursor);
+                if self.cursor < end {
+                    self.apply_delete(Operator::Delete, self.cursor, end, false)
+                } else {
+                    EditorOutcome::handled()
+                }
+            }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
                 // Only record an undo step when there is something to
                 // delete, so a no-op `x` doesn't discard redo history.
@@ -448,15 +479,7 @@ impl TextEditor {
     }
 
     fn move_first_non_whitespace(&mut self) -> EditorOutcome {
-        let line_start = self.line_start(self.cursor);
-        let line_end = self.line_end(self.cursor);
-        let line = &self.text[line_start..line_end];
-        let offset = line
-            .char_indices()
-            .find(|(_, ch)| !ch.is_whitespace())
-            .map(|(idx, _)| idx)
-            .unwrap_or(0);
-        let next = line_start + offset;
+        let next = self.first_non_blank_of_line(self.cursor);
         if next == self.cursor {
             return EditorOutcome::default();
         }
@@ -476,7 +499,38 @@ impl TextEditor {
     }
 
     fn move_word_forward(&mut self) -> EditorOutcome {
-        let mut idx = self.cursor;
+        let idx = self.word_forward_index(self.cursor);
+        if idx == self.cursor {
+            return EditorOutcome::default();
+        }
+        self.cursor = idx;
+        self.preferred_col = None;
+        EditorOutcome::moved()
+    }
+
+    fn move_word_backward(&mut self) -> EditorOutcome {
+        let idx = self.word_backward_index(self.cursor);
+        if idx == self.cursor {
+            return EditorOutcome::default();
+        }
+        self.cursor = idx;
+        self.preferred_col = None;
+        EditorOutcome::moved()
+    }
+
+    fn move_word_end(&mut self) -> EditorOutcome {
+        let idx = self.word_end_index(self.cursor);
+        if idx == self.cursor {
+            return EditorOutcome::default();
+        }
+        self.cursor = idx;
+        self.preferred_col = None;
+        EditorOutcome::moved()
+    }
+
+    /// Index of the start of the next word at or after `from`.
+    fn word_forward_index(&self, from: usize) -> usize {
+        let mut idx = from;
         while idx < self.text.len() {
             let Some(ch) = self.char_at(idx) else {
                 break;
@@ -487,7 +541,6 @@ impl TextEditor {
                 break;
             }
         }
-
         while idx < self.text.len() {
             let Some(ch) = self.char_at(idx) else {
                 break;
@@ -497,22 +550,15 @@ impl TextEditor {
             }
             idx = self.next_boundary(idx);
         }
-
-        if idx == self.cursor {
-            return EditorOutcome::default();
-        }
-
-        self.cursor = idx;
-        self.preferred_col = None;
-        EditorOutcome::moved()
+        idx
     }
 
-    fn move_word_backward(&mut self) -> EditorOutcome {
-        if self.cursor == 0 {
-            return EditorOutcome::default();
+    /// Index of the start of the word at or before `from`.
+    fn word_backward_index(&self, from: usize) -> usize {
+        if from == 0 {
+            return 0;
         }
-
-        let mut idx = self.prev_boundary(self.cursor);
+        let mut idx = self.prev_boundary(from);
         while idx > 0 {
             let Some(ch) = self.char_at(idx) else {
                 break;
@@ -522,7 +568,6 @@ impl TextEditor {
             }
             idx = self.prev_boundary(idx);
         }
-
         while idx > 0 {
             let prev = self.prev_boundary(idx);
             let Some(ch) = self.char_at(prev) else {
@@ -533,14 +578,156 @@ impl TextEditor {
             }
             idx = prev;
         }
+        idx
+    }
 
-        if idx == self.cursor {
-            return EditorOutcome::default();
+    /// Index of the last character of the next word after `from`
+    /// (the `e` motion target — points *at* that character).
+    fn word_end_index(&self, from: usize) -> usize {
+        let len = self.text.len();
+        if from >= len {
+            return from;
         }
+        let mut idx = self.next_boundary(from);
+        while idx < len {
+            let Some(ch) = self.char_at(idx) else {
+                break;
+            };
+            if Self::is_word_char(ch) {
+                break;
+            }
+            idx = self.next_boundary(idx);
+        }
+        while idx < len {
+            let next = self.next_boundary(idx);
+            match self.char_at(next) {
+                Some(ch) if next < len && Self::is_word_char(ch) => idx = next,
+                _ => break,
+            }
+        }
+        idx
+    }
 
-        self.cursor = idx;
-        self.preferred_col = None;
-        EditorOutcome::moved()
+    /// Index of the first non-whitespace char on the line containing
+    /// `idx`, or the line start if the line is blank.
+    fn first_non_blank_of_line(&self, idx: usize) -> usize {
+        let line_start = self.line_start(idx);
+        let line_end = self.line_end(idx);
+        let line = &self.text[line_start..line_end];
+        let offset = line
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        line_start + offset
+    }
+
+    /// Full linewise byte range covering the lines at `a` and `b`,
+    /// including one trailing newline (or the leading one on the last
+    /// line) so the lines are removed cleanly.
+    fn linewise_range(&self, a: usize, b: usize) -> (usize, usize) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let start = self.line_start(lo);
+        let end = self.line_end(hi);
+        if end < self.text.len() {
+            (start, end + 1)
+        } else if start > 0 {
+            (start - 1, end)
+        } else {
+            (start, end)
+        }
+    }
+
+    /// Resolve a charwise operator target for `key`, returning the byte
+    /// range `[start, end)` to operate on, or None when `key` is not a
+    /// supported charwise motion.
+    fn charwise_op_range(&self, key: KeyEvent) -> Option<(usize, usize)> {
+        let c = self.cursor;
+        match key.code {
+            KeyCode::Char('w') if key.modifiers.is_empty() => Some((c, self.word_forward_index(c))),
+            KeyCode::Char('b') if key.modifiers.is_empty() => Some((self.word_backward_index(c), c)),
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                // Inclusive: extend past the end-of-word character.
+                Some((c, self.next_boundary(self.word_end_index(c))))
+            }
+            KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                Some((c, self.line_end(c)))
+            }
+            KeyCode::Char('0') if key.modifiers.is_empty() => Some((self.line_start(c), c)),
+            KeyCode::Char('h') if key.modifiers.is_empty() => Some((self.prev_boundary(c), c)),
+            KeyCode::Left => Some((self.prev_boundary(c), c)),
+            KeyCode::Char('l') if key.modifiers.is_empty() => Some((c, self.next_boundary(c))),
+            KeyCode::Right => Some((c, self.next_boundary(c))),
+            _ => None,
+        }
+    }
+
+    /// Resolve and apply an operator's motion (the second key of `dw`,
+    /// `dd`, etc.). Esc or an unsupported key cancels the operator.
+    fn apply_pending_operator(&mut self, op: Operator, key: KeyEvent) -> EditorOutcome {
+        if key.code == KeyCode::Esc {
+            self.pending_op = None;
+            return EditorOutcome::handled();
+        }
+        self.pending_op = None;
+
+        // A doubled operator (`dd`) acts linewise on the current line.
+        let doubled = op == Operator::Delete
+            && key.code == KeyCode::Char('d')
+            && key.modifiers.is_empty();
+
+        let down = matches!(key.code, KeyCode::Down)
+            || (key.code == KeyCode::Char('j') && key.modifiers.is_empty());
+        let up = matches!(key.code, KeyCode::Up)
+            || (key.code == KeyCode::Char('k') && key.modifiers.is_empty());
+
+        let (range, linewise) = if doubled {
+            (Some(self.linewise_range(self.cursor, self.cursor)), true)
+        } else if down {
+            let line_end = self.line_end(self.cursor);
+            let range = (line_end < self.text.len())
+                .then(|| self.linewise_range(self.cursor, line_end + 1));
+            (range, true)
+        } else if up {
+            let line_start = self.line_start(self.cursor);
+            let range = (line_start > 0).then(|| self.linewise_range(line_start - 1, self.cursor));
+            (range, true)
+        } else {
+            (self.charwise_op_range(key), false)
+        };
+
+        match range {
+            Some((start, end)) if start < end => self.apply_delete(op, start, end, linewise),
+            // Valid-but-empty or unsupported motion: consume, no change.
+            _ => EditorOutcome::handled(),
+        }
+    }
+
+    /// Apply an operator to a resolved byte range.
+    fn apply_delete(
+        &mut self,
+        op: Operator,
+        start: usize,
+        end: usize,
+        linewise: bool,
+    ) -> EditorOutcome {
+        match op {
+            Operator::Delete => {
+                self.push_undo_state();
+                self.text.drain(start..end);
+                self.cursor = start.min(self.text.len());
+                if linewise {
+                    self.cursor = self.first_non_blank_of_line(self.cursor);
+                }
+                self.preferred_col = None;
+                EditorOutcome {
+                    handled: true,
+                    text_changed: true,
+                    cursor_moved: true,
+                    mode_changed: false,
+                }
+            }
+        }
     }
 
     fn open_below(&mut self) -> EditorOutcome {
@@ -800,6 +987,106 @@ mod tests {
         let outcome = editor.handle_key(ctrl(KeyCode::Char('r')));
         assert!(!outcome.text_changed);
         assert_eq!(editor.text(), "ello");
+    }
+
+    /// Put a fresh vim editor into normal mode with the cursor at the
+    /// very start of the buffer. (`with_vim` opens with the cursor at the
+    /// end, so we walk up to the top line before going home.)
+    fn normal_at_start(text: &str) -> TextEditor {
+        let mut editor = TextEditor::with_vim(text.to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        for _ in 0..text.lines().count().max(1) {
+            editor.handle_key(key(KeyCode::Up));
+        }
+        editor.handle_key(key(KeyCode::Home));
+        editor
+    }
+
+    #[test]
+    fn delete_word_with_dw() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('d')));
+        let outcome = editor.handle_key(key(KeyCode::Char('w')));
+        assert!(outcome.text_changed);
+        assert_eq!(editor.text(), "world");
+        assert_eq!(editor.cursor(), 0);
+    }
+
+    #[test]
+    fn delete_to_end_of_word_with_de_is_inclusive() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('e')));
+        assert_eq!(editor.text(), " world");
+    }
+
+    #[test]
+    fn delete_back_with_db() {
+        let mut editor = normal_at_start("hello world");
+        // Move to the start of "world" (index 6).
+        editor.handle_key(key(KeyCode::Char('w')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(editor.text(), "world");
+    }
+
+    #[test]
+    fn delete_to_line_end_with_d_dollar_and_shift_d() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('w'))); // cursor at "world"
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(shift(KeyCode::Char('$')));
+        assert_eq!(editor.text(), "hello ");
+
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(shift(KeyCode::Char('D')));
+        assert_eq!(editor.text(), "");
+    }
+
+    #[test]
+    fn delete_line_with_dd() {
+        let mut editor = normal_at_start("one\ntwo\nthree");
+        editor.handle_key(key(KeyCode::Down)); // cursor on "two"
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(editor.text(), "one\nthree");
+    }
+
+    #[test]
+    fn delete_two_lines_with_dj() {
+        let mut editor = normal_at_start("a\nb\nc");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(editor.text(), "c");
+    }
+
+    #[test]
+    fn operator_is_cancelled_by_escape() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Esc));
+        // The pending `d` is gone; a plain `w` now just moves.
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.text(), "hello world");
+        assert_eq!(editor.cursor(), 6);
+    }
+
+    #[test]
+    fn delete_can_be_undone_as_one_step() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.text(), "world");
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "hello world");
+    }
+
+    #[test]
+    fn e_moves_to_end_of_word() {
+        let mut editor = normal_at_start("hello world");
+        let outcome = editor.handle_key(key(KeyCode::Char('e')));
+        assert!(outcome.cursor_moved);
+        assert_eq!(editor.cursor(), 4); // the second 'l'... 'o' of hello
     }
 
     #[test]

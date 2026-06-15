@@ -44,20 +44,22 @@ woven into the ranking below rather than listed separately:
 
 - [x] **Undo / redo** — `u`, `Ctrl-r`. Introduces the undo stack used
   by everything below. (Foundational)
-- [ ] **Operator + motion framework** — operator-pending state so
+- [x] **Operator + motion framework** — operator-pending state so
   `d`/`c`/`y` combine with any motion. (Foundational)
-- [ ] **Delete operator** `d` with motions — `dw`, `db`, `d$`, `d0`,
-  `dl`, etc.
+- [x] **Delete operator** `d` with motions — `dw`, `db`, `de`, `d$`,
+  `d0`, `dh`, `dl`, `dj`, `dk`.
 - [ ] **Change operator** `c` with motions — `cw`, `cb`, `c$`, etc.
   (delete + enter insert).
 - [ ] **Yank operator** `y` with motions — `yw`, `y$`, etc. Introduces
   register storage. (Foundational)
 - [ ] **Paste** — `p` (after cursor) and `P` (before), charwise and
   linewise aware.
-- [ ] **Linewise operators** — `dd`, `cc`, `yy` (and `S` as `cc`).
-- [ ] **Line-tail shortcuts** — `D` (= `d$`), `C` (= `c$`).
-- [ ] **Word-end motion** `e` — used standalone and as a `d`/`c`/`y`
-  target (`de`, `ce`).
+- [x] **Delete line** `dd` (linewise).
+- [ ] **Linewise change/yank** — `cc`, `yy` (and `S` as `cc`).
+- [x] **Delete to line end** `D` (= `d$`).
+- [ ] **Change to line end** `C` (= `c$`).
+- [x] **Word-end motion** `e` — standalone and as a `d`/`c`/`y` target
+  (`de`, `ce`).
 
 ### Tier 2 — Everyday productivity
 

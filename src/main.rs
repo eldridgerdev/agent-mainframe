@@ -1354,6 +1354,22 @@ fn run_loop<B: Backend>(
                 .record_duration("ui.draw", draw_started_at.elapsed());
             app.perf.note_draw_completed();
             force_redraw = false;
+
+            if !startup_loading && app.diff_viewer_loading() {
+                let started_at = Instant::now();
+                app.complete_diff_viewer_loading();
+                app.perf
+                    .record_duration("diff_viewer.load_snapshot", started_at.elapsed());
+                force_redraw = true;
+            }
+
+            if !startup_loading && app.markdown_loading() {
+                let started_at = Instant::now();
+                app.complete_markdown_loading();
+                app.perf
+                    .record_duration("markdown.load", started_at.elapsed());
+                force_redraw = true;
+            }
         }
 
         for line in app.perf.take_due_summary_lines() {

@@ -16,7 +16,7 @@ mod search;
 mod view;
 
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::App;
 
@@ -84,6 +84,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ConfirmingCodexSession { .. } => handle_codex_session_confirm_key(app, key.code),
         AppMode::SessionPicker(_) => handle_session_picker_key(app, key.code),
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
+        AppMode::DiffViewerLoading(_) => handle_diff_viewer_key(app, key.code),
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key.code),
         AppMode::DiffReviewPrompt(_) => handle_diff_review_key(app, key),
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
@@ -94,6 +95,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
         AppMode::SyntaxLanguagePicker(_) => handle_syntax_language_picker_key(app, key.code),
         AppMode::DebugLog(_) => handle_debug_log_key(app, key.code),
+        AppMode::MarkdownLoading(_) => {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                app.cancel_markdown_loading();
+            }
+            Ok(())
+        }
         AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key),
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
     }

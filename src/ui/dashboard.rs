@@ -856,6 +856,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::DiffViewerLoading(state) = &app.mode {
+        draw_view_pane(frame, app, &state.from_view, false, false);
+        super::dialogs::draw_diff_viewer_loading(frame, state, &app.throbber_state, &app.theme);
+        return;
+    }
+
+    if let AppMode::MarkdownLoading(state) = &app.mode {
+        if let Some(view) = state.from_view.clone() {
+            draw_view_pane(frame, app, &view, false, false);
+        }
+        super::dialogs::draw_markdown_loading(frame, state, &app.throbber_state, &app.theme);
+        return;
+    }
+
     let markdown_from_view = if let AppMode::MarkdownViewer(state) = &app.mode {
         state.from_view.clone()
     } else {

@@ -397,41 +397,10 @@ impl App {
             }
         };
 
-        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
-            self.mode = AppMode::Viewing(view);
-            self.message = Some("Error: Could not resolve feature workdir".into());
-            return Ok(());
-        };
-
-        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
-        if files.is_empty() {
-            self.mode = AppMode::Viewing(view);
-            self.message = Some(
-                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
-                    .into(),
-            );
-            return Ok(());
-        }
-
-        if files.len() == 1 {
-            return self.open_markdown_viewer_path(
-                files[0].clone(),
-                workdir,
-                repo_root,
-                view,
-                None,
-            );
-        }
-
-        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
-            files,
-            selected: 0,
-            plan_only: true,
-            search_active: false,
-            query: String::new(),
-            workdir,
-            repo_root,
-            from_view: Some(view),
+        self.mode = AppMode::MarkdownLoading(crate::app::MarkdownLoadingState {
+            title: "Finding markdown files...".into(),
+            from_view: Some(view.clone()),
+            operation: crate::app::MarkdownLoadingOperation::DiscoverFromView { view },
         });
         self.message = None;
         Ok(())
@@ -452,36 +421,10 @@ impl App {
             return Ok(());
         };
 
-        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
-            self.mode = AppMode::MarkdownViewer(viewer);
-            self.message = Some("Error: Could not resolve feature workdir".into());
-            return Ok(());
-        };
-
-        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
-        if files.is_empty() {
-            self.mode = AppMode::MarkdownViewer(viewer);
-            self.message = Some(
-                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
-                    .into(),
-            );
-            return Ok(());
-        }
-
-        let selected = files
-            .iter()
-            .position(|path| path == &viewer.source_path)
-            .unwrap_or(0);
-
-        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
-            files,
-            selected,
-            plan_only: true,
-            search_active: false,
-            query: String::new(),
-            workdir,
-            repo_root,
+        self.mode = AppMode::MarkdownLoading(crate::app::MarkdownLoadingState {
+            title: "Finding markdown files...".into(),
             from_view: Some(view),
+            operation: crate::app::MarkdownLoadingOperation::DiscoverFromViewer { viewer },
         });
         self.message = None;
         Ok(())
@@ -509,12 +452,169 @@ impl App {
         view: ViewState,
         return_to_picker: Option<crate::app::MarkdownFilePickerState>,
     ) -> Result<()> {
+        self.mode = AppMode::MarkdownLoading(crate::app::MarkdownLoadingState {
+            title: format!("Loading {}...", path.display()),
+            from_view: Some(view.clone()),
+            operation: crate::app::MarkdownLoadingOperation::ReadPath {
+                path,
+                workdir,
+                repo_root,
+                view,
+                return_to_picker,
+            },
+        });
+        self.message = None;
+        Ok(())
+    }
+
+    pub fn markdown_loading(&self) -> bool {
+        matches!(self.mode, AppMode::MarkdownLoading(_))
+    }
+
+    pub fn complete_markdown_loading(&mut self) {
+        let loading = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::MarkdownLoading(loading) => loading,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        match loading.operation {
+            crate::app::MarkdownLoadingOperation::DiscoverFromView { view } => {
+                self.complete_markdown_discovery_from_view(view);
+            }
+            crate::app::MarkdownLoadingOperation::DiscoverFromViewer { viewer } => {
+                self.complete_markdown_discovery_from_viewer(viewer);
+            }
+            crate::app::MarkdownLoadingOperation::ReadPath {
+                path,
+                workdir,
+                repo_root,
+                view,
+                return_to_picker,
+            } => {
+                self.complete_markdown_read_path(path, workdir, repo_root, view, return_to_picker);
+            }
+        }
+    }
+
+    pub fn cancel_markdown_loading(&mut self) {
+        let loading = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::MarkdownLoading(loading) => loading,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        self.mode = match loading.operation {
+            crate::app::MarkdownLoadingOperation::DiscoverFromView { view } => {
+                AppMode::Viewing(view)
+            }
+            crate::app::MarkdownLoadingOperation::DiscoverFromViewer { viewer } => {
+                AppMode::MarkdownViewer(viewer)
+            }
+            crate::app::MarkdownLoadingOperation::ReadPath {
+                view,
+                return_to_picker,
+                ..
+            } => return_to_picker
+                .map(AppMode::MarkdownFilePicker)
+                .unwrap_or(AppMode::Viewing(view)),
+        };
+    }
+
+    fn complete_markdown_discovery_from_view(&mut self, view: ViewState) {
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return;
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return;
+        }
+
+        if files.len() == 1 {
+            self.complete_markdown_read_path(files[0].clone(), workdir, repo_root, view, None);
+            return;
+        }
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected: 0,
+            plan_only: true,
+            search_active: false,
+            query: String::new(),
+            workdir,
+            repo_root,
+            from_view: Some(view),
+        });
+        self.message = None;
+    }
+
+    fn complete_markdown_discovery_from_viewer(&mut self, viewer: crate::app::MarkdownViewerState) {
+        let Some(view) = viewer.from_view.clone() else {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return;
+        };
+
+        let Some((workdir, repo_root)) = self.feature_markdown_context(Some(&view)) else {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return;
+        };
+
+        let files = crate::markdown::collect_markdown_view_paths(&workdir, repo_root.as_deref());
+        if files.is_empty() {
+            self.mode = AppMode::MarkdownViewer(viewer);
+            self.message = Some(
+                "Error: No markdown file found (.claude/*.md or top-level *.md in the worktree/repo root)"
+                    .into(),
+            );
+            return;
+        }
+
+        let selected = files
+            .iter()
+            .position(|path| path == &viewer.source_path)
+            .unwrap_or(0);
+
+        self.mode = AppMode::MarkdownFilePicker(crate::app::MarkdownFilePickerState {
+            files,
+            selected,
+            plan_only: true,
+            search_active: false,
+            query: String::new(),
+            workdir,
+            repo_root,
+            from_view: Some(view),
+        });
+        self.message = None;
+    }
+
+    fn complete_markdown_read_path(
+        &mut self,
+        path: PathBuf,
+        workdir: PathBuf,
+        repo_root: Option<PathBuf>,
+        view: ViewState,
+        return_to_picker: Option<crate::app::MarkdownFilePickerState>,
+    ) {
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
                 self.mode = AppMode::Viewing(view);
                 self.message = Some(format!("Error: Failed to read {}: {err}", path.display()));
-                return Ok(());
+                return;
             }
         };
 
@@ -531,7 +631,6 @@ impl App {
             from_view: Some(view),
         });
         self.message = None;
-        Ok(())
     }
 
     pub fn activate_leader(&mut self) {

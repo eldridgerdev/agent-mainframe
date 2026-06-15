@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Vim mode in the compose and steering-prompt inputs now supports undo
+  and redo: press `u` in normal mode to undo and `Ctrl+R` to redo.
+  Everything typed during a single insert session is undone in one step.
+
 ### Changed
 
 - Review mode, final review, plan mode, and the steering coach now show

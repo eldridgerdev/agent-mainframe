@@ -42,7 +42,7 @@ woven into the ranking below rather than listed separately:
 
 ### Tier 1 — Core editing (highest value)
 
-- [ ] **Undo / redo** — `u`, `Ctrl-r`. Introduces the undo stack used
+- [x] **Undo / redo** — `u`, `Ctrl-r`. Introduces the undo stack used
   by everything below. (Foundational)
 - [ ] **Operator + motion framework** — operator-pending state so
   `d`/`c`/`y` combine with any motion. (Foundational)

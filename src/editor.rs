@@ -53,6 +53,17 @@ impl EditorOutcome {
     }
 }
 
+/// A point-in-time copy of the buffer used for undo/redo.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    text: String,
+    cursor: usize,
+}
+
+/// Cap on history depth so pathological editing can't grow memory
+/// without bound. Generous for prompt-sized buffers.
+const MAX_HISTORY: usize = 1000;
+
 #[derive(Debug, Clone)]
 pub struct TextEditor {
     text: String,
@@ -60,6 +71,13 @@ pub struct TextEditor {
     preferred_col: Option<usize>,
     keymap: EditorKeymap,
     vim_mode: VimMode,
+    /// States to restore on `u`, oldest first.
+    undo_stack: Vec<Snapshot>,
+    /// States to restore on `Ctrl-r`, in reverse-undo order.
+    redo_stack: Vec<Snapshot>,
+    /// Snapshot staged when an insert session begins; flushed into the
+    /// undo stack by the first mutation so the whole session is one step.
+    pending: Option<Snapshot>,
 }
 
 impl TextEditor {
@@ -71,12 +89,18 @@ impl TextEditor {
             preferred_col: None,
             keymap: EditorKeymap::Plain,
             vim_mode: VimMode::Insert,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending: None,
         }
     }
 
     pub fn with_vim(text: String) -> Self {
         let mut editor = Self::new(text);
         editor.keymap = EditorKeymap::Vim;
+        // The editor opens in insert mode; stage the initial state so the
+        // first edits can be undone back to the original text.
+        editor.arm_undo();
         editor
     }
 
@@ -104,14 +128,93 @@ impl TextEditor {
             EditorKeymap::Plain => {
                 self.keymap = EditorKeymap::Vim;
                 self.vim_mode = VimMode::Insert;
+                // Entering vim lands in insert mode; stage the current
+                // state so the session is undoable.
+                self.arm_undo();
             }
             EditorKeymap::Vim => {
                 self.keymap = EditorKeymap::Plain;
                 self.vim_mode = VimMode::Insert;
+                self.pending = None;
             }
         }
         self.preferred_col = None;
         EditorOutcome::mode_changed()
+    }
+
+    fn current_snapshot(&self) -> Snapshot {
+        Snapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+        }
+    }
+
+    fn push_history(stack: &mut Vec<Snapshot>, snapshot: Snapshot) {
+        if stack.len() >= MAX_HISTORY {
+            stack.remove(0);
+        }
+        stack.push(snapshot);
+    }
+
+    /// Record the current state as an immediate, atomic undo step and
+    /// invalidate the redo history. Used by one-shot normal-mode edits.
+    fn push_undo_state(&mut self) {
+        self.pending = None;
+        let snapshot = self.current_snapshot();
+        Self::push_history(&mut self.undo_stack, snapshot);
+        self.redo_stack.clear();
+    }
+
+    /// Stage a snapshot for an upcoming insert session. The first
+    /// mutation flushes it, so an entire session collapses to one undo
+    /// step; if no mutation happens, the snapshot is discarded.
+    fn arm_undo(&mut self) {
+        self.pending = Some(self.current_snapshot());
+    }
+
+    /// Flush a staged insert-session snapshot. No-op when nothing is
+    /// staged (plain mode, or a session past its first edit).
+    fn commit_pending(&mut self) {
+        if let Some(snapshot) = self.pending.take() {
+            Self::push_history(&mut self.undo_stack, snapshot);
+            self.redo_stack.clear();
+        }
+    }
+
+    fn undo(&mut self) -> EditorOutcome {
+        let Some(prev) = self.undo_stack.pop() else {
+            return EditorOutcome::handled();
+        };
+        let snapshot = self.current_snapshot();
+        Self::push_history(&mut self.redo_stack, snapshot);
+        self.text = prev.text;
+        self.cursor = prev.cursor.min(self.text.len());
+        self.pending = None;
+        self.preferred_col = None;
+        EditorOutcome {
+            handled: true,
+            text_changed: true,
+            cursor_moved: true,
+            mode_changed: false,
+        }
+    }
+
+    fn redo(&mut self) -> EditorOutcome {
+        let Some(next) = self.redo_stack.pop() else {
+            return EditorOutcome::handled();
+        };
+        let snapshot = self.current_snapshot();
+        Self::push_history(&mut self.undo_stack, snapshot);
+        self.text = next.text;
+        self.cursor = next.cursor.min(self.text.len());
+        self.pending = None;
+        self.preferred_col = None;
+        EditorOutcome {
+            handled: true,
+            text_changed: true,
+            cursor_moved: true,
+            mode_changed: false,
+        }
     }
 
     pub fn insert_str(&mut self, text: &str) -> EditorOutcome {
@@ -119,6 +222,7 @@ impl TextEditor {
             return EditorOutcome::default();
         }
 
+        self.commit_pending();
         self.text.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.preferred_col = None;
@@ -130,6 +234,7 @@ impl TextEditor {
             return EditorOutcome::default();
         }
 
+        self.push_undo_state();
         self.text.clear();
         self.cursor = 0;
         self.preferred_col = None;
@@ -189,6 +294,9 @@ impl TextEditor {
             KeyCode::Esc => {
                 self.vim_mode = VimMode::Normal;
                 self.preferred_col = None;
+                // Discard an unused insert-session snapshot so entering
+                // insert and leaving without editing records no undo step.
+                self.pending = None;
                 EditorOutcome::mode_changed()
             }
             _ => self.handle_plain_key(key),
@@ -199,10 +307,12 @@ impl TextEditor {
         match key.code {
             KeyCode::Esc => EditorOutcome::handled(),
             KeyCode::Char('i') if key.modifiers.is_empty() => {
+                self.arm_undo();
                 self.vim_mode = VimMode::Insert;
                 EditorOutcome::mode_changed()
             }
             KeyCode::Char('a') if key.modifiers.is_empty() => {
+                self.arm_undo();
                 let moved = self.move_right();
                 self.vim_mode = VimMode::Insert;
                 let mut outcome = EditorOutcome::mode_changed();
@@ -210,6 +320,7 @@ impl TextEditor {
                 outcome
             }
             KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.arm_undo();
                 let moved = self.move_end();
                 self.vim_mode = VimMode::Insert;
                 let mut outcome = EditorOutcome::mode_changed();
@@ -217,6 +328,7 @@ impl TextEditor {
                 outcome
             }
             KeyCode::Char('I') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.arm_undo();
                 let moved = self.move_first_non_whitespace();
                 self.vim_mode = VimMode::Insert;
                 let mut outcome = EditorOutcome::mode_changed();
@@ -237,7 +349,16 @@ impl TextEditor {
             KeyCode::End => self.move_end(),
             KeyCode::Char('w') if key.modifiers.is_empty() => self.move_word_forward(),
             KeyCode::Char('b') if key.modifiers.is_empty() => self.move_word_backward(),
-            KeyCode::Char('x') if key.modifiers.is_empty() => self.delete(),
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
+                // Only record an undo step when there is something to
+                // delete, so a no-op `x` doesn't discard redo history.
+                if self.cursor < self.text.len() {
+                    self.push_undo_state();
+                }
+                self.delete()
+            }
+            KeyCode::Char('u') if key.modifiers.is_empty() => self.undo(),
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => self.redo(),
             KeyCode::Char('o') if key.modifiers.is_empty() => self.open_below(),
             KeyCode::Char('O') if key.modifiers.contains(KeyModifiers::SHIFT) => self.open_above(),
             _ => EditorOutcome::default(),
@@ -249,6 +370,7 @@ impl TextEditor {
             return EditorOutcome::default();
         }
 
+        self.commit_pending();
         let prev = self.prev_boundary(self.cursor);
         self.text.drain(prev..self.cursor);
         self.cursor = prev;
@@ -261,6 +383,7 @@ impl TextEditor {
             return EditorOutcome::default();
         }
 
+        self.commit_pending();
         let next = self.next_boundary(self.cursor);
         self.text.drain(self.cursor..next);
         self.preferred_col = None;
@@ -421,6 +544,7 @@ impl TextEditor {
     }
 
     fn open_below(&mut self) -> EditorOutcome {
+        self.push_undo_state();
         let line_end = self.line_end(self.cursor);
         let has_next_line = line_end < self.text.len();
         let insert_at = if has_next_line {
@@ -445,6 +569,7 @@ impl TextEditor {
     }
 
     fn open_above(&mut self) -> EditorOutcome {
+        self.push_undo_state();
         let insert_at = self.line_start(self.cursor);
         self.text.insert(insert_at, '\n');
         self.cursor = insert_at;
@@ -526,6 +651,10 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
 
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
     #[test]
     fn vim_insert_mode_switches_to_normal_on_escape() {
         let mut editor = TextEditor::with_vim("hello".to_string());
@@ -591,6 +720,95 @@ mod tests {
         editor.handle_key(key(KeyCode::Char('!')));
 
         assert_eq!(editor.text(), "  >hello!\nworld");
+    }
+
+    #[test]
+    fn undo_and_redo_restore_delete() {
+        let mut editor = TextEditor::with_vim("hello".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        editor.handle_key(key(KeyCode::Home));
+        editor.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(editor.text(), "ello");
+
+        let outcome = editor.handle_key(key(KeyCode::Char('u')));
+        assert!(outcome.text_changed);
+        assert_eq!(editor.text(), "hello");
+
+        let outcome = editor.handle_key(ctrl(KeyCode::Char('r')));
+        assert!(outcome.text_changed);
+        assert_eq!(editor.text(), "ello");
+    }
+
+    #[test]
+    fn undo_collapses_a_whole_insert_session() {
+        let mut editor = TextEditor::with_vim("ab".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        // Append " cd" via an insert session entered with `a`.
+        editor.handle_key(key(KeyCode::Char('a')));
+        editor.handle_key(key(KeyCode::Char(' ')));
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Esc));
+        assert_eq!(editor.text(), "ab cd");
+
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "ab");
+    }
+
+    #[test]
+    fn undo_reverts_open_below_and_its_typed_text() {
+        let mut editor = TextEditor::with_vim("one".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        editor.handle_key(key(KeyCode::Char('o')));
+        editor.handle_key(key(KeyCode::Char('t')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        editor.handle_key(key(KeyCode::Esc));
+        assert_eq!(editor.text(), "one\ntw");
+
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "one");
+    }
+
+    #[test]
+    fn entering_insert_without_editing_records_no_undo_step() {
+        let mut editor = TextEditor::with_vim("hi".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        editor.handle_key(key(KeyCode::Home));
+        // Make one real edit so there is a baseline undo step.
+        editor.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(editor.text(), "i");
+        // Enter and leave insert without typing.
+        editor.handle_key(key(KeyCode::Char('i')));
+        editor.handle_key(key(KeyCode::Esc));
+        // A single undo should jump past the empty session to the edit.
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "hi");
+    }
+
+    #[test]
+    fn new_edit_clears_redo_history() {
+        let mut editor = TextEditor::with_vim("hello".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        editor.handle_key(key(KeyCode::Home));
+        editor.handle_key(key(KeyCode::Char('x')));
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "hello");
+
+        // A fresh edit invalidates the redo we just created.
+        editor.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(editor.text(), "ello");
+        let outcome = editor.handle_key(ctrl(KeyCode::Char('r')));
+        assert!(!outcome.text_changed);
+        assert_eq!(editor.text(), "ello");
+    }
+
+    #[test]
+    fn undo_on_empty_history_is_a_noop() {
+        let mut editor = TextEditor::with_vim("hello".to_string());
+        editor.handle_key(key(KeyCode::Esc));
+        let outcome = editor.handle_key(key(KeyCode::Char('u')));
+        assert!(!outcome.text_changed);
+        assert_eq!(editor.text(), "hello");
     }
 
     #[test]

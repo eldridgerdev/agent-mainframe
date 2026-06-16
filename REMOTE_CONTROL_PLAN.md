@@ -274,9 +274,11 @@ and surface it:
      `capture-pane` usually can't recover (OSC 8 limitation, see Phase
      2). Low payoff until the URL is reliably obtainable, so skipped for
      now in favour of copy/open + the phone's own session list.
-4. **Phase 4 (optional) — server mode**: a "remote server" session
-   kind backed by `claude remote-control --spawn worktree` for
-   multi-session-from-one-process workflows.
+4. **Phase 4 (optional) — server mode**: a project-scoped "remote
+   server" backed by `claude remote-control --spawn worktree` for
+   spawning new sessions on demand from web/mobile. Concrete integration
+   design and the reasoning for deferring it live in the backlog:
+   [`docs/backlog/remote-control-server-mode-plan.md`](docs/backlog/remote-control-server-mode-plan.md).
 
 ## 7. Open questions / decisions
 

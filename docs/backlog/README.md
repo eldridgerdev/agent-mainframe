@@ -70,3 +70,7 @@ doc always says exactly what remains.
   _Backlog._ Spawn new Claude sessions on demand from web/mobile, each
   in its own worktree. Deferred; AMF's role would shift from
   drive-the-agent to provision-and-review.
+- [Remote Control — QR code overlay](remote-control-qr-overlay-plan.md) —
+  _Backlog._ Render the Remote Control session URL as a scannable QR in
+  a TUI overlay. Pays off most with server mode, which prints a stable
+  URL.

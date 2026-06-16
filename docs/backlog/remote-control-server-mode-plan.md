@@ -3,7 +3,7 @@
 - **Status:** Backlog
 - **Owner:** unassigned
 - **Relates to:** interactive Remote Control, shipped in v0.24.0 (see
-  `REMOTE_CONTROL_PLAN.md`); `claude remote-control` CLI
+  `CHANGELOG.md`); `claude remote-control` CLI
 
 ## Why / problem
 

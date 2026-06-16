@@ -26,6 +26,11 @@ are tagged.
 - Added a top-level `llms.txt` navigation file so AI tools can quickly
   locate the README, architecture docs, and automation guides.
 
+### Changed
+
+- Renamed session bookmark internals and UI copy to remove legacy
+  external-editor terminology.
+
 ## [v0.24.0] - 2026-06-16
 
 ### Added
@@ -1082,7 +1087,7 @@ are tagged.
   config support.
 - `allowed_agents` config so each workspace can restrict AMF to a
   subset of Claude, Codex, and Opencode.
-- Harpoon-style session bookmarks with `H`, `M`, and `1`-`9` quick
+- Session bookmarks with `H`, `M`, and `1`-`9` quick
   jumps.
 - Ready-state tracking for features.
 - Configurable leader timeout via `leader_timeout_seconds`.

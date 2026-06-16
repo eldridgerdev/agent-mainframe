@@ -731,7 +731,7 @@ pub fn draw_bookmark_picker(
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Harpoon Bookmarks ")
+        .title(" Session Bookmarks ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));

@@ -8,7 +8,7 @@ pub mod commands;
 mod compose;
 mod diff;
 mod feature_ops;
-mod harpoon;
+mod bookmarks;
 mod hooks;
 mod navigation;
 mod notifications;

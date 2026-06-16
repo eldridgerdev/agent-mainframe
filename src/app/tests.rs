@@ -5434,6 +5434,9 @@ fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
     });
 
     app.poll_syntax_language_picker().unwrap();
+    // Returning to the diff viewer triggers a refresh (DiffViewerLoading);
+    // drive it to completion as the event loop does before asserting.
+    app.complete_diff_viewer_loading();
 
     match &app.mode {
         AppMode::DiffViewer(state) => {

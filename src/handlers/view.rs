@@ -540,6 +540,9 @@ mod tests {
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        // Opening the diff viewer is async (DiffViewerLoading); drive the
+        // load to completion as the event loop does before asserting.
+        app.complete_diff_viewer_loading();
 
         assert!(matches!(
             &app.mode,
@@ -561,6 +564,9 @@ mod tests {
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        // Opening the diff viewer is async (DiffViewerLoading); drive the
+        // load to completion as the event loop does before asserting.
+        app.complete_diff_viewer_loading();
         assert!(matches!(
             &app.mode,
             AppMode::DiffViewer(state)
@@ -578,6 +584,9 @@ mod tests {
 
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        // Opening the diff viewer is async (DiffViewerLoading); drive the
+        // load to completion as the event loop does before asserting.
+        app.complete_diff_viewer_loading();
         crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
 
         assert!(matches!(
@@ -616,6 +625,9 @@ mod tests {
         crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
+        // Opening the diff viewer is async (DiffViewerLoading); drive the
+        // load to completion as the event loop does before asserting.
+        app.complete_diff_viewer_loading();
         assert!(matches!(
             &app.mode,
             AppMode::DiffViewer(state)

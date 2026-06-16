@@ -15,6 +15,7 @@ mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
 mod project_ops;
+pub mod remote_control;
 mod rename;
 mod review;
 mod search;
@@ -366,6 +367,11 @@ pub struct AppConfig {
     pub transparent_background: bool,
     #[serde(default)]
     pub token_pricing: TokenPricingConfig,
+    /// Default state of the Remote Control toggle for new Claude features.
+    /// Still subject to the availability guard (z.ai / provider / version),
+    /// so enabling this never forces RC onto an incompatible session.
+    #[serde(default)]
+    pub remote_control_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -401,6 +407,7 @@ impl Default for AppConfig {
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
+            remote_control_default: false,
         }
     }
 }

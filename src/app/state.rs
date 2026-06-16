@@ -29,6 +29,7 @@ pub struct ForkFeatureState {
     pub mode: VibeMode,
     pub review: bool,
     pub enable_chrome: bool,
+    pub remote_control: bool,
     pub include_context: bool,
 }
 
@@ -869,6 +870,7 @@ pub enum HookNext {
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
+        remote_control: bool,
         steering_enabled: bool,
     },
     StartFeature {
@@ -902,6 +904,7 @@ pub struct RunningHookState {
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
+    pub remote_control: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
@@ -983,6 +986,7 @@ pub struct BackgroundHook {
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
+    pub remote_control: bool,
     pub steering_enabled: bool,
     pub child: Option<Child>,
     pub output: String,
@@ -1008,6 +1012,7 @@ impl BackgroundHook {
             create_terminal: state.create_terminal,
             session_name: state.session_name,
             enable_chrome: state.enable_chrome,
+            remote_control: state.remote_control,
             steering_enabled: state.steering_enabled,
             child: state.child,
             output: state.output,
@@ -1110,6 +1115,17 @@ pub struct CreateFeatureState {
     pub worktree_query: String,
     pub use_worktree: bool,
     pub enable_chrome: bool,
+    pub remote_control: bool,
+    /// Whether Remote Control can be enabled for this feature. False when
+    /// the resolved auth is incompatible (e.g. a z.ai / third-party
+    /// provider session). When false the wizard shows the toggle disabled
+    /// with a reason rather than letting the user enable something that
+    /// would be silently dropped at launch.
+    pub remote_control_available: bool,
+    /// When `remote_control_available` is false, a short reason shown in
+    /// the wizard (e.g. "Unavailable with z.ai provider" or a version
+    /// requirement). `None` when Remote Control is available.
+    pub remote_control_block_reason: Option<String>,
     pub steering_enabled: bool,
     pub preset_index: usize,
     pub task_prompt: String,
@@ -1159,6 +1175,11 @@ impl CreateFeatureState {
             worktree_query: String::new(),
             use_worktree: !is_first_feature,
             enable_chrome: false,
+            remote_control: false,
+            // Assume available; the caller refines this from the resolved
+            // auth (see feature_ops.rs) when opening the wizard.
+            remote_control_available: true,
+            remote_control_block_reason: None,
             steering_enabled: false,
             preset_index: 0,
             task_prompt: String::new(),
@@ -1210,6 +1231,7 @@ pub struct PreparedFeatureLaunch {
     pub create_terminal: bool,
     pub session_name: String,
     pub enable_chrome: bool,
+    pub remote_control: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
     pub startup_prompt: Option<String>,

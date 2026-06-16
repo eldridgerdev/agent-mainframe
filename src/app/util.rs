@@ -1023,6 +1023,23 @@ pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     ))
 }
 
+/// Open a URL in the user's default browser. Uses `xdg-open` on Linux and
+/// `open` on macOS; the child is detached so AMF does not block on it.
+pub fn open_in_browser(url: &str) -> anyhow::Result<()> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("Failed to launch {opener}: {e}"))
+}
+
 pub enum ClipboardContent {
     Text(String),
     Image { data: Vec<u8>, mime: String },

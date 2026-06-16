@@ -51,6 +51,7 @@ impl App {
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
+        remote_control: bool,
     ) -> Option<(usize, usize)> {
         let pi = self
             .store
@@ -80,6 +81,7 @@ impl App {
                     plan_mode,
                     agent.clone(),
                     enable_chrome,
+                    remote_control,
                 );
                 feature.pending_worktree_script = true;
                 project.features.push(feature);
@@ -97,6 +99,7 @@ impl App {
                 feature.plan_mode = plan_mode;
                 feature.agent = agent.clone();
                 feature.enable_chrome = enable_chrome;
+                feature.remote_control = remote_control;
                 feature.pending_worktree_script = true;
                 feature.status = ProjectStatus::Stopped;
                 App::initialize_feature_sessions(feature, create_terminal, Some(session_name));
@@ -123,6 +126,7 @@ impl App {
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
+        remote_control: bool,
         steering_enabled: bool,
         focus_feature: bool,
     ) -> Result<()> {
@@ -137,6 +141,7 @@ impl App {
             create_terminal,
             session_name.clone(),
             enable_chrome,
+            remote_control,
         ) else {
             return Ok(());
         };
@@ -164,6 +169,7 @@ impl App {
             create_terminal,
             session_name,
             enable_chrome,
+            remote_control,
             steering_enabled,
             hook_succeeded: None,
             startup_prompt: None,
@@ -312,6 +318,7 @@ impl App {
                 create_terminal,
                 session_name,
                 enable_chrome,
+                remote_control,
                 steering_enabled,
             } => {
                 self.start_worktree_hook(
@@ -326,6 +333,7 @@ impl App {
                     create_terminal,
                     session_name,
                     enable_chrome,
+                    remote_control,
                     steering_enabled,
                     Some(choice),
                 );
@@ -355,6 +363,7 @@ impl App {
         create_terminal: bool,
         session_name: String,
         enable_chrome: bool,
+        remote_control: bool,
         steering_enabled: bool,
         choice: Option<String>,
     ) {
@@ -387,6 +396,7 @@ impl App {
             create_terminal,
             session_name.clone(),
             enable_chrome,
+            remote_control,
         ) {
             self.selection = Selection::Feature(pi, fi);
         }
@@ -430,6 +440,7 @@ impl App {
             create_terminal,
             session_name,
             enable_chrome,
+            remote_control,
             steering_enabled,
             child,
             output: String::new(),
@@ -487,6 +498,7 @@ impl App {
             create_terminal,
             session_name,
             enable_chrome,
+            remote_control,
             steering_enabled,
             success,
         ) = {
@@ -502,6 +514,7 @@ impl App {
                     s.create_terminal,
                     s.session_name.clone(),
                     s.enable_chrome,
+                    s.remote_control,
                     s.steering_enabled,
                     s.success,
                 ),
@@ -521,6 +534,7 @@ impl App {
             create_terminal,
             session_name,
             enable_chrome,
+            remote_control,
             steering_enabled,
             true,
         )?;
@@ -600,6 +614,7 @@ impl App {
                     hook.create_terminal,
                     hook.session_name.clone(),
                     hook.enable_chrome,
+                    hook.remote_control,
                     hook.steering_enabled,
                     false,
                 ) {

@@ -372,6 +372,85 @@ impl App {
         Ok(())
     }
 
+    /// Resolve the Remote Control session URL from the current Claude pane,
+    /// or set a helpful message and return `None`. Only meaningful while
+    /// viewing a Claude session.
+    fn remote_control_url_from_view(&mut self) -> Option<String> {
+        match &self.mode {
+            AppMode::Viewing(view) if view.session_kind == SessionKind::Claude => {}
+            _ => {
+                self.push_toast_warning("Remote Control: not a Claude session");
+                return None;
+            }
+        }
+        let status = crate::app::remote_control::detect_remote_control(&self.pane_content);
+        match status.url {
+            Some(url) => Some(url),
+            None if status.active => {
+                self.push_toast_warning(
+                    "Remote Control active — open the /rc link in the pane footer",
+                );
+                None
+            }
+            None => {
+                self.push_toast_warning("Remote Control not active in this session");
+                None
+            }
+        }
+    }
+
+    pub fn copy_remote_control_url(&mut self) -> Result<()> {
+        let Some(url) = self.remote_control_url_from_view() else {
+            return Ok(());
+        };
+        match crate::app::util::copy_to_clipboard(&url) {
+            Ok(()) => self.push_toast_success("Copied Remote Control URL"),
+            Err(e) => self.push_toast_error(format!("Clipboard error: {e}")),
+        }
+        Ok(())
+    }
+
+    pub fn open_remote_control_url(&mut self) -> Result<()> {
+        let Some(url) = self.remote_control_url_from_view() else {
+            return Ok(());
+        };
+        match crate::app::util::open_in_browser(&url) {
+            Ok(()) => self.push_toast_success("Opened Remote Control URL"),
+            Err(e) => self.push_toast_error(format!("Open failed: {e}")),
+        }
+        Ok(())
+    }
+
+    /// Toggle Remote Control on the focused Claude session by sending `/rc`.
+    /// Sent straight to the tmux pane (bypassing the AMF composer), mirroring
+    /// how the compose path submits slash commands.
+    pub fn toggle_remote_control_in_view(&mut self) -> Result<()> {
+        let (session, window) = match &self.mode {
+            AppMode::Viewing(v) if v.session_kind == SessionKind::Claude => {
+                (v.session.clone(), v.window.clone())
+            }
+            AppMode::Viewing(_) => {
+                self.push_toast_warning("Remote Control: not a Claude session");
+                return Ok(());
+            }
+            _ => return Ok(()),
+        };
+
+        if let Some(reason) =
+            crate::claude::ClaudeLauncher::remote_control_block_reason(self.config.zai.is_some())
+        {
+            self.push_toast_warning(format!("Remote Control {reason}"));
+            return Ok(());
+        }
+
+        // Clear any leftover input so `/rc` cannot merge with typed text.
+        self.tmux.send_key_name(&session, &window, "C-u")?;
+        self.tmux.send_literal(&session, &window, "/rc")?;
+        self.tmux.send_key_name(&session, &window, "Enter")?;
+        self.push_toast_info("Sent /rc to toggle Remote Control");
+        Ok(())
+    }
+
     pub fn latest_prompt_select_next(&mut self) {
         if let AppMode::LatestPrompt(state) = &mut self.mode {
             if !state.prompts.is_empty() && state.selected + 1 < state.prompts.len() {

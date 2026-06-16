@@ -838,6 +838,7 @@ mod tests {
             false,
             AgentKind::Claude,
             false,
+            false,
         ));
         let store = ProjectStore {
             version: 5,

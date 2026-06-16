@@ -1,4 +1,5 @@
 use super::*;
+use crate::project::LaunchOpts;
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 impl App {
@@ -204,6 +205,8 @@ impl App {
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
         let viewport = self.view_pane_viewport();
+        // Resolve before the mutable borrow of `feature` below.
+        let rc_allowed = self.remote_control_allowed();
         let feature = match self
             .store
             .projects
@@ -266,7 +269,17 @@ impl App {
                         provider: TokenUsageProvider::Claude,
                         id: claude_session_id.to_string(),
                     });
-                    let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
+                    let use_rc = feature.remote_control && rc_allowed;
+                    let extra_args: Vec<String> =
+                        feature.mode.cli_flags(LaunchOpts {
+                            enable_chrome: feature.enable_chrome,
+                            remote_control: use_rc,
+                            session_name: if use_rc {
+                                Some(feature.name.clone())
+                            } else {
+                                None
+                            },
+                        });
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,

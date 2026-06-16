@@ -152,34 +152,36 @@ sudo ln -sf /opt/amf/amf /usr/local/bin/amf
 
 ### Build from source
 
-This project requires Rust 1.85+ (2024 edition). Install via rustup:
+This project requires Rust 1.85+ (2024 edition). The following
+installs the toolchain (skip the first two lines if you already have
+rustup), then builds and installs the `amf` binary to `~/.cargo/bin/`:
 
 ```bash
+# Install the Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-After installation, restart your shell or run:
-
-```bash
 source ~/.cargo/env
-```
 
-Then clone and install:
-
-```bash
+# Clone, build, and install amf
 git clone https://github.com/eldridgerdev/agent-mainframe
 cd agent-mainframe
 cargo install --path .
 ```
 
-This installs the `amf` binary to `~/.cargo/bin/`.
+To build without installing to `~/.cargo/bin/`, produce a release
+binary at `target/release/amf` instead:
+
+```bash
+cargo build --release
+./target/release/amf
+```
 
 ### Upgrade and Release Notes
 
-Upgrade an existing install:
+Upgrade an existing install and confirm the new version:
 
 ```bash
-amf upgrade
+amf upgrade   # fetch and install the latest release over HTTPS
+amf -V        # print the installed version
 ```
 
 > The upgrade command fetches the latest release over HTTPS. If you
@@ -190,20 +192,10 @@ amf upgrade
 > Older AMF versions expected standalone release binaries, but releases
 > now publish `.tar.gz` bundles.
 
-Check the installed version:
-
-```bash
-amf -V
-```
-
 User-facing release notes and migration guidance live in
 [`CHANGELOG.md`](CHANGELOG.md).
 
-## Docker Screenshot Demo
-
-For a clean, isolated AMF setup that boots straight into a seeded demo
-dashboard for screenshots, see
-[`docs/docker-screenshots.md`](docs/docker-screenshots.md).
+## Docker
 
 For a container that installs AMF in an environment without the system
 `tmux` package preinstalled, see
@@ -241,8 +233,6 @@ Create-project and batch-feature templates, examples, and the JSON response form
    is created automatically when needed, and features auto-start on
    creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
    available for agents with diff-review hook support.
-
-   > Screenshot placeholder: new feature dialog showing branch entry, agent selection, vibe modes, and review-hook toggle.
 
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/328be46c-b8db-4150-9955-436377c03295" />
 
@@ -402,8 +392,6 @@ Additional features get worktrees under `.worktrees/<branch>` so
 multiple agents can work on the same repo simultaneously without
 conflicts.
 
-> Screenshot placeholder: batch creation or fork flow, ideally showing how multiple parallel branches/worktrees are created from one workspace.
-
 - `F` forks the selected feature into a new worktree, preserves
   uncommitted changes, and can export transcript context into
   `.claude/context.md`.
@@ -430,8 +418,6 @@ Codex worktrees do not support this hook path, so Codex features must
 use `Vibe` or `SuperVibe` instead. By default this uses the AMF in-app
 diff viewer; set `"diff_review_viewer": "nvim"` in
 `~/.config/amf/config.json` if you want the legacy tmux/neovim popup:
-
-> Screenshot placeholder: diff-review overlay with a real code diff and the accept/reject controls visible.
 
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/f41435e0-b607-425f-aa5e-bfaa3f944c08" />
 
@@ -485,7 +471,6 @@ automatically with defaults on first run.
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
-| `zai` | object? | `null` | Optional ZAI usage limits for the status bar. |
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
 
 To customize input-request startup waiting, edit
@@ -496,31 +481,6 @@ To customize input-request startup waiting, edit
   "input_request_wait_seconds": 1.5
 }
 ```
-
-### `zai` — token usage limits (optional)
-(This is pretty busted as of now. Until ZAI gives more useful info in their API you can guess some hard coded limits until it somewhat matches the dashboard. or just keep it disabled)
-Controls whether ZAI usage is shown in the status bar. Set to `null`
-or omit the key entirely to disable it.
-
-```json
-"zai": null
-```
-
-To enable ZAI, set `plan` to one of the presets or override individual
-limits manually:
-
-```json
-"zai": {
-  "plan": "coding-plan"
-}
-```
-
-| Key | Type | Default | Description |
-| --- | --- | --- | --- |
-| `plan` | string | `"free"` | Preset plan: `"free"`, `"coding-plan"`, or `"unlimited"`. |
-| `monthly_token_limit` | number? | (from plan) | Override the monthly token limit. |
-| `weekly_token_limit` | number? | (from plan) | Override the weekly token limit. |
-| `five_hour_token_limit` | number? | (from plan) | Override the rolling 5-hour token limit. |
 
 ### `extension` — customizations
 
@@ -688,8 +648,6 @@ An empty array means "allow all agents".
 AMF has a full built-in theme system for the dashboard and embedded
 view. You can:
 
-> Screenshot placeholder: theme picker or side-by-side themed dashboard view that makes the visual differences between themes obvious.
-
 1. Press `T` in the dashboard to open the theme picker.
 2. Set a default in `~/.config/amf/config.json`:
 
@@ -706,6 +664,10 @@ Available UI themes:
 - `amf`
 - `dracula`
 - `nord`
+- `catppuccin-latte`
+- `catppuccin-frappe`
+- `catppuccin-macchiato`
+- `catppuccin-mocha`
 
 ### Syntax Parsers
 
@@ -720,10 +682,6 @@ JavaScript, JSON, Markdown, Python, Rust, TOML, TSX, TypeScript, and YAML.
 3. Use `x` to remove a parser you no longer need.
 
 Installed parsers are stored under `~/.config/amf/tree-sitter/`.
-- `catppuccin-latte`
-- `catppuccin-frappe`
-- `catppuccin-macchiato`
-- `catppuccin-mocha`
 
 ### Bundled Opencode Themes
 
@@ -746,14 +704,6 @@ added to `.opencode/themes/` in the worktree. You can then:
 
 The themes are embedded in the AMF binary, so they're always available without any external dependencies.
 
-Or build without installing:
-
-```bash
-cargo build --release
-# binary at target/release/amf
-```
-
-
 ## Development
 
 ### Build Commands
@@ -768,80 +718,9 @@ cargo clippy           # lint
 
 ### Project Structure
 
-```text
-src/
-├── main.rs            # entry point, event loop
-├── codex.rs           # Codex CLI launcher
-├── ipc.rs             # local IPC server/client for notifications
-├── summary.rs         # feature summary generation
-├── theme.rs           # AMF theme system + Opencode theme injection
-├── upgrade.rs         # self-upgrade command
-├── app/
-│   ├── mod.rs         # App struct, config types, new/save
-│   ├── state.rs       # AppMode, Selection, dialog states
-│   ├── navigation.rs  # tree navigation, selection getters
-│   ├── sync.rs        # status polling, thinking detection
-│   ├── project_ops.rs # project CRUD, path browsing
-│   ├── feature_ops.rs # feature create/start/stop/delete
-│   ├── harpoon.rs     # session bookmarks
-│   ├── session_ops.rs # session picker, add/remove sessions
-│   ├── view.rs        # embedded tmux view, leader key
-│   ├── switcher.rs    # in-view session switcher
-│   ├── notifications.rs # notification scanning
-│   ├── hooks.rs       # lifecycle hook execution
-│   ├── opencode.rs    # opencode session management
-│   ├── claude_session_picker.rs # Claude resume picker
-│   ├── search.rs      # search and jump
-│   ├── commands.rs    # command picker
-│   ├── rename.rs      # session renaming
-│   ├── review.rs      # final review trigger
-│   ├── setup.rs       # notification hooks, config loading
-│   ├── util.rs        # path/string helpers
-│   └── tests.rs       # unit tests
-├── project.rs         # ProjectStore / Project / Feature models,
-│                      # JSON persistence
-├── extension.rs       # extension config (presets, hooks,
-│                      # sessions)
-├── tmux.rs            # TmuxManager — all tmux interaction
-├── worktree.rs        # WorktreeManager — git worktree ops
-├── claude.rs          # ClaudeLauncher — claude CLI wrapper
-├── usage.rs           # token usage tracking (Claude / Codex / ZAI)
-├── traits.rs          # shared traits (TmuxOps, WorktreeOps)
-├── handlers/
-│   ├── mod.rs         # top-level key dispatch
-│   ├── normal.rs      # dashboard normal mode
-│   ├── view.rs        # embedded tmux view mode
-│   ├── dialog.rs      # project/delete/rename handlers
-│   ├── batch_creation.rs # batch feature creation
-│   ├── feature_creation.rs # feature creation wizard
-│   ├── browse.rs      # path browser
-│   ├── fork.rs        # feature forking flow
-│   ├── hooks.rs       # hook/delete-progress handlers
-│   ├── picker.rs      # notification/session/command pickers
-│   ├── search.rs      # search mode
-│   ├── diff_review.rs  # diff review prompt
-│   ├── input.rs       # paste handling
-│   └── mouse.rs       # mouse events
-└── ui/
-    ├── mod.rs         # top-level draw dispatch
-    ├── dashboard.rs   # layout, ANSI rendering
-    ├── list.rs        # project tree rendering
-    ├── header.rs      # header bar
-    ├── status.rs      # status bar + usage meters
-    ├── pane.rs        # embedded tmux ANSI view
-    ├── picker.rs      # picker overlays
-    └── dialogs/
-        ├── mod.rs     # re-exports
-        ├── batch_creation.rs # batch feature dialog
-        ├── project.rs # create/delete project dialogs
-        ├── feature.rs # feature creation, forking, supervibe confirm
-        ├── session.rs # rename session
-        ├── help.rs    # keybindings help
-        ├── debug.rs   # debug log overlay
-        ├── browse.rs  # path browser dialog
-        ├── search.rs  # search dialog
-        └── hooks.rs   # hook/review dialogs
-```
+For a module-by-module map of `src/`, see
+[`CLAUDE.md`](CLAUDE.md). The "Architecture Notes" and key design
+patterns below cover the parts worth reading before the source.
 
 ### Key Dependencies
 
@@ -897,4 +776,4 @@ The project uses Rust 2024 edition (rustc 1.85+).
 
 ---
 
-*Last updated: 2026-03-13*
+*Last updated: 2026-06-16*

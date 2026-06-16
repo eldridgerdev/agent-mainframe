@@ -211,7 +211,7 @@ pub(crate) fn draw_with_lines(
         header_spans.push(Span::styled(
             format!("/{} ", view.feature_name),
             Style::default()
-                .fg(theme.feature_title.to_color())
+                .fg(theme.warning.to_color())
                 .add_modifier(Modifier::BOLD),
         ));
         header_spans.push(Span::styled(

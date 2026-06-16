@@ -10,7 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- Feature view now highlights the active worktree name with a stronger
+  accent color, making labels like `/visual-updates` easier to spot in
+  the header.
+
+### Migration
+
+- No migration is required.
 
 ## [v0.24.0] - 2026-06-16
 

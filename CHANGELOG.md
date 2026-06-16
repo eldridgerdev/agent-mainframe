@@ -34,6 +34,17 @@ are tagged.
 - Renamed session bookmark internals and UI copy to remove legacy
   external-editor terminology.
 
+### Fixed
+
+- The Ctrl+Space leader menu now lists the bookmark shortcuts for
+  opening bookmarks, adding or removing the current session, and jumping
+  to saved bookmark slots, so the on-screen help matches the available
+  commands.
+
+### Migration
+
+- No migration is required.
+
 ## [v0.24.0] - 2026-06-16
 
 ### Added

@@ -18,6 +18,10 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("w", "Session switcher"),
     ("n / p", "Next / prev feature"),
     ("/", "Command picker"),
+    ("h", "Bookmark picker"),
+    ("H", "Bookmark session"),
+    ("M", "Unbookmark session"),
+    ("1-9", "Jump to bookmark slot"),
     ("i", "Pending inputs"),
     ("s", "Steering coach (experimental)"),
     ("g", "Generate summary"),
@@ -1381,6 +1385,8 @@ mod tests {
 
         assert!(rendered.contains("Ctrl+Space commands"));
         assert!(rendered.contains("Show / hide sidebar"));
+        assert!(rendered.contains("Bookmark picker"));
+        assert!(rendered.contains("Jump to bookmark slot"));
         assert!(rendered.contains("Check pending diff revie"));
         // compose_intercept is Some(false): the menu offers the way
         // back out of direct mode.

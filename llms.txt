@@ -1,0 +1,38 @@
+# Agent Mainframe (amf)
+
+> A terminal dashboard (Rust TUI) for running many AI coding agents in
+> parallel — Claude Code, Codex, and Opencode — each on its own git
+> branch and tmux session. Watch every agent from one place, jump into
+> whichever needs attention, and get notified the moment one is waiting
+> for input.
+
+Key features:
+
+- Multi-agent workspace manager for Claude Code, Codex, and Opencode
+- Project/feature tree with per-feature git worktrees and tmux sessions
+- Embedded tmux view with live ANSI rendering inside the TUI
+- Vibe modes (Vibeless diff-review, Vibe, SuperVibe) for permission control
+- Local-only hooks and notifications; global settings are never modified
+- Machine-friendly automation commands with JSON request/response
+
+## Documentation
+
+- [README](https://github.com/eldridgerdev/agent-mainframe/blob/main/README.md): Install, quick start, keybindings, configuration, themes, and architecture
+- [CLAUDE.md](https://github.com/eldridgerdev/agent-mainframe/blob/main/CLAUDE.md): Architecture and module map for working in the codebase
+- [AGENTS.md](https://github.com/eldridgerdev/agent-mainframe/blob/main/AGENTS.md): Guidance for AI agents contributing to the project
+
+## Guides
+
+- [Docker without system tmux](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/docker-no-tmux.md): Run AMF in a container where the tmux package is not preinstalled
+
+## Automation
+
+- [Automation overview](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/automation/README.md): External-agent commands for creating projects, features, and batch features with JSON responses
+- [create-project example](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/automation/create-project.example.json): Sample payload for `amf automation create-project`
+- [create-feature example](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/automation/create-feature.example.json): Sample payload for `amf automation create-feature`
+- [create-batch-features example](https://github.com/eldridgerdev/agent-mainframe/blob/main/docs/automation/create-batch-features.example.json): Sample payload for `amf automation create-batch-features`
+
+## Optional
+
+- [CHANGELOG](https://github.com/eldridgerdev/agent-mainframe/blob/main/CHANGELOG.md): User-facing release notes and migration guidance
+- [Releases](https://github.com/eldridgerdev/agent-mainframe/releases): Pre-built binaries for Linux and macOS

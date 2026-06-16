@@ -10,6 +10,30 @@ are tagged.
 
 ## [Unreleased]
 
+### Documentation
+
+- Optimized the README for LLM/AI-assistant retrieval (c7score):
+  merged install and upgrade steps into copy-paste-ready blocks,
+  removed screenshot placeholders, and trimmed the duplicated `src/`
+  file tree in favor of a pointer to `CLAUDE.md`.
+- Fixed README issues found during the cleanup: a Catppuccin theme
+  list and a `cargo build` snippet that had drifted into the wrong
+  sections, and a dead link to a non-existent
+  `docs/docker-screenshots.md`.
+- Removed the `zai` (Z.AI usage limits) configuration section from the
+  README. The feature is not reliable enough to document yet; the
+  config key still exists for future use.
+- Added a top-level `llms.txt` navigation file so AI tools can quickly
+  locate the README, architecture docs, and automation guides.
+
+### Changed
+
+- Feature view now highlights the active worktree name with a stronger
+  accent color, making labels like `/visual-updates` easier to spot in
+  the header.
+- Renamed session bookmark internals and UI copy to remove legacy
+  external-editor terminology.
+
 ### Fixed
 
 - The Ctrl+Space leader menu now lists the bookmark shortcuts for
@@ -1077,7 +1101,7 @@ are tagged.
   config support.
 - `allowed_agents` config so each workspace can restrict AMF to a
   subset of Claude, Codex, and Opencode.
-- Harpoon-style session bookmarks with `H`, `M`, and `1`-`9` quick
+- Session bookmarks with `H`, `M`, and `1`-`9` quick
   jumps.
 - Ready-state tracking for features.
 - Configurable leader timeout via `leader_timeout_seconds`.

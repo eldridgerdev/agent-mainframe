@@ -944,6 +944,9 @@ mod tests {
             KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
         )
         .unwrap();
+        // File discovery is async (MarkdownLoading); drive it to completion
+        // as the event loop does before asserting the picker opened.
+        app.complete_markdown_loading();
 
         match &app.mode {
             AppMode::MarkdownFilePicker(state) => {

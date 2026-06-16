@@ -467,6 +467,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             ]);
             Line::from(spans)
         }
+        AppMode::DiffViewerLoading(_) => Line::from(vec![
+            Span::raw(" Loading branch diff...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::MarkdownLoading(_) => Line::from(vec![
+            Span::raw(" Loading markdown...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::MarkdownViewer(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" scroll  "),

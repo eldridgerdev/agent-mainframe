@@ -6,7 +6,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::MarkdownViewerState;
+use crate::app::{MarkdownLoadingState, MarkdownViewerState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -100,6 +100,52 @@ pub fn draw_markdown_viewer(frame: &mut Frame, state: &mut MarkdownViewerState, 
     ])
     .style(Style::default().bg(theme.effective_header_bg()));
     frame.render_widget(hints, chunks[1]);
+}
+
+pub fn draw_markdown_loading(
+    frame: &mut Frame,
+    state: &MarkdownLoadingState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = centered_rect(54, 28, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Markdown ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_header_bg()))
+        .border_style(
+            Style::default()
+                .fg(theme.info.to_color())
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let loading = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            spinner,
+            Span::styled(
+                " Loading markdown...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            state.title.clone(),
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ]);
+
+    frame.render_widget(loading, inner);
 }
 
 fn count_wrapped_lines(lines: &[Line<'static>], width: usize) -> usize {

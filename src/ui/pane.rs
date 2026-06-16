@@ -19,7 +19,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("n / p", "Next / prev feature"),
     ("/", "Command picker"),
     ("i", "Pending inputs"),
-    ("s", "Steering coach"),
+    ("s", "Steering coach (experimental)"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
     ("d", "Diff viewer"),
@@ -34,7 +34,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("c", "Copy Remote Control URL"),
     ("C", "Toggle Remote Control (/rc)"),
     ("O", "Open Remote Control URL"),
-    ("f", "Final review"),
+    ("f", "Final review (experimental)"),
     ("D", "Debug log"),
     ("?", "Help"),
 ];
@@ -235,7 +235,7 @@ pub(crate) fn draw_with_lines(
         };
         if view.review {
             header_spans.push(Span::styled(
-                "[review] ",
+                "[review experimental] ",
                 Style::default().fg(theme.mode_review.to_color()),
             ));
         }
@@ -1362,7 +1362,17 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "hello", None, true, 0, None, Some(false), &theme);
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    None,
+                    true,
+                    0,
+                    None,
+                    Some(false),
+                    &theme,
+                );
             })
             .unwrap();
 

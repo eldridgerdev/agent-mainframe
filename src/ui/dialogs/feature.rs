@@ -1,3 +1,11 @@
+use crate::app::{
+    CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
+    ForkFeatureStep, PromptAnalysis, SteeringPromptState,
+};
+use crate::editor::VimMode;
+use crate::extension::FeaturePreset;
+use crate::project::{AgentKind, VibeMode};
+use crate::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
@@ -8,14 +16,6 @@ use ratatui::{
         Wrap,
     },
 };
-use crate::app::{
-    CreateFeatureState, CreateFeatureStep, DeleteStage, DeletingFeatureState, ForkFeatureState,
-    ForkFeatureStep, PromptAnalysis, SteeringPromptState,
-};
-use crate::editor::VimMode;
-use crate::extension::FeaturePreset;
-use crate::project::{AgentKind, VibeMode};
-use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
 
@@ -211,7 +211,11 @@ fn draw_create_feature_preset_picker(
                     " {} | {}{}",
                     agent_str,
                     mode_str,
-                    if preset.review { " | review log" } else { "" }
+                    if preset.review {
+                        " | review log (experimental)"
+                    } else {
+                        ""
+                    }
                 );
                 let line = Line::from(vec![
                     Span::styled(
@@ -614,7 +618,7 @@ fn draw_create_feature_branch_mode(
             },
         ),
         Span::styled(
-            format!("{} Log changes for final code review", review_check),
+            format!("{} Final review log (experimental)", review_check),
             review_style,
         ),
     ])];
@@ -639,7 +643,7 @@ fn draw_create_feature_branch_mode(
             },
         ),
         Span::styled(
-            format!("{} Collaborative planning mode", plan_check),
+            format!("{} Collaborative planning (experimental)", plan_check),
             plan_style,
         ),
     ])];
@@ -728,7 +732,7 @@ fn draw_create_feature_branch_mode(
     let steering_check = if state.steering_enabled { "[x]" } else { "[ ]" };
     let steering_lines = vec![Line::from(vec![
         Span::styled(
-            " Steering Coach: ",
+            " Steering: ",
             if steering_active {
                 Style::default().fg(theme.primary.to_color())
             } else {
@@ -736,7 +740,7 @@ fn draw_create_feature_branch_mode(
             },
         ),
         Span::styled(
-            format!("{} Show prompt guidance before launch", steering_check),
+            format!("{} Prompt coach (experimental)", steering_check),
             if steering_active {
                 Style::default().fg(theme.text.to_color())
             } else {
@@ -1110,10 +1114,12 @@ pub fn draw_steering_prompt_dialog(
     let prompt_inner = prompt_block.inner(chunks[1]);
     let visible_lines = prompt_inner.height as usize;
     let mut wrap_width = prompt_inner.width as usize;
-    let mut total_visual_lines = super::editor_view::count_wrapped_editor_lines(&prompt_text, wrap_width);
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&prompt_text, wrap_width);
     if total_visual_lines > visible_lines && wrap_width > 1 {
         wrap_width -= 1;
-        total_visual_lines = super::editor_view::count_wrapped_editor_lines(&prompt_text, wrap_width);
+        total_visual_lines =
+            super::editor_view::count_wrapped_editor_lines(&prompt_text, wrap_width);
     }
     super::editor_view::sync_editor_scroll(
         &state.editor,

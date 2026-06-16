@@ -627,6 +627,8 @@ impl App {
             AppMode::DiffReviewPrompt(state) => {
                 state.explanation_child.is_some() || state.hold_active()
             }
+            AppMode::DiffViewerLoading(_) => true,
+            AppMode::MarkdownLoading(_) => true,
             AppMode::HarnessSetup(state) => state
                 .harnesses
                 .iter()

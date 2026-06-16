@@ -616,6 +616,7 @@ pub enum AppMode {
         workdir: PathBuf,
     },
     BookmarkPicker(BookmarkPickerState),
+    DiffViewerLoading(DiffViewerState),
     DiffViewer(DiffViewerState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
@@ -628,6 +629,7 @@ pub enum AppMode {
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),
     DebugLog(DebugLogState),
+    MarkdownLoading(MarkdownLoadingState),
     MarkdownViewer(MarkdownViewerState),
     MarkdownFilePicker(MarkdownFilePickerState),
     CreatingBatchFeatures(CreateBatchFeaturesState),
@@ -768,6 +770,28 @@ pub struct MarkdownViewerState {
     pub rendered_lines: Vec<ratatui::text::Line<'static>>,
     pub return_to_picker: Option<MarkdownFilePickerState>,
     pub from_view: Option<ViewState>,
+}
+
+pub enum MarkdownLoadingOperation {
+    DiscoverFromView {
+        view: ViewState,
+    },
+    DiscoverFromViewer {
+        viewer: MarkdownViewerState,
+    },
+    ReadPath {
+        path: PathBuf,
+        workdir: PathBuf,
+        repo_root: Option<PathBuf>,
+        view: ViewState,
+        return_to_picker: Option<MarkdownFilePickerState>,
+    },
+}
+
+pub struct MarkdownLoadingState {
+    pub title: String,
+    pub from_view: Option<ViewState>,
+    pub operation: MarkdownLoadingOperation,
 }
 
 pub struct MarkdownFilePickerState {

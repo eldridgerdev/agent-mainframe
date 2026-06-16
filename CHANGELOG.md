@@ -12,6 +12,54 @@ are tagged.
 
 ### Added
 
+- Vim mode in the compose and steering-prompt inputs now supports undo
+  and redo: press `u` in normal mode to undo and `Ctrl+R` to redo.
+  Everything typed during a single insert session is undone in one step.
+- Vim normal mode now supports operator + motion editing: `d` combined
+  with a motion (`dw`, `db`, `de`, `d$`, `d0`, `dh`, `dl`), line
+  deletes (`dd`, and `dj`/`dk` for multiple lines), `D` to delete to
+  end of line, and the `e` motion to jump to the end of a word.
+- Vim normal mode now supports yank and paste: `y` with a motion
+  (`yw`, `y$`, …), `yy`/`Y` to yank a line, and `p`/`P` to paste after
+  or before the cursor (charwise or linewise). Deletes and `x` feed the
+  same register, so `ddp` and `xp` work as in vim.
+- Remote Control: drive a feature's local Claude session from
+  claude.ai/code or the Claude mobile app while the agent keeps running
+  on your machine in tmux. Turn it on with the new "Remote Control"
+  toggle when creating a Claude feature, or set it as the default for
+  all new Claude features in config. The toggle disables itself with a
+  reason when it can't be used — on z.ai or other third-party providers,
+  or with a Claude Code older than v2.1.51 — so you never start a session
+  that can't connect.
+- A `[remote ●]` badge appears in the session view when Remote Control
+  is connected, and RC-enabled features are marked `[remote]` in the
+  project list. From a Claude view, the Ctrl+Space menu adds: `c` to
+  copy the session URL, `O` to open it in your browser, and `C` to
+  toggle Remote Control on or off at runtime. When the link only lives
+  in Claude Code's footer (and can't be read back), AMF tells you to use
+  that footer link rather than failing silently.
+
+### Changed
+
+- Review mode, final review, plan mode, and the steering coach now show
+  an experimental label in the UI, so users can tell these workflows are
+  still being refined before they opt into them.
+
+### Fixed
+
+- Opening the branch diff viewer and Markdown viewer now shows a
+  loading indicator while AMF gathers files or reads content, so slower
+  startups and large worktrees no longer look like the app ignored the
+  command.
+
+### Migration
+
+- No migration is required.
+
+## [v0.23.0] - 2026-06-15
+
+### Added
+
 - New compose input for Claude Code sessions that sidesteps Claude
   Code's input-box rendering glitches. Start typing in a Claude view
   and an AMF-drawn input opens over Claude Code's own input box; press
@@ -38,24 +86,14 @@ are tagged.
   box; the next keystroke in that session restores them. Submissions
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
-- Remote Control: drive a feature's local Claude session from
-  claude.ai/code or the Claude mobile app while the agent keeps running
-  on your machine in tmux. Turn it on with the new "Remote Control"
-  toggle when creating a Claude feature, or set it as the default for
-  all new Claude features in config. The toggle disables itself with a
-  reason when it can't be used — on z.ai or other third-party providers,
-  or with a Claude Code older than v2.1.51 — so you never start a session
-  that can't connect.
-- A `[remote ●]` badge appears in the session view when Remote Control
-  is connected, and RC-enabled features are marked `[remote]` in the
-  project list. From a Claude view, the Ctrl+Space menu adds: `c` to
-  copy the session URL, `O` to open it in your browser, and `C` to
-  toggle Remote Control on or off at runtime. When the link only lives
-  in Claude Code's footer (and can't be read back), AMF tells you to use
-  that footer link rather than failing silently.
 
 ### Fixed
 
+- The toast shown when the composer switches a session to direct input
+  (after running an interactive command like `/model`, or via
+  `leader+e`/Ctrl+E) was too long and got truncated, hiding the part
+  that told you how to get back. It now clearly reads "Composer off —
+  leader+e to re-enable" as a warning so the state change stands out.
 - Claude Code panes could garble in the embedded view: the input box
   drifted up a row and bled its text into the divider above it, and a
   repaint (leader-R) only cleared it until the next update. The garble

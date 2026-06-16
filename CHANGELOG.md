@@ -28,6 +28,9 @@ are tagged.
 
 ### Changed
 
+- Feature view now highlights the active worktree name with a stronger
+  accent color, making labels like `/visual-updates` easier to spot in
+  the header.
 - Renamed session bookmark internals and UI copy to remove legacy
   external-editor terminology.
 

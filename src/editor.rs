@@ -13,11 +13,29 @@ pub enum VimMode {
 }
 
 /// A pending vim operator awaiting a motion or text object (the `d` in
-/// `dw`). The framework is operator-generic; today only delete is wired
-/// up, with change/yank to follow.
+/// `dw`). The framework is operator-generic; change still to follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operator {
     Delete,
+    Yank,
+}
+
+/// A resolved operator motion: either a charwise byte range or a
+/// linewise span identified by byte positions on its first/last lines.
+#[derive(Debug, Clone, Copy)]
+enum OpTarget {
+    Char(usize, usize),
+    Line(usize, usize),
+}
+
+/// The unnamed register holding the most recent yank or delete. Named
+/// registers are a later (Tier 3) feature.
+#[derive(Debug, Clone, Default)]
+struct Register {
+    text: String,
+    /// True when the contents represent whole lines (yanked/deleted
+    /// linewise), which changes how `p`/`P` paste them.
+    linewise: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,6 +106,8 @@ pub struct TextEditor {
     pending: Option<Snapshot>,
     /// Operator awaiting a motion (e.g. `d` pressed, waiting for `w`).
     pending_op: Option<Operator>,
+    /// Unnamed register for yank/delete/paste.
+    register: Register,
 }
 
 impl TextEditor {
@@ -103,6 +123,7 @@ impl TextEditor {
             redo_stack: Vec::new(),
             pending: None,
             pending_op: None,
+            register: Register::default(),
         }
     }
 
@@ -372,22 +393,25 @@ impl TextEditor {
                 self.pending_op = Some(Operator::Delete);
                 EditorOutcome::handled()
             }
+            KeyCode::Char('y') if key.modifiers.is_empty() => {
+                self.pending_op = Some(Operator::Yank);
+                EditorOutcome::handled()
+            }
             KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 let end = self.line_end(self.cursor);
-                if self.cursor < end {
-                    self.apply_delete(Operator::Delete, self.cursor, end, false)
-                } else {
-                    EditorOutcome::handled()
-                }
+                self.apply_operator(Operator::Delete, OpTarget::Char(self.cursor, end))
+            }
+            KeyCode::Char('Y') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.apply_operator(Operator::Yank, OpTarget::Line(self.cursor, self.cursor))
             }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
-                // Only record an undo step when there is something to
-                // delete, so a no-op `x` doesn't discard redo history.
-                if self.cursor < self.text.len() {
-                    self.push_undo_state();
-                }
-                self.delete()
+                // `x` is `dl`: delete the character under the cursor,
+                // populating the register, as a single undo step.
+                let end = self.next_boundary(self.cursor);
+                self.apply_operator(Operator::Delete, OpTarget::Char(self.cursor, end))
             }
+            KeyCode::Char('p') if key.modifiers.is_empty() => self.paste_after(),
+            KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::SHIFT) => self.paste_before(),
             KeyCode::Char('u') if key.modifiers.is_empty() => self.undo(),
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => self.redo(),
             KeyCode::Char('o') if key.modifiers.is_empty() => self.open_below(),
@@ -671,51 +695,85 @@ impl TextEditor {
         }
         self.pending_op = None;
 
-        // A doubled operator (`dd`) acts linewise on the current line.
-        let doubled = op == Operator::Delete
-            && key.code == KeyCode::Char('d')
-            && key.modifiers.is_empty();
+        // A doubled operator (`dd`, `yy`) acts linewise on the current
+        // line.
+        let doubled_key = match op {
+            Operator::Delete => KeyCode::Char('d'),
+            Operator::Yank => KeyCode::Char('y'),
+        };
+        let doubled = key.code == doubled_key && key.modifiers.is_empty();
 
         let down = matches!(key.code, KeyCode::Down)
             || (key.code == KeyCode::Char('j') && key.modifiers.is_empty());
         let up = matches!(key.code, KeyCode::Up)
             || (key.code == KeyCode::Char('k') && key.modifiers.is_empty());
 
-        let (range, linewise) = if doubled {
-            (Some(self.linewise_range(self.cursor, self.cursor)), true)
+        let target = if doubled {
+            Some(OpTarget::Line(self.cursor, self.cursor))
         } else if down {
             let line_end = self.line_end(self.cursor);
-            let range = (line_end < self.text.len())
-                .then(|| self.linewise_range(self.cursor, line_end + 1));
-            (range, true)
+            (line_end < self.text.len()).then(|| OpTarget::Line(self.cursor, line_end + 1))
         } else if up {
             let line_start = self.line_start(self.cursor);
-            let range = (line_start > 0).then(|| self.linewise_range(line_start - 1, self.cursor));
-            (range, true)
+            (line_start > 0).then(|| OpTarget::Line(line_start - 1, self.cursor))
         } else {
-            (self.charwise_op_range(key), false)
+            self.charwise_op_range(key)
+                .map(|(start, end)| OpTarget::Char(start, end))
         };
 
-        match range {
-            Some((start, end)) if start < end => self.apply_delete(op, start, end, linewise),
-            // Valid-but-empty or unsupported motion: consume, no change.
-            _ => EditorOutcome::handled(),
+        match target {
+            Some(target) => self.apply_operator(op, target),
+            // Unsupported motion: consume the key, no change.
+            None => EditorOutcome::handled(),
         }
     }
 
-    /// Apply an operator to a resolved byte range.
-    fn apply_delete(
-        &mut self,
-        op: Operator,
-        start: usize,
-        end: usize,
-        linewise: bool,
-    ) -> EditorOutcome {
+    /// Apply an operator to a resolved target: copy the spanned text to
+    /// the register, then delete it (Delete) or leave it (Yank).
+    fn apply_operator(&mut self, op: Operator, target: OpTarget) -> EditorOutcome {
+        let (del_start, del_end, content, linewise, cursor_at) = match target {
+            OpTarget::Char(start, end) => {
+                if start >= end {
+                    // Empty/no-op motion: don't touch the register, undo,
+                    // or redo history.
+                    return EditorOutcome::handled();
+                }
+                (start, end, self.text[start..end].to_string(), false, start)
+            }
+            OpTarget::Line(a, b) => {
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let content_start = self.line_start(lo);
+                let content_end = self.line_end(hi);
+                // Normalize to whole lines with a single trailing newline,
+                // independent of how the deletion range treats newlines.
+                let mut content = self.text[content_start..content_end].to_string();
+                content.push('\n');
+                let (del_start, del_end) = self.linewise_range(lo, hi);
+                (del_start, del_end, content, true, del_start)
+            }
+        };
+
+        self.register = Register {
+            text: content,
+            linewise,
+        };
+
         match op {
+            Operator::Yank => {
+                // Yank leaves the buffer unchanged. A charwise yank moves
+                // the cursor to the start of the range (matching vim for
+                // backward motions); a linewise yank keeps the cursor.
+                if linewise {
+                    return EditorOutcome::handled();
+                }
+                self.cursor = cursor_at.min(self.text.len());
+                self.preferred_col = None;
+                EditorOutcome::moved()
+            }
             Operator::Delete => {
                 self.push_undo_state();
-                self.text.drain(start..end);
-                self.cursor = start.min(self.text.len());
+                self.text.drain(del_start..del_end);
+                self.cursor = cursor_at.min(self.text.len());
                 if linewise {
                     self.cursor = self.first_non_blank_of_line(self.cursor);
                 }
@@ -727,6 +785,82 @@ impl TextEditor {
                     mode_changed: false,
                 }
             }
+        }
+    }
+
+    fn paste_after(&mut self) -> EditorOutcome {
+        if self.register.text.is_empty() {
+            return EditorOutcome::handled();
+        }
+        if self.register.linewise {
+            self.paste_linewise(false)
+        } else {
+            let insert_at = if self.cursor < self.text.len() {
+                self.next_boundary(self.cursor)
+            } else {
+                self.cursor
+            };
+            self.paste_charwise(insert_at)
+        }
+    }
+
+    fn paste_before(&mut self) -> EditorOutcome {
+        if self.register.text.is_empty() {
+            return EditorOutcome::handled();
+        }
+        if self.register.linewise {
+            self.paste_linewise(true)
+        } else {
+            self.paste_charwise(self.cursor)
+        }
+    }
+
+    fn paste_charwise(&mut self, insert_at: usize) -> EditorOutcome {
+        self.push_undo_state();
+        let text = self.register.text.clone();
+        let end = insert_at + text.len();
+        self.text.insert_str(insert_at, &text);
+        // Cursor on the last character of the pasted text (vim).
+        self.cursor = self.prev_boundary(end);
+        self.preferred_col = None;
+        EditorOutcome {
+            handled: true,
+            text_changed: true,
+            cursor_moved: true,
+            mode_changed: false,
+        }
+    }
+
+    fn paste_linewise(&mut self, before: bool) -> EditorOutcome {
+        self.push_undo_state();
+        let content = self.register.text.clone(); // ends with '\n'
+        let line_start = if before {
+            let insert_at = self.line_start(self.cursor);
+            self.text.insert_str(insert_at, &content);
+            insert_at
+        } else {
+            let line_end = self.line_end(self.cursor);
+            if line_end < self.text.len() {
+                let insert_at = line_end + 1;
+                self.text.insert_str(insert_at, &content);
+                insert_at
+            } else {
+                // Last line has no trailing newline: add one, then the
+                // content without its own trailing newline.
+                let trimmed = content.trim_end_matches('\n');
+                let insert_at = self.text.len();
+                self.text.insert(insert_at, '\n');
+                self.text.insert_str(insert_at + 1, trimmed);
+                insert_at + 1
+            }
+        };
+        self.cursor = self.first_non_blank_of_line(line_start);
+        self.preferred_col = None;
+        EditorOutcome {
+            handled: true,
+            text_changed: true,
+            cursor_moved: true,
+            mode_changed: false,
         }
     }
 
@@ -1087,6 +1221,78 @@ mod tests {
         let outcome = editor.handle_key(key(KeyCode::Char('e')));
         assert!(outcome.cursor_moved);
         assert_eq!(editor.cursor(), 4); // the second 'l'... 'o' of hello
+    }
+
+    #[test]
+    fn yank_word_and_paste_after() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('y')));
+        editor.handle_key(key(KeyCode::Char('w'))); // yank "hello "
+        editor.handle_key(key(KeyCode::Char('p'))); // paste after cursor
+        assert_eq!(editor.text(), "hhello ello world");
+    }
+
+    #[test]
+    fn paste_before_with_capital_p() {
+        let mut editor = normal_at_start("ab");
+        editor.handle_key(key(KeyCode::Char('y')));
+        editor.handle_key(key(KeyCode::Char('l'))); // yank "a"
+        editor.handle_key(shift(KeyCode::Char('P'))); // paste before cursor
+        assert_eq!(editor.text(), "aab");
+    }
+
+    #[test]
+    fn delete_then_paste_charwise() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('x'))); // delete 'h' into register
+        assert_eq!(editor.text(), "ello world");
+        editor.handle_key(key(KeyCode::Char('p'))); // paste after cursor
+        assert_eq!(editor.text(), "ehllo world");
+    }
+
+    #[test]
+    fn yank_line_and_paste_below() {
+        let mut editor = normal_at_start("one\ntwo");
+        editor.handle_key(key(KeyCode::Char('y')));
+        editor.handle_key(key(KeyCode::Char('y'))); // yank "one\n"
+        editor.handle_key(key(KeyCode::Char('p'))); // paste on the line below
+        assert_eq!(editor.text(), "one\none\ntwo");
+    }
+
+    #[test]
+    fn capital_y_yanks_line_and_capital_p_pastes_above() {
+        let mut editor = normal_at_start("one\ntwo");
+        editor.handle_key(shift(KeyCode::Char('Y'))); // yank current line
+        editor.handle_key(shift(KeyCode::Char('P'))); // paste above
+        assert_eq!(editor.text(), "one\none\ntwo");
+    }
+
+    #[test]
+    fn delete_line_then_paste_below() {
+        let mut editor = normal_at_start("one\ntwo\nthree");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('d'))); // delete "one" line
+        assert_eq!(editor.text(), "two\nthree");
+        editor.handle_key(key(KeyCode::Char('p'))); // paste it below "two"
+        assert_eq!(editor.text(), "two\none\nthree");
+    }
+
+    #[test]
+    fn linewise_paste_below_on_last_line_adds_newline() {
+        let mut editor = normal_at_start("one\ntwo");
+        editor.handle_key(key(KeyCode::Char('y')));
+        editor.handle_key(key(KeyCode::Char('y'))); // yank "one\n"
+        editor.handle_key(key(KeyCode::Down)); // move to last line "two"
+        editor.handle_key(key(KeyCode::Char('p'))); // paste below last line
+        assert_eq!(editor.text(), "one\ntwo\none");
+    }
+
+    #[test]
+    fn paste_with_empty_register_is_a_noop() {
+        let mut editor = normal_at_start("abc");
+        let outcome = editor.handle_key(key(KeyCode::Char('p')));
+        assert!(!outcome.text_changed);
+        assert_eq!(editor.text(), "abc");
     }
 
     #[test]

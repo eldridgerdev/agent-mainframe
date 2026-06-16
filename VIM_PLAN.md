@@ -29,12 +29,12 @@ Several backlog items share infrastructure that does not exist yet.
 Building these first unblocks whole groups of features, so they are
 woven into the ranking below rather than listed separately:
 
-- **Undo/redo stack** — the buffer is a raw `String` with a byte-offset
-  cursor and no history. Required by `u` / `Ctrl-r` and makes every
-  edit operator safer.
-- **Register storage** — needed for yank/paste and named registers.
-- **Operator-pending state** — a small state machine so an operator
-  (`d`/`c`/`y`) can wait for a motion or text object.
+- **Undo/redo stack** — _(done)_ the buffer was a raw `String` with no
+  history; now backs `u` / `Ctrl-r` and makes every edit operator safer.
+- **Register storage** — _(done)_ unnamed register backing yank/paste;
+  named registers remain a Tier 3 feature.
+- **Operator-pending state** — _(done)_ a small state machine so an
+  operator (`d`/`c`/`y`) can wait for a motion or text object.
 - **Count accumulator** — collect leading digits and apply a repeat
   count to motions/operators.
 
@@ -50,12 +50,13 @@ woven into the ranking below rather than listed separately:
   `d0`, `dh`, `dl`, `dj`, `dk`.
 - [ ] **Change operator** `c` with motions — `cw`, `cb`, `c$`, etc.
   (delete + enter insert).
-- [ ] **Yank operator** `y` with motions — `yw`, `y$`, etc. Introduces
-  register storage. (Foundational)
-- [ ] **Paste** — `p` (after cursor) and `P` (before), charwise and
-  linewise aware.
+- [x] **Yank operator** `y` with motions — `yw`, `y$`, `ye`, etc.
+  Introduces register storage. (Foundational)
+- [x] **Paste** — `p` (after cursor) and `P` (before), charwise and
+  linewise aware. Delete/`x` also populate the register (`ddp`, `xp`).
 - [x] **Delete line** `dd` (linewise).
-- [ ] **Linewise change/yank** — `cc`, `yy` (and `S` as `cc`).
+- [x] **Yank line** — `yy` / `Y` (linewise).
+- [ ] **Linewise change** — `cc` (and `S` as `cc`).
 - [x] **Delete to line end** `D` (= `d$`).
 - [ ] **Change to line end** `C` (= `c$`).
 - [x] **Word-end motion** `e` — standalone and as a `d`/`c`/`y` target

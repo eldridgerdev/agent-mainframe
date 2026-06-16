@@ -10,7 +10,21 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Documentation
+
+- Optimized the README for LLM/AI-assistant retrieval (c7score):
+  merged install and upgrade steps into copy-paste-ready blocks,
+  removed screenshot placeholders, and trimmed the duplicated `src/`
+  file tree in favor of a pointer to `CLAUDE.md`.
+- Fixed README issues found during the cleanup: a Catppuccin theme
+  list and a `cargo build` snippet that had drifted into the wrong
+  sections, and a dead link to a non-existent
+  `docs/docker-screenshots.md`.
+- Removed the `zai` (Z.AI usage limits) configuration section from the
+  README. The feature is not reliable enough to document yet; the
+  config key still exists for future use.
+- Added a top-level `llms.txt` navigation file so AI tools can quickly
+  locate the README, architecture docs, and automation guides.
 
 ## [v0.24.0] - 2026-06-16
 

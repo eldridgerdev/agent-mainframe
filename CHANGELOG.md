@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.24.0] - 2026-06-16
+
 ### Added
 
 - Vim mode in the compose and steering-prompt inputs now supports undo

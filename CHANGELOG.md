@@ -38,6 +38,21 @@ are tagged.
   box; the next keystroke in that session restores them. Submissions
   also clear any leftover text in Claude Code's input first, so stray
   typed characters can no longer merge into your prompt.
+- Remote Control: drive a feature's local Claude session from
+  claude.ai/code or the Claude mobile app while the agent keeps running
+  on your machine in tmux. Turn it on with the new "Remote Control"
+  toggle when creating a Claude feature, or set it as the default for
+  all new Claude features in config. The toggle disables itself with a
+  reason when it can't be used — on z.ai or other third-party providers,
+  or with a Claude Code older than v2.1.51 — so you never start a session
+  that can't connect.
+- A `[remote ●]` badge appears in the session view when Remote Control
+  is connected, and RC-enabled features are marked `[remote]` in the
+  project list. From a Claude view, the Ctrl+Space menu adds: `c` to
+  copy the session URL, `O` to open it in your browser, and `C` to
+  toggle Remote Control on or off at runtime. When the link only lives
+  in Claude Code's footer (and can't be read back), AMF tells you to use
+  that footer link rather than failing silently.
 
 ### Fixed
 

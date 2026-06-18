@@ -23,6 +23,11 @@ are tagged.
   (`yw`, `y$`, …), `yy`/`Y` to yank a line, and `p`/`P` to paste after
   or before the cursor (charwise or linewise). Deletes and `x` feed the
   same register, so `ddp` and `xp` work as in vim.
+- Vim normal mode now supports the change operator: `c` with a motion
+  (`cw`, `cb`, `c$`, …) deletes and drops into insert mode, `cc`/`S`
+  changes a whole line (leaving it empty rather than removing it), and
+  `C` changes to the end of the line. The delete and the text typed
+  afterwards undo together as one step.
 
 ### Changed
 

@@ -48,17 +48,19 @@ woven into the ranking below rather than listed separately:
   `d`/`c`/`y` combine with any motion. (Foundational)
 - [x] **Delete operator** `d` with motions — `dw`, `db`, `de`, `d$`,
   `d0`, `dh`, `dl`, `dj`, `dk`.
-- [ ] **Change operator** `c` with motions — `cw`, `cb`, `c$`, etc.
-  (delete + enter insert).
+- [x] **Change operator** `c` with motions — `cw` (acts like `ce`),
+  `cb`, `c$`, `c0`, `ch`, `cl`, `ce`, etc. (delete + enter insert as one
+  undo step).
 - [x] **Yank operator** `y` with motions — `yw`, `y$`, `ye`, etc.
   Introduces register storage. (Foundational)
 - [x] **Paste** — `p` (after cursor) and `P` (before), charwise and
   linewise aware. Delete/`x` also populate the register (`ddp`, `xp`).
 - [x] **Delete line** `dd` (linewise).
 - [x] **Yank line** — `yy` / `Y` (linewise).
-- [ ] **Linewise change** — `cc` (and `S` as `cc`).
+- [x] **Linewise change** — `cc` (and `S` as `cc`). Keeps an empty line
+  in place (unlike `dd`) and enters insert.
 - [x] **Delete to line end** `D` (= `d$`).
-- [ ] **Change to line end** `C` (= `c$`).
+- [x] **Change to line end** `C` (= `c$`).
 - [x] **Word-end motion** `e` — standalone and as a `d`/`c`/`y` target
   (`de`, `ce`).
 

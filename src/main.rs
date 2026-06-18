@@ -614,6 +614,11 @@ fn run_loop<B: Backend>(
     let mut last_thinking_sync = std::time::Instant::now();
     let mut last_file_log_flush = std::time::Instant::now();
     let mut last_log_rotation_check = std::time::Instant::now();
+    let mut last_notification_prune = std::time::Instant::now();
+    // Clear out notification files abandoned by previous runs before the
+    // first scan, so a directory grown large over days does not slow the
+    // initial reconciliation.
+    app.prune_stale_notifications();
     let mut last_usage_debug: Option<(Option<i64>, Option<i64>, u64, u64)> = None;
     let mut last_claude_usage_debug: Option<String> = None;
     let mut last_resize: Option<(u16, u16, String, String)> = None;
@@ -1164,6 +1169,10 @@ fn run_loop<B: Backend>(
                 debug::rotate_log_if_needed();
                 last_log_rotation_check = Instant::now();
             }
+            if last_notification_prune.elapsed() >= Duration::from_secs(3600) {
+                app.prune_stale_notifications();
+                last_notification_prune = Instant::now();
+            }
         }
         let startup_grace_active = is_viewing && Instant::now() < startup_grace_until;
         let can_run_startup_task = startup_tasks_pending
@@ -1372,8 +1381,13 @@ fn run_loop<B: Backend>(
             }
         }
 
-        for line in app.perf.take_due_summary_lines() {
-            app.log_debug("perf", line);
+        // Always drain (keeps interval sample buffers bounded), but only
+        // persist the summaries when profiling is explicitly enabled.
+        let summary_lines = app.perf.take_due_summary_lines();
+        if perf::perf_logging_enabled() {
+            for line in summary_lines {
+                app.log_debug("perf", line);
+            }
         }
 
         if app.should_quit || app.should_switch.is_some() {

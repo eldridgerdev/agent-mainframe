@@ -1,7 +1,24 @@
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Whether per-interval perf summaries should be written to the debug
+/// log (and thus the SQLite `debug_log` table). Off by default: leaving
+/// it on emits a summary line every [`SUMMARY_INTERVAL`] forever, which
+/// dominates the debug log and churns the SQLite cap trigger. Opt in with
+/// `AMF_PERF=1` when profiling. Metrics are still collected and drained
+/// regardless; only the logging is gated.
+pub fn perf_logging_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AMF_PERF").ok().as_deref(),
+            Some("1") | Some("true") | Some("yes")
+        )
+    })
+}
 
 /// Defensive cap: a metric that is recorded but never drained must not
 /// accumulate samples without bound.

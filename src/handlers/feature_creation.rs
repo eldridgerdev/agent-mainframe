@@ -212,6 +212,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.review = preset.review;
                     state.plan_mode = preset.plan_mode;
                     state.enable_chrome = preset.enable_chrome;
+                    state.remote_control = preset.remote_control;
                     if let Some(ref prefix) = preset.branch_prefix
                         && !prefix.is_empty()
                     {
@@ -291,8 +292,12 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
             KeyCode::Tab | KeyCode::Char('l') => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
+                    // For Claude: 0=agent 1=mode 2=review 3=plan
+                    //   4=chrome 5=remote_control 6=steering
+                    // For others: 0=agent 1=mode 2=review 3=plan
+                    //   4=steering
                     let max_focus = if state.agent == AgentKind::Claude {
-                        5
+                        6
                     } else {
                         4
                     };
@@ -311,7 +316,7 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 if let AppMode::CreatingFeature(state) = &mut app.mode {
                     let max_focus = if state.agent == AgentKind::Claude {
-                        5
+                        6
                     } else {
                         4
                     };
@@ -353,7 +358,15 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        5 if state.agent == AgentKind::Claude => {
+                            // Remote Control requires claude.ai OAuth; it is
+                            // unavailable for z.ai / third-party provider
+                            // sessions, in which case the toggle is inert.
+                            if state.remote_control_available {
+                                state.remote_control = !state.remote_control;
+                            }
+                        }
+                        6 | 5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}
@@ -392,7 +405,12 @@ pub fn handle_create_feature_key(app: &mut App, key: KeyCode) -> Result<()> {
                                 state.steering_enabled = !state.steering_enabled;
                             }
                         }
-                        5 => {
+                        5 if state.agent == AgentKind::Claude => {
+                            if state.remote_control_available {
+                                state.remote_control = !state.remote_control;
+                            }
+                        }
+                        6 | 5 => {
                             state.steering_enabled = !state.steering_enabled;
                         }
                         _ => {}

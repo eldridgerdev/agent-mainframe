@@ -102,6 +102,7 @@ pub struct FeaturePreset {
     pub review: bool,
     pub plan_mode: bool,
     pub enable_chrome: bool,
+    pub remote_control: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -114,6 +115,7 @@ struct FeaturePresetDe {
     review: bool,
     plan_mode: bool,
     enable_chrome: bool,
+    remote_control: bool,
 }
 
 impl<'de> Deserialize<'de> for FeaturePreset {
@@ -131,6 +133,7 @@ impl<'de> Deserialize<'de> for FeaturePreset {
             review: preset.review || legacy_review,
             plan_mode: preset.plan_mode,
             enable_chrome: preset.enable_chrome,
+            remote_control: preset.remote_control,
         })
     }
 }

@@ -43,6 +43,12 @@ struct IpcMsg {
     prompt: Option<String>,
 }
 
+/// Notification files older than this are considered abandoned and are
+/// pruned. A pending input-request the user still needs to act on is
+/// always far younger than this, so age-based pruning never drops a live
+/// request.
+const NOTIFICATION_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 impl App {
     fn notification_dirs_fingerprint(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
@@ -79,6 +85,57 @@ impl App {
                 false.hash(hasher);
             }
         }
+    }
+
+    /// Delete notification JSON files older than [`NOTIFICATION_MAX_AGE`]
+    /// from the global and per-feature notification directories. Stale
+    /// files (e.g. `codex-input-*.json` left behind when a hook never
+    /// claimed them) otherwise accumulate indefinitely and make every
+    /// `scan_notifications` reparse an ever-growing directory. Called once
+    /// at startup and on a long interval by the main loop.
+    pub fn prune_stale_notifications(&self) {
+        let global_dir = crate::project::amf_config_dir().join("notifications");
+        let mut removed = Self::prune_notification_dir(&global_dir);
+
+        for project in &self.store.projects {
+            for feature in &project.features {
+                let dir = feature.workdir.join(".claude").join("notifications");
+                removed += Self::prune_notification_dir(&dir);
+            }
+        }
+
+        if removed > 0 {
+            crate::debug::log_to_file(
+                crate::debug::LogLevel::Info,
+                "notify",
+                &format!("pruned {removed} stale notification file(s)"),
+            );
+        }
+    }
+
+    fn prune_notification_dir(dir: &Path) -> usize {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        let now = std::time::SystemTime::now();
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let too_old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .map(|age| age > NOTIFICATION_MAX_AGE)
+                .unwrap_or(false);
+            if too_old && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     fn touch_feature_for_session(&mut self, session_id: &str) {

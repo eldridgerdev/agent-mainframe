@@ -3,6 +3,7 @@ use anyhow::Result;
 use super::setup::{ensure_notification_hooks, ensure_review_claude_md};
 use super::util::slugify;
 use super::*;
+use crate::project::LaunchOpts;
 use crate::tmux::TmuxManager;
 
 fn session_kind_for_agent(agent: &AgentKind) -> SessionKind {
@@ -481,6 +482,9 @@ impl App {
             return Ok(());
         };
 
+        // Resolve before the mutable borrow of `feature` below.
+        let rc_allowed = self.remote_control_allowed();
+
         let feature = match self
             .store
             .projects
@@ -499,7 +503,16 @@ impl App {
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
         let mode = feature.mode.clone();
-        let extra_args: Vec<String> = feature.mode.cli_flags(feature.enable_chrome);
+        let use_rc = feature.remote_control && rc_allowed;
+        let extra_args: Vec<String> = feature.mode.cli_flags(LaunchOpts {
+            enable_chrome: feature.enable_chrome,
+            remote_control: use_rc,
+            session_name: if use_rc {
+                Some(feature.name.clone())
+            } else {
+                None
+            },
+        });
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
         let session = match label {

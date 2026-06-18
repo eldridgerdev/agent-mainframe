@@ -12,6 +12,51 @@ are tagged.
 
 ### Added
 
+- Vim normal mode now supports the change operator: `c` with a motion
+  (`cw`, `cb`, `c$`, …) deletes and drops into insert mode, `cc`/`S`
+  changes a whole line (leaving it empty rather than removing it), and
+  `C` changes to the end of the line. The delete and the text typed
+  afterwards undo together as one step.
+
+### Documentation
+
+- Optimized the README for LLM/AI-assistant retrieval (c7score):
+  merged install and upgrade steps into copy-paste-ready blocks,
+  removed screenshot placeholders, and trimmed the duplicated `src/`
+  file tree in favor of a pointer to `CLAUDE.md`.
+- Fixed README issues found during the cleanup: a Catppuccin theme
+  list and a `cargo build` snippet that had drifted into the wrong
+  sections, and a dead link to a non-existent
+  `docs/docker-screenshots.md`.
+- Removed the `zai` (Z.AI usage limits) configuration section from the
+  README. The feature is not reliable enough to document yet; the
+  config key still exists for future use.
+- Added a top-level `llms.txt` navigation file so AI tools can quickly
+  locate the README, architecture docs, and automation guides.
+
+### Changed
+
+- Feature view now highlights the active worktree name with a stronger
+  accent color, making labels like `/visual-updates` easier to spot in
+  the header.
+- Renamed session bookmark internals and UI copy to remove legacy
+  external-editor terminology.
+
+### Fixed
+
+- The Ctrl+Space leader menu now lists the bookmark shortcuts for
+  opening bookmarks, adding or removing the current session, and jumping
+  to saved bookmark slots, so the on-screen help matches the available
+  commands.
+
+### Migration
+
+- No migration is required.
+
+## [v0.24.0] - 2026-06-16
+
+### Added
+
 - Vim mode in the compose and steering-prompt inputs now supports undo
   and redo: press `u` in normal mode to undo and `Ctrl+R` to redo.
   Everything typed during a single insert session is undone in one step.
@@ -23,11 +68,21 @@ are tagged.
   (`yw`, `y$`, …), `yy`/`Y` to yank a line, and `p`/`P` to paste after
   or before the cursor (charwise or linewise). Deletes and `x` feed the
   same register, so `ddp` and `xp` work as in vim.
-- Vim normal mode now supports the change operator: `c` with a motion
-  (`cw`, `cb`, `c$`, …) deletes and drops into insert mode, `cc`/`S`
-  changes a whole line (leaving it empty rather than removing it), and
-  `C` changes to the end of the line. The delete and the text typed
-  afterwards undo together as one step.
+- Remote Control: drive a feature's local Claude session from
+  claude.ai/code or the Claude mobile app while the agent keeps running
+  on your machine in tmux. Turn it on with the new "Remote Control"
+  toggle when creating a Claude feature, or set it as the default for
+  all new Claude features in config. The toggle disables itself with a
+  reason when it can't be used — on z.ai or other third-party providers,
+  or with a Claude Code older than v2.1.51 — so you never start a session
+  that can't connect.
+- A `[remote ●]` badge appears in the session view when Remote Control
+  is connected, and RC-enabled features are marked `[remote]` in the
+  project list. From a Claude view, the Ctrl+Space menu adds: `c` to
+  copy the session URL, `O` to open it in your browser, and `C` to
+  toggle Remote Control on or off at runtime. When the link only lives
+  in Claude Code's footer (and can't be read back), AMF tells you to use
+  that footer link rather than failing silently.
 
 ### Changed
 
@@ -1054,7 +1109,7 @@ are tagged.
   config support.
 - `allowed_agents` config so each workspace can restrict AMF to a
   subset of Claude, Codex, and Opencode.
-- Harpoon-style session bookmarks with `H`, `M`, and `1`-`9` quick
+- Session bookmarks with `H`, `M`, and `1`-`9` quick
   jumps.
 - Ready-state tracking for features.
 - Configurable leader timeout via `leader_timeout_seconds`.

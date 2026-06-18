@@ -1,9 +1,16 @@
-# Vim Mode — Feature Backlog & Implementation Plan
+# Vim mode
+
+- **Status:** Partial — Tier 1 core editing largely shipped (v0.24.0:
+  undo/redo, operator+motion, delete/yank/paste, `dd`/`yy`/`D`/`e`);
+  `c`/`cc`/`C` and Tiers 2-3 remain.
+- **Owner:** unassigned
+- **Relates to:** `src/editor.rs` (`TextEditor`),
+  `src/ui/dialogs/editor_view.rs`; shipped vim work in v0.24.0
 
 A living, ranked checklist of vim features we want in our in-house
 editor. We extend `src/editor.rs` (`TextEditor`) rather than adopt a
 third-party crate, so this file is the source of truth for what is done
-and what is next. Check items off as they ship.
+and what is next. Check items off as they ship (see **Backlog** below).
 
 ## Approach
 

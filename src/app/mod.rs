@@ -8,13 +8,14 @@ pub mod commands;
 mod compose;
 mod diff;
 mod feature_ops;
-mod harpoon;
+mod bookmarks;
 mod hooks;
 mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
 mod project_ops;
+pub mod remote_control;
 mod rename;
 mod review;
 mod search;
@@ -366,6 +367,11 @@ pub struct AppConfig {
     pub transparent_background: bool,
     #[serde(default)]
     pub token_pricing: TokenPricingConfig,
+    /// Default state of the Remote Control toggle for new Claude features.
+    /// Still subject to the availability guard (z.ai / provider / version),
+    /// so enabling this never forces RC onto an incompatible session.
+    #[serde(default)]
+    pub remote_control_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -401,6 +407,7 @@ impl Default for AppConfig {
             theme: crate::theme::ThemeName::default(),
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
+            remote_control_default: false,
         }
     }
 }
@@ -2103,6 +2110,33 @@ impl App {
         self.sidebar_plan_cache.remove(tmux_session);
         self.codex_live_threads.remove(tmux_session);
         self.opencode_sidebar_cache.remove(tmux_session);
+        self.prune_codex_sidebar_caches();
+    }
+
+    /// Drop codex sidebar metadata cache entries that no longer belong to
+    /// any existing feature. These caches are keyed by `workdir::session_id`
+    /// (not the tmux session), so they cannot be removed alongside the
+    /// other per-session state above; without this GC they accumulate as
+    /// features are deleted and codex sessions are resumed under new ids.
+    fn prune_codex_sidebar_caches(&mut self) {
+        let valid_prefixes: Vec<String> = self
+            .store
+            .projects
+            .iter()
+            .flat_map(|project| project.features.iter())
+            .map(|feature| format!("{}::", feature.workdir.display()))
+            .collect();
+
+        let keep = |key: &String| {
+            valid_prefixes
+                .iter()
+                .any(|prefix| key.starts_with(prefix.as_str()))
+        };
+
+        self.codex_session_title_cache.retain(|key, _| keep(key));
+        self.codex_session_prompt_cache.retain(|key, _| keep(key));
+        self.codex_session_model_cache.retain(|key, _| keep(key));
+        self.codex_sidebar_metadata_inflight.retain(|key| keep(key));
     }
 
     pub(crate) fn refresh_latest_prompt_for_feature(&mut self, pi: usize, fi: usize) {

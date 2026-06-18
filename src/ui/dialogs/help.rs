@@ -57,6 +57,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("Z", "Generate session summary"),
         ("i", "Input requests picker"),
         ("/", "Search and jump to item"),
+        ("Ctrl+Space c", "Config wizard"),
         ("?", "Toggle this help"),
         ("q / Esc", "Quit"),
     ];

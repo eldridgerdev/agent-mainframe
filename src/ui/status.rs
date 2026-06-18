@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, AppMode, Selection, SessionFilter};
+use crate::app::{App, AppMode, ConfigWizardStep, Selection, SessionFilter};
 use crate::editor::VimMode;
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -263,6 +263,79 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("n/Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ConfigWizard(state) => match state.step {
+            ConfigWizardStep::CategoryPicker => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" select  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" cancel  "),
+                Span::styled("Ctrl+Q", key_style()),
+                Span::raw(" close"),
+            ]),
+            ConfigWizardStep::ScopePicker => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" select  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" back  "),
+                Span::styled("Ctrl+Q", key_style()),
+                Span::raw(" close"),
+            ]),
+            ConfigWizardStep::ItemList => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" navigate  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" select  "),
+                Span::styled("Ctrl+S", key_style()),
+                Span::raw(" save  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" back  "),
+                Span::styled("Ctrl+Q", key_style()),
+                Span::raw(" close"),
+            ]),
+            ConfigWizardStep::EditItem => {
+                if state.input_mode {
+                    Line::from(vec![
+                        Span::styled("Type", key_style()),
+                        Span::raw(" text  "),
+                        Span::styled("Enter/Esc", key_style()),
+                        Span::raw(" stop editing  "),
+                        Span::styled("Tab", key_style()),
+                        Span::raw(" next field  "),
+                        Span::styled("Ctrl+Q", key_style()),
+                        Span::raw(" close"),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled("j/k", key_style()),
+                        Span::raw(" move  "),
+                        Span::styled("Tab", key_style()),
+                        Span::raw(" next  "),
+                        Span::styled("Enter", key_style()),
+                        Span::raw(" edit/toggle/select  "),
+                        Span::styled("Esc", key_style()),
+                        Span::raw(" back  "),
+                        Span::styled("Ctrl+Q", key_style()),
+                        Span::raw(" close"),
+                    ])
+                }
+            }
+            ConfigWizardStep::ConfirmSave => Line::from(vec![
+                Span::styled("j/k", key_style()),
+                Span::raw(" scroll  "),
+                Span::styled("Enter", key_style()),
+                Span::raw(" save  "),
+                Span::styled("Esc", key_style()),
+                Span::raw(" back  "),
+                Span::styled("q", key_style()),
+                Span::raw(" cancel  "),
+                Span::styled("Ctrl+Q", key_style()),
+                Span::raw(" close"),
+            ]),
+        },
         AppMode::Help(_) => Line::from(vec![
             Span::styled("Esc/q/?", key_style()),
             Span::raw(" close help"),

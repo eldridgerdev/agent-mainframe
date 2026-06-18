@@ -13,11 +13,13 @@ pub enum VimMode {
 }
 
 /// A pending vim operator awaiting a motion or text object (the `d` in
-/// `dw`). The framework is operator-generic; change still to follow.
+/// `dw`). The framework is operator-generic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operator {
     Delete,
     Yank,
+    /// Delete the spanned text and enter insert mode (`cw`, `cc`, `C`).
+    Change,
 }
 
 /// A resolved operator motion: either a charwise byte range or a
@@ -397,6 +399,19 @@ impl TextEditor {
                 self.pending_op = Some(Operator::Yank);
                 EditorOutcome::handled()
             }
+            KeyCode::Char('c') if key.modifiers.is_empty() => {
+                self.pending_op = Some(Operator::Change);
+                EditorOutcome::handled()
+            }
+            KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                // `C` == `c$`: change to end of line.
+                let end = self.line_end(self.cursor);
+                self.apply_operator(Operator::Change, OpTarget::Char(self.cursor, end))
+            }
+            KeyCode::Char('S') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                // `S` == `cc`: linewise change of the current line.
+                self.apply_operator(Operator::Change, OpTarget::Line(self.cursor, self.cursor))
+            }
             KeyCode::Char('D') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 let end = self.line_end(self.cursor);
                 self.apply_operator(Operator::Delete, OpTarget::Char(self.cursor, end))
@@ -700,6 +715,7 @@ impl TextEditor {
         let doubled_key = match op {
             Operator::Delete => KeyCode::Char('d'),
             Operator::Yank => KeyCode::Char('y'),
+            Operator::Change => KeyCode::Char('c'),
         };
         let doubled = key.code == doubled_key && key.modifiers.is_empty();
 
@@ -707,6 +723,17 @@ impl TextEditor {
             || (key.code == KeyCode::Char('j') && key.modifiers.is_empty());
         let up = matches!(key.code, KeyCode::Up)
             || (key.code == KeyCode::Char('k') && key.modifiers.is_empty());
+
+        // Vim special case: when the cursor is on a word, `cw` changes only
+        // to the end of the word (like `ce`), not over the trailing
+        // whitespace that `dw` would consume.
+        let cw_as_ce = matches!(op, Operator::Change)
+            && matches!(key.code, KeyCode::Char('w'))
+            && key.modifiers.is_empty()
+            && self
+                .char_at(self.cursor)
+                .map(Self::is_word_char)
+                .unwrap_or(false);
 
         let target = if doubled {
             Some(OpTarget::Line(self.cursor, self.cursor))
@@ -716,6 +743,9 @@ impl TextEditor {
         } else if up {
             let line_start = self.line_start(self.cursor);
             (line_start > 0).then(|| OpTarget::Line(line_start - 1, self.cursor))
+        } else if cw_as_ce {
+            let end = self.next_boundary(self.word_end_index(self.cursor));
+            Some(OpTarget::Char(self.cursor, end))
         } else {
             self.charwise_op_range(key)
                 .map(|(start, end)| OpTarget::Char(start, end))
@@ -729,62 +759,108 @@ impl TextEditor {
     }
 
     /// Apply an operator to a resolved target: copy the spanned text to
-    /// the register, then delete it (Delete) or leave it (Yank).
+    /// the register, then delete it (Delete), delete it and enter insert
+    /// (Change), or leave the buffer unchanged (Yank).
     fn apply_operator(&mut self, op: Operator, target: OpTarget) -> EditorOutcome {
-        let (del_start, del_end, content, linewise, cursor_at) = match target {
+        match target {
             OpTarget::Char(start, end) => {
                 if start >= end {
-                    // Empty/no-op motion: don't touch the register, undo,
-                    // or redo history.
+                    // Empty/no-op motion. For Change (e.g. `C` on an empty
+                    // line) still enter insert mode, arming undo so any
+                    // typed text is undoable; otherwise it's a pure no-op
+                    // that leaves the register, undo, and redo untouched.
+                    if matches!(op, Operator::Change) {
+                        self.arm_undo();
+                        self.vim_mode = VimMode::Insert;
+                        self.preferred_col = None;
+                        return EditorOutcome::mode_changed();
+                    }
                     return EditorOutcome::handled();
                 }
-                (start, end, self.text[start..end].to_string(), false, start)
+                self.register = Register {
+                    text: self.text[start..end].to_string(),
+                    linewise: false,
+                };
+                match op {
+                    Operator::Yank => {
+                        // Charwise yank moves the cursor to the start of the
+                        // range (matching vim for backward motions).
+                        self.cursor = start.min(self.text.len());
+                        self.preferred_col = None;
+                        EditorOutcome::moved()
+                    }
+                    Operator::Delete => {
+                        self.push_undo_state();
+                        self.text.drain(start..end);
+                        self.cursor = start.min(self.text.len());
+                        self.preferred_col = None;
+                        EditorOutcome {
+                            handled: true,
+                            text_changed: true,
+                            cursor_moved: true,
+                            mode_changed: false,
+                        }
+                    }
+                    Operator::Change => self.change_drain(start, end, start),
+                }
             }
             OpTarget::Line(a, b) => {
                 let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
                 let content_start = self.line_start(lo);
                 let content_end = self.line_end(hi);
-                // Normalize to whole lines with a single trailing newline,
-                // independent of how the deletion range treats newlines.
+                // Normalize the register to whole lines with a single
+                // trailing newline, independent of how each operator's
+                // deletion range treats the surrounding newlines.
                 let mut content = self.text[content_start..content_end].to_string();
                 content.push('\n');
-                let (del_start, del_end) = self.linewise_range(lo, hi);
-                (del_start, del_end, content, true, del_start)
+                self.register = Register {
+                    text: content,
+                    linewise: true,
+                };
+                match op {
+                    Operator::Yank => {
+                        // Linewise yank keeps the cursor where it is.
+                        EditorOutcome::handled()
+                    }
+                    Operator::Delete => {
+                        let (del_start, del_end) = self.linewise_range(lo, hi);
+                        self.push_undo_state();
+                        self.text.drain(del_start..del_end);
+                        self.cursor = self.first_non_blank_of_line(del_start.min(self.text.len()));
+                        self.preferred_col = None;
+                        EditorOutcome {
+                            handled: true,
+                            text_changed: true,
+                            cursor_moved: true,
+                            mode_changed: false,
+                        }
+                    }
+                    Operator::Change => {
+                        // Unlike `dd`, linewise change keeps an empty line
+                        // in place: drain only the line content, not the
+                        // surrounding newlines, then insert at its start.
+                        self.change_drain(content_start, content_end, content_start)
+                    }
+                }
             }
-        };
+        }
+    }
 
-        self.register = Register {
-            text: content,
-            linewise,
-        };
-
-        match op {
-            Operator::Yank => {
-                // Yank leaves the buffer unchanged. A charwise yank moves
-                // the cursor to the start of the range (matching vim for
-                // backward motions); a linewise yank keeps the cursor.
-                if linewise {
-                    return EditorOutcome::handled();
-                }
-                self.cursor = cursor_at.min(self.text.len());
-                self.preferred_col = None;
-                EditorOutcome::moved()
-            }
-            Operator::Delete => {
-                self.push_undo_state();
-                self.text.drain(del_start..del_end);
-                self.cursor = cursor_at.min(self.text.len());
-                if linewise {
-                    self.cursor = self.first_non_blank_of_line(self.cursor);
-                }
-                self.preferred_col = None;
-                EditorOutcome {
-                    handled: true,
-                    text_changed: true,
-                    cursor_moved: true,
-                    mode_changed: false,
-                }
-            }
+    /// Delete `[start, end)`, place the cursor at `cursor_at`, and enter
+    /// insert mode as a single undo step. The pre-change snapshot is pushed
+    /// up front and `pending` left cleared, so the deletion *and* the text
+    /// typed afterwards collapse into one `u`.
+    fn change_drain(&mut self, start: usize, end: usize, cursor_at: usize) -> EditorOutcome {
+        self.push_undo_state();
+        self.text.drain(start..end);
+        self.cursor = cursor_at.min(self.text.len());
+        self.vim_mode = VimMode::Insert;
+        self.preferred_col = None;
+        EditorOutcome {
+            handled: true,
+            text_changed: true,
+            cursor_moved: true,
+            mode_changed: true,
         }
     }
 
@@ -1302,6 +1378,102 @@ mod tests {
         let outcome = editor.handle_key(key(KeyCode::Char('u')));
         assert!(!outcome.text_changed);
         assert_eq!(editor.text(), "hello");
+    }
+
+    #[test]
+    fn change_word_with_cw_acts_like_ce_and_enters_insert() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('c')));
+        let outcome = editor.handle_key(key(KeyCode::Char('w')));
+        assert!(outcome.mode_changed);
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        // `cw` stops at the end of the word, leaving the space (unlike dw).
+        assert_eq!(editor.text(), " world");
+        editor.handle_key(key(KeyCode::Char('h')));
+        editor.handle_key(key(KeyCode::Char('i')));
+        assert_eq!(editor.text(), "hi world");
+    }
+
+    #[test]
+    fn change_back_with_cb() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('w'))); // cursor at "world"
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('b')));
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        assert_eq!(editor.text(), "world");
+    }
+
+    #[test]
+    fn change_to_line_end_with_c_dollar_and_capital_c() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('w'))); // cursor at "world"
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(shift(KeyCode::Char('$')));
+        assert_eq!(editor.text(), "hello ");
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+
+        let mut editor = normal_at_start("hello world");
+        let outcome = editor.handle_key(shift(KeyCode::Char('C')));
+        assert!(outcome.mode_changed);
+        assert_eq!(editor.text(), "");
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+    }
+
+    #[test]
+    fn capital_c_on_empty_line_enters_insert() {
+        let mut editor = normal_at_start("\nrest");
+        let outcome = editor.handle_key(shift(KeyCode::Char('C')));
+        assert!(outcome.mode_changed);
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        assert_eq!(editor.text(), "\nrest");
+    }
+
+    #[test]
+    fn linewise_change_cc_keeps_an_empty_line() {
+        let mut editor = normal_at_start("one\ntwo\nthree");
+        editor.handle_key(key(KeyCode::Down)); // cursor on "two"
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('c')));
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        // The line is emptied but not removed (unlike dd).
+        assert_eq!(editor.text(), "one\n\nthree");
+        editor.handle_key(key(KeyCode::Char('X')));
+        assert_eq!(editor.text(), "one\nX\nthree");
+    }
+
+    #[test]
+    fn capital_s_is_linewise_change() {
+        let mut editor = normal_at_start("one\ntwo");
+        editor.handle_key(shift(KeyCode::Char('S')));
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        assert_eq!(editor.text(), "\ntwo");
+    }
+
+    #[test]
+    fn change_and_typed_text_undo_as_one_step() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('w'))); // change "hello"
+        editor.handle_key(key(KeyCode::Char('h')));
+        editor.handle_key(key(KeyCode::Char('i')));
+        editor.handle_key(key(KeyCode::Esc));
+        assert_eq!(editor.text(), "hi world");
+
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "hello world");
+    }
+
+    #[test]
+    fn change_then_paste_uses_the_register() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('w'))); // change deletes "hello"
+        editor.handle_key(key(KeyCode::Esc));
+        assert_eq!(editor.text(), " world");
+        // The changed text landed in the register and pastes back.
+        editor.handle_key(key(KeyCode::Char('p')));
+        assert_eq!(editor.text(), " helloworld");
     }
 
     #[test]

@@ -496,14 +496,21 @@ impl ComposeState {
 
         match self.pending_command_prefix() {
             Some(prefix) => {
-                let prefix_lower = prefix.to_lowercase();
-                self.suggestions = self
+                // Fuzzy-rank the catalog so a query like "commit"
+                // matches namespaced commands such as "stn:commit".
+                let mut scored: Vec<(i32, usize)> = self
                     .catalog
                     .iter()
                     .enumerate()
-                    .filter(|(_, entry)| entry.name.to_lowercase().starts_with(&prefix_lower))
-                    .map(|(idx, _)| idx)
+                    .filter_map(|(idx, entry)| {
+                        crate::app::compose::fuzzy_score(prefix, &entry.name)
+                            .map(|score| (score, idx))
+                    })
                     .collect();
+                // Highest score first; ties keep catalog order, which
+                // preserves the built-in/global/project/skill grouping.
+                scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                self.suggestions = scored.into_iter().map(|(_, idx)| idx).collect();
             }
             None => self.suggestions.clear(),
         }

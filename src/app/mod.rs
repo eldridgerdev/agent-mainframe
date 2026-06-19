@@ -534,6 +534,7 @@ pub struct App {
     pub opencode_sidebar_cache: HashMap<String, opencode_storage::OpencodeSidebarData>,
     sidebar_load_tx: Sender<SidebarLoadResult>,
     sidebar_load_rx: Receiver<SidebarLoadResult>,
+    sidebar_load_executor: Option<SidebarLoadExecutor>,
     sidebar_load_signatures: HashMap<String, u64>,
     pending_sidebar_loads: std::collections::HashSet<String>,
     pub usage: UsageManager,
@@ -600,6 +601,131 @@ struct SidebarLoadResult {
     latest_prompt: Option<String>,
     model_text: Option<String>,
     opencode_sidebar: Option<opencode_storage::OpencodeSidebarData>,
+}
+
+type SidebarLoadTask = Box<dyn FnOnce() + Send + 'static>;
+
+struct SidebarLoadQueue {
+    tasks: VecDeque<SidebarLoadTask>,
+    stopping: bool,
+}
+
+struct SidebarLoadExecutor {
+    queue: Arc<(StdMutex<SidebarLoadQueue>, StdCondvar)>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl SidebarLoadExecutor {
+    const WORKER_COUNT: usize = 4;
+
+    fn new() -> Self {
+        Self::with_worker_count(Self::WORKER_COUNT)
+    }
+
+    fn with_worker_count(worker_count: usize) -> Self {
+        assert!(worker_count > 0);
+        let queue = Arc::new((
+            StdMutex::new(SidebarLoadQueue {
+                tasks: VecDeque::new(),
+                stopping: false,
+            }),
+            StdCondvar::new(),
+        ));
+        let workers = (0..worker_count)
+            .map(|index| {
+                let queue = Arc::clone(&queue);
+                std::thread::Builder::new()
+                    .name(format!("sidebar-loader-{index}"))
+                    .spawn(move || loop {
+                        let task = {
+                            let (lock, ready) = &*queue;
+                            let mut state = lock.lock().unwrap();
+                            while state.tasks.is_empty() && !state.stopping {
+                                state = ready.wait(state).unwrap();
+                            }
+                            if state.tasks.is_empty() && state.stopping {
+                                return;
+                            }
+                            state.tasks.pop_front()
+                        };
+                        if let Some(task) = task {
+                            task();
+                        }
+                    })
+                    .expect("failed to start sidebar loader worker")
+            })
+            .collect();
+        Self { queue, workers }
+    }
+
+    fn submit(&self, task: SidebarLoadTask) {
+        let (lock, ready) = &*self.queue;
+        let mut state = lock.lock().unwrap();
+        state.tasks.push_back(task);
+        ready.notify_one();
+    }
+}
+
+impl Drop for SidebarLoadExecutor {
+    fn drop(&mut self) {
+        let (lock, ready) = &*self.queue;
+        let mut state = lock.lock().unwrap();
+        state.stopping = true;
+        state.tasks.clear();
+        drop(state);
+        ready.notify_all();
+        for worker in self.workers.drain(..) {
+            let _ = worker.join();
+        }
+    }
+}
+
+#[cfg(test)]
+mod sidebar_load_executor_tests {
+    use super::SidebarLoadExecutor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn executor_bounds_concurrent_sidebar_loads() {
+        let executor = SidebarLoadExecutor::with_worker_count(2);
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, started_rx) = mpsc::channel();
+
+        for _ in 0..6 {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let gate = Arc::clone(&gate);
+            let started_tx = started_tx.clone();
+            executor.submit(Box::new(move || {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current, Ordering::SeqCst);
+                started_tx.send(()).unwrap();
+                let (lock, ready) = &*gate;
+                let mut open = lock.lock().unwrap();
+                while !*open {
+                    open = ready.wait(open).unwrap();
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        drop(started_tx);
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let third_started_while_blocked = started_rx.try_recv().is_ok();
+
+        let (lock, ready) = &*gate;
+        *lock.lock().unwrap() = true;
+        ready.notify_all();
+        while started_rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+
+        assert!(!third_started_while_blocked);
+        assert_eq!(max_active.load(Ordering::SeqCst), 2);
+    }
 }
 
 pub struct ViewInputBatch {
@@ -1704,6 +1830,7 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
@@ -1884,6 +2011,7 @@ impl App {
             opencode_sidebar_cache: HashMap::new(),
             sidebar_load_tx,
             sidebar_load_rx,
+            sidebar_load_executor: None,
             sidebar_load_signatures: HashMap::new(),
             pending_sidebar_loads: std::collections::HashSet::new(),
             usage: UsageManager::new(false, None, None, None),
@@ -2034,9 +2162,11 @@ impl App {
             .get(&request.tmux_session)
             .copied();
         let tx = self.sidebar_load_tx.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(request.load(previous_signature));
-        });
+        self.sidebar_load_executor
+            .get_or_insert_with(SidebarLoadExecutor::new)
+            .submit(Box::new(move || {
+                let _ = tx.send(request.load(previous_signature));
+            }));
     }
 
     pub(crate) fn schedule_sidebar_loads_for_all_features(&mut self) {

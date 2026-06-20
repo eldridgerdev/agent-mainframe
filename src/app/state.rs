@@ -266,6 +266,14 @@ pub enum DiffViewerLayout {
     SideBySide,
 }
 
+/// Per-file verdict in a final review. Absence of an entry means the file
+/// was skipped (neither approved nor rejected).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewDecision {
+    Approve,
+    Reject { feedback: String },
+}
+
 #[derive(Clone)]
 pub struct DiffViewerState {
     pub from_view: ViewState,
@@ -279,6 +287,26 @@ pub struct DiffViewerState {
     pub focus: DiffViewerFocus,
     pub layout: DiffViewerLayout,
     pub error: Option<String>,
+    /// When true the viewer is a final-review session: each file can be
+    /// approved/rejected/skipped and feedback is collected on finish.
+    pub review: bool,
+    /// File path -> verdict. Skipped files have no entry.
+    pub decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// True while the user is typing rejection feedback for the current file.
+    pub feedback_editing: bool,
+    /// True while the user is typing general (non-file) review feedback.
+    pub editing_general: bool,
+    /// Active editor buffer, shared by the per-file and general editors (only
+    /// one is open at a time).
+    pub feedback_input: String,
+    /// Overall review feedback not tied to a specific file.
+    pub general_feedback: String,
+    /// File path -> developer note parsed from `.claude/review-notes.md`
+    /// (written by review mode). Shown beside the diff during final review.
+    pub review_notes: std::collections::HashMap<String, String>,
+    /// When true the developer-notes panel takes the full patch column.
+    pub notes_expanded: bool,
+    pub notes_scroll: usize,
 }
 
 impl DiffViewerState {
@@ -295,6 +323,15 @@ impl DiffViewerState {
             focus: DiffViewerFocus::FileList,
             layout: DiffViewerLayout::Unified,
             error: None,
+            review: false,
+            decisions: std::collections::HashMap::new(),
+            feedback_editing: false,
+            editing_general: false,
+            feedback_input: String::new(),
+            general_feedback: String::new(),
+            review_notes: std::collections::HashMap::new(),
+            notes_expanded: false,
+            notes_scroll: 0,
         }
     }
 }

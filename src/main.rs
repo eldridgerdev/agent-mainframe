@@ -245,7 +245,6 @@ fn main() -> Result<()> {
         )
     })?;
 
-    let mut should_switch = None;
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         cleanup_global_hooks();
         app::App::cleanup_stale_thinking_files();
@@ -292,9 +291,7 @@ fn main() -> Result<()> {
             }
         }
 
-        let loop_result = run_loop(&mut terminal, &mut app, vscode_check_rx);
-        should_switch = app.should_switch.clone();
-        loop_result
+        run_loop(&mut terminal, &mut app, vscode_check_rx)
     }));
 
     debug::flush_log_writer();
@@ -307,10 +304,6 @@ fn main() -> Result<()> {
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
-
-    if let Some(session) = &should_switch {
-        TmuxManager::attach_session(session)?;
-    }
 
     match result {
         Ok(result) => result,
@@ -946,7 +939,7 @@ fn run_loop<B: Backend>(
             }
         }
 
-        if app.should_quit || app.should_switch.is_some() {
+        if app.should_quit {
             app.flush_pending_debug_log_entries();
             return Ok(());
         }
@@ -1390,7 +1383,7 @@ fn run_loop<B: Backend>(
             }
         }
 
-        if app.should_quit || app.should_switch.is_some() {
+        if app.should_quit {
             app.flush_pending_debug_log_entries();
             return Ok(());
         }

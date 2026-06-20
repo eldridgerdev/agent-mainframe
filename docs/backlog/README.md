@@ -74,3 +74,8 @@ doc always says exactly what remains.
   _Backlog._ Render the Remote Control session URL as a scannable QR in
   a TUI overlay. Pays off most with server mode, which prints a stable
   URL.
+- [Final review enhancements](final-review-enhancements-plan.md) —
+  _Backlog._ Follow-ups for the shipped native final review: line-level
+  comments, multi-line/markdown feedback and notes, on-demand
+  walkthroughs, finish gating, resumable state, base-ref selection, and
+  PR integration.

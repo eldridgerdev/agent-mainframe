@@ -17,7 +17,7 @@ pub(crate) mod opencode_storage;
 mod project_ops;
 pub mod remote_control;
 mod rename;
-mod review;
+pub(crate) mod review;
 mod search;
 mod session_config;
 mod session_ops;
@@ -497,7 +497,6 @@ pub struct App {
     pub message: Option<String>,
     pub toasts: Vec<Toast>,
     pub should_quit: bool,
-    pub should_switch: Option<String>,
     pub pane_content: String,
     pub pane_lines: Vec<Line<'static>>,
     pub pane_content_cols: u16,
@@ -651,7 +650,6 @@ impl App {
         std::mem::discriminant(&self.mode).hash(&mut hasher);
         std::mem::discriminant(&self.selection).hash(&mut hasher);
         self.should_quit.hash(&mut hasher);
-        self.should_switch.hash(&mut hasher);
         self.leader_active.hash(&mut hasher);
         self.message.hash(&mut hasher);
         self.toasts.len().hash(&mut hasher);
@@ -1673,7 +1671,6 @@ impl App {
             message: None,
             toasts: Vec::new(),
             should_quit: false,
-            should_switch: None,
             pane_content: String::new(),
             pane_lines: Vec::new(),
             pane_content_cols: 0,
@@ -1853,7 +1850,6 @@ impl App {
             message: None,
             toasts: Vec::new(),
             should_quit: false,
-            should_switch: None,
             pane_content: String::new(),
             pane_lines: Vec::new(),
             pane_content_cols: 0,

@@ -954,6 +954,7 @@ pub fn ensure_notification_hooks_with_config(
     let claude_gitignore = claude_dir.join(".gitignore");
     ensure_gitignore_entry(&claude_gitignore, "notifications/");
     ensure_gitignore_entry(&claude_gitignore, "review-notes.md");
+    ensure_gitignore_entry(&claude_gitignore, "final-review-feedback.md");
     ensure_gitignore_entry(&claude_gitignore, "latest-prompt.txt");
     ensure_gitignore_entry(&claude_gitignore, "skills/amf-*/");
 

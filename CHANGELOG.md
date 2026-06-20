@@ -36,6 +36,18 @@ are tagged.
 
 ### Changed
 
+- Final review (press `f` in a feature view) now runs entirely inside
+  AMF instead of opening tmux/vim popups. You step through every changed
+  file with syntax-highlighted diffs, read the agent's own per-file
+  reasoning beside each change (captured by review mode in
+  `.claude/review-notes.md`), and approve, reject with feedback, or skip
+  each file — plus leave general feedback that isn't tied to a file. On
+  finish, AMF writes `.claude/final-review-feedback.md` and prompts the
+  feature's agent to read it and address every item, so a review round
+  flows straight back to the agent without copy-pasting.
+- The per-file change review now finds a developer's note even when the
+  heading includes a title (e.g. `## path — summary`), not only a bare
+  path heading, so your review-mode notes show up more reliably.
 - Feature view now highlights the active worktree name with a stronger
   accent color, making labels like `/visual-updates` easier to spot in
   the header.
@@ -44,6 +56,10 @@ are tagged.
 
 ### Fixed
 
+- Final review no longer crashes with a tmux `open terminal failed: not
+  a terminal` error. The previous version tried to attach a separate
+  terminal session for its vim/popup walkthrough, which doesn't work
+  with AMF's embedded tmux; the review now stays inside AMF.
 - The Ctrl+Space leader menu now lists the bookmark shortcuts for
   opening bookmarks, adding or removing the current session, and jumping
   to saved bookmark slots, so the on-screen help matches the available

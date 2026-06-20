@@ -77,3 +77,8 @@ doc always says exactly what remains.
 - [Expanded keybindings](expanded-keybindings-plan.md) — _Backlog._
   Grow config wizard keybinding support beyond dashboard actions to
   leader commands and other scoped command surfaces.
+- [Final review enhancements](final-review-enhancements-plan.md) —
+  _Backlog._ Follow-ups for the shipped native final review: line-level
+  comments, multi-line/markdown feedback and notes, on-demand
+  walkthroughs, finish gating, resumable state, base-ref selection, and
+  PR integration.

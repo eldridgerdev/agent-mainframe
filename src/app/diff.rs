@@ -81,6 +81,13 @@ impl App {
                     .and_then(|path| state.files.iter().position(|file| file.path == path))
                     .unwrap_or_else(|| selected_index.min(state.files.len().saturating_sub(1)));
                 state.patch_scroll = 0;
+                if state.review {
+                    state.review_notes = std::fs::read_to_string(
+                        state.workdir.join(".claude").join("review-notes.md"),
+                    )
+                    .map(|content| crate::app::review::parse_review_notes(&content))
+                    .unwrap_or_default();
+                }
             }
             Err(err) => {
                 state.branch.clear();
@@ -105,6 +112,7 @@ impl App {
         {
             state.selected_file += 1;
             state.patch_scroll = 0;
+            state.notes_scroll = 0;
         }
     }
 
@@ -114,6 +122,7 @@ impl App {
         {
             state.selected_file -= 1;
             state.patch_scroll = 0;
+            state.notes_scroll = 0;
         }
     }
 

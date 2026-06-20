@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.25.0] - 2026-06-19
+
 ### Added
 
 - Prompt library (phase 1): save reusable prompts and inject them into a

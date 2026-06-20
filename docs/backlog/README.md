@@ -63,6 +63,11 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Startup performance](startup-performance-plan.md) — _In progress._
+  Parser repair and sidebar concurrency fixes shipped in PR #308;
+  indexed Codex transcript access and sequenced startup I/O are
+  implemented, with provider consolidation and deeper instrumentation
+  still planned.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.

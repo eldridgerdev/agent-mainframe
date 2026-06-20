@@ -2905,6 +2905,11 @@ impl SidebarLoadRequest {
             && let Some(home) = dirs::home_dir()
         {
             hash_path_metadata(&mut hasher, home.join(".codex").join("config.toml"));
+            if let Some(session_id) = self.preferred_session_id.as_deref()
+                && let Some(session) = crate::codex::indexed_session(&self.workdir, session_id)
+            {
+                hash_path_metadata(&mut hasher, session.rollout_path);
+            }
         }
 
         hasher.finish()

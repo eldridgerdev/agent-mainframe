@@ -99,6 +99,10 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
         Span::raw(" vim  "),
         Span::styled("Ctrl+E", Style::default().fg(theme.warning.to_color())),
         Span::raw(" direct  "),
+        Span::styled("Ctrl+P", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" library  "),
+        Span::styled("Ctrl+S", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" save  "),
         Span::styled("Ctrl+Space", Style::default().fg(theme.warning.to_color())),
         Span::raw(" leader "),
     ]);

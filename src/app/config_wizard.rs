@@ -419,6 +419,12 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         } else {
             state.allowed_agents.clone()
         },
+        // The wizard doesn't edit prompt templates; carry the existing
+        // ones through from the loaded config so saving doesn't wipe
+        // prompts exported via the prompt library.
+        prompt_templates: serde_json::from_str::<ExtensionConfig>(&state.original_json)
+            .map(|config| config.prompt_templates)
+            .unwrap_or_default(),
     }
 }
 

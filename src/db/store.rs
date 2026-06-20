@@ -7,6 +7,7 @@ use crate::project::{
     AgentKind, CURRENT_PROJECT_STORE_VERSION, Feature, FeatureSession, Project, ProjectStatus,
     ProjectStore, SessionBookmark, SessionKind, TokenUsageSourceMatch, VibeMode,
 };
+use crate::prompt_library::{PromptPlaceholder, PromptTemplate};
 use crate::token_tracking::TokenUsageSource;
 
 // ── enum ↔ str helpers ───────────────────────────────────────
@@ -153,6 +154,8 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
+    let prompt_templates = load_prompt_templates(conn)?;
+
     let mut proj_stmt = conn.prepare(
         "SELECT id, name, repo, collapsed, preferred_agent, is_git, created_at
          FROM projects ORDER BY sort_order ASC, rowid ASC",
@@ -191,8 +194,36 @@ pub fn load(conn: &Connection) -> Result<ProjectStore> {
         projects,
         session_bookmarks,
         available_harnesses,
+        prompt_templates,
         extra,
     })
+}
+
+fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, description, body, tags, placeholders, created_at, updated_at
+         FROM prompt_templates ORDER BY sort_order ASC, rowid ASC",
+    )?;
+
+    let templates = stmt
+        .query_map([], |row| {
+            let tags_json: String = row.get(4)?;
+            let placeholders_json: String = row.get(5)?;
+            Ok(PromptTemplate {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                body: row.get(3)?,
+                tags: serde_json::from_str::<Vec<String>>(&tags_json).unwrap_or_default(),
+                placeholders: serde_json::from_str::<Vec<PromptPlaceholder>>(&placeholders_json)
+                    .unwrap_or_default(),
+                created_at: dt_from_str(&row.get::<_, String>(6)?),
+                updated_at: dt_from_str(&row.get::<_, String>(7)?),
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(templates)
 }
 
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
@@ -358,7 +389,31 @@ pub fn save(conn: &Connection, store: &ProjectStore) -> Result<()> {
 
 fn do_save(conn: &Connection, store: &ProjectStore) -> Result<()> {
     // Full replace: CASCADE deletes features → sessions.
-    conn.execute_batch("DELETE FROM session_bookmarks; DELETE FROM projects;")?;
+    conn.execute_batch(
+        "DELETE FROM session_bookmarks; DELETE FROM projects; DELETE FROM prompt_templates;",
+    )?;
+
+    for (idx, template) in store.prompt_templates.iter().enumerate() {
+        let tags_json = serde_json::to_string(&template.tags)?;
+        let placeholders_json = serde_json::to_string(&template.placeholders)?;
+        conn.execute(
+            "INSERT INTO prompt_templates (
+                id, name, description, body, tags, placeholders,
+                created_at, updated_at, sort_order
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                template.id,
+                template.name,
+                template.description,
+                template.body,
+                tags_json,
+                placeholders_json,
+                dt_to_str(&template.created_at),
+                dt_to_str(&template.updated_at),
+                idx as i64,
+            ],
+        )?;
+    }
 
     let harnesses_json = serde_json::to_string(
         &store
@@ -493,6 +548,7 @@ mod tests {
             projects: Vec::new(),
             session_bookmarks: Vec::new(),
             available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -511,6 +567,48 @@ mod tests {
         let loaded = db.load_store().unwrap();
         assert_eq!(loaded.projects.len(), 0);
         assert_eq!(loaded.session_bookmarks.len(), 0);
+        assert_eq!(loaded.prompt_templates.len(), 0);
+    }
+
+    #[test]
+    fn prompt_templates_roundtrip_preserves_order_and_fields() {
+        use crate::prompt_library::{
+            PlaceholderKind, PromptPlaceholder, PromptTemplate,
+        };
+
+        let (_tmp, db) = open_temp_db();
+        let mut store = empty_store();
+
+        let mut first = PromptTemplate::new("Fix bug".to_string(), "Fix {{area}}".to_string());
+        first.id = "tpl-1".to_string();
+        first.description = Some("a description".to_string());
+        first.tags = vec!["dev".to_string(), "fix".to_string()];
+        first.placeholders = vec![PromptPlaceholder {
+            key: "area".to_string(),
+            label: Some("Area".to_string()),
+            kind: PlaceholderKind::Text { default: None },
+            required: true,
+        }];
+
+        let mut second = PromptTemplate::new("Review".to_string(), "Review the diff".to_string());
+        second.id = "tpl-2".to_string();
+
+        store.prompt_templates = vec![first.clone(), second.clone()];
+
+        db.save_store(&store).unwrap();
+        let loaded = db.load_store().unwrap();
+
+        assert_eq!(loaded.prompt_templates.len(), 2);
+        // Insertion order is preserved via sort_order.
+        assert_eq!(loaded.prompt_templates[0].id, "tpl-1");
+        assert_eq!(loaded.prompt_templates[1].id, "tpl-2");
+
+        let lt = &loaded.prompt_templates[0];
+        assert_eq!(lt.name, "Fix bug");
+        assert_eq!(lt.body, "Fix {{area}}");
+        assert_eq!(lt.description, Some("a description".to_string()));
+        assert_eq!(lt.tags, vec!["dev".to_string(), "fix".to_string()]);
+        assert_eq!(lt.placeholders, first.placeholders);
     }
 
     #[test]

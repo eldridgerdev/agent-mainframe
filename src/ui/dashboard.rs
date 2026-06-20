@@ -886,6 +886,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::PromptLibrary(state) = &app.mode
+        && let Some(view) = &state.from_view
+    {
+        draw_view_pane(frame, app, view, false, false);
+        super::dialogs::draw_prompt_library(frame, state, app.message.as_deref(), &app.theme);
+        return;
+    }
+
     if let AppMode::DiffViewer(state) = &app.mode {
         draw_view_pane(frame, app, &state.from_view, false, false);
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
@@ -1199,6 +1207,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_harness_setup_dialog(frame, state, &app.throbber_state, &app.theme);
     }
 
+    if let AppMode::PromptLibrary(state) = &app.mode {
+        super::dialogs::draw_prompt_library(frame, state, app.message.as_deref(), &app.theme);
+    }
+
+    if let AppMode::PromptEditor(state) = &app.mode {
+        super::dialogs::draw_prompt_editor(frame, state, &app.theme);
+    }
+
     if let AppMode::ConfigWizard(state) = &mut app.mode {
         super::dialogs::draw_config_wizard_dialog(frame, state, &app.theme);
     }
@@ -1310,6 +1326,7 @@ mod tests {
                 projects: vec![],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1516,6 +1533,7 @@ mod tests {
                 projects: vec![project.clone()],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1618,6 +1636,7 @@ mod tests {
                 projects: vec![project],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1723,6 +1742,7 @@ mod tests {
                 projects: vec![project],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1828,6 +1848,7 @@ mod tests {
                 projects: vec![project],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),
@@ -1920,6 +1941,7 @@ mod tests {
                 projects: vec![project],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),

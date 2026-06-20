@@ -275,6 +275,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `Z` | Generate a one-line summary for the selected feature |
 | `T` | Open the theme picker |
 | `P` | Open the syntax parser picker |
+| `L` | Open the prompt library |
 | `i` | Input requests picker |
 | `/` | Search and jump |
 | `D` | Open the debug log overlay |
@@ -308,6 +309,7 @@ All keys are forwarded to the tmux session except:
 | `x` | Stop session and exit view |
 | `f` | Trigger final review |
 | `l` | Show the latest saved prompt |
+| `P` | Open the prompt library (inject a saved prompt) — same as `Ctrl+P` in the compose box |
 | `o` / `S` | Toggle pane scroll mode |
 | `D` | Open debug log |
 | `H` / `M` | Bookmark / unbookmark current session |
@@ -682,6 +684,31 @@ JavaScript, JSON, Markdown, Python, Rust, TOML, TSX, TypeScript, and YAML.
 3. Use `x` to remove a parser you no longer need.
 
 Installed parsers are stored under `~/.config/amf/tree-sitter/`.
+
+### Prompt Library
+
+Save reusable prompts once and inject them into a session on demand
+instead of retyping them.
+
+1. Open the library with `leader+P` while viewing a session, or press
+   `L` from the dashboard to manage entries.
+2. Press `Enter` to inject the selected prompt. When compose is on it
+   seeds the compose box so you can review and edit before sending; when
+   compose is off it pastes into the agent window **without** sending.
+3. Manage entries from the picker: `n` new, `e` edit, `d` delete, `y`
+   duplicate, `/` search.
+4. Export a saved prompt to declarative config with `x`, then choose
+   `g` for the global config (`~/.config/amf/config.json`) or `p` for
+   the project config (`{repo}/.amf/config.json`). Exported templates
+   are version-controllable and shareable; an entry with the same name
+   is replaced in place.
+5. While composing, press `Ctrl+P` to open the library and inject a
+   saved prompt into the box (mirrors `leader+P`), or `Ctrl+S` to save
+   the current compose buffer as a new template.
+
+Templates are stored in the AMF SQLite database
+(`~/.config/amf/amf.db`). Fill-in `{{placeholder}}` slots and
+declarative/team templates are planned for later phases.
 
 ### Bundled Opencode Themes
 

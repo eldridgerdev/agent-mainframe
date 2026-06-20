@@ -16,6 +16,7 @@ mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
 mod project_ops;
+mod prompt_library;
 pub mod remote_control;
 mod rename;
 pub(crate) mod review;
@@ -66,6 +67,7 @@ use crate::ui::{render_ansi_lines, render_vt100_screen};
 use crate::usage::UsageManager;
 use crate::worktree::WorktreeManager;
 
+pub use self::prompt_library::PromptExportTarget;
 pub use self::setup::load_config;
 pub use codex_live::CodexLiveThreadState;
 pub use codex_sessions::sidebar_metadata_for_session_id as codex_sidebar_metadata_for_session_id;

@@ -238,6 +238,48 @@ impl App {
         Ok(())
     }
 
+    /// Open the compose box over the current Viewing mode seeded with
+    /// the given text. Used by the prompt library to inject a template
+    /// for review before sending. Any saved draft's images are kept; the
+    /// seed replaces the draft text.
+    pub fn open_compose_seeded(&mut self, text: String) -> Result<()> {
+        let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => view,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let workdir = self
+            .store
+            .projects
+            .iter()
+            .find(|project| project.name == view.project_name)
+            .and_then(|project| {
+                project
+                    .features
+                    .iter()
+                    .find(|feature| feature.name == view.feature_name)
+            })
+            .map(|feature| feature.workdir.clone());
+
+        let Some(workdir) = workdir else {
+            self.mode = AppMode::Viewing(view);
+            self.message = Some("Error: Could not resolve feature workdir".into());
+            return Ok(());
+        };
+
+        let key = compose_target_key(&view.session, &view.window);
+        let draft = self.compose_drafts.get(&key).cloned().unwrap_or_default();
+        let catalog = build_compose_catalog(&workdir);
+        let mut state = ComposeState::new(view, workdir, text, catalog);
+        state.images = draft.images;
+        self.mode = AppMode::Compose(state);
+        self.push_toast_success("Prompt loaded — review and send");
+        Ok(())
+    }
+
     /// Escape hatch from inside the composer: close it (draft kept)
     /// and disable interception for this session until `leader+e`
     /// turns it back on.

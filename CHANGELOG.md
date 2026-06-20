@@ -12,6 +12,21 @@ are tagged.
 
 ### Added
 
+- Prompt library (phase 1): save reusable prompts and inject them into a
+  session on demand. Open the picker with `leader+P` while viewing a
+  session, or `L` from the dashboard. `Enter` injects the selected
+  prompt — into the compose box when compose is on (so you can review
+  and edit before sending), or pasted straight into the agent window
+  without sending when compose is off. Manage entries from the picker
+  (`n` new, `e` edit, `d` delete, `y` duplicate, `/` search) or export
+  one to declarative config with `x` → `g` (global
+  `~/.config/amf/config.json`) or `p` (project `{repo}/.amf/config.json`)
+  so it can be version-controlled and shared. From the compose box,
+  `Ctrl+P` opens the library to inject a saved prompt (mirroring
+  `leader+P`) and `Ctrl+S` saves the current buffer as a new template.
+  Templates are
+  stored in the AMF SQLite database. Fill-in `{{placeholder}}` slots and
+  declarative/team templates are planned for later phases.
 - Vim normal mode now supports the change operator: `c` with a motion
   (`cw`, `cb`, `c$`, …) deletes and drops into insert mode, `cc`/`S`
   changes a whole line (leaving it empty rather than removing it), and
@@ -67,7 +82,9 @@ are tagged.
 
 ### Migration
 
-- No migration is required.
+- The AMF database gains a `prompt_templates` table (schema migration
+  `007`), applied automatically on first launch. No user action is
+  required.
 
 ## [v0.24.0] - 2026-06-16
 

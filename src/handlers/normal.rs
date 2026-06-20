@@ -272,6 +272,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('P') => {
             app.start_syntax_language_picker();
         }
+        KeyCode::Char('L') => {
+            app.open_prompt_library(None);
+        }
         KeyCode::Char('f') => {
             app.session_filter = app.session_filter.next();
             app.push_toast_info(format!("Filter: {}", app.session_filter.display_name()));

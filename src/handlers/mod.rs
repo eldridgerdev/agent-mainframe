@@ -13,6 +13,7 @@ mod input;
 mod mouse;
 mod normal;
 mod picker;
+mod prompt_library;
 mod search;
 mod view;
 
@@ -49,6 +50,7 @@ pub use picker::{
     handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
     handle_session_picker_key, handle_session_switcher_key, handle_syntax_language_picker_key,
 };
+pub use prompt_library::{handle_prompt_editor_key, handle_prompt_library_key};
 pub use search::handle_search_key;
 pub use view::handle_view_key;
 
@@ -94,6 +96,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),
         AppMode::HookPrompt(_) => handle_hook_prompt_key(app, key.code),
         AppMode::LatestPrompt(_) => handle_latest_prompt_key(app, key.code),
+        AppMode::PromptLibrary(_) => handle_prompt_library_key(app, key.code),
+        AppMode::PromptEditor(_) => handle_prompt_editor_key(app, key),
         AppMode::ForkingFeature(_) => handle_fork_feature_key(app, key.code),
         AppMode::ThemePicker(_) => handle_theme_picker_key(app, key.code),
         AppMode::SyntaxLanguagePicker(_) => handle_syntax_language_picker_key(app, key.code),

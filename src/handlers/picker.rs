@@ -475,6 +475,7 @@ mod tests {
             )],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
         App::new_for_test(
@@ -550,6 +551,7 @@ mod tests {
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
 

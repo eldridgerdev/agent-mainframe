@@ -961,6 +961,7 @@ mod tests {
                 projects: vec![],
                 session_bookmarks: vec![],
                 available_harnesses: vec![],
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             },
             Box::new(MockTmuxOps::new()),

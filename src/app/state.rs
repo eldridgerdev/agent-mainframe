@@ -614,6 +614,54 @@ pub struct LatestPromptState {
     pub selected: usize,
 }
 
+/// A prompt-library row: a template plus where it came from. Phase 1
+/// only surfaces `User` templates; the `source` field is ready for the
+/// declarative `Global` / `Project` templates added in phase 3.
+#[derive(Clone)]
+pub struct PromptLibraryEntry {
+    pub template: crate::prompt_library::PromptTemplate,
+    pub source: crate::prompt_library::PromptSource,
+}
+
+/// Picker over the merged, source-tagged prompt library. Mirrors the
+/// `LatestPrompt` shape (a list with a `selected` index) plus fuzzy
+/// filtering and an optional `from_view` to inject back into.
+#[derive(Clone)]
+pub struct PromptLibraryState {
+    pub templates: Vec<PromptLibraryEntry>,
+    /// Indices into `templates` matching `query`, best score first.
+    pub filtered: Vec<usize>,
+    pub query: String,
+    pub search_active: bool,
+    pub selected: usize,
+    /// Set after the first `d` press; a second `d` confirms deletion.
+    pub confirm_delete: bool,
+    /// Set after `x`; `g` exports to global config, `p` to project.
+    pub pending_export: bool,
+    pub from_view: Option<ViewState>,
+}
+
+impl PromptLibraryState {
+    /// The template currently highlighted in the filtered list.
+    pub fn selected_entry(&self) -> Option<&PromptLibraryEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|idx| self.templates.get(*idx))
+    }
+}
+
+/// Create/edit dialog for a user template. `editing_id` is `None` for a
+/// new template. `return_to` is where to land after save/cancel — the
+/// picker it was opened from, or the underlying `Viewing` mode when
+/// saved straight from the compose box.
+pub struct PromptEditorState {
+    pub editing_id: Option<String>,
+    pub name: String,
+    pub name_field_active: bool,
+    pub editor: TextEditor,
+    pub return_to: Box<AppMode>,
+}
+
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
@@ -663,6 +711,8 @@ pub enum AppMode {
     RunningHook(RunningHookState),
     HookPrompt(HookPromptState),
     LatestPrompt(LatestPromptState),
+    PromptLibrary(PromptLibraryState),
+    PromptEditor(PromptEditorState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),

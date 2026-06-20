@@ -27,6 +27,7 @@ fn startup_harness_setup_allows_quit_with_q() {
         projects: vec![],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -488,6 +489,7 @@ fn default_project_preferred_agent_comes_from_config() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -698,6 +700,7 @@ fn store_with_feature(status: ProjectStatus) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -743,6 +746,7 @@ fn store_with_repo(repo: PathBuf, status: ProjectStatus) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -1059,6 +1063,7 @@ fn visible_items_prioritizes_non_worktree_features() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -1135,6 +1140,7 @@ fn start_worktree_hook_adds_pending_feature_immediately() {
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: std::collections::HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -1291,6 +1297,7 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: std::collections::HashMap::new(),
     };
 
@@ -1655,6 +1662,7 @@ fn start_create_feature_defaults_to_first_allowed_agent() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -1694,6 +1702,7 @@ fn project_only_store(repo: &std::path::Path) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -1780,6 +1789,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: std::collections::HashMap::new(),
     };
 
@@ -1958,6 +1968,7 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         }],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -2665,6 +2676,7 @@ fn create_project_persists_selected_preferred_agent() {
         projects: vec![],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let repo_path = repo.path().to_path_buf();
@@ -2707,6 +2719,7 @@ fn start_create_feature_uses_project_preferred_agent_when_allowed() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -2855,6 +2868,7 @@ fn open_session_picker_selects_project_preferred_agent_by_default() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -3215,6 +3229,7 @@ fn reload_extension_config_uses_project_repo_for_worktree_feature() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -3875,6 +3890,7 @@ fn store_with_worktree_agent(
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -3998,6 +4014,7 @@ fn apply_project_agent_config_updates_preferred_agent_only() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
     let mut app = App::new_for_test(
@@ -4086,6 +4103,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -4145,6 +4163,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -4293,6 +4312,7 @@ fn sync_session_status_shows_agent_token_usage() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -4396,6 +4416,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -4484,6 +4505,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -5428,6 +5450,7 @@ fn contextual_syntax_install_returns_to_diff_viewer_and_refreshes() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -5505,6 +5528,7 @@ fn contextual_syntax_install_returns_to_diff_review_prompt() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -5575,6 +5599,7 @@ fn contextual_syntax_install_stays_open_for_non_matching_language() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -5715,6 +5740,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     };
 
@@ -5939,6 +5965,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -5999,6 +6026,7 @@ fn store_with_empty_project(repo: PathBuf, is_git: bool) -> ProjectStore {
         projects: vec![project],
         session_bookmarks: vec![],
         available_harnesses: vec![],
+        prompt_templates: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -6022,6 +6050,7 @@ fn create_project_automation_dry_run_returns_plan_without_mutating_store() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -6064,6 +6093,7 @@ fn create_project_automation_creates_project() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -6307,6 +6337,7 @@ fn batch_feature_automation_dry_run_returns_plan_without_mutating_store() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -6357,6 +6388,7 @@ fn batch_feature_automation_rejects_review_as_a_mode() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(MockTmuxOps::new()),
@@ -6448,6 +6480,7 @@ fn batch_feature_automation_creates_project_and_starts_features() {
             projects: vec![],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         },
         Box::new(tmux),
@@ -6483,4 +6516,178 @@ fn batch_feature_automation_creates_project_and_starts_features() {
             .iter()
             .all(|feature| feature.sessions.len() == 1)
     );
+}
+
+// ── Prompt library picker ─────────────────────────────────────
+
+fn store_with_prompt_templates(names: &[&str]) -> ProjectStore {
+    let templates = names
+        .iter()
+        .map(|name| {
+            crate::prompt_library::PromptTemplate::new(
+                name.to_string(),
+                format!("body of {name}"),
+            )
+        })
+        .collect();
+    ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: templates,
+        extra: HashMap::new(),
+    }
+}
+
+#[test]
+fn prompt_library_opens_with_all_templates_visible() {
+    let store = store_with_prompt_templates(&["alpha", "beta", "gamma"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.open_prompt_library(None);
+
+    match &app.mode {
+        AppMode::PromptLibrary(state) => {
+            assert_eq!(state.templates.len(), 3);
+            assert_eq!(state.filtered.len(), 3);
+            assert_eq!(state.selected, 0);
+        }
+        _ => panic!("expected PromptLibrary mode"),
+    }
+}
+
+#[test]
+fn prompt_library_nav_wraps_around() {
+    let store = store_with_prompt_templates(&["a", "b", "c"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_prompt_library(None);
+
+    app.prompt_library_select_prev(); // wraps from 0 to last
+    match &app.mode {
+        AppMode::PromptLibrary(state) => assert_eq!(state.selected, 2),
+        _ => panic!("expected PromptLibrary mode"),
+    }
+    app.prompt_library_select_next(); // wraps back to 0
+    match &app.mode {
+        AppMode::PromptLibrary(state) => assert_eq!(state.selected, 0),
+        _ => panic!("expected PromptLibrary mode"),
+    }
+}
+
+#[test]
+fn prompt_library_filter_narrows_and_clamps_selection() {
+    let store = store_with_prompt_templates(&["alpha", "beta", "gamma"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_prompt_library(None);
+
+    // Move selection to the last row, then filter to a single match so
+    // the selection must clamp back into range.
+    app.prompt_library_select_prev();
+    if let AppMode::PromptLibrary(state) = &mut app.mode {
+        assert_eq!(state.selected, 2);
+        state.query = "alpha".to_string();
+    }
+    app.prompt_library_filter();
+
+    match &app.mode {
+        AppMode::PromptLibrary(state) => {
+            assert_eq!(state.filtered.len(), 1);
+            assert!(state.selected < state.filtered.len());
+            let entry = state.selected_entry().unwrap();
+            assert_eq!(entry.template.name, "alpha");
+        }
+        _ => panic!("expected PromptLibrary mode"),
+    }
+}
+
+#[test]
+fn prompt_library_inject_with_no_session_copies_and_exits() {
+    let store = store_with_prompt_templates(&["only"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_prompt_library(None);
+
+    // No from_view, so injection falls back to a clipboard copy (which may
+    // fail in headless CI) and returns to Normal either way.
+    let _ = app.inject_selected_template();
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn prompt_library_surfaces_global_config_templates_with_badge() {
+    let store = store_with_prompt_templates(&["mine"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.config.extension.prompt_templates =
+        vec![crate::prompt_library::PromptTemplate::new(
+            "shared".to_string(),
+            "shared body".to_string(),
+        )];
+
+    app.open_prompt_library(None);
+
+    match &app.mode {
+        AppMode::PromptLibrary(state) => {
+            assert_eq!(state.templates.len(), 2);
+            let user = state
+                .templates
+                .iter()
+                .find(|e| e.template.name == "mine")
+                .unwrap();
+            assert_eq!(user.source, crate::prompt_library::PromptSource::User);
+            let global = state
+                .templates
+                .iter()
+                .find(|e| e.template.name == "shared")
+                .unwrap();
+            assert_eq!(global.source, crate::prompt_library::PromptSource::Global);
+            // Read-only entries can't be edited/deleted in place.
+            assert!(!global.source.is_editable());
+        }
+        _ => panic!("expected PromptLibrary mode"),
+    }
+}
+
+#[test]
+fn prompt_library_export_to_global_updates_extension_config() {
+    let store = store_with_prompt_templates(&["only"]);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.open_prompt_library(None);
+
+    app.export_selected_template(crate::app::PromptExportTarget::Global)
+        .unwrap();
+
+    // The in-memory global extension config gains the template (the file
+    // write is a no-op in tests, which use an empty store_path).
+    assert_eq!(app.config.extension.prompt_templates.len(), 1);
+    assert_eq!(app.config.extension.prompt_templates[0].name, "only");
+
+    // Exporting the same name again replaces rather than duplicates.
+    app.open_prompt_library(None);
+    app.export_selected_template(crate::app::PromptExportTarget::Global)
+        .unwrap();
+    assert_eq!(app.config.extension.prompt_templates.len(), 1);
 }

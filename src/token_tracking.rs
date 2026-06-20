@@ -205,7 +205,9 @@ impl SessionTokenTracker {
                 self.read_claude_usage(workdir, &source.id, &mut parse_state)
             }
             TokenUsageProvider::Opencode => self.read_opencode_usage(&source.id),
-            TokenUsageProvider::Codex => self.read_codex_usage(&source.id, &mut parse_state),
+            TokenUsageProvider::Codex => {
+                self.read_codex_usage(workdir, &source.id, &mut parse_state)
+            }
         };
         self.usage_cache.insert(
             source.clone(),
@@ -228,7 +230,7 @@ impl SessionTokenTracker {
         match source.provider {
             TokenUsageProvider::Claude => self.claude_usage_signature(workdir, &source.id),
             TokenUsageProvider::Opencode => self.opencode_usage_signature(&source.id),
-            TokenUsageProvider::Codex => self.codex_usage_signature(&source.id),
+            TokenUsageProvider::Codex => self.codex_usage_signature(workdir, &source.id),
         }
     }
 
@@ -407,23 +409,37 @@ impl SessionTokenTracker {
         let mut newest_match: Option<(String, i64)> = None;
         let mut newest_any: Option<(String, i64)> = None;
 
-        for meta in self.codex_sessions() {
-            if meta.cwd != workdir {
-                continue;
-            }
+        let sessions = self
+            .home_dir
+            .as_deref()
+            .and_then(|home| crate::codex::indexed_sessions_in(home, workdir))
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .map(|session| (session.id, session.updated_at))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| {
+                self.codex_sessions()
+                    .iter()
+                    .filter(|meta| meta.cwd == workdir)
+                    .map(|meta| (meta.id.clone(), meta.updated))
+                    .collect()
+            });
 
+        for (id, updated) in sessions {
             if newest_any
                 .as_ref()
-                .is_none_or(|(_, updated)| meta.updated > *updated)
+                .is_none_or(|(_, current)| updated > *current)
             {
-                newest_any = Some((meta.id.clone(), meta.updated));
+                newest_any = Some((id.clone(), updated));
             }
-            if meta.updated >= threshold
+            if updated >= threshold
                 && newest_match
                     .as_ref()
-                    .is_none_or(|(_, updated)| meta.updated > *updated)
+                    .is_none_or(|(_, current)| updated > *current)
             {
-                newest_match = Some((meta.id.clone(), meta.updated));
+                newest_match = Some((id, updated));
             }
         }
 
@@ -435,10 +451,11 @@ impl SessionTokenTracker {
 
     fn read_codex_usage(
         &mut self,
+        workdir: &Path,
         session_id: &str,
         state: &mut TranscriptParseState,
     ) -> Option<SessionTokenUsage> {
-        let session_path = self.codex_session_path(session_id)?;
+        let session_path = self.codex_session_path(workdir, session_id)?;
 
         let offset = state.offsets.get(&session_path).copied().unwrap_or(0);
         let shrunk = std::fs::metadata(&session_path)
@@ -495,20 +512,26 @@ impl SessionTokenTracker {
         })
     }
 
-    fn codex_usage_signature(&mut self, session_id: &str) -> Option<u64> {
-        metadata_signature_for_paths(vec![self.codex_session_path(session_id)?])
+    fn codex_usage_signature(&mut self, workdir: &Path, session_id: &str) -> Option<u64> {
+        metadata_signature_for_paths(vec![self.codex_session_path(workdir, session_id)?])
     }
 
-    fn codex_session_path(&mut self, session_id: &str) -> Option<PathBuf> {
-        self.codex_sessions()
-            .iter()
-            .find(|record| record.id == session_id)
-            .map(|record| record.path.clone())
+    fn codex_session_path(&mut self, workdir: &Path, session_id: &str) -> Option<PathBuf> {
+        self.home_dir
+            .as_deref()
+            .and_then(|home| crate::codex::indexed_session_in(home, workdir, session_id))
+            .map(|session| session.rollout_path)
+            .or_else(|| {
+                self.codex_sessions()
+                    .iter()
+                    .find(|record| record.id == session_id && record.cwd == workdir)
+                    .map(|record| record.path.clone())
+            })
             .or_else(|| {
                 self.refresh_codex_sessions();
                 self.codex_sessions()
                     .iter()
-                    .find(|record| record.id == session_id)
+                    .find(|record| record.id == session_id && record.cwd == workdir)
                     .map(|record| record.path.clone())
             })
     }
@@ -1310,7 +1333,10 @@ mod tests {
 
         let mut tracker = tracker_with_roots(home.path(), data.path());
         let mut state = TranscriptParseState::default();
-        let usage = tracker.read_codex_usage("codex-1", &mut state).unwrap();
+        let workdir = Path::new("/tmp/codex-worktree");
+        let usage = tracker
+            .read_codex_usage(workdir, "codex-1", &mut state)
+            .unwrap();
         assert_eq!(usage.total_tokens, 107);
 
         let mut contents = std::fs::read(&transcript).unwrap();
@@ -1319,7 +1345,9 @@ mod tests {
         );
         std::fs::write(&transcript, contents).unwrap();
 
-        let usage = tracker.read_codex_usage("codex-1", &mut state).unwrap();
+        let usage = tracker
+            .read_codex_usage(workdir, "codex-1", &mut state)
+            .unwrap();
         assert_eq!(usage.input_tokens, 180);
         assert_eq!(usage.total_tokens, 192);
     }

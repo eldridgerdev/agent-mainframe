@@ -290,28 +290,30 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Returns the default canonical key character for a named
-/// action. These correspond to the hardcoded keys in
-/// handle_normal_key().
-fn default_key_for_action(action: &str) -> Option<char> {
-    match action {
-        "quit" => Some('q'),
-        "create_project" => Some('N'),
-        "create_feature" => Some('n'),
-        "start_session" => Some('c'),
-        "stop_session" => Some('x'),
-        "delete" => Some('d'),
-        "sessions" => Some('s'),
-        "help" => Some('?'),
-        "search" => Some('/'),
-        "refresh" => Some('r'),
-        "filter" => Some('f'),
-        "syntax_picker" => Some('P'),
-        "session_config" => Some('u'),
-        "fork_feature" => Some('F'),
-        "mark_ready" => Some('y'),
-        _ => None,
-    }
+pub(crate) const DASHBOARD_KEYBINDING_ACTIONS: &[(&str, char)] = &[
+    ("quit", 'q'),
+    ("create_project", 'N'),
+    ("create_feature", 'n'),
+    ("start_session", 'c'),
+    ("stop_session", 'x'),
+    ("delete", 'd'),
+    ("sessions", 's'),
+    ("help", '?'),
+    ("search", '/'),
+    ("refresh", 'r'),
+    ("filter", 'f'),
+    ("syntax_picker", 'P'),
+    ("session_config", 'u'),
+    ("fork_feature", 'F'),
+    ("mark_ready", 'y'),
+];
+
+/// Returns the default canonical key character for a named action.
+/// These correspond to the hardcoded keys in handle_normal_key().
+pub(crate) fn default_key_for_action(action: &str) -> Option<char> {
+    DASHBOARD_KEYBINDING_ACTIONS
+        .iter()
+        .find_map(|(known_action, key)| (*known_action == action).then_some(*key))
 }
 
 fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -336,6 +338,9 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('a') => {
             app.open_command_picker_with_focus(None, crate::app::CommandPickerFocus::Local);
+        }
+        KeyCode::Char('c') => {
+            app.start_config_wizard();
         }
         KeyCode::Char('h') => {
             app.open_bookmark_picker(None);

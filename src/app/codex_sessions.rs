@@ -54,6 +54,11 @@ pub fn session_info_for_workdir(
     workdir: &Path,
     session_id: &str,
 ) -> Result<Option<CodexSessionInfo>> {
+    if let Some(path) = indexed_rollout_path(workdir, session_id) {
+        return Ok(
+            parse_codex_session_file(&path, workdir).filter(|session| session.id == session_id)
+        );
+    }
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(None);
     };
@@ -193,6 +198,11 @@ pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
 }
 
 pub fn latest_prompt_for_session_id(workdir: &Path, session_id: &str) -> Result<Option<String>> {
+    if let Some(path) = indexed_rollout_path(workdir, session_id) {
+        return Ok(prompt_history_from_file(&path, workdir, session_id)
+            .and_then(|prompts| prompts.into_iter().max_by_key(|prompt| prompt.timestamp))
+            .map(|prompt| prompt.text));
+    }
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(None);
     };
@@ -203,6 +213,17 @@ pub fn sidebar_metadata_for_session_id(
     workdir: &Path,
     session_id: &str,
 ) -> Result<Option<CodexSidebarMetadata>> {
+    if let Some(path) = indexed_rollout_path(workdir, session_id) {
+        let mut metadata = parse_codex_session_file_details(&path, workdir)
+            .filter(|parsed| parsed.info.id == session_id)
+            .map(sidebar_metadata_from_parsed);
+        if let Some(metadata) = &mut metadata
+            && metadata.model.is_none()
+        {
+            metadata.model = crate::codex_config::configured_model();
+        }
+        return Ok(metadata);
+    }
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(None);
     };
@@ -220,6 +241,11 @@ pub fn prompt_history_for_session_id(
     workdir: &Path,
     session_id: &str,
 ) -> Result<Vec<CodexPromptEntry>> {
+    if let Some(path) = indexed_rollout_path(workdir, session_id) {
+        let mut prompts = prompt_history_from_file(&path, workdir, session_id).unwrap_or_default();
+        sort_prompt_history(&mut prompts);
+        return Ok(prompts);
+    }
     let Some(sessions_root) = codex_sessions_root() else {
         return Ok(Vec::new());
     };
@@ -345,7 +371,11 @@ fn sidebar_metadata_for_session_id_from_root(
         }
     }
 
-    Ok(newest_session.map(|parsed| CodexSidebarMetadata {
+    Ok(newest_session.map(sidebar_metadata_from_parsed))
+}
+
+fn sidebar_metadata_from_parsed(parsed: ParsedCodexSession) -> CodexSidebarMetadata {
+    CodexSidebarMetadata {
         title: Some(parsed.info.title)
             .filter(|title| !title.trim().is_empty() && title != "Untitled"),
         latest_prompt: parsed
@@ -355,7 +385,7 @@ fn sidebar_metadata_for_session_id_from_root(
         model_provider: parsed
             .model_provider
             .filter(|provider| !provider.trim().is_empty()),
-    }))
+    }
 }
 
 fn prompt_history_for_session_id_from_root(
@@ -393,14 +423,24 @@ fn prompt_history_for_session_id_from_root(
         }
     }
 
+    sort_prompt_history(&mut prompts);
+
+    Ok(prompts)
+}
+
+fn sort_prompt_history(prompts: &mut [CodexPromptEntry]) {
     prompts.sort_by(|a, b| match (b.timestamp, a.timestamp) {
         (Some(bt), Some(at)) => bt.cmp(&at),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
     });
+}
 
-    Ok(prompts)
+fn indexed_rollout_path(workdir: &Path, session_id: &str) -> Option<PathBuf> {
+    crate::codex::indexed_session(workdir, session_id)
+        .map(|session| session.rollout_path)
+        .filter(|path| path.is_file())
 }
 
 fn is_real_dir(path: &Path) -> bool {

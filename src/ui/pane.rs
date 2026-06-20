@@ -761,10 +761,6 @@ fn draw_leader_menu(
     theme: &Theme,
     compose_intercept: Option<bool>,
 ) {
-    if content_area.width < 30 || content_area.height < 8 {
-        return;
-    }
-
     let mut commands: Vec<(&str, &str)> = LEADER_COMMANDS.to_vec();
     if let Some(active) = compose_intercept {
         let entry = if active {
@@ -778,6 +774,26 @@ fn draw_leader_menu(
             .map(|pos| pos + 1)
             .unwrap_or(commands.len());
         commands.insert(pos, entry);
+    }
+
+    draw_command_menu(
+        frame,
+        content_area,
+        " Ctrl+Space commands ",
+        commands.as_slice(),
+        theme,
+    );
+}
+
+pub(crate) fn draw_command_menu(
+    frame: &mut Frame,
+    content_area: Rect,
+    title: &str,
+    commands: &[(&str, &str)],
+    theme: &Theme,
+) {
+    if content_area.width < 30 || content_area.height < 8 {
+        return;
     }
 
     let longest_label = commands
@@ -802,14 +818,14 @@ fn draw_leader_menu(
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
-                Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+                Span::styled(desc.to_string(), Style::default().fg(theme.text.to_color())),
             ])
         })
         .collect();
 
     let popup = Paragraph::new(lines).block(
         Block::default()
-            .title(" Ctrl+Space commands ")
+            .title(title)
             .borders(Borders::ALL)
             .style(Style::default().bg(theme.effective_bg()))
             .border_style(Style::default().fg(theme.info.to_color())),

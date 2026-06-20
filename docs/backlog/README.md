@@ -70,6 +70,11 @@ doc always says exactly what remains.
   with badges) and export to `config.json`. Fill-in `{{placeholders}}`,
   select-menu templates, export/display location unification, and showing
   the on-disk destination path remain.
+- [Startup performance](startup-performance-plan.md) — _In progress._
+  Parser repair and sidebar concurrency fixes shipped in PR #308;
+  indexed Codex transcript access and sequenced startup I/O are
+  implemented, with provider consolidation and deeper instrumentation
+  still planned.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.
@@ -81,3 +86,11 @@ doc always says exactly what remains.
   _Backlog._ Render the Remote Control session URL as a scannable QR in
   a TUI overlay. Pays off most with server mode, which prints a stable
   URL.
+- [Expanded keybindings](expanded-keybindings-plan.md) — _Backlog._
+  Grow config wizard keybinding support beyond dashboard actions to
+  leader commands and other scoped command surfaces.
+- [Final review enhancements](final-review-enhancements-plan.md) —
+  _Backlog._ Follow-ups for the shipped native final review: line-level
+  comments, multi-line/markdown feedback and notes, on-demand
+  walkthroughs, finish gating, resumable state, base-ref selection, and
+  PR integration.

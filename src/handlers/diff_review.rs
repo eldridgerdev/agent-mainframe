@@ -300,33 +300,7 @@ fn generate_diff_review_explanation(app: &mut App) {
 
 fn find_review_note(workdir: &std::path::Path, relative_path: &str) -> Option<String> {
     let notes = fs::read_to_string(workdir.join(".claude").join("review-notes.md")).ok()?;
-    let heading = format!("## {relative_path}");
-    let mut in_block = false;
-    let mut block = String::new();
-
-    for line in notes.lines() {
-        if line.starts_with("## ") {
-            if in_block {
-                break;
-            }
-            in_block = line == heading;
-            continue;
-        }
-        if in_block && line == "---" {
-            break;
-        }
-        if in_block {
-            block.push_str(line);
-            block.push('\n');
-        }
-    }
-
-    let trimmed = block.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
+    crate::app::review::parse_review_notes(&notes).remove(relative_path)
 }
 
 #[cfg(test)]
@@ -394,6 +368,30 @@ mod tests {
             patch: String::new(),
             hunks: vec![],
         }
+    }
+
+    #[test]
+    fn find_review_note_matches_titled_and_grouped_headings() {
+        let dir = TempDir::new().unwrap();
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(
+            claude.join("review-notes.md"),
+            "## src/main.rs — entrypoint\n\nThe note.\n\n---\n\n### src/lib.rs — lib\n\nLib note.\n",
+        )
+        .unwrap();
+
+        // The old exact-`## path` matcher missed the titled and grouped forms;
+        // the shared parser resolves both.
+        assert_eq!(
+            find_review_note(dir.path(), "src/main.rs").as_deref(),
+            Some("The note.")
+        );
+        assert_eq!(
+            find_review_note(dir.path(), "src/lib.rs").as_deref(),
+            Some("Lib note.")
+        );
+        assert!(find_review_note(dir.path(), "src/none.rs").is_none());
     }
 
     #[test]

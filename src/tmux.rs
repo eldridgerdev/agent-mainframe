@@ -1676,28 +1676,6 @@ impl TmuxManager {
         )
     }
 
-    /// Attach to a session (replaces current terminal)
-    pub fn attach_session(session: &str) -> Result<()> {
-        if !Self::session_exists(session) {
-            bail!("tmux session '{}' does not exist", session);
-        }
-
-        let output = Self::output(
-            &["switch-client", "-t", session],
-            "Failed to switch tmux client",
-        )?;
-
-        if output.status.success() {
-            return Ok(());
-        }
-
-        Self::run(
-            &["attach-session", "-t", session],
-            "Failed to attach to tmux session",
-            "tmux attach-session failed",
-        )
-    }
-
     /// Set an environment variable in a tmux session so it is
     /// inherited by all processes started in that session.
     pub fn set_session_env(session: &str, key: &str, value: &str) -> Result<()> {

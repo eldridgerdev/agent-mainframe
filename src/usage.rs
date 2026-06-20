@@ -343,6 +343,10 @@ impl UsageManager {
         self.data.lock().unwrap().clone()
     }
 
+    pub fn stats_refresh_inflight(&self) -> bool {
+        self.stats_refresh_inflight.load(Ordering::Acquire)
+    }
+
     pub fn cycle_visible_model(&mut self) {
         let mut data = self.data.lock().unwrap();
         let mut next = data.visible_model;

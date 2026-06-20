@@ -52,6 +52,72 @@ pub(crate) fn compose_target_key(session: &str, window: &str) -> String {
     format!("{session}:{window}")
 }
 
+/// Characters that begin a new "word" inside a command name, so a
+/// query character landing right after one is a strong match. Covers
+/// namespace separators (`stn:commit`) and the usual word boundaries.
+fn is_command_boundary(c: char) -> bool {
+    matches!(c, ':' | '-' | '_' | '/' | ' ' | '.')
+}
+
+/// Fuzzy-match `query` against `candidate`, both compared case-
+/// insensitively. Returns a score (higher is better) when every
+/// character of `query` appears in order within `candidate`, or `None`
+/// when it does not. An empty query matches everything neutrally.
+///
+/// Scoring favors matches at the start of the name or just after a
+/// namespace/word boundary and rewards consecutive runs, so typing
+/// `commit` surfaces `stn:commit` while still ranking a literal
+/// `commit` command above it.
+pub(crate) fn fuzzy_score(query: &str, candidate: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let query_lower: Vec<char> = query
+        .chars()
+        .flat_map(|c| c.to_lowercase())
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if query_lower.is_empty() {
+        return Some(0);
+    }
+
+    let candidate_chars: Vec<char> = candidate.chars().collect();
+    let mut score = 0i32;
+    let mut q = 0usize;
+    let mut prev_match: Option<usize> = None;
+
+    for (idx, ch) in candidate_chars.iter().enumerate() {
+        if q >= query_lower.len() {
+            break;
+        }
+        let cand_lower = ch.to_lowercase().next().unwrap_or(*ch);
+        if cand_lower != query_lower[q] {
+            continue;
+        }
+
+        score += 1;
+        if idx == 0 {
+            score += 8;
+        } else if is_command_boundary(candidate_chars[idx - 1]) {
+            score += 6;
+        }
+        if idx > 0 && prev_match == Some(idx - 1) {
+            score += 4;
+        }
+
+        prev_match = Some(idx);
+        q += 1;
+    }
+
+    if q == query_lower.len() {
+        // Prefer tighter candidates so closer matches sort first.
+        Some(score - (candidate_chars.len() as i32) / 8)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ComposePart {
     Text(String),

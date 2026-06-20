@@ -16,6 +16,19 @@ const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 32;
 const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
 const SIDEBAR_WORK_VALUE_CHARS: usize = 28;
 const SIDEBAR_TODO_VALUE_CHARS: usize = 26;
+const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
+    ("i", "Pending inputs"),
+    ("?", "Help"),
+    ("/", "Command picker"),
+    ("a", "Local commands"),
+    ("A", "Manage harnesses"),
+    ("c", "Config wizard"),
+    ("h", "Bookmarks"),
+    ("H", "Bookmark current session"),
+    ("M", "Remove bookmark"),
+    ("1-9", "Jump to bookmark"),
+    ("r", "Refresh statuses"),
+];
 
 fn build_agent_sidebar_data(
     app: &App,
@@ -1018,6 +1031,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     super::list::draw(frame, app, chunks[1]);
     super::status::draw(frame, app, chunks[2]);
 
+    if app.leader_active {
+        super::pane::draw_command_menu(
+            frame,
+            frame.area(),
+            " Ctrl+Space commands ",
+            DASHBOARD_LEADER_COMMANDS,
+            &app.theme,
+        );
+    }
+
     match &app.mode {
         AppMode::CreatingProject(state) => {
             let allowed_agents =
@@ -1190,6 +1213,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::PromptEditor(state) = &app.mode {
         super::dialogs::draw_prompt_editor(frame, state, &app.theme);
+    }
+
+    if let AppMode::ConfigWizard(state) = &mut app.mode {
+        super::dialogs::draw_config_wizard_dialog(frame, state, &app.theme);
     }
 
     super::draw_toasts(frame, &app.toasts, &app.theme);

@@ -39,19 +39,29 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Them
     };
 
     let block = Block::default()
-        .title(" Branch Diff ")
+        .title(if state.review {
+            " Final Review "
+        } else {
+            " Branch Diff "
+        })
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The review footer needs an extra row for the feedback editor.
+    let footer_height = if state.review && (state.feedback_editing || state.editing_general) {
+        3
+    } else {
+        2
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(2),
             Constraint::Min(8),
-            Constraint::Length(2),
+            Constraint::Length(footer_height),
         ])
         .split(inner);
 
@@ -128,11 +138,61 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
     let additions: usize = state.files.iter().map(|file| file.additions).sum();
     let deletions: usize = state.files.iter().map(|file| file.deletions).sum();
 
+    let mut second_line = vec![
+        Span::styled(
+            format!(" {} file(s)  ", state.files.len()),
+            Style::default().fg(theme.text.to_color()),
+        ),
+        Span::styled(
+            format!("+{additions}"),
+            Style::default()
+                .fg(theme.success.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("-{deletions}"),
+            Style::default()
+                .fg(theme.danger.to_color())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    if state.review {
+        let (approved, rejected) = review_counts(state);
+        let pending = state.files.len().saturating_sub(approved + rejected);
+        second_line.push(Span::raw("   "));
+        second_line.push(Span::styled(
+            format!("✓ {approved}"),
+            Style::default()
+                .fg(theme.success.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
+        second_line.push(Span::raw("  "));
+        second_line.push(Span::styled(
+            format!("✗ {rejected}"),
+            Style::default()
+                .fg(theme.danger.to_color())
+                .add_modifier(Modifier::BOLD),
+        ));
+        second_line.push(Span::raw("  "));
+        second_line.push(Span::styled(
+            format!("· {pending}"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    } else {
+        second_line.push(Span::raw("  "));
+        second_line.push(Span::styled(
+            state.workdir.to_string_lossy().into_owned(),
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
+
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(" Branch ", Style::default().fg(theme.text_muted.to_color())),
             Span::styled(
-                branch,
+                branch.to_string(),
                 Style::default()
                     .fg(theme.project_title.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -145,34 +205,25 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!(" {} file(s)  ", state.files.len()),
-                Style::default().fg(theme.text.to_color()),
-            ),
-            Span::styled(
-                format!("+{additions}"),
-                Style::default()
-                    .fg(theme.success.to_color())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("-{deletions}"),
-                Style::default()
-                    .fg(theme.danger.to_color())
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                state.workdir.to_string_lossy(),
-                Style::default().fg(theme.text_muted.to_color()),
-            ),
-        ]),
+        Line::from(second_line),
     ])
     .wrap(Wrap { trim: false });
 
     frame.render_widget(header, area);
+}
+
+/// Count approved and rejected files in a review-mode viewer.
+fn review_counts(state: &DiffViewerState) -> (usize, usize) {
+    let mut approved = 0;
+    let mut rejected = 0;
+    for file in &state.files {
+        match state.decisions.get(&file.path) {
+            Some(crate::app::ReviewDecision::Approve) => approved += 1,
+            Some(crate::app::ReviewDecision::Reject { .. }) => rejected += 1,
+            None => {}
+        }
+    }
+    (approved, rejected)
 }
 
 fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
@@ -215,6 +266,11 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &The
         return;
     }
 
+    if state.review {
+        draw_review_body(frame, area, state, theme);
+        return;
+    }
+
     if state.focus == DiffViewerFocus::Patch {
         draw_patch(frame, area, state, theme);
         return;
@@ -227,6 +283,72 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &The
 
     draw_file_list(frame, body[0], state, theme);
     draw_patch(frame, body[1], state, theme);
+}
+
+/// Review-mode body: file list (unless the patch is focused) on the left, and a
+/// right column split into the developer-notes panel (top) over the diff. When
+/// notes are expanded the panel takes the full right column.
+fn draw_review_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+    let content_area = if state.focus == DiffViewerFocus::Patch {
+        area
+    } else {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(body_constraints(area, state))
+            .split(area);
+        draw_file_list(frame, cols[0], state, theme);
+        cols[1]
+    };
+
+    if state.notes_expanded {
+        draw_notes_panel(frame, content_area, state, theme);
+        return;
+    }
+
+    // Give the notes panel ~40% of the column, but always leave room for both.
+    let notes_height = (content_area.height * 2 / 5).clamp(
+        5.min(content_area.height),
+        content_area.height.saturating_sub(5).max(1),
+    );
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(notes_height), Constraint::Min(3)])
+        .split(content_area);
+    draw_notes_panel(frame, split[0], state, theme);
+    draw_patch(frame, split[1], state, theme);
+}
+
+fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+    let note = state
+        .files
+        .get(state.selected_file)
+        .and_then(|file| state.review_notes.get(&file.path));
+
+    let border = if state.notes_expanded {
+        theme.warning.to_color()
+    } else {
+        theme.primary.to_color()
+    };
+    let block = Block::default()
+        .title(" Developer Notes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let paragraph = match note {
+        Some(text) => Paragraph::new(text.as_str())
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme.text.to_color()))
+            .scroll((state.notes_scroll as u16, 0)),
+        None => Paragraph::new(
+            "No developer note for this file.\n\nReview mode records per-file reasoning in \
+             .claude/review-notes.md as changes are made.",
+        )
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(theme.text_muted.to_color())),
+    };
+    frame.render_widget(paragraph, inner);
 }
 
 fn body_constraints(area: Rect, state: &DiffViewerState) -> [Constraint; 2] {
@@ -251,17 +373,31 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
             let status_style = Style::default()
                 .fg(status_color(&file.status, theme))
                 .add_modifier(Modifier::BOLD);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {} ", status_label(&file.status)), status_style),
-                Span::styled(
-                    file.path.clone(),
-                    Style::default().fg(theme.text.to_color()),
-                ),
-                Span::styled(
-                    format!("  +{} -{}", file.additions, file.deletions),
-                    Style::default().fg(theme.text_muted.to_color()),
-                ),
-            ]))
+            let mut spans = Vec::new();
+            if state.review {
+                let (symbol, color) = match state.decisions.get(&file.path) {
+                    Some(crate::app::ReviewDecision::Approve) => ("✓", theme.success.to_color()),
+                    Some(crate::app::ReviewDecision::Reject { .. }) => ("✗", theme.danger.to_color()),
+                    None => ("·", theme.text_muted.to_color()),
+                };
+                spans.push(Span::styled(
+                    format!(" {symbol} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ));
+            }
+            spans.push(Span::styled(
+                format!(" {} ", status_label(&file.status)),
+                status_style,
+            ));
+            spans.push(Span::styled(
+                file.path.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ));
+            spans.push(Span::styled(
+                format!("  +{} -{}", file.additions, file.deletions),
+                Style::default().fg(theme.text_muted.to_color()),
+            ));
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -395,6 +531,10 @@ pub(crate) fn draw_patch_panel(
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+    if state.review {
+        draw_review_footer(frame, area, state, theme);
+        return;
+    }
     let focus = match state.focus {
         DiffViewerFocus::FileList => "files",
         DiffViewerFocus::Patch => "patch",
@@ -421,6 +561,117 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
     ))
     .wrap(Wrap { trim: false });
     frame.render_widget(footer, area);
+}
+
+fn draw_review_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+
+    if state.feedback_editing || state.editing_general {
+        let (label, label_color, submit_hint) = if state.editing_general {
+            (
+                " General feedback: ",
+                theme.info.to_color(),
+                " save general feedback  ",
+            )
+        } else {
+            (" Feedback: ", theme.danger.to_color(), " submit rejection  ")
+        };
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(label_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}\u{2588}", state.feedback_input),
+                    Style::default().fg(theme.text.to_color()),
+                ),
+            ]),
+            Line::from(vec![
+                key(" Enter"),
+                Span::raw(submit_hint),
+                key("Esc"),
+                Span::raw(" cancel"),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+        return;
+    }
+
+    let mut second_line = vec![
+        key(" j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" scroll  "),
+    ];
+
+    // Surface the syntax-highlight install/select affordance for the selected
+    // file, mirroring the read-only diff viewer footer. Highlighting itself is
+    // already applied by draw_patch_panel; `i` (handled by the shared key
+    // handler) opens the language picker to install or repair the parser.
+    if let Some((language, status)) = state
+        .files
+        .get(state.selected_file)
+        .and_then(|file| highlight::language_install_state_for_path(Path::new(&file.path)))
+    {
+        let (label, color) = match status {
+            highlight::HighlightInstallState::Installed => (
+                format!("syntax:{} installed  ", language.display_name()),
+                theme.info.to_color(),
+            ),
+            highlight::HighlightInstallState::Available => (
+                format!("install {} parser  ", language.display_name()),
+                theme.warning.to_color(),
+            ),
+            highlight::HighlightInstallState::Broken => (
+                format!("repair {} parser  ", language.display_name()),
+                theme.danger.to_color(),
+            ),
+        };
+        second_line.push(key("i"));
+        second_line.push(Span::raw(" "));
+        second_line.push(Span::styled(label, Style::default().fg(color)));
+    }
+
+    second_line.push(key("q"));
+    second_line.push(Span::raw(" finish review (writes feedback)"));
+
+    let mut first_line = vec![
+        key(" a"),
+        Span::raw(" approve  "),
+        key("r"),
+        Span::raw(" reject  "),
+        key("s"),
+        Span::raw(" skip  "),
+        key("f"),
+        Span::raw(" general feedback"),
+    ];
+    if !state.general_feedback.trim().is_empty() {
+        first_line.push(Span::styled(
+            " ✎ note set",
+            Style::default().fg(theme.info.to_color()),
+        ));
+    }
+    first_line.extend([
+        Span::raw("  "),
+        key("n"),
+        Span::raw("/"),
+        key("p"),
+        Span::raw(" file  "),
+        key("e"),
+        Span::raw(if state.notes_expanded {
+            " show diff  "
+        } else {
+            " expand notes  "
+        }),
+        key("Tab"),
+        Span::raw(" focus  "),
+        key("v"),
+        Span::raw(" layout"),
+    ]);
+
+    let lines = vec![Line::from(first_line), Line::from(second_line)];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 fn diff_footer_lines(

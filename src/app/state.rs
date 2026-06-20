@@ -1,12 +1,13 @@
 use ratatui_explorer::FileExplorer;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Child;
 use std::time::Instant;
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
-use crate::extension::{CustomSessionConfig, FeaturePreset};
+use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
@@ -266,6 +267,14 @@ pub enum DiffViewerLayout {
     SideBySide,
 }
 
+/// Per-file verdict in a final review. Absence of an entry means the file
+/// was skipped (neither approved nor rejected).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewDecision {
+    Approve,
+    Reject { feedback: String },
+}
+
 #[derive(Clone)]
 pub struct DiffViewerState {
     pub from_view: ViewState,
@@ -279,6 +288,26 @@ pub struct DiffViewerState {
     pub focus: DiffViewerFocus,
     pub layout: DiffViewerLayout,
     pub error: Option<String>,
+    /// When true the viewer is a final-review session: each file can be
+    /// approved/rejected/skipped and feedback is collected on finish.
+    pub review: bool,
+    /// File path -> verdict. Skipped files have no entry.
+    pub decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// True while the user is typing rejection feedback for the current file.
+    pub feedback_editing: bool,
+    /// True while the user is typing general (non-file) review feedback.
+    pub editing_general: bool,
+    /// Active editor buffer, shared by the per-file and general editors (only
+    /// one is open at a time).
+    pub feedback_input: String,
+    /// Overall review feedback not tied to a specific file.
+    pub general_feedback: String,
+    /// File path -> developer note parsed from `.claude/review-notes.md`
+    /// (written by review mode). Shown beside the diff during final review.
+    pub review_notes: std::collections::HashMap<String, String>,
+    /// When true the developer-notes panel takes the full patch column.
+    pub notes_expanded: bool,
+    pub notes_scroll: usize,
 }
 
 impl DiffViewerState {
@@ -295,6 +324,15 @@ impl DiffViewerState {
             focus: DiffViewerFocus::FileList,
             layout: DiffViewerLayout::Unified,
             error: None,
+            review: false,
+            decisions: std::collections::HashMap::new(),
+            feedback_editing: false,
+            editing_general: false,
+            feedback_input: String::new(),
+            general_feedback: String::new(),
+            review_notes: std::collections::HashMap::new(),
+            notes_expanded: false,
+            notes_scroll: 0,
         }
     }
 }
@@ -491,31 +529,31 @@ impl ComposeState {
     }
 
     pub fn refresh_suggestions(&mut self) {
-        let previously_selected = self
-            .suggestions
-            .get(self.suggestion_index)
-            .copied();
+        let previously_selected = self.suggestions.get(self.suggestion_index).copied();
 
         match self.pending_command_prefix() {
             Some(prefix) => {
-                let prefix_lower = prefix.to_lowercase();
-                self.suggestions = self
+                // Fuzzy-rank the catalog so a query like "commit"
+                // matches namespaced commands such as "stn:commit".
+                let mut scored: Vec<(i32, usize)> = self
                     .catalog
                     .iter()
                     .enumerate()
-                    .filter(|(_, entry)| entry.name.to_lowercase().starts_with(&prefix_lower))
-                    .map(|(idx, _)| idx)
+                    .filter_map(|(idx, entry)| {
+                        crate::app::compose::fuzzy_score(prefix, &entry.name)
+                            .map(|score| (score, idx))
+                    })
                     .collect();
+                // Highest score first; ties keep catalog order, which
+                // preserves the built-in/global/project/skill grouping.
+                scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                self.suggestions = scored.into_iter().map(|(_, idx)| idx).collect();
             }
             None => self.suggestions.clear(),
         }
 
         self.suggestion_index = previously_selected
-            .and_then(|catalog_idx| {
-                self.suggestions
-                    .iter()
-                    .position(|idx| *idx == catalog_idx)
-            })
+            .and_then(|catalog_idx| self.suggestions.iter().position(|idx| *idx == catalog_idx))
             .unwrap_or(0);
     }
 
@@ -684,6 +722,7 @@ pub enum AppMode {
     MarkdownFilePicker(MarkdownFilePickerState),
     CreatingBatchFeatures(CreateBatchFeaturesState),
     HarnessSetup(HarnessSetupState),
+    ConfigWizard(ConfigWizardState),
 }
 
 #[derive(Debug, Clone)]
@@ -739,6 +778,67 @@ impl HarnessSetupState {
             .map(|h| h.kind.clone())
             .collect()
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigCategory {
+    CustomSessions,
+    FeaturePresets,
+    LifecycleHooks,
+    Keybindings,
+    AllowedAgents,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigScope {
+    Global,
+    Project(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigWizardStep {
+    CategoryPicker,
+    ScopePicker,
+    ItemList,
+    EditItem,
+    ConfirmSave,
+}
+
+pub struct ConfigWizardState {
+    pub step: ConfigWizardStep,
+    pub category: ConfigCategory,
+    pub scope: ConfigScope,
+    pub selected: usize,
+    pub field_focus: usize,
+    pub input_mode: bool,
+    pub sessions: Vec<CustomSessionConfig>,
+    pub presets: Vec<FeaturePreset>,
+    pub hooks: LifecycleHooks,
+    pub keybindings: HashMap<String, char>,
+    pub allowed_agents: Option<Vec<AgentKind>>,
+    pub editing_index: Option<usize>,
+    pub field_values: Vec<String>,
+    pub field_editor: Option<ConfigWizardFieldEditor>,
+    pub field_toggles: Vec<bool>,
+    pub agent_toggles: Vec<bool>,
+    pub agent_toggles_dirty: bool,
+    pub keybinding_actions: Vec<String>,
+    pub capturing_key: bool,
+    pub original_json: String,
+    pub modified_json: String,
+    pub confirm_diff: Option<crate::diff::DiffFile>,
+    pub preview_scroll: usize,
+    pub project_repo: Option<PathBuf>,
+    pub project_name: Option<String>,
+    pub error: Option<String>,
+}
+
+pub struct ConfigWizardFieldEditor {
+    pub field_index: usize,
+    pub label: String,
+    pub editor: TextEditor,
+    pub scroll_offset: usize,
+    pub sync_scroll_to_cursor: bool,
 }
 
 #[derive(Debug, Clone)]

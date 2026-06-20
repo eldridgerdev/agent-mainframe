@@ -246,7 +246,6 @@ fn main() -> Result<()> {
         )
     })?;
 
-    let mut should_switch = None;
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         cleanup_global_hooks();
         app::App::cleanup_stale_thinking_files();
@@ -293,9 +292,7 @@ fn main() -> Result<()> {
             }
         }
 
-        let loop_result = run_loop(&mut terminal, &mut app, vscode_check_rx);
-        should_switch = app.should_switch.clone();
-        loop_result
+        run_loop(&mut terminal, &mut app, vscode_check_rx)
     }));
 
     debug::flush_log_writer();
@@ -308,10 +305,6 @@ fn main() -> Result<()> {
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;
-
-    if let Some(session) = &should_switch {
-        TmuxManager::attach_session(session)?;
-    }
 
     match result {
         Ok(result) => result,
@@ -359,6 +352,22 @@ fn startup_loading_hint(elapsed: Duration) -> &'static str {
 
     let index = (elapsed.as_secs() / HINT_ROTATION_SECS) as usize % HINTS.len();
     HINTS[index]
+}
+
+fn startup_loading_pending(
+    sync_statuses_pending: bool,
+    session_status_pending: bool,
+    claude_hooks_pending: bool,
+    opencode_plugins_pending: bool,
+) -> bool {
+    sync_statuses_pending
+        || session_status_pending
+        || claude_hooks_pending
+        || opencode_plugins_pending
+}
+
+fn startup_sidebar_can_warm(session_status_inflight: bool, usage_stats_inflight: bool) -> bool {
+    !session_status_inflight && !usage_stats_inflight
 }
 
 fn draw_loading(frame: &mut Frame, message: &str, hint: &str) {
@@ -765,7 +774,15 @@ fn run_loop<B: Backend>(
             || startup_claude_hooks_pending
             || startup_opencode_plugins_pending
             || startup_sidebar_warm_pending;
-        let startup_loading = startup_tasks_pending;
+        // Usage parsing and sidebar warming remain startup-owned so periodic
+        // refreshes do not overlap them, but they run behind the interactive
+        // dashboard rather than extending the blocking loading screen.
+        let startup_loading = startup_loading_pending(
+            startup_sync_statuses_pending,
+            startup_session_status_pending,
+            startup_claude_hooks_pending,
+            startup_opencode_plugins_pending,
+        );
 
         let poll_duration = if startup_loading {
             Duration::ZERO
@@ -947,7 +964,7 @@ fn run_loop<B: Backend>(
             }
         }
 
-        if app.should_quit || app.should_switch.is_some() {
+        if app.should_quit {
             app.flush_pending_debug_log_entries();
             return Ok(());
         }
@@ -1197,13 +1214,6 @@ fn run_loop<B: Backend>(
                     .record_duration("startup.sync_session_status_bg_start", started_at.elapsed());
                 startup_session_status_pending = false;
                 // Results applied asynchronously via poll_session_status_bg().
-            } else if startup_usage_pending {
-                let started_at = Instant::now();
-                app.usage.refresh(None);
-                app.perf
-                    .record_duration("startup.usage_refresh", started_at.elapsed());
-                startup_usage_pending = false;
-                force_redraw = true;
             } else if startup_claude_hooks_pending {
                 let started_at = Instant::now();
                 let refreshed = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
@@ -1224,7 +1234,19 @@ fn run_loop<B: Backend>(
                     format!("Refreshed opencode plugins for {refreshed} feature(s)"),
                 );
                 startup_opencode_plugins_pending = false;
-            } else if startup_sidebar_warm_pending {
+            } else if startup_usage_pending && app.session_status_bg.is_none() {
+                let started_at = Instant::now();
+                app.usage.refresh(None);
+                app.perf
+                    .record_duration("startup.usage_refresh", started_at.elapsed());
+                startup_usage_pending = false;
+                force_redraw = true;
+            } else if startup_sidebar_warm_pending
+                && startup_sidebar_can_warm(
+                    app.session_status_bg.is_some(),
+                    app.usage.stats_refresh_inflight(),
+                )
+            {
                 let started_at = Instant::now();
                 app.schedule_sidebar_loads_for_all_features();
                 app.perf
@@ -1391,7 +1413,7 @@ fn run_loop<B: Backend>(
             }
         }
 
-        if app.should_quit || app.should_switch.is_some() {
+        if app.should_quit {
             app.flush_pending_debug_log_entries();
             return Ok(());
         }
@@ -1400,7 +1422,7 @@ fn run_loop<B: Backend>(
 
 #[cfg(test)]
 mod tests {
-    use super::cleanup_hooks_at;
+    use super::{cleanup_hooks_at, startup_loading_pending, startup_sidebar_can_warm};
     use std::fs;
     use tempfile::TempDir;
 
@@ -1413,6 +1435,23 @@ mod tests {
     fn read_settings(path: &std::path::Path) -> serde_json::Value {
         let s = fs::read_to_string(path).unwrap();
         serde_json::from_str(&s).unwrap()
+    }
+
+    #[test]
+    fn background_startup_work_does_not_hold_loading_screen() {
+        assert!(!startup_loading_pending(false, false, false, false));
+        assert!(startup_loading_pending(true, false, false, false));
+        assert!(startup_loading_pending(false, true, false, false));
+        assert!(startup_loading_pending(false, false, true, false));
+        assert!(startup_loading_pending(false, false, false, true));
+    }
+
+    #[test]
+    fn sidebar_warm_waits_for_transcript_jobs() {
+        assert!(!startup_sidebar_can_warm(true, false));
+        assert!(!startup_sidebar_can_warm(false, true));
+        assert!(!startup_sidebar_can_warm(true, true));
+        assert!(startup_sidebar_can_warm(false, false));
     }
 
     #[test]

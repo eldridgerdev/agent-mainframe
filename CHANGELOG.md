@@ -10,6 +10,14 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Vim normal mode now supports the change operator: `c` with a motion
+  (`cw`, `cb`, `c$`, …) deletes and drops into insert mode, `cc`/`S`
+  changes a whole line (leaving it empty rather than removing it), and
+  `C` changes to the end of the line. The delete and the text typed
+  afterwards undo together as one step.
+
 ### Documentation
 
 - Optimized the README for LLM/AI-assistant retrieval (c7score):

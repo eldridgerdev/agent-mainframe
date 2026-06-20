@@ -281,6 +281,15 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
     merged
 }
 
+/// Write an `ExtensionConfig` to `{repo}/.amf/config.json`.
+pub fn save_project_extension_config(repo: &Path, config: &ExtensionConfig) -> anyhow::Result<()> {
+    let amf_dir = repo.join(".amf");
+    std::fs::create_dir_all(&amf_dir)?;
+    let json = serde_json::to_string_pretty(config)?;
+    std::fs::write(amf_dir.join("config.json"), json)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +497,24 @@ mod tests {
         assert_eq!(merged.feature_presets.len(), 1);
         assert_eq!(merged.feature_presets[0].mode, VibeMode::Vibeless);
         assert!(merged.feature_presets[0].review);
+    }
+
+    #[test]
+    fn save_project_extension_config_writes_raw_extension_json() {
+        let tmp = TempDir::new().unwrap();
+        let config = ExtensionConfig {
+            custom_sessions: vec![CustomSessionConfig {
+                name: "lint".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        save_project_extension_config(tmp.path(), &config).unwrap();
+
+        let raw = std::fs::read_to_string(tmp.path().join(".amf").join("config.json")).unwrap();
+        let loaded: ExtensionConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(loaded.custom_sessions.len(), 1);
+        assert_eq!(loaded.custom_sessions[0].name, "lint");
     }
 }

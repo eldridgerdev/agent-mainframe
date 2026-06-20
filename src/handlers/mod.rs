@@ -1,6 +1,7 @@
 mod batch_creation;
 mod browse;
 mod compose;
+mod config_wizard;
 mod dialog;
 mod diff;
 mod diff_review;
@@ -23,6 +24,7 @@ use crate::app::App;
 pub use batch_creation::handle_create_batch_features_key;
 pub use browse::handle_browse_path_key;
 pub use compose::handle_compose_key;
+pub use config_wizard::handle_config_wizard_key;
 pub use dialog::{
     handle_create_project_key, handle_debug_log_key, handle_delete_feature_key,
     handle_delete_project_key, handle_help_key, handle_latest_prompt_key,
@@ -38,6 +40,7 @@ pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_runn
 pub use input::handle_paste;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
+pub(crate) use normal::{DASHBOARD_KEYBINDING_ACTIONS, default_key_for_action};
 pub use picker::{
     handle_bookmark_picker_key, handle_claude_session_confirm_key,
     handle_claude_session_picker_key, handle_codex_session_confirm_key,
@@ -103,5 +106,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         }
         AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key),
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
+        AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
     }
 }

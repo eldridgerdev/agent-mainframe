@@ -130,6 +130,22 @@ pub fn highlight_source(language: HighlightLanguage, source: &str) -> Result<Hig
 }
 
 pub fn validate_startup_parsers() -> Vec<StartupValidationMessage> {
+    validate_startup_parsers_with(dynamic_loading_supported)
+}
+
+fn validate_startup_parsers_with<F>(check_dynamic_loading: F) -> Vec<StartupValidationMessage>
+where
+    F: FnOnce() -> Result<()>,
+{
+    if let Err(error) = check_dynamic_loading() {
+        return vec![StartupValidationMessage {
+            level: StartupValidationLevel::Warn,
+            message: format!(
+                "Syntax parser startup validation skipped because dynamic loading is unavailable: {error}"
+            ),
+        }];
+    }
+
     let mut messages = Vec::new();
 
     for language in HighlightLanguage::ALL {
@@ -172,6 +188,21 @@ pub fn validate_startup_parsers() -> Vec<StartupValidationMessage> {
     }
 
     messages
+}
+
+fn dynamic_loading_supported() -> Result<()> {
+    // Opening the current process is a side-effect-free capability probe.
+    // Static builds may expose dlopen while rejecting every call; attempting
+    // parser repair in that environment only rebuilds the same unusable
+    // libraries on every startup.
+    let handle = unsafe { dlopen(std::ptr::null(), RTLD_NOW) };
+    if handle.is_null() {
+        bail!("{}", dl_error_message());
+    }
+    unsafe {
+        let _ = dlclose(handle);
+    }
+    Ok(())
 }
 
 pub fn install_language<F>(language: HighlightLanguage, mut progress: F) -> Result<String>
@@ -834,6 +865,16 @@ fn dl_error_message() -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn unavailable_dynamic_loading_skips_startup_parser_validation() {
+        let messages = validate_startup_parsers_with(|| bail!("dynamic loading disabled"));
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].level, StartupValidationLevel::Warn);
+        assert!(messages[0].message.contains("startup validation skipped"));
+        assert!(messages[0].message.contains("dynamic loading disabled"));
+    }
 
     #[test]
     fn unknown_language_falls_back_to_plain_text() {

@@ -2468,6 +2468,55 @@ fn compose_suggestions_filter_by_prefix_and_complete() {
 }
 
 #[test]
+fn compose_suggestions_match_namespaced_commands_fuzzily() {
+    let catalog = vec![
+        compose_command("clear", false),
+        compose_command("stn:commit", false),
+        compose_command("config", true),
+    ];
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        "/commit".to_string(),
+        catalog,
+    );
+
+    let names: Vec<&str> = state
+        .suggestions
+        .iter()
+        .filter_map(|idx| state.catalog.get(*idx))
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["stn:commit"]);
+
+    assert!(state.complete_selected_suggestion());
+    assert_eq!(state.editor.text(), "/stn:commit");
+    assert!(state.exact_command_match().is_some());
+}
+
+#[test]
+fn compose_suggestions_rank_literal_above_namespaced() {
+    let catalog = vec![
+        compose_command("stn:commit", false),
+        compose_command("commit", false),
+    ];
+    let state = ComposeState::new(
+        compose_test_view(),
+        PathBuf::from("/tmp"),
+        "/commit".to_string(),
+        catalog,
+    );
+
+    let names: Vec<&str> = state
+        .suggestions
+        .iter()
+        .filter_map(|idx| state.catalog.get(*idx))
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["commit", "stn:commit"]);
+}
+
+#[test]
 fn compose_parts_interleave_text_and_images() {
     use super::compose::{ComposePart, split_compose_parts};
 

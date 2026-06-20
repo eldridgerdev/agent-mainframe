@@ -63,6 +63,13 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Prompt library](prompt-library-plan.md) — _In progress._ Save
+  reusable prompts and inject them into a session (compose box when on,
+  paste without sending when off). Phase 1 (SQLite-backed save & inject)
+  has shipped, plus a multi-source picker (`User` / `Project` / `Global`
+  with badges) and export to `config.json`. Fill-in `{{placeholders}}`,
+  select-menu templates, export/display location unification, and showing
+  the on-disk destination path remain.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.

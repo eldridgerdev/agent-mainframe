@@ -10,6 +10,7 @@ mod help;
 mod hooks;
 mod markdown;
 mod project;
+mod prompt_library;
 mod search;
 mod session;
 mod theme;
@@ -31,6 +32,7 @@ pub use hooks::{
 };
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
+pub use prompt_library::{draw_prompt_editor, draw_prompt_library};
 pub use search::draw_search_dialog;
 pub use session::{
     draw_new_session_name_dialog, draw_project_agent_config_dialog, draw_rename_feature_dialog,

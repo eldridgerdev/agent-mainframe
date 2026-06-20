@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::project::{AgentKind, StoredVibeMode, VibeMode};
+use crate::prompt_library::PromptTemplate;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -152,6 +153,10 @@ pub struct ExtensionConfig {
     pub keybindings: HashMap<String, char>,
     pub feature_presets: Vec<FeaturePreset>,
     pub allowed_agents: Option<Vec<AgentKind>>,
+    /// Declarative prompt-library templates (read-only at load time).
+    /// The library view can export user templates here. Phase 3 surfaces
+    /// these in the picker with a `Global` / `Project` source badge.
+    pub prompt_templates: Vec<PromptTemplate>,
 }
 
 impl ExtensionConfig {
@@ -241,6 +246,14 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         }
     }
 
+    // Merge prompt_templates by name (project wins).
+    let mut prompt_templates = project.prompt_templates.clone();
+    for entry in &base.prompt_templates {
+        if !prompt_templates.iter().any(|e| e.name == entry.name) {
+            prompt_templates.push(entry.clone());
+        }
+    }
+
     // Merge lifecycle_hooks: project fields take priority.
     let on_start = project
         .lifecycle_hooks
@@ -276,6 +289,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .allowed_agents
             .clone()
             .or_else(|| base.allowed_agents.clone()),
+        prompt_templates,
     };
     merged.normalize_legacy_review_modes();
     merged

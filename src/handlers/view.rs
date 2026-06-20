@@ -413,6 +413,16 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
         }
+        KeyCode::Char('P') => {
+            let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+                AppMode::Viewing(v) => v,
+                other => {
+                    app.mode = other;
+                    return Ok(());
+                }
+            };
+            app.open_prompt_library(Some(view_state));
+        }
         KeyCode::Char('b') => {
             app.toggle_sidebar_in_view();
         }
@@ -1183,6 +1193,7 @@ mod tests {
             projects: vec![project],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
 

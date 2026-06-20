@@ -19,6 +19,7 @@ mod markdown;
 mod perf;
 mod pi;
 mod project;
+mod prompt_library;
 mod summary;
 mod theme;
 mod tmux;

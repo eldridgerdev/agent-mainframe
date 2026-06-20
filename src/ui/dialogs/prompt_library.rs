@@ -1,0 +1,331 @@
+use ratatui::{
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+};
+
+use crate::app::{PromptEditorState, PromptLibraryState};
+use crate::theme::Theme;
+
+use super::super::dashboard::centered_rect;
+use super::editor_view::editor_lines;
+
+/// Picker over the prompt library: a list of templates on the left with
+/// a body preview on the right, plus a search line and footer hints.
+pub fn draw_prompt_library(
+    frame: &mut Frame,
+    state: &PromptLibraryState,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    let area = centered_rect(82, 78, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let total = state.templates.len();
+    let shown = state.filtered.len();
+    let title = if state.query.is_empty() {
+        format!(" Prompt Library ({total}) ")
+    } else {
+        format!(" Prompt Library ({shown}/{total}) ")
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let msg_height = if message.is_some() { 1 } else { 0 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),             // search line
+            Constraint::Min(1),                // list + preview
+            Constraint::Length(1),             // footer hints
+            Constraint::Length(msg_height),    // message
+        ])
+        .split(inner);
+
+    // ── Search line ──────────────────────────────────────────────
+    let search_line = if state.search_active {
+        Line::from(vec![
+            Span::styled("Search: ", Style::default().fg(theme.warning.to_color())),
+            Span::styled(
+                state.query.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::styled("█", Style::default().fg(theme.primary.to_color())),
+        ])
+    } else if state.query.is_empty() {
+        Line::from(Span::styled(
+            "Press / to search",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled("Filter: ", Style::default().fg(theme.text_muted.to_color())),
+            Span::styled(
+                state.query.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+        ])
+    };
+    frame.render_widget(Paragraph::new(search_line), chunks[0]);
+
+    if state.templates.is_empty() {
+        let empty = Paragraph::new(
+            "No saved prompts yet.\n\nPress n to create one, or save the compose box with Ctrl+P.",
+        )
+        .style(Style::default().fg(theme.text_muted.to_color()))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(empty, chunks[1]);
+        draw_footer(frame, chunks[2], theme);
+        draw_message(frame, chunks[3], message, theme);
+        return;
+    }
+
+    // ── List + preview ───────────────────────────────────────────
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(chunks[1]);
+
+    let list_width = body[0].width as usize;
+    let visible = body[0].height as usize;
+    let scroll_offset = if state.selected >= visible {
+        state.selected - visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = state
+        .filtered
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible)
+        .filter_map(|(pos, template_idx)| {
+            let entry = state.templates.get(*template_idx)?;
+            let selected = pos == state.selected;
+            let marker = if selected { "▸ " } else { "  " };
+            let name_style = if selected {
+                Style::default()
+                    .fg(theme.primary.to_color())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text.to_color())
+            };
+
+            let badge = format!(" [{}]", entry.source.label());
+            let fixed = marker.len() + badge.len();
+            let name = truncate(&entry.template.name, list_width.saturating_sub(fixed));
+
+            Some(ListItem::new(Line::from(vec![
+                Span::styled(marker.to_string(), name_style),
+                Span::styled(name, name_style),
+                Span::styled(badge, Style::default().fg(badge_color(entry.source, theme))),
+            ])))
+        })
+        .collect();
+    frame.render_widget(List::new(items), body[0]);
+
+    // Preview of the selected template's body.
+    let preview_block = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(theme.border.to_color()));
+    let preview_inner = preview_block.inner(body[1]);
+    frame.render_widget(preview_block, body[1]);
+
+    if let Some(entry) = state.selected_entry() {
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(desc) = &entry.template.description {
+            if !desc.trim().is_empty() {
+                lines.push(Line::from(Span::styled(
+                    desc.clone(),
+                    Style::default()
+                        .fg(theme.text_muted.to_color())
+                        .add_modifier(Modifier::ITALIC),
+                )));
+                lines.push(Line::from(""));
+            }
+        }
+        for line in entry.template.body.lines() {
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(theme.text.to_color()),
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(lines).wrap(Wrap { trim: false }),
+            preview_inner,
+        );
+    }
+
+    draw_footer(frame, chunks[2], theme);
+    draw_message(frame, chunks[3], message, theme);
+}
+
+/// Distinguish template sources at a glance: editable `User` entries are
+/// muted, read-only `Project` ones use the success accent, and `Global`
+/// ones the info accent.
+fn badge_color(source: crate::prompt_library::PromptSource, theme: &Theme) -> ratatui::style::Color {
+    use crate::prompt_library::PromptSource;
+    match source {
+        PromptSource::User => theme.text_muted.to_color(),
+        PromptSource::Project => theme.success.to_color(),
+        PromptSource::Global => theme.info.to_color(),
+    }
+}
+
+fn draw_footer(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let footer = Line::from(vec![
+        hint("Enter"),
+        label(" inject  "),
+        hint("n"),
+        label(" new  "),
+        hint("e"),
+        label(" edit  "),
+        hint("d"),
+        label(" del  "),
+        hint("y"),
+        label(" dup  "),
+        hint("x"),
+        label(" export  "),
+        hint("/"),
+        label(" search  "),
+        hint("Esc"),
+        label(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(footer), area);
+}
+
+fn draw_message(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    message: Option<&str>,
+    theme: &Theme,
+) {
+    if let Some(msg) = message {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                msg.to_string(),
+                Style::default().fg(theme.success.to_color()),
+            ))),
+            area,
+        );
+    }
+}
+
+/// Create/edit dialog: a name field above a multi-line body editor.
+pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &Theme) {
+    let area = centered_rect(78, 74, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let title = if state.editing_id.is_some() {
+        " Edit Prompt "
+    } else {
+        " New Prompt "
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // name label
+            Constraint::Length(1), // name field
+            Constraint::Length(1), // spacer
+            Constraint::Length(1), // body label
+            Constraint::Min(3),    // body editor
+            Constraint::Length(1), // footer hints
+        ])
+        .split(inner);
+
+    let active_marker = |active: bool| {
+        if active {
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        }
+    };
+
+    frame.render_widget(
+        Paragraph::new(Span::styled("Name", active_marker(state.name_field_active))),
+        chunks[0],
+    );
+    let name_line = if state.name_field_active {
+        Line::from(vec![
+            Span::styled(state.name.clone(), Style::default().fg(theme.text.to_color())),
+            Span::styled("█", Style::default().fg(theme.primary.to_color())),
+        ])
+    } else if state.name.is_empty() {
+        Line::from(Span::styled(
+            "(unnamed)",
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+    } else {
+        Line::from(Span::styled(
+            state.name.clone(),
+            Style::default().fg(theme.text.to_color()),
+        ))
+    };
+    frame.render_widget(Paragraph::new(name_line), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Prompt body",
+            active_marker(!state.name_field_active),
+        )),
+        chunks[3],
+    );
+    let body_lines = editor_lines(
+        &state.editor,
+        theme,
+        "Type the prompt. Use {{placeholder}} for fill-in slots (phase 2).",
+    );
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[4],
+    );
+
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let footer = Line::from(vec![
+        hint("Tab"),
+        label(" switch field  "),
+        hint("Ctrl+S"),
+        label(" save  "),
+        hint("Esc"),
+        label(" cancel"),
+    ]);
+    frame.render_widget(Paragraph::new(footer), chunks[5]);
+}
+
+fn truncate(s: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}

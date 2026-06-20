@@ -673,6 +673,8 @@ pub struct ProjectStore {
     pub session_bookmarks: Vec<SessionBookmark>,
     #[serde(default)]
     pub available_harnesses: Vec<AgentKind>,
+    #[serde(default)]
+    pub prompt_templates: Vec<crate::prompt_library::PromptTemplate>,
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
 }
@@ -708,6 +710,16 @@ impl ProjectStore {
                     && existing.session_id == bookmark.session_id
             }) {
                 self.session_bookmarks.push(bookmark);
+            }
+        }
+
+        for template in other.prompt_templates {
+            if !self
+                .prompt_templates
+                .iter()
+                .any(|existing| existing.id == template.id)
+            {
+                self.prompt_templates.push(template);
             }
         }
 
@@ -848,6 +860,7 @@ impl ProjectStore {
                 projects: Vec::new(),
                 session_bookmarks: default_session_bookmarks(),
                 available_harnesses: Vec::new(),
+                prompt_templates: Vec::new(),
                 extra: HashMap::new(),
             });
         }
@@ -933,6 +946,7 @@ impl ProjectStore {
             projects: v2.projects,
             session_bookmarks: default_session_bookmarks(),
             available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -944,6 +958,7 @@ impl ProjectStore {
             projects: v3.projects,
             session_bookmarks: default_session_bookmarks(),
             available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -1088,6 +1103,7 @@ impl ProjectStore {
             projects,
             session_bookmarks: default_session_bookmarks(),
             available_harnesses: Vec::new(),
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -1296,6 +1312,7 @@ mod tests {
                 session_id: "session-1".to_string(),
             }],
             available_harnesses: vec![AgentKind::Claude],
+            prompt_templates: Vec::new(),
             extra: HashMap::from([(String::from("alpha"), serde_json::json!(1))]),
         };
 
@@ -1402,6 +1419,7 @@ mod tests {
                 },
             ],
             available_harnesses: vec![AgentKind::Codex, AgentKind::Pi],
+            prompt_templates: Vec::new(),
             extra: HashMap::from([
                 (String::from("alpha"), serde_json::json!(2)),
                 (String::from("beta"), serde_json::json!(true)),
@@ -1456,6 +1474,7 @@ mod tests {
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();
@@ -1554,6 +1573,7 @@ mod tests {
             }],
             session_bookmarks: vec![],
             available_harnesses: vec![],
+            prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
         let tmp = NamedTempFile::new().unwrap();

@@ -77,6 +77,34 @@ pub fn handle_compose_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        app.save_current_prompt_as_template();
+        return Ok(());
+    }
+
+    // Ctrl+P opens the prompt library (mirrors leader+P in view mode),
+    // but yields to suggestion navigation (Ctrl+P = previous) while a
+    // /command popup is open.
+    let suggestions_open =
+        matches!(&app.mode, AppMode::Compose(state) if !state.suggestions.is_empty());
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('p')
+        && !suggestions_open
+    {
+        // Close the composer (draft kept) and open the prompt library
+        // targeting this session, so an injected prompt seeds the box.
+        app.cancel_compose();
+        let from_view = match std::mem::replace(&mut app.mode, AppMode::Normal) {
+            AppMode::Viewing(view) => Some(view),
+            other => {
+                app.mode = other;
+                None
+            }
+        };
+        app.open_prompt_library(from_view);
+        return Ok(());
+    }
+
     if let AppMode::Compose(state) = &mut app.mode {
         match key.code {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {

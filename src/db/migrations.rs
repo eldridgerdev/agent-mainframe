@@ -40,6 +40,7 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add incremental parse state to token usage cache",
             MIGRATION_006,
         ),
+        ("Add prompt_templates table for the prompt library", MIGRATION_007),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -112,6 +113,20 @@ ALTER TABLE session_status ADD COLUMN file_mtime_nanos INTEGER;
 
 const MIGRATION_006: &str = "
 ALTER TABLE token_usage_cache ADD COLUMN parse_state TEXT;
+";
+
+const MIGRATION_007: &str = "
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    description  TEXT,
+    body         TEXT NOT NULL,
+    tags         TEXT NOT NULL DEFAULT '[]',
+    placeholders TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    sort_order   INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 const MIGRATION_001: &str = "

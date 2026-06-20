@@ -444,6 +444,28 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             ]);
             Line::from(spans)
         }
+        AppMode::PromptLibrary(_) => Line::from(vec![
+            Span::styled(" Enter", key_style()),
+            Span::raw(" inject  "),
+            Span::styled("n", key_style()),
+            Span::raw(" new  "),
+            Span::styled("e", key_style()),
+            Span::raw(" edit  "),
+            Span::styled("d", key_style()),
+            Span::raw(" delete  "),
+            Span::styled("/", key_style()),
+            Span::raw(" search  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" close"),
+        ]),
+        AppMode::PromptEditor(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" switch field  "),
+            Span::styled("Ctrl+S", key_style()),
+            Span::raw(" save  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::DiffViewer(_) => {
             let mut spans = vec![Span::styled(" Tab", key_style()), Span::raw(" focus  ")];
             if app.diff_viewer_selected_file_is_new() {

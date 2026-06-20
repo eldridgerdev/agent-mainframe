@@ -26,6 +26,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("s", "Steering coach (experimental)"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
+    ("P", "Prompt library"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
     ("b", "Show / hide sidebar"),

@@ -266,6 +266,7 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
             Constraint::Length(1), // name field
             Constraint::Length(1), // spacer
             Constraint::Length(1), // body label
+            Constraint::Length(2), // placeholder help (always visible)
             Constraint::Min(3),    // body editor
             Constraint::Length(1), // footer hints
         ])
@@ -310,14 +311,34 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         )),
         chunks[3],
     );
-    let body_lines = editor_lines(
-        &state.editor,
-        theme,
-        "Type the prompt. Use {{placeholder}} for fill-in slots (phase 2).",
-    );
+
+    // Always-visible placeholder help, kept off the editor so it stays put
+    // while typing. Explains both the text-slot and the option-list forms.
+    let help = Line::from(vec![
+        Span::styled(
+            "{{name}}",
+            Style::default().fg(theme.primary.to_color()),
+        ),
+        Span::styled(
+            " fill-in slot \u{00b7} options: ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled(
+            "{{env|dev|staging|prod}}",
+            Style::default().fg(theme.primary.to_color()),
+        ),
+        Span::styled(
+            " shows a menu to pick from",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), chunks[4]);
+
+    // Help lives on its own line above, so the editor placeholder is empty.
+    let body_lines = editor_lines(&state.editor, theme, "");
     frame.render_widget(
         Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[4],
+        chunks[5],
     );
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
@@ -332,7 +353,7 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         hint("Ctrl+Q"),
         label(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(footer), chunks[5]);
+    frame.render_widget(Paragraph::new(footer), chunks[6]);
 }
 
 /// Fill-in flow: one slot at a time with a `current/total` progress
@@ -356,8 +377,9 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // slot label
+            Constraint::Length(2), // help line (always visible)
             Constraint::Length(1), // spacer
-            Constraint::Min(3),    // field editor
+            Constraint::Min(3),    // field editor / option list
             Constraint::Length(1), // footer hints
         ])
         .split(inner);
@@ -384,21 +406,64 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
     }
     frame.render_widget(Paragraph::new(Line::from(label_spans)), chunks[0]);
 
-    let placeholder_hint = if state.current_is_multiline() {
-        "Type a value. Enter inserts a newline; Tab moves on."
+    // Always-visible help, tailored to the slot kind. Kept separate from the
+    // editor so it stays put while the user types.
+    let help_text = if state.is_select() {
+        "Choose an option with \u{2191}/\u{2193} (or j/k), then Tab to confirm and continue."
+    } else if state.current_is_multiline() {
+        "Type a value. Enter adds a new line; Tab continues to the next field."
     } else {
-        "Type a value. Enter or Tab moves on."
+        "Type a value, then Tab or Enter to continue to the next field."
     };
-    let body_lines = editor_lines(&state.input, theme, placeholder_hint);
     frame.render_widget(
-        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[2],
+        Paragraph::new(Span::styled(
+            help_text,
+            Style::default().fg(theme.text_muted.to_color()),
+        ))
+        .wrap(Wrap { trim: true }),
+        chunks[1],
     );
+
+    if state.is_select() {
+        // Select slot: render the options as a navigable list.
+        let items: Vec<Line> = state
+            .current_options()
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| {
+                let selected = i == state.select_index;
+                let marker = if selected { "\u{25b8} " } else { "  " };
+                let style = if selected {
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text.to_color())
+                };
+                Line::from(vec![
+                    Span::styled(marker.to_string(), style),
+                    Span::styled(opt.clone(), style),
+                ])
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(items), chunks[3]);
+    } else {
+        // Help lives on its own line above, so the editor placeholder is empty.
+        let body_lines = editor_lines(&state.input, theme, "");
+        frame.render_widget(
+            Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+            chunks[3],
+        );
+    }
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
     let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
     let last = state.current + 1 >= total;
-    let footer = Line::from(vec![
+    let mut footer_spans = Vec::new();
+    if state.is_select() {
+        footer_spans.extend([hint("\u{2191}/\u{2193}"), label(" choose  ")]);
+    }
+    footer_spans.extend([
         hint("Tab"),
         label(if last { " inject  " } else { " next  " }),
         hint("Shift+Tab"),
@@ -408,7 +473,7 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
         hint("Esc"),
         label(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(footer), chunks[3]);
+    frame.render_widget(Paragraph::new(Line::from(footer_spans)), chunks[4]);
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

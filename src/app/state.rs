@@ -680,7 +680,10 @@ pub struct PlaceholderFillState {
     pub values: Vec<String>,
     pub current: usize,
     /// Editor for the field currently shown; reseeded from `values` on nav.
+    /// Unused while the active slot is a `Select` (the option list drives it).
     pub input: TextEditor,
+    /// Highlighted option index for a `Select` slot; ignored otherwise.
+    pub select_index: usize,
     pub from_view: Option<ViewState>,
 }
 
@@ -696,6 +699,67 @@ impl PlaceholderFillState {
             self.current_placeholder().map(|p| &p.kind),
             Some(crate::prompt_library::PlaceholderKind::MultiLine { .. })
         )
+    }
+
+    /// Whether the active slot is a `Select` (choose from a fixed option list).
+    pub fn is_select(&self) -> bool {
+        matches!(
+            self.current_placeholder().map(|p| &p.kind),
+            Some(crate::prompt_library::PlaceholderKind::Select { .. })
+        )
+    }
+
+    /// The options for the active slot, or an empty slice when it isn't a
+    /// `Select`.
+    pub fn current_options(&self) -> &[String] {
+        match self.current_placeholder().map(|p| &p.kind) {
+            Some(crate::prompt_library::PlaceholderKind::Select { options }) => options.as_slice(),
+            _ => &[],
+        }
+    }
+
+    /// Move to slot `idx`: reseed the editor from its stored value and point
+    /// `select_index` at that value's position in the options (0 otherwise).
+    pub fn enter(&mut self, idx: usize) {
+        self.current = idx;
+        let value = self.values.get(idx).cloned().unwrap_or_default();
+        self.select_index = match self.placeholders.get(idx).map(|p| &p.kind) {
+            Some(crate::prompt_library::PlaceholderKind::Select { options }) => {
+                options.iter().position(|o| o == &value).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        self.input = TextEditor::new(value);
+    }
+
+    /// Record the active slot's value into `values`: the chosen option for a
+    /// `Select`, the editor text otherwise.
+    pub fn commit_current(&mut self) {
+        let value = match self.current_placeholder().map(|p| &p.kind) {
+            Some(crate::prompt_library::PlaceholderKind::Select { options }) => {
+                options.get(self.select_index).cloned().unwrap_or_default()
+            }
+            _ => self.input.text().to_string(),
+        };
+        if let Some(slot) = self.values.get_mut(self.current) {
+            *slot = value;
+        }
+    }
+
+    /// Highlight the next option (wrapping) for a `Select` slot.
+    pub fn select_next(&mut self) {
+        let len = self.current_options().len();
+        if len > 0 {
+            self.select_index = (self.select_index + 1) % len;
+        }
+    }
+
+    /// Highlight the previous option (wrapping) for a `Select` slot.
+    pub fn select_prev(&mut self) {
+        let len = self.current_options().len();
+        if len > 0 {
+            self.select_index = self.select_index.checked_sub(1).unwrap_or(len - 1);
+        }
     }
 }
 

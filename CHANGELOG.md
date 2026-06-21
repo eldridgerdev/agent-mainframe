@@ -19,8 +19,15 @@ are tagged.
   `Shift+Tab` goes back, and `Ctrl+S` injects at any point. Slots are filled in
   the order they appear in the prompt, pre-seeded with any configured defaults,
   and required slots block injection until filled. Templates without slots
-  inject immediately as before. Slots default to free-text fields; richer types
-  (multi-line, select menus) are honored when declared in a template's config.
+  inject immediately as before.
+
+- **Menu (pick-from-a-list) placeholders.** A slot can offer a fixed set of
+  choices instead of free text: when you reach it in the fill-in flow, you pick
+  from a list with `↑`/`↓` (or `j`/`k`) and `Tab` to confirm. Define one right
+  in the prompt body with `{{name|option1|option2|option3}}` — for example
+  `Deploy to {{env|dev|staging|prod}}`. Plain `{{name}}` stays a free-text slot.
+  The New/Edit Prompt editor now shows a short, always-visible help line
+  explaining both forms (it no longer disappears once you start typing).
 
 - **Save a past prompt to the library.** In the recent-prompts menu
   (`leader+L`), press `s` to save the highlighted prompt as a new reusable

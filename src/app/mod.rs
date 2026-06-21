@@ -2792,16 +2792,22 @@ impl App {
     }
 
     pub fn save_config(&self) {
+        if let Err(e) = self.try_save_config() {
+            // Fire-and-forget callers (theme/background) can't surface errors; log only.
+            eprintln!("save_config failed: {e}");
+        }
+    }
+
+    pub fn try_save_config(&self) -> anyhow::Result<()> {
         if self.store_path.as_os_str().is_empty() {
-            return;
+            return Ok(());
         }
         let config_path = crate::project::amf_config_dir().join("config.json");
         let dir = config_path.parent().unwrap();
-        let _ = std::fs::create_dir_all(dir);
-        let _ = std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&self.config).unwrap_or_default(),
-        );
+        std::fs::create_dir_all(dir)?;
+        let json = serde_json::to_string_pretty(&self.config)?;
+        std::fs::write(&config_path, json)?;
+        Ok(())
     }
 }
 

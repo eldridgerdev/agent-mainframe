@@ -25,6 +25,9 @@ pub enum PromptSource {
     User,
     Global,
     Project,
+    /// Template lives in the active feature's worktree `.amf/config.json`.
+    /// Branch-specific; not yet promoted to the main repo.
+    Worktree,
 }
 
 impl PromptSource {
@@ -33,12 +36,19 @@ impl PromptSource {
             PromptSource::User => "User",
             PromptSource::Global => "Global",
             PromptSource::Project => "Project",
+            PromptSource::Worktree => "Worktree",
         }
     }
 
-    /// User templates can be edited and deleted in place; read-only
-    /// sources must be duplicated to the user library first.
+    /// All templates can be opened in the editor and saved back to their
+    /// source file (or the SQLite store for `User`).
     pub fn is_editable(self) -> bool {
+        true
+    }
+
+    /// Only `User` templates can be deleted; config-file sources require
+    /// manually removing the entry from the file.
+    pub fn is_deletable(self) -> bool {
         matches!(self, PromptSource::User)
     }
 }

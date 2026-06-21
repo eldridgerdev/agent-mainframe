@@ -10,7 +10,47 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Worktree export target for prompt templates.** Pressing `x` → `w` in the
+  prompt library exports a template to the active feature's worktree
+  `.amf/config.json` instead of the main project config. Worktree templates
+  appear with a distinct yellow `[Worktree]` badge so you can tell them apart
+  from `[Project]` templates. This lets you commit a prompt on a feature branch
+  and promote it to the main repo via git when it's ready.
+
+- **Edit prompts from any source.** Project, Global, and Worktree templates can
+  now be opened in the prompt editor with `e`. Saving writes back to the config
+  file they came from — SQLite for `[User]` templates, the appropriate
+  `.amf/config.json` for config-file sources. Renaming a config-source template
+  removes the old entry so stale names don't accumulate.
+
+### Changed
+
+- All four template sources (User, Worktree, Project, Global) are now shown
+  independently in the prompt library with no cross-source deduplication.
+  Previously, a Worktree or Project template with the same name would silently
+  hide the Global copy, making freshly-exported templates appear to vanish.
+  Each scope's copy is now always listed so you can see exactly where a prompt
+  lives and manage them individually.
+
+- The library list updates immediately after every mutation — export, create,
+  edit, or duplicate — and the cursor jumps straight to the affected entry.
+  Previously the list reset to position 0 and newly-exported entries could be
+  invisible until you closed and reopened the picker.
+
+- Global templates are re-read from disk each time the library opens, so
+  changes made while AMF is running (including exports from the same session)
+  take effect without restarting the app.
+
+- Export failures now surface as a toast instead of doing nothing silently.
+  A corrupt or unwriteable config file shows an explicit error message.
+
+- Only `[User]` templates show the `d` delete hint. Config-source templates
+  (`Project`, `Global`, `Worktree`) show `e edit` but not `d del`, since
+  deleting those requires editing the config file directly. Pressing `d` on a
+  config template now immediately explains this instead of arming a confirm
+  dialog that then refuses to act.
 
 ## [v0.25.0] - 2026-06-19
 

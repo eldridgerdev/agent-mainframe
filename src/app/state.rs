@@ -667,6 +667,38 @@ pub struct PromptEditorState {
     pub return_to: Box<AppMode>,
 }
 
+/// Collects a value for each `{{slot}}` in a template before injection.
+/// One field is shown at a time (`current` of `placeholders.len()`); each
+/// slot's value lives in `values` (seeded with its default) so moving
+/// back and forth preserves edits. `from_view` is where the rendered
+/// prompt is delivered once every field is filled.
+pub struct PlaceholderFillState {
+    pub template: crate::prompt_library::PromptTemplate,
+    /// Slots to fill, in body order. Built by `resolve_placeholders`.
+    pub placeholders: Vec<crate::prompt_library::PromptPlaceholder>,
+    /// One entry per placeholder; seeded with defaults, updated on nav.
+    pub values: Vec<String>,
+    pub current: usize,
+    /// Editor for the field currently shown; reseeded from `values` on nav.
+    pub input: TextEditor,
+    pub from_view: Option<ViewState>,
+}
+
+impl PlaceholderFillState {
+    pub fn current_placeholder(&self) -> Option<&crate::prompt_library::PromptPlaceholder> {
+        self.placeholders.get(self.current)
+    }
+
+    /// Whether the active field accepts newlines (Enter inserts a line break
+    /// rather than advancing to the next slot).
+    pub fn current_is_multiline(&self) -> bool {
+        matches!(
+            self.current_placeholder().map(|p| &p.kind),
+            Some(crate::prompt_library::PlaceholderKind::MultiLine { .. })
+        )
+    }
+}
+
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
@@ -718,6 +750,7 @@ pub enum AppMode {
     LatestPrompt(LatestPromptState),
     PromptLibrary(PromptLibraryState),
     PromptEditor(PromptEditorState),
+    PlaceholderFill(PlaceholderFillState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),

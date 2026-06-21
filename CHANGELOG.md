@@ -12,6 +12,20 @@ are tagged.
 
 ### Added
 
+- **Fill-in placeholders for prompt templates.** Injecting a template that
+  contains `{{slot}}` markers now walks you through one field at a time,
+  collecting a value for each slot before the prompt is delivered. A `2/3`
+  counter shows your progress; `Tab`/`Enter` move to the next field,
+  `Shift+Tab` goes back, and `Ctrl+S` injects at any point. Slots are filled in
+  the order they appear in the prompt, pre-seeded with any configured defaults,
+  and required slots block injection until filled. Templates without slots
+  inject immediately as before. Slots default to free-text fields; richer types
+  (multi-line, select menus) are honored when declared in a template's config.
+
+- **Save a past prompt to the library.** In the recent-prompts menu
+  (`leader+L`), press `s` to save the highlighted prompt as a new reusable
+  template — it opens the editor pre-filled so you can name and tweak it.
+
 - **Worktree export target for prompt templates.** Pressing `x` → `w` in the
   prompt library exports a template to the active feature's worktree
   `.amf/config.json` instead of the main project config. Worktree templates

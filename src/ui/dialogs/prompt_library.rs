@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{PromptEditorState, PromptLibraryState};
+use crate::app::{PlaceholderFillState, PromptEditorState, PromptLibraryState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -333,6 +333,82 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         label(" cancel"),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[5]);
+}
+
+/// Fill-in flow: one slot at a time with a `current/total` progress
+/// counter, the slot label, the field editor, and footer hints.
+pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, theme: &Theme) {
+    let area = centered_rect(70, 50, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let total = state.placeholders.len();
+    let pos = state.current + 1;
+    let title = format!(" Fill \u{2014} {} ({pos}/{total}) ", state.template.name);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // slot label
+            Constraint::Length(1), // spacer
+            Constraint::Min(3),    // field editor
+            Constraint::Length(1), // footer hints
+        ])
+        .split(inner);
+
+    let label = state
+        .current_placeholder()
+        .map(|p| p.label.as_deref().unwrap_or(&p.key).to_string())
+        .unwrap_or_default();
+    let required = state
+        .current_placeholder()
+        .map(|p| p.required)
+        .unwrap_or(false);
+    let mut label_spans = vec![Span::styled(
+        label,
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )];
+    if required {
+        label_spans.push(Span::styled(
+            " *",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(label_spans)), chunks[0]);
+
+    let placeholder_hint = if state.current_is_multiline() {
+        "Type a value. Enter inserts a newline; Tab moves on."
+    } else {
+        "Type a value. Enter or Tab moves on."
+    };
+    let body_lines = editor_lines(&state.input, theme, placeholder_hint);
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[2],
+    );
+
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let last = state.current + 1 >= total;
+    let footer = Line::from(vec![
+        hint("Tab"),
+        label(if last { " inject  " } else { " next  " }),
+        hint("Shift+Tab"),
+        label(" prev  "),
+        hint("Ctrl+S"),
+        label(" inject  "),
+        hint("Esc"),
+        label(" cancel"),
+    ]);
+    frame.render_widget(Paragraph::new(footer), chunks[3]);
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

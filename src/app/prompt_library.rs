@@ -5,7 +5,10 @@ use chrono::Utc;
 
 use super::*;
 use crate::editor::TextEditor;
-use crate::prompt_library::{PromptSource, PromptTemplate, render_template};
+use crate::prompt_library::{
+    PlaceholderKind, PromptPlaceholder, PromptSource, PromptTemplate, infer_placeholder_keys,
+    render_template,
+};
 
 /// Where `export_selected_template` writes a user template.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,9 +158,9 @@ impl App {
 
     // ── Injection ────────────────────────────────────────────────
 
-    /// Render the selected template and deliver it to the originating
-    /// session. Phase 1 has no fill-in flow, so any `{{slots}}` collapse
-    /// to empty; plain templates inject verbatim.
+    /// Inject the selected template. Templates with no `{{slots}}` render
+    /// and deliver verbatim; templates with slots enter the fill-in flow
+    /// to collect a value for each slot first.
     pub fn inject_selected_template(&mut self) -> Result<()> {
         let (template, from_view) = match &self.mode {
             AppMode::PromptLibrary(state) => match state.selected_entry() {
@@ -170,8 +173,112 @@ impl App {
             _ => return Ok(()),
         };
 
-        let rendered = render_template(&template.body, &[]);
+        let placeholders = resolve_placeholders(&template);
+        if placeholders.is_empty() {
+            let rendered = render_template(&template.body, &[]);
+            return self.deliver_prompt(rendered, from_view);
+        }
+
+        self.start_placeholder_fill(template, placeholders, from_view);
+        Ok(())
+    }
+
+    /// Enter the fill-in flow on the first slot, seeding each field with its
+    /// default value.
+    fn start_placeholder_fill(
+        &mut self,
+        template: PromptTemplate,
+        placeholders: Vec<PromptPlaceholder>,
+        from_view: Option<ViewState>,
+    ) {
+        let values: Vec<String> = placeholders.iter().map(placeholder_default).collect();
+        let input = TextEditor::new(values.first().cloned().unwrap_or_default());
+        self.mode = AppMode::PlaceholderFill(PlaceholderFillState {
+            template,
+            placeholders,
+            values,
+            current: 0,
+            input,
+            from_view,
+        });
+        self.message = None;
+    }
+
+    /// Save the current field, then advance to the next slot — or submit
+    /// when already on the last slot.
+    pub fn placeholder_fill_next(&mut self) -> Result<()> {
+        let at_last = match &mut self.mode {
+            AppMode::PlaceholderFill(state) => {
+                state.values[state.current] = state.input.text().to_string();
+                state.current + 1 >= state.placeholders.len()
+            }
+            _ => return Ok(()),
+        };
+        if at_last {
+            return self.submit_placeholder_fill();
+        }
+        if let AppMode::PlaceholderFill(state) = &mut self.mode {
+            state.current += 1;
+            state.input = TextEditor::new(state.values[state.current].clone());
+        }
+        Ok(())
+    }
+
+    /// Save the current field, then step back to the previous slot.
+    pub fn placeholder_fill_prev(&mut self) {
+        if let AppMode::PlaceholderFill(state) = &mut self.mode {
+            state.values[state.current] = state.input.text().to_string();
+            if state.current > 0 {
+                state.current -= 1;
+                state.input = TextEditor::new(state.values[state.current].clone());
+            }
+        }
+    }
+
+    /// Substitute every slot value into the body and deliver the result.
+    /// Empty `required` slots block delivery: the cursor jumps to the first
+    /// such slot with a message.
+    pub fn submit_placeholder_fill(&mut self) -> Result<()> {
+        let (rendered, from_view) = match &mut self.mode {
+            AppMode::PlaceholderFill(state) => {
+                state.values[state.current] = state.input.text().to_string();
+
+                let missing = state
+                    .placeholders
+                    .iter()
+                    .zip(state.values.iter())
+                    .position(|(p, v)| p.required && v.trim().is_empty());
+                if let Some(missing) = missing {
+                    state.current = missing;
+                    state.input = TextEditor::new(state.values[missing].clone());
+                    let label = placeholder_label(&state.placeholders[missing]).to_string();
+                    self.message = Some(format!("\"{label}\" is required"));
+                    return Ok(());
+                }
+
+                let pairs: Vec<(String, String)> = state
+                    .placeholders
+                    .iter()
+                    .zip(state.values.iter())
+                    .map(|(p, v)| (p.key.clone(), v.clone()))
+                    .collect();
+                (render_template(&state.template.body, &pairs), state.from_view.clone())
+            }
+            _ => return Ok(()),
+        };
         self.deliver_prompt(rendered, from_view)
+    }
+
+    /// Abandon the fill-in flow and return to the picker it was launched from.
+    pub fn cancel_placeholder_fill(&mut self) {
+        let from_view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PlaceholderFill(state) => state.from_view,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.open_prompt_library(from_view);
     }
 
     /// Shared delivery step. Seeds the compose box when compose
@@ -641,6 +748,45 @@ fn merge_prompt_library_entries(
     entries
 }
 
+/// Build the ordered list of slots to fill for a template: the distinct
+/// `{{key}}` tokens that appear in the body, in first-seen order. Each key
+/// resolves to its explicit `PromptPlaceholder` definition when the template
+/// declares one (so config-authored label / kind / default / required apply),
+/// otherwise a synthesized `Text` slot. Explicit placeholders whose key never
+/// appears in the body are skipped — filling them would substitute nothing.
+fn resolve_placeholders(template: &PromptTemplate) -> Vec<PromptPlaceholder> {
+    infer_placeholder_keys(&template.body)
+        .into_iter()
+        .map(|key| match template.placeholders.iter().find(|p| p.key == key) {
+            Some(explicit) => explicit.clone(),
+            None => PromptPlaceholder {
+                key,
+                label: None,
+                kind: PlaceholderKind::Text { default: None },
+                required: false,
+            },
+        })
+        .collect()
+}
+
+/// The value a slot's field is seeded with. `Text` / `MultiLine` use their
+/// configured default (empty when none); `Select` (phase 3) degrades to its
+/// first option so a hand-authored config template still injects.
+fn placeholder_default(p: &PromptPlaceholder) -> String {
+    match &p.kind {
+        PlaceholderKind::Text { default } | PlaceholderKind::MultiLine { default } => {
+            default.clone().unwrap_or_default()
+        }
+        PlaceholderKind::Select { options } => options.first().cloned().unwrap_or_default(),
+    }
+}
+
+/// The prompt shown for a slot in the fill-in flow: its explicit `label`,
+/// falling back to the raw `key`.
+fn placeholder_label(p: &PromptPlaceholder) -> &str {
+    p.label.as_deref().unwrap_or(&p.key)
+}
+
 /// Insert or replace a template in a config list, matching by name.
 fn upsert_template(list: &mut Vec<PromptTemplate>, template: PromptTemplate) {
     if let Some(existing) = list.iter_mut().find(|t| t.name == template.name) {
@@ -711,6 +857,79 @@ fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::extension::ExtensionConfig;
+
+    fn text_placeholder(key: &str, default: Option<&str>, required: bool) -> PromptPlaceholder {
+        PromptPlaceholder {
+            key: key.to_string(),
+            label: None,
+            kind: PlaceholderKind::Text {
+                default: default.map(ToString::to_string),
+            },
+            required,
+        }
+    }
+
+    #[test]
+    fn resolve_infers_text_slots_in_body_order() {
+        let template = PromptTemplate::new(
+            "t".to_string(),
+            "Fix {{area}} in {{file}}, twice {{area}}".to_string(),
+        );
+        let slots = resolve_placeholders(&template);
+        let keys: Vec<&str> = slots.iter().map(|p| p.key.as_str()).collect();
+        // Distinct keys, first-seen order, no duplicate for the repeated slot.
+        assert_eq!(keys, vec!["area", "file"]);
+        // Inferred slots are plain Text with no default and not required.
+        assert!(matches!(slots[0].kind, PlaceholderKind::Text { default: None }));
+        assert!(!slots[0].required);
+    }
+
+    #[test]
+    fn resolve_uses_explicit_definition_when_present() {
+        let mut template =
+            PromptTemplate::new("t".to_string(), "Hello {{name}}".to_string());
+        template.placeholders = vec![PromptPlaceholder {
+            key: "name".to_string(),
+            label: Some("Your name".to_string()),
+            kind: PlaceholderKind::Text {
+                default: Some("Ada".to_string()),
+            },
+            required: true,
+        }];
+        let slots = resolve_placeholders(&template);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].label.as_deref(), Some("Your name"));
+        assert!(slots[0].required);
+        assert_eq!(placeholder_default(&slots[0]), "Ada");
+    }
+
+    #[test]
+    fn resolve_ignores_explicit_placeholder_absent_from_body() {
+        let mut template = PromptTemplate::new("t".to_string(), "no slots here".to_string());
+        template.placeholders = vec![text_placeholder("unused", Some("x"), false)];
+        assert!(resolve_placeholders(&template).is_empty());
+    }
+
+    #[test]
+    fn fill_renders_collected_values_into_body() {
+        // End-to-end of the substitution step: resolved slots + values →
+        // render_template produces the final prompt.
+        let template = PromptTemplate::new(
+            "t".to_string(),
+            "Fix {{area}} in {{file}}".to_string(),
+        );
+        let slots = resolve_placeholders(&template);
+        let values = ["auth", "login.rs"];
+        let pairs: Vec<(String, String)> = slots
+            .iter()
+            .zip(values.iter())
+            .map(|(p, v)| (p.key.clone(), v.to_string()))
+            .collect();
+        assert_eq!(
+            render_template(&template.body, &pairs),
+            "Fix auth in login.rs"
+        );
+    }
 
     #[test]
     fn project_export_writes_and_roundtrips() {
@@ -917,5 +1136,104 @@ mod tests {
 
         // The config.json must be at the project's main repo root, not CWD.
         assert!(repo.path().join(".amf").join("config.json").exists());
+    }
+
+    #[test]
+    fn inject_plain_template_skips_fill_flow() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.store
+            .prompt_templates
+            .push(PromptTemplate::new("plain".to_string(), "no slots".to_string()));
+        app.open_prompt_library(None);
+
+        // No view context → delivery copies to clipboard and returns to Normal,
+        // never entering the fill flow.
+        app.inject_selected_template().unwrap();
+        assert!(!matches!(app.mode, AppMode::PlaceholderFill(_)));
+    }
+
+    #[test]
+    fn inject_slotted_template_enters_fill_then_renders_on_submit() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.store.prompt_templates.push(PromptTemplate::new(
+            "slotted".to_string(),
+            "Fix {{area}} in {{file}}".to_string(),
+        ));
+        app.open_prompt_library(None);
+
+        // Slots present → enter the fill flow on the first slot.
+        app.inject_selected_template().unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        assert_eq!(state.placeholders.len(), 2);
+        assert_eq!(state.current, 0);
+
+        // Fill the first slot, advance, fill the second, then submit. With no
+        // view context, submit delivers to the clipboard and leaves the fill
+        // flow.
+        if let AppMode::PlaceholderFill(state) = &mut app.mode {
+            state.input = crate::editor::TextEditor::new("auth".to_string());
+        }
+        app.placeholder_fill_next().unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected to advance to second slot");
+        };
+        assert_eq!(state.current, 1);
+        if let AppMode::PlaceholderFill(state) = &mut app.mode {
+            state.input = crate::editor::TextEditor::new("login.rs".to_string());
+        }
+        // next() on the last slot submits.
+        app.placeholder_fill_next().unwrap();
+        assert!(!matches!(app.mode, AppMode::PlaceholderFill(_)));
+    }
+
+    #[test]
+    fn fill_blocks_submit_on_empty_required_slot() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut template =
+            PromptTemplate::new("req".to_string(), "Hello {{name}}".to_string());
+        template.placeholders = vec![PromptPlaceholder {
+            key: "name".to_string(),
+            label: Some("Name".to_string()),
+            kind: PlaceholderKind::Text { default: None },
+            required: true,
+        }];
+        app.store.prompt_templates.push(template);
+        app.open_prompt_library(None);
+
+        app.inject_selected_template().unwrap();
+        // The field is empty; submitting must stay in the fill flow with a
+        // required-field message rather than delivering.
+        app.submit_placeholder_fill().unwrap();
+        assert!(matches!(app.mode, AppMode::PlaceholderFill(_)));
+        assert!(app.message.as_deref().unwrap_or("").contains("required"));
     }
 }

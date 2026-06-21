@@ -539,6 +539,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::PlaceholderFill(_) => Line::from(vec![
+            Span::styled(" Tab", key_style()),
+            Span::raw(" next  "),
+            Span::styled("Shift+Tab", key_style()),
+            Span::raw(" prev  "),
+            Span::styled("Ctrl+S", key_style()),
+            Span::raw(" inject  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::DiffViewer(_) => {
             let mut spans = vec![Span::styled(" Tab", key_style()), Span::raw(" focus  ")];
             if app.diff_viewer_selected_file_is_new() {

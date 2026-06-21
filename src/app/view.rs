@@ -350,6 +350,41 @@ impl App {
         Ok(())
     }
 
+    /// Open the prompt editor seeded with the selected past prompt, to save
+    /// it as a new `User` template. Returns to the session view on save or
+    /// cancel.
+    pub fn save_latest_prompt_as_template(&mut self) {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::LatestPrompt(state) => state,
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+
+        let text = state
+            .prompts
+            .get(state.selected)
+            .map(|e| e.text.trim().to_string())
+            .filter(|p| !p.is_empty());
+
+        let Some(text) = text else {
+            self.mode = AppMode::LatestPrompt(state);
+            self.message = Some("No prompt to save".into());
+            return;
+        };
+
+        self.mode = AppMode::PromptEditor(crate::app::PromptEditorState {
+            editing_id: None,
+            editing_source: crate::prompt_library::PromptSource::User,
+            original_template: None,
+            name: String::new(),
+            name_field_active: true,
+            editor: crate::editor::TextEditor::with_vim(text),
+            return_to: Box::new(AppMode::Viewing(state.view)),
+        });
+    }
+
     pub fn copy_selected_prompt_to_clipboard(&mut self) -> Result<()> {
         let text = match &self.mode {
             AppMode::LatestPrompt(state) => state

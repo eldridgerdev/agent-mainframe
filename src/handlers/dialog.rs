@@ -205,6 +205,9 @@ pub fn handle_latest_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('y') => {
             app.copy_selected_prompt_to_clipboard()?;
         }
+        KeyCode::Char('s') => {
+            app.save_latest_prompt_as_template();
+        }
         _ => {}
     }
     Ok(())

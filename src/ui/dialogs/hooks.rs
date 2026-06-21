@@ -738,6 +738,8 @@ pub fn draw_latest_prompt_dialog(
         ),
         Span::styled("y", Style::default().fg(theme.warning.to_color())),
         Span::styled(" copy  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled("s", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" save  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::styled(" nav  ", Style::default().fg(theme.text_muted.to_color())),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),

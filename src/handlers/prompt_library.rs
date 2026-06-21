@@ -203,3 +203,29 @@ pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
     Ok(())
 }
+
+/// Fill-in flow: collect a value for each `{{slot}}`, one field at a time.
+pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Ctrl+S submits from anywhere (collecting the current field first).
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
+        app.submit_placeholder_fill()?;
+        return Ok(());
+    }
+
+    let multiline = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.current_is_multiline());
+
+    match key.code {
+        KeyCode::Esc => app.cancel_placeholder_fill(),
+        KeyCode::BackTab => app.placeholder_fill_prev(),
+        KeyCode::Tab => app.placeholder_fill_next()?,
+        // On a single-line field Enter advances; on a multi-line field it
+        // inserts a newline and is forwarded to the editor below.
+        KeyCode::Enter if !multiline => app.placeholder_fill_next()?,
+        _ => {
+            if let AppMode::PlaceholderFill(state) = &mut app.mode {
+                state.input.handle_key(key);
+            }
+        }
+    }
+    Ok(())
+}

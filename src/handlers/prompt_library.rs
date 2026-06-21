@@ -2,6 +2,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, AppMode, PromptExportTarget};
+use crate::editor::VimMode;
 
 /// Prompt-library picker: navigate, filter, inject, and manage templates.
 pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
@@ -46,16 +47,33 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
         match key {
             KeyCode::Char('g') => app.export_selected_template(PromptExportTarget::Global)?,
             KeyCode::Char('p') => app.export_selected_template(PromptExportTarget::Project)?,
+            KeyCode::Char('w') => app.export_selected_template(PromptExportTarget::Worktree)?,
             KeyCode::Esc => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
                 }
                 app.message = Some("Export cancelled".into());
             }
+            // Navigation dismisses the export prompt and moves the cursor.
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let AppMode::PromptLibrary(state) = &mut app.mode {
+                    state.pending_export = false;
+                }
+                app.message = None;
+                app.prompt_library_select_next();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let AppMode::PromptLibrary(state) = &mut app.mode {
+                    state.pending_export = false;
+                }
+                app.message = None;
+                app.prompt_library_select_prev();
+            }
             _ => {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = false;
                 }
+                app.message = None;
             }
         }
         return Ok(());
@@ -106,15 +124,18 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
                     state.confirm_delete = false;
                 }
                 app.message =
-                    Some("Export to: (g) global  (p) project  ·  Esc cancel".into());
+                    Some("Export to: (g) global  (p) project  (w) worktree  ·  Esc cancel".into());
             }
         }
         KeyCode::Char('d') => {
-            let has_selection =
-                matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
+            let selected = matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
+            let deletable = matches!(&app.mode, AppMode::PromptLibrary(state)
+                if state.selected_entry().is_some_and(|e| e.source.is_deletable()));
             if confirm_delete {
                 app.delete_selected_template()?;
-            } else if has_selection {
+            } else if selected && !deletable {
+                app.push_toast_warning("Config templates can't be deleted here — edit or duplicate (y) instead");
+            } else if selected {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.confirm_delete = true;
                 }
@@ -168,10 +189,11 @@ pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    // Body editor: Esc (outside vim) cancels; everything else, including
-    // Enter (newline), goes to the TextEditor.
+    // Body editor: Esc cancels unless vim is in Insert mode (where it just
+    // transitions to Normal). A second Esc from Normal mode closes the dialog.
     if key.code == KeyCode::Esc
-        && matches!(&app.mode, AppMode::PromptEditor(state) if state.editor.vim_mode().is_none())
+        && !matches!(&app.mode, AppMode::PromptEditor(state)
+            if matches!(state.editor.vim_mode(), Some(VimMode::Insert)))
     {
         app.cancel_prompt_editor();
         return Ok(());

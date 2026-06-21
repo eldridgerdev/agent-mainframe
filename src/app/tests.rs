@@ -6660,8 +6660,9 @@ fn prompt_library_surfaces_global_config_templates_with_badge() {
                 .find(|e| e.template.name == "shared")
                 .unwrap();
             assert_eq!(global.source, crate::prompt_library::PromptSource::Global);
-            // Read-only entries can't be edited/deleted in place.
-            assert!(!global.source.is_editable());
+            // Config entries can be edited but not deleted in place.
+            assert!(global.source.is_editable());
+            assert!(!global.source.is_deletable());
         }
         _ => panic!("expected PromptLibrary mode"),
     }

@@ -83,7 +83,7 @@ pub fn draw_prompt_library(
         .style(Style::default().fg(theme.text_muted.to_color()))
         .wrap(Wrap { trim: true });
         frame.render_widget(empty, chunks[1]);
-        draw_footer(frame, chunks[2], theme);
+        draw_footer(frame, chunks[2], theme, true, true);
         draw_message(frame, chunks[3], message, theme);
         return;
     }
@@ -165,7 +165,9 @@ pub fn draw_prompt_library(
         );
     }
 
-    draw_footer(frame, chunks[2], theme);
+    let can_edit = state.selected_entry().is_some_and(|e| e.source.is_editable());
+    let can_delete = state.selected_entry().is_some_and(|e| e.source.is_deletable());
+    draw_footer(frame, chunks[2], theme, can_edit, can_delete);
     draw_message(frame, chunks[3], message, theme);
 }
 
@@ -178,31 +180,42 @@ fn badge_color(source: crate::prompt_library::PromptSource, theme: &Theme) -> ra
         PromptSource::User => theme.text_muted.to_color(),
         PromptSource::Project => theme.success.to_color(),
         PromptSource::Global => theme.info.to_color(),
+        PromptSource::Worktree => theme.warning.to_color(),
     }
 }
 
-fn draw_footer(frame: &mut Frame, area: ratatui::layout::Rect, theme: &Theme) {
+fn draw_footer(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    theme: &Theme,
+    can_edit: bool,
+    can_delete: bool,
+) {
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
     let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
-    let footer = Line::from(vec![
+    let mut spans = vec![
         hint("Enter"),
         label(" inject  "),
         hint("n"),
         label(" new  "),
-        hint("e"),
-        label(" edit  "),
-        hint("d"),
-        label(" del  "),
+    ];
+    if can_edit {
+        spans.extend([hint("e"), label(" edit  ")]);
+    }
+    if can_delete {
+        spans.extend([hint("d"), label(" del  ")]);
+    }
+    spans.extend([
         hint("y"),
         label(" dup  "),
         hint("x"),
-        label(" export  "),
+        label(" export(g/p/w)  "),
         hint("/"),
         label(" search  "),
         hint("Esc"),
         label(" close"),
     ]);
-    frame.render_widget(Paragraph::new(footer), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_message(
@@ -228,9 +241,15 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let title = if state.editing_id.is_some() {
-        " Edit Prompt "
+        use crate::prompt_library::PromptSource;
+        match state.editing_source {
+            PromptSource::User => " Edit Prompt ".to_string(),
+            PromptSource::Project => " Edit Prompt [Project config] ".to_string(),
+            PromptSource::Global => " Edit Prompt [Global config] ".to_string(),
+            PromptSource::Worktree => " Edit Prompt [Worktree config] ".to_string(),
+        }
     } else {
-        " New Prompt "
+        " New Prompt ".to_string()
     };
     let block = Block::default()
         .title(title)
@@ -309,6 +328,8 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         hint("Ctrl+S"),
         label(" save  "),
         hint("Esc"),
+        label(" cancel (×2 in body)  "),
+        hint("Ctrl+Q"),
         label(" cancel"),
     ]);
     frame.render_widget(Paragraph::new(footer), chunks[5]);

@@ -1,34 +1,46 @@
 {
   "custom_sessions": [
     {
-      "name": "Status Ticker",
-      "description": "Long-running test session — updates status every 2s via file and IPC",
+      "autolaunch": null,
       "command": "bash .amf/test-ticker.sh",
-      "window_name": "ticker",
+      "description": "Long-running test session — updates status every 2s via file and IPC",
       "icon": "~",
       "icon_nerd": "󰁫",
+      "name": "Status Ticker",
       "on_stop": null,
-      "autolaunch": null,
-      "pre_check": null
+      "pre_check": null,
+      "window_name": "ticker"
     },
     {
-      "name": "Release",
-      "description": "Run release script to bump version and tag",
-      "command": "CURRENT=$(sed -n 's/^version = \"\\([^\"]*\\)\".*/\\1/p' Cargo.toml | head -1) && echo \"Current version: $CURRENT\" && read -p \"Release version (major|minor|patch|<ver>): \" version && bash scripts/release.sh \"$version\"",
-      "window_name": "release",
-      "working_dir": null,
-      "icon": "v",
-      "icon_nerd": "\u26a1",
-      "on_stop": null,
       "autolaunch": null,
-      "pre_check": null
+      "command": "CURRENT=$(sed -n 's/^version = \"\\([^\"]*\\)\".*/\\1/p' Cargo.toml | head -1) && echo \"Current version: $CURRENT\" && read -p \"Release version (major|minor|patch|<ver>): \" version && bash scripts/release.sh \"$version\"",
+      "description": "Run release script to bump version and tag",
+      "icon": "v",
+      "icon_nerd": "⚡",
+      "name": "Release",
+      "on_stop": null,
+      "pre_check": null,
+      "window_name": "release",
+      "working_dir": null
     }
   ],
+  "feature_presets": [],
+  "keybindings": {},
   "lifecycle_hooks": {
     "on_start": null,
     "on_stop": null,
     "on_worktree_created": null
   },
-  "keybindings": {},
-  "feature_presets": []
+  "prompt_templates": [
+    {
+      "body": "update the changelog, start a pr, merge the pr",
+      "created_at": "2026-06-20T18:24:02.704863091Z",
+      "description": null,
+      "id": "266e4577-4935-4478-8f90-6369761b87d3",
+      "name": "push",
+      "placeholders": [],
+      "tags": [],
+      "updated_at": "2026-06-20T18:24:02.704863091Z"
+    }
+  ]
 }

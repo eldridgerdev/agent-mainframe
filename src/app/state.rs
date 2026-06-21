@@ -656,6 +656,11 @@ impl PromptLibraryState {
 /// saved straight from the compose box.
 pub struct PromptEditorState {
     pub editing_id: Option<String>,
+    /// Where the template lives; determines which store/file is written on save.
+    pub editing_source: crate::prompt_library::PromptSource,
+    /// Original template for config-file sources (Project/Global/Worktree),
+    /// preserving id/description/tags/placeholders across edits.
+    pub original_template: Option<crate::prompt_library::PromptTemplate>,
     pub name: String,
     pub name_field_active: bool,
     pub editor: TextEditor,

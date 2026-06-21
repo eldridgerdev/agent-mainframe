@@ -12,8 +12,12 @@ use crate::prompt_library::{PromptSource, PromptTemplate, render_template};
 pub enum PromptExportTarget {
     /// `~/.config/amf/config.json` (the `extension` block).
     Global,
-    /// `{repo}/.amf/config.json`.
+    /// `{project.repo}/.amf/config.json` — the main repo root.
     Project,
+    /// `{feature.workdir}/.amf/config.json` — the active worktree.
+    /// Lets the user commit the template on a feature branch and
+    /// promote it to the main repo via git later.
+    Worktree,
 }
 
 impl App {
@@ -24,23 +28,66 @@ impl App {
     /// SQLite store alongside read-only `Project` (`{repo}/.amf/config.json`)
     /// and `Global` (`~/.config/amf/config.json`) declarative templates.
     pub fn open_prompt_library(&mut self, from_view: Option<ViewState>) {
+        self.rebuild_prompt_library(from_view, None);
+    }
+
+    /// Like `open_prompt_library` but positions the cursor on the entry
+    /// matching `focus` (name + source) after the rebuild. Used by mutation
+    /// paths so the newly added/modified entry is immediately visible.
+    /// Falls back to position 0 when the focused entry isn't in the list
+    /// (e.g. hidden by a higher-priority Worktree/Project entry with the
+    /// same name).
+    fn rebuild_prompt_library(
+        &mut self,
+        from_view: Option<ViewState>,
+        focus: Option<(&str, PromptSource)>,
+    ) {
         let project = self
             .resolve_library_repo(from_view.as_ref())
             .map(|repo| load_project_prompt_templates(&repo))
             .unwrap_or_default();
+
+        // Load worktree templates separately so they get their own badge.
+        let worktree_templates = self
+            .resolve_worktree_dir(from_view.as_ref())
+            .map(|dir| load_project_prompt_templates(&dir))
+            .unwrap_or_default();
+
+        // Always read global templates fresh from disk so that external edits
+        // and `try_save_config` writes are immediately reflected without an
+        // app restart. In tests (store_path empty) there is no real global
+        // config file, so fall back to the in-memory value that the test seeds.
+        let global_templates = if !self.store_path.as_os_str().is_empty() {
+            let fresh = crate::extension::load_global_extension_config().prompt_templates;
+            self.config.extension.prompt_templates = fresh.clone();
+            fresh
+        } else {
+            self.config.extension.prompt_templates.clone()
+        };
+
         let templates = merge_prompt_library_entries(
             &self.store.prompt_templates,
-            &self.config.extension.prompt_templates,
+            &global_templates,
             &project,
+            &worktree_templates,
         );
 
-        let filtered = (0..templates.len()).collect();
+        let filtered: Vec<usize> = (0..templates.len()).collect();
+
+        let selected = focus
+            .and_then(|(name, source)| {
+                filtered
+                    .iter()
+                    .position(|&idx| templates[idx].template.name == name && templates[idx].source == source)
+            })
+            .unwrap_or(0);
+
         self.mode = AppMode::PromptLibrary(PromptLibraryState {
             templates,
             filtered,
             query: String::new(),
             search_active: false,
-            selected: 0,
+            selected,
             confirm_delete: false,
             pending_export: false,
             from_view,
@@ -161,6 +208,8 @@ impl App {
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: None,
+            editing_source: PromptSource::User,
+            original_template: None,
             name: String::new(),
             name_field_active: true,
             editor: TextEditor::with_vim(String::new()),
@@ -178,14 +227,17 @@ impl App {
             self.message = Some("No template to edit".into());
             return;
         };
-        if !entry.source.is_editable() {
-            self.push_toast_warning("Read-only template — press y to duplicate first");
-            return;
-        }
 
+        let original_template = if entry.source.is_deletable() {
+            None
+        } else {
+            Some(entry.template.clone())
+        };
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: Some(entry.template.id.clone()),
+            editing_source: entry.source,
+            original_template,
             name: entry.template.name.clone(),
             name_field_active: false,
             editor: TextEditor::with_vim(entry.template.body.clone()),
@@ -212,6 +264,8 @@ impl App {
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: None,
+            editing_source: PromptSource::User,
+            original_template: None,
             name: String::new(),
             name_field_active: true,
             editor: TextEditor::with_vim(text),
@@ -243,28 +297,80 @@ impl App {
             return Ok(());
         }
 
-        match &state.editing_id {
-            Some(id) => {
-                if let Some(template) = self
-                    .store
-                    .prompt_templates
-                    .iter_mut()
-                    .find(|template| &template.id == id)
-                {
-                    template.name = name;
-                    template.body = body;
-                    template.updated_at = Utc::now();
+        // Extract from_view before consuming state (needed by config resolvers).
+        let from_view: Option<ViewState> = match state.return_to.as_ref() {
+            AppMode::PromptLibrary(picker) => picker.from_view.clone(),
+            _ => None,
+        };
+        // Capture the final name before the match arms consume it (User arms move name).
+        let focus_name = name.clone();
+
+        match state.editing_source {
+            PromptSource::User => {
+                match &state.editing_id {
+                    Some(id) => {
+                        if let Some(template) = self
+                            .store
+                            .prompt_templates
+                            .iter_mut()
+                            .find(|t| &t.id == id)
+                        {
+                            template.name = name;
+                            template.body = body;
+                            template.updated_at = Utc::now();
+                        }
+                    }
+                    None => {
+                        self.store
+                            .prompt_templates
+                            .push(PromptTemplate::new(name, body));
+                    }
+                }
+                self.save()?;
+            }
+            PromptSource::Global => {
+                let orig = state.original_template.as_ref().expect("config edit always has original");
+                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                if orig.name != name {
+                    self.config.extension.prompt_templates.retain(|t| t.name != orig.name);
+                }
+                upsert_template(&mut self.config.extension.prompt_templates, updated);
+                if let Err(e) = self.try_save_config() {
+                    self.push_toast_warning(format!("Failed to save global config: {e}"));
+                    self.return_from_prompt_editor(*state.return_to);
+                    return Ok(());
                 }
             }
-            None => {
-                self.store
-                    .prompt_templates
-                    .push(PromptTemplate::new(name, body));
+            PromptSource::Project => {
+                let orig = state.original_template.as_ref().expect("config edit always has original");
+                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
+                    self.push_toast_warning("No project repo — can't save");
+                    self.return_from_prompt_editor(*state.return_to);
+                    return Ok(());
+                };
+                if orig.name != name {
+                    remove_template_from_config(&repo, &orig.name)?;
+                }
+                export_template_to_project_config(&repo, &updated)?;
+            }
+            PromptSource::Worktree => {
+                let orig = state.original_template.as_ref().expect("config edit always has original");
+                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
+                    self.push_toast_warning("No worktree — can't save");
+                    self.return_from_prompt_editor(*state.return_to);
+                    return Ok(());
+                };
+                if orig.name != name {
+                    remove_template_from_config(&workdir, &orig.name)?;
+                }
+                export_template_to_project_config(&workdir, &updated)?;
             }
         }
-        self.save()?;
+        let focus = (focus_name, state.editing_source);
         self.push_toast_success("Saved prompt");
-        self.return_from_prompt_editor(*state.return_to);
+        self.return_from_prompt_editor_focused(*state.return_to, Some(focus));
         Ok(())
     }
 
@@ -279,8 +385,22 @@ impl App {
     /// Land back on the editor's origin. When returning to the picker,
     /// rebuild it so a new/edited/deleted template is reflected.
     fn return_from_prompt_editor(&mut self, return_to: AppMode) {
+        self.return_from_prompt_editor_focused(return_to, None);
+    }
+
+    /// Like `return_from_prompt_editor` but scrolls the rebuilt picker to
+    /// the entry with the given (name, source) so the user immediately sees
+    /// the result of a create/edit.
+    fn return_from_prompt_editor_focused(
+        &mut self,
+        return_to: AppMode,
+        focus: Option<(String, PromptSource)>,
+    ) {
         match return_to {
-            AppMode::PromptLibrary(picker) => self.open_prompt_library(picker.from_view),
+            AppMode::PromptLibrary(picker) => {
+                let focus_ref = focus.as_ref().map(|(n, s)| (n.as_str(), *s));
+                self.rebuild_prompt_library(picker.from_view, focus_ref);
+            }
             other => self.mode = other,
         }
     }
@@ -295,8 +415,8 @@ impl App {
         let Some(entry) = entry else {
             return Ok(());
         };
-        if !entry.source.is_editable() {
-            self.push_toast_warning("Read-only template can't be deleted");
+        if !entry.source.is_deletable() {
+            self.push_toast_warning("Config template can't be deleted here — remove it from the config file");
             return Ok(());
         }
 
@@ -327,9 +447,10 @@ impl App {
         template.name = format!("{} (copy)", template.name);
         template.created_at = now;
         template.updated_at = now;
+        let copy_name = template.name.clone();
         self.store.prompt_templates.push(template);
         self.save()?;
-        self.open_prompt_library(from_view);
+        self.rebuild_prompt_library(from_view, Some((&copy_name, PromptSource::User)));
         self.push_toast_success("Duplicated to your library");
         Ok(())
     }
@@ -355,14 +476,25 @@ impl App {
             return Ok(());
         };
 
+        let mut success: Option<(String, PromptSource)> = None;
         match target {
             PromptExportTarget::Global => {
                 upsert_template(&mut self.config.extension.prompt_templates, template.clone());
-                self.save_config();
-                self.push_toast_success(format!(
-                    "Exported \"{}\" to global config",
-                    template.name
-                ));
+                match self.try_save_config() {
+                    Ok(()) => {
+                        self.log_info("prompt-library", format!("exported \"{}\" to global config", template.name));
+                        success = Some((
+                            format!("Exported \"{}\" to global config", template.name),
+                            PromptSource::Global,
+                        ));
+                    }
+                    Err(e) => {
+                        // Roll back the in-memory upsert so the list stays consistent.
+                        self.config.extension.prompt_templates.retain(|t| t.name != template.name);
+                        self.push_toast_warning(format!("Export failed: {e}"));
+                        return Ok(());
+                    }
+                }
             }
             PromptExportTarget::Project => {
                 let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
@@ -372,24 +504,51 @@ impl App {
                     return Ok(());
                 };
                 match export_template_to_project_config(&repo, &template) {
-                    Ok(path) => self.push_toast_success(format!(
-                        "Exported \"{}\" to {}",
-                        template.name,
-                        crate::app::util::shorten_path(&path)
-                    )),
+                    Ok(path) => {
+                        let short = crate::app::util::shorten_path(&path);
+                        self.log_info("prompt-library", format!("exported \"{}\" to {short}", template.name));
+                        success = Some((
+                            format!("Exported \"{}\" to {short}", template.name),
+                            PromptSource::Project,
+                        ));
+                    }
                     Err(e) => self.push_toast_warning(format!("Export failed: {e}")),
                 }
             }
+            PromptExportTarget::Worktree => {
+                let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
+                    self.push_toast_warning(
+                        "No worktree to export to — open a feature session first",
+                    );
+                    return Ok(());
+                };
+                match export_template_to_project_config(&workdir, &template) {
+                    Ok(path) => {
+                        let short = crate::app::util::shorten_path(&path);
+                        self.log_info("prompt-library", format!("exported \"{}\" to {short}", template.name));
+                        success = Some((
+                            format!("Exported \"{}\" to {short}", template.name),
+                            PromptSource::Worktree,
+                        ));
+                    }
+                    Err(e) => self.push_toast_warning(format!("Export failed: {e}")),
+                }
+            }
+        }
+        if let Some((msg, source)) = success {
+            self.push_toast_success(msg.clone());
+            self.rebuild_prompt_library(from_view, Some((&template.name, source)));
+            self.message = Some(msg);
         }
         Ok(())
     }
 
     /// Resolve the repo whose `.amf/config.json` project templates should
-    /// appear in the picker: the viewed feature's repo when opened from a
-    /// session, else the currently selected project's repo. Unlike
-    /// `resolve_export_repo`, this never falls back to the working
-    /// directory, so the picker only shows project templates when there is
-    /// real project context (and unit tests stay deterministic).
+    /// appear in the picker: the viewed feature's project repo when opened
+    /// from a session, else the currently selected project's repo. Never
+    /// falls back to the working directory, so the picker only shows project
+    /// templates when there is real project context (and unit tests stay
+    /// deterministic). Used by both display and export so they always agree.
     fn resolve_library_repo(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
         if let Some(view) = from_view
             && let Some(project) = self
@@ -408,21 +567,29 @@ impl App {
         self.store.projects.get(pi).map(|project| project.repo.clone())
     }
 
-    /// Resolve the repo to export a project template into: the viewed
-    /// feature's repo when opened from a session, else the repo
-    /// containing AMF's working directory.
+    /// Resolve the repo to export a project template into. Delegates to
+    /// `resolve_library_repo` so display and export always target the same
+    /// main-repo root, regardless of whether AMF was launched from inside a
+    /// worktree.
     fn resolve_export_repo(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
-        if let Some(view) = from_view
-            && let Some(project) = self
+        self.resolve_library_repo(from_view)
+    }
+
+    /// Resolve the working directory for a worktree export: the active
+    /// feature's `workdir` when opened from a session, else the selected
+    /// feature's `workdir` on the dashboard. Returns `None` when no feature
+    /// context is available.
+    fn resolve_worktree_dir(&self, from_view: Option<&ViewState>) -> Option<PathBuf> {
+        if let Some(view) = from_view {
+            return self
                 .store
                 .projects
                 .iter()
-                .find(|project| project.name == view.project_name)
-        {
-            return Some(project.repo.clone());
+                .find(|p| p.name == view.project_name)
+                .and_then(|p| p.features.iter().find(|f| f.name == view.feature_name))
+                .map(|f| f.workdir.clone());
         }
-        let detected = crate::app::util::detect_repo_path();
-        (!detected.is_empty()).then(|| PathBuf::from(detected))
+        self.selected_feature().map(|(_, f)| f.workdir.clone())
     }
 }
 
@@ -441,38 +608,35 @@ fn load_project_prompt_templates(repo: &Path) -> Vec<PromptTemplate> {
         .unwrap_or_default()
 }
 
-/// Merge the three template sources into one source-tagged list for the
-/// picker: editable `User` entries first, then read-only `Project`, then
-/// `Global`. A `Global` entry whose name also exists in `Project` is
-/// dropped, matching the config merge rule that project wins. `User`
-/// entries are never deduped against config — an exported template
-/// legitimately exists as both an editable copy and a declarative one.
+/// Merge the four template sources into one source-tagged list for the
+/// picker: editable `User` entries first, then `Worktree`, then read-only
+/// `Project`, then `Global`.
+///
+/// No cross-source deduplication is applied. Each source shows its entries
+/// independently so the user can see exactly which scopes hold a copy of a
+/// given name and manage them individually. (The AMF extension-config merge
+/// hierarchy — Worktree > Project > Global — applies when *consuming* the
+/// config for feature presets etc., but is wrong here: silently hiding an
+/// exported template because a higher-priority copy exists makes the export
+/// appear to have failed.)
 fn merge_prompt_library_entries(
     user: &[PromptTemplate],
     global: &[PromptTemplate],
     project: &[PromptTemplate],
+    worktree: &[PromptTemplate],
 ) -> Vec<PromptLibraryEntry> {
     let mut entries: Vec<PromptLibraryEntry> = Vec::new();
     for template in user {
-        entries.push(PromptLibraryEntry {
-            template: template.clone(),
-            source: PromptSource::User,
-        });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::User });
+    }
+    for template in worktree {
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Worktree });
     }
     for template in project {
-        entries.push(PromptLibraryEntry {
-            template: template.clone(),
-            source: PromptSource::Project,
-        });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Project });
     }
     for template in global {
-        if project.iter().any(|p| p.name == template.name) {
-            continue;
-        }
-        entries.push(PromptLibraryEntry {
-            template: template.clone(),
-            source: PromptSource::Global,
-        });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Global });
     }
     entries
 }
@@ -524,6 +688,23 @@ fn export_template_to_project_config(repo: &Path, template: &PromptTemplate) -> 
 
     std::fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
     Ok(path)
+}
+
+/// Remove the entry matching `name` from `{repo}/.amf/config.json`. Used
+/// when renaming a config-source template so the old name doesn't linger.
+fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
+    let path = repo.join(".amf").join("config.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let contents = std::fs::read_to_string(&path)?;
+    let mut root: serde_json::Value =
+        serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(arr) = root.get_mut("prompt_templates").and_then(|v| v.as_array_mut()) {
+        arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -581,7 +762,7 @@ mod tests {
         let project = vec![PromptTemplate::new("p".to_string(), "2".to_string())];
         let global = vec![PromptTemplate::new("g".to_string(), "3".to_string())];
 
-        let entries = merge_prompt_library_entries(&user, &global, &project);
+        let entries = merge_prompt_library_entries(&user, &global, &project, &[]);
         let tagged: Vec<(&str, PromptSource)> = entries
             .iter()
             .map(|e| (e.template.name.as_str(), e.source))
@@ -597,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_project_wins_over_global_by_name() {
+    fn merge_shows_all_sources_independently_no_dedup() {
         let user = vec![];
         let project = vec![PromptTemplate::new("dup".to_string(), "proj".to_string())];
         let global = vec![
@@ -605,12 +786,12 @@ mod tests {
             PromptTemplate::new("only-global".to_string(), "g".to_string()),
         ];
 
-        let entries = merge_prompt_library_entries(&user, &global, &project);
-        // "dup" appears once, from the project source.
+        let entries = merge_prompt_library_entries(&user, &global, &project, &[]);
+        // Both Project and Global copies of "dup" are shown — no cross-source dedup.
         let dup: Vec<_> = entries.iter().filter(|e| e.template.name == "dup").collect();
-        assert_eq!(dup.len(), 1);
-        assert_eq!(dup[0].source, PromptSource::Project);
-        assert_eq!(dup[0].template.body, "proj");
+        assert_eq!(dup.len(), 2);
+        assert!(dup.iter().any(|e| e.source == PromptSource::Project && e.template.body == "proj"));
+        assert!(dup.iter().any(|e| e.source == PromptSource::Global && e.template.body == "glob"));
         // The global-only entry still shows.
         assert!(
             entries
@@ -627,7 +808,7 @@ mod tests {
         let global = vec![PromptTemplate::new("shared".to_string(), "g".to_string())];
         let project = vec![];
 
-        let entries = merge_prompt_library_entries(&user, &global, &project);
+        let entries = merge_prompt_library_entries(&user, &global, &project, &[]);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].source, PromptSource::User);
         assert_eq!(entries[1].source, PromptSource::Global);
@@ -657,5 +838,84 @@ mod tests {
 
         upsert_template(&mut list, PromptTemplate::new("b".to_string(), "3".to_string()));
         assert_eq!(list.len(), 2);
+    }
+
+    // ── App-level round-trip: dashboard export → picker shows entry ───
+    //
+    // Regression for the bug where resolve_export_repo fell back to
+    // detect_repo_path() (the CWD git root), which points at the worktree
+    // dir when AMF runs inside one, while resolve_library_repo always uses
+    // project.repo (the main repo root). Exporting from the dashboard (no
+    // from_view) then reopening the picker would find nothing because the
+    // export landed in the wrong directory.
+
+    fn project_store_at(repo: &std::path::Path) -> crate::project::ProjectStore {
+        use crate::project::{AgentKind, Project, ProjectStore};
+        use chrono::Utc;
+        let project = Project {
+            id: "p1".to_string(),
+            name: "my-project".to_string(),
+            repo: repo.to_path_buf(),
+            collapsed: false,
+            features: vec![],
+            created_at: Utc::now(),
+            preferred_agent: AgentKind::Claude,
+            is_git: false,
+        };
+        ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn dashboard_export_then_reopen_shows_project_template() {
+        use crate::app::{App, AppMode, PromptExportTarget};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Seed a user template and open the library from the dashboard
+        // (no view context — this is the case that previously broke).
+        app.store
+            .prompt_templates
+            .push(PromptTemplate::new("My prompt".to_string(), "body".to_string()));
+        app.open_prompt_library(None);
+
+        // Export the template to the project config.
+        app.export_selected_template(PromptExportTarget::Project)
+            .unwrap();
+
+        // Reopen the library (still no view) and assert the Project-source
+        // entry is present — it should have been written to `repo/.amf/config.json`,
+        // not to some worktree subdirectory.
+        app.open_prompt_library(None);
+        let AppMode::PromptLibrary(ref state) = app.mode else {
+            panic!("expected PromptLibrary mode");
+        };
+        let project_entries: Vec<_> = state
+            .templates
+            .iter()
+            .filter(|e| e.source == PromptSource::Project)
+            .collect();
+        assert_eq!(
+            project_entries.len(),
+            1,
+            "exported template must appear as a Project entry"
+        );
+        assert_eq!(project_entries[0].template.name, "My prompt");
+
+        // The config.json must be at the project's main repo root, not CWD.
+        assert!(repo.path().join(".amf").join("config.json").exists());
     }
 }

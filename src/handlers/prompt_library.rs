@@ -213,6 +213,7 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     let multiline = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.current_is_multiline());
+    let is_select = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.is_select());
 
     match key.code {
         KeyCode::Esc => app.cancel_placeholder_fill(),
@@ -221,8 +222,23 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // On a single-line field Enter advances; on a multi-line field it
         // inserts a newline and is forwarded to the editor below.
         KeyCode::Enter if !multiline => app.placeholder_fill_next()?,
-        _ => {
+        // Select slots choose from a fixed option list.
+        KeyCode::Up | KeyCode::Char('k') if is_select => {
             if let AppMode::PlaceholderFill(state) = &mut app.mode {
+                state.select_prev();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') if is_select => {
+            if let AppMode::PlaceholderFill(state) = &mut app.mode {
+                state.select_next();
+            }
+        }
+        // Text / multi-line slots forward to the editor; Select slots ignore
+        // any other key (there's nothing to type).
+        _ => {
+            if !is_select
+                && let AppMode::PlaceholderFill(state) = &mut app.mode
+            {
                 state.input.handle_key(key);
             }
         }

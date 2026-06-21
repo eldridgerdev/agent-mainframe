@@ -63,6 +63,9 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
+  bugs not yet scheduled for a fix, one section per bug. Currently
+  tracks `A` not opening harness setup from the dashboard.
 - [Prompt library](prompt-library-plan.md) — _In progress._ Save
   reusable prompts and inject them into a session (compose box when on,
   paste without sending when off). Phase 1 (SQLite-backed save & inject)

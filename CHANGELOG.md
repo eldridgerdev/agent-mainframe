@@ -39,6 +39,11 @@ are tagged.
   `.amf/config.json` for config-file sources. Renaming a config-source template
   removes the old entry so stale names don't accumulate.
 
+- A running bug backlog in `docs/backlog/bug-backlog-plan.md`, viewable
+  in AMF's in-app Markdown viewer alongside the existing plans, so known
+  issues are tracked in one place. First entry: pressing `A` on the
+  dashboard does not open harness setup.
+
 ### Changed
 
 - All four template sources (User, Worktree, Project, Global) are now shown

@@ -423,7 +423,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
         AppMode::Viewing(view) => {
             let mut spans = Vec::new();
-            if view.session_kind == SessionKind::Claude {
+            if view.session_kind.is_agent_harness() {
                 if app.compose_intercept_active(view) {
                     spans.push(Span::styled(
                         "[compose] ",

@@ -3210,6 +3210,90 @@ fn new_session_name_rejects_empty_input() {
 }
 
 #[test]
+fn adding_session_starts_stopped_feature() {
+    let mut tmux = MockTmuxOps::new();
+    let mut sequence = mockall::Sequence::new();
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(false);
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(false);
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(true);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    tmux.expect_create_window()
+        .withf(|session, window, _| session == "amf-my-feat" && window == "terminal")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.add_builtin_session_with_label(0, 0, SessionKind::Terminal, "Shell".into())
+        .unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.status, ProjectStatus::Idle);
+    assert_eq!(feature.sessions.len(), 2);
+    assert_eq!(feature.sessions[1].label, "Shell");
+}
+
+#[test]
+fn adding_session_start_failure_shows_error_toast() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| anyhow::bail!("tmux failed"));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+    if let AppMode::SessionPicker(state) = &mut app.mode {
+        state.selected = state
+            .builtin_sessions
+            .iter()
+            .position(|session| session.kind == SessionKind::Terminal)
+            .unwrap();
+    }
+
+    crate::handlers::handle_session_picker_key(&mut app, KeyCode::Enter).unwrap();
+    crate::handlers::handle_new_session_name_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("Error: tmux failed")
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
 fn feature_add_session_named_uses_custom_label_and_default_window() {
     let mut feature = Feature::new(
         "my-feat".to_string(),

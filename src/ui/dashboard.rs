@@ -751,8 +751,10 @@ fn draw_view_pane(
     } else {
         None
     };
-    let compose_intercept =
-        (view.session_kind == SessionKind::Claude).then(|| app.compose_intercept_active(view));
+    let compose_intercept = view
+        .session_kind
+        .is_agent_harness()
+        .then(|| app.compose_intercept_active(view));
 
     super::pane::draw_with_lines(
         frame,
@@ -778,15 +780,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         draw_view_pane(frame, app, view, app.leader_active, true);
-        // Top-right status badges for Claude sessions: a Remote Control
-        // indicator (when the session is bridged to claude.ai) and the
-        // direct-input hint (when typing goes straight to Claude rather than
-        // the compose box). Both are right-aligned on the top row.
-        if view.session_kind == SessionKind::Claude {
+        // Top-right status badges for agent sessions. Remote Control is
+        // Claude-only; the direct-input hint applies to every harness.
+        if view.session_kind.is_agent_harness() {
             use ratatui::style::{Modifier, Style};
             use ratatui::text::{Line, Span};
             let mut badge_spans: Vec<Span> = Vec::new();
-            if crate::app::remote_control::detect_remote_control(&app.pane_content).active {
+            if view.session_kind == SessionKind::Claude
+                && crate::app::remote_control::detect_remote_control(&app.pane_content).active
+            {
                 badge_spans.push(Span::styled(
                     " [remote ●] ",
                     Style::default()

@@ -159,10 +159,10 @@ pub(crate) fn split_compose_parts(
 }
 
 impl App {
-    /// Whether typing in this Claude view should open the compose box
+    /// Whether typing in this agent view should open the compose box
     /// instead of forwarding keystrokes to tmux.
     pub fn compose_intercept_active(&self, view: &ViewState) -> bool {
-        view.session_kind == SessionKind::Claude
+        view.session_kind.is_agent_harness()
             && !self
                 .compose_direct_targets
                 .contains(&compose_target_key(&view.session, &view.window))
@@ -179,8 +179,8 @@ impl App {
             _ => return,
         };
 
-        if kind != SessionKind::Claude {
-            self.push_toast_warning("Compose is only for Claude Code sessions");
+        if !kind.is_agent_harness() {
+            self.push_toast_warning("Compose is only for agent harness sessions");
             return;
         }
 
@@ -323,8 +323,8 @@ impl App {
         self.mode = AppMode::Viewing(state.view);
     }
 
-    /// Deliver the compose buffer to the Claude Code session. Slash
-    /// commands are typed as keystrokes so CC parses them as commands;
+    /// Deliver the compose buffer to the agent session. Slash commands
+    /// are typed as keystrokes so the harness parses them as commands;
     /// anything else is bracketed-pasted so newlines survive.
     pub fn submit_compose(&mut self) -> Result<()> {
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
@@ -344,9 +344,10 @@ impl App {
 
         let session = state.view.session.clone();
         let window = state.view.window.clone();
+        let session_kind = state.view.session_kind.clone();
         let key = compose_target_key(&session, &window);
 
-        // Clear any leftover text in Claude Code's input (e.g. typed
+        // Clear any leftover text in the harness input (e.g. typed
         // during direct mode) so the submission cannot merge with it.
         self.tmux.send_key_name(&session, &window, "C-u")?;
 
@@ -378,7 +379,7 @@ impl App {
                     ComposePart::Image(idx) => {
                         let image = &state.images[*idx];
                         crate::app::util::copy_image_to_clipboard(&image.data, &image.mime)?;
-                        // Claude Code reads the clipboard when it
+                        // The harness reads the clipboard when it
                         // receives Ctrl+V; give it time to ingest the
                         // image before the clipboard changes again.
                         self.tmux.send_key_name(&session, &window, "C-v")?;
@@ -391,6 +392,9 @@ impl App {
 
         self.compose_drafts.remove(&key);
         self.mode = AppMode::Viewing(state.view);
+        if session_kind == SessionKind::Codex {
+            self.note_codex_prompt_submit(&session, &window);
+        }
         self.request_view_snapshot_pane_burst();
         Ok(())
     }

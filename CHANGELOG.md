@@ -10,6 +10,15 @@ are tagged.
 
 ## [Unreleased]
 
+### Changed
+
+- The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with
+  the same workflow and keybindings as Claude Code. Start typing to compose,
+  use `Ctrl+E` or `leader+e` to switch between compose and direct input, and
+  use drafts, prompt templates, multiline input, clipboard paste, and image
+  attachments without changing workflows between agent harnesses. Terminal,
+  editor, and custom sessions continue to use direct input.
+
 ### Fixed
 
 - Claude panes now keep their periodic automatic repaint when direct tmux
@@ -23,7 +32,9 @@ are tagged.
 
 ### Migration
 
-- No migration is required.
+- No migration is required. The composer is enabled by default for all
+  built-in agent harness sessions; use `leader+e` per session to opt into
+  direct input.
 
 ## [v0.26.0] - 2026-06-22
 

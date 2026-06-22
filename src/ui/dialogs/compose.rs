@@ -15,15 +15,15 @@ use crate::theme::Theme;
 
 use super::editor_view::{count_wrapped_editor_lines, editor_lines, sync_editor_scroll};
 
-// Tall enough that the box blankets Claude Code's own bottom UI
+// Tall enough that the box blankets the harness's own bottom UI
 // (input prompt, any leftover typed text, and its status line).
 const COMPOSE_MIN_INPUT_ROWS: usize = 6;
 const COMPOSE_MAX_INPUT_ROWS: usize = 12;
 const COMPOSE_MAX_SUGGESTION_ROWS: usize = 8;
 
 /// Compose input drawn over the live pane, sized and positioned to
-/// cover Claude Code's own input box at the bottom of the pane. The
-/// pane above stays visible so CC's output can be watched while
+/// cover the harness's own input box at the bottom of the pane. The
+/// pane above stays visible so the agent's output can be watched while
 /// typing.
 pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &Theme) {
     let area = frame.area();
@@ -32,7 +32,7 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
     }
 
     // Match the embedded pane: full main-pane width (excluding the
-    // sidebar), flush with the bottom of the frame where CC renders
+    // sidebar), flush with the bottom of the frame where the harness renders
     // its input box and status line.
     let width = crate::ui::viewing_main_width(&state.view, area.width);
     let x = area.x;

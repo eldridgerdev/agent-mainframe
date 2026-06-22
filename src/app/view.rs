@@ -379,7 +379,8 @@ impl App {
             editing_source: crate::prompt_library::PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: crate::app::PromptEditorFocus::Name,
             editor: crate::editor::TextEditor::with_vim(text),
             return_to: Box::new(AppMode::Viewing(state.view)),
         });

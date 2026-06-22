@@ -306,6 +306,55 @@ pub fn infer_placeholder_keys(body: &str) -> Vec<String> {
         .collect()
 }
 
+/// Parse the editor's raw tag input into a clean tag list. Tags are separated
+/// by commas or whitespace; a leading `#` is stripped, original case is kept,
+/// and empties and case-insensitive duplicates are dropped. So
+/// `"#bug, Frontend  bug"` yields `["bug", "Frontend"]`.
+pub fn parse_tags(input: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for raw in input.split(|c: char| c == ',' || c.is_whitespace()) {
+        let tag = raw.trim().trim_start_matches('#').trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
+}
+
+/// Render a tag list back into the comma-separated form shown (and re-parsed)
+/// by the editor's tag field.
+pub fn format_tags(tags: &[String]) -> String {
+    tags.join(", ")
+}
+
+/// Score a template against the picker query, returning the best (lowest)
+/// fuzzy score across its name, body, and tags, or `None` when nothing
+/// matches. A query beginning with `#` is a tag-only filter (the `#` is
+/// stripped); a bare `#` surfaces every tagged template (a light "group by
+/// tagged" view) and hides untagged ones.
+pub fn prompt_filter_score(name: &str, body: &str, tags: &[String], query: &str) -> Option<usize> {
+    use crate::app::util::fuzzy_match_score;
+    if let Some(rest) = query.strip_prefix('#') {
+        let needle = rest.trim();
+        if needle.is_empty() {
+            return if tags.is_empty() { None } else { Some(0) };
+        }
+        return tags.iter().filter_map(|t| fuzzy_match_score(t, needle)).min();
+    }
+    let tag_best = tags.iter().filter_map(|t| fuzzy_match_score(t, query)).min();
+    [
+        fuzzy_match_score(name, query),
+        fuzzy_match_score(body, query),
+        tag_best,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,5 +463,52 @@ mod tests {
             render_template("Deploy to {{dev|staging|prod}}", &values),
             "Deploy to staging"
         );
+    }
+
+    #[test]
+    fn parse_tags_splits_strips_hash_and_dedups() {
+        // Commas and whitespace both separate; `#` stripped; case-insensitive
+        // dedup keeps the first spelling; empties dropped.
+        assert_eq!(
+            parse_tags("#bug, Frontend  bug ,, #frontend"),
+            vec!["bug".to_string(), "Frontend".to_string()]
+        );
+        assert!(parse_tags("   ").is_empty());
+        assert!(parse_tags("").is_empty());
+    }
+
+    #[test]
+    fn format_tags_round_trips_through_parse() {
+        let tags = vec!["bug".to_string(), "Frontend".to_string()];
+        assert_eq!(format_tags(&tags), "bug, Frontend");
+        assert_eq!(parse_tags(&format_tags(&tags)), tags);
+    }
+
+    #[test]
+    fn filter_score_matches_name_body_or_tag() {
+        let tags = vec!["frontend".to_string()];
+        // Name match.
+        assert!(prompt_filter_score("Fix login", "body", &tags, "login").is_some());
+        // Body match.
+        assert!(prompt_filter_score("name", "refactor auth", &tags, "auth").is_some());
+        // Tag match (no `#`).
+        assert!(prompt_filter_score("name", "body", &tags, "frontend").is_some());
+        // No match anywhere.
+        assert!(prompt_filter_score("name", "body", &tags, "zzz").is_none());
+    }
+
+    #[test]
+    fn filter_score_hash_prefix_matches_tags_only() {
+        let tags = vec!["frontend".to_string()];
+        // `#`-prefixed query matches the tag but not name/body text.
+        assert!(prompt_filter_score("frontend", "frontend", &[], "#frontend").is_none());
+        assert!(prompt_filter_score("name", "body", &tags, "#front").is_some());
+    }
+
+    #[test]
+    fn filter_score_bare_hash_surfaces_only_tagged() {
+        // Bare `#` keeps tagged templates, hides untagged ones.
+        assert!(prompt_filter_score("n", "b", &["x".to_string()], "#").is_some());
+        assert!(prompt_filter_score("n", "b", &[], "#").is_none());
     }
 }

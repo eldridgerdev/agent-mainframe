@@ -1,8 +1,9 @@
 # Prompt Library
 
 - **Status:** In progress _(phases 1–3 shipped in v0.26.0: multi-source picker,
-  fill-in flow, and inline select-menus landed; phase 3 tags + phase 4 polish
-  remain, plus phase 5 editor/injection enhancements)_
+  fill-in flow, and inline select-menus landed; tags + tag filtering, the
+  config-merge test, and the amf-add-prompt skill now done — phase 3 complete.
+  Remaining: phase 4 polish + phase 5 editor/injection enhancements)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -298,10 +299,21 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   `{{name|opt1|opt2}}` (key before the first `|`, options after); a bare
   `{{name}}` stays free text. Explicit config-authored `placeholders` defs
   (label / kind / default / required) still win over inferred slots.
-- [ ] Tags/grouping and fuzzy filtering by tag
-- [ ] Optional `amf-add-prompt` skill (parallel to `amf-add-preset`)
-- [ ] Tests: config merge by name (project wins) — merge logic exists in
-  `extension.rs::merge_project_extension_config` but has no dedicated test
+- [x] Tags/grouping and fuzzy filtering by tag. A `Tags` field in the
+  New/Edit dialog (Tab cycles Name → Tags → Body) authors the existing
+  `PromptTemplate.tags`; the picker fuzzy-matches tags alongside name/body, a
+  `#tag` query filters by tag only, and a bare `#` surfaces every tagged
+  template (light grouping). Tags render as `#chips` in the preview pane.
+- [x] Optional `amf-add-prompt` skill (parallel to `amf-add-preset`).
+  `.claude/skills/amf-add-prompt/SKILL.md` adds/updates a `prompt_templates`
+  entry in `.amf/config.json` (project) or `~/.config/amf/config.json`'s
+  `extension` block (global), documenting the `PromptTemplate` schema, inline
+  `{{slot}}` / `{{name|opt1|opt2}}` syntax, and the explicit `placeholders`
+  array (text / multi_line / select).
+- [x] Tests: config merge by name (project wins). `extension.rs` test
+  `prompt_templates_merged_by_name_project_wins` covers a `shared` name in
+  both global + project (project body wins, appears once) plus the
+  global-only / project-only entries surviving.
 
 ### Phase 4 — Location handling & polish
 

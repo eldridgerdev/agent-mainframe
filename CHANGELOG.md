@@ -106,6 +106,11 @@ are tagged.
   that transport is Unix-only. Defaulting to the direct transport removes the
   extra clients and the corruption with them.
 
+- Diff/review mode no longer shows AMF-generated runtime files as if they
+  were branch changes. The change-tracker log (`.amf/change-history.json`)
+  and the opencode TUI state (`tui.json`) are now gitignored and untracked,
+  so the review surface reflects only the real changes on your branch.
+
 - Pressing `A` on the dashboard now opens the agent-harness setup picker as
   expected. The key was only wired into the `Ctrl+Space` leader chord, so a
   bare `A` did nothing. It is now a top-level dashboard action (and listed in

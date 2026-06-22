@@ -10,7 +10,11 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- Claude panes now keep their periodic automatic repaint when direct tmux
+  transport is active, preventing the embedded UI from becoming mangled on
+  Linux even though control mode is disabled by default.
 
 ## [v0.26.0] - 2026-06-22
 

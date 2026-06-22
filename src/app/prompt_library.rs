@@ -759,21 +759,24 @@ fn merge_prompt_library_entries(
 fn resolve_placeholders(template: &PromptTemplate) -> Vec<PromptPlaceholder> {
     infer_placeholder_slots(&template.body)
         .into_iter()
-        .map(|(key, options)| {
+        .map(|slot| {
             // An explicit config-authored definition always wins.
-            if let Some(explicit) = template.placeholders.iter().find(|p| p.key == key) {
+            if let Some(explicit) = template.placeholders.iter().find(|p| p.key == slot.key) {
                 return explicit.clone();
             }
-            // Inline `{{key|a|b}}` options become a Select; a bare `{{key}}`
-            // becomes a free-text slot.
-            let kind = if options.is_empty() {
+            // A slot with inline options (`{{a|b}}` / `{{label: a|b}}`) becomes
+            // a Select; a bare `{{key}}` becomes a free-text slot. A labelled
+            // menu carries its label so the fill flow shows a heading.
+            let kind = if slot.options.is_empty() {
                 PlaceholderKind::Text { default: None }
             } else {
-                PlaceholderKind::Select { options }
+                PlaceholderKind::Select {
+                    options: slot.options,
+                }
             };
             PromptPlaceholder {
-                key,
-                label: None,
+                key: slot.key,
+                label: slot.label,
                 kind,
                 required: false,
             }
@@ -793,10 +796,10 @@ fn placeholder_default(p: &PromptPlaceholder) -> String {
     }
 }
 
-/// The prompt shown for a slot in the fill-in flow: its explicit `label`,
-/// falling back to the raw `key`.
+/// The prompt shown for a slot in the fill-in flow: its explicit `label`, the
+/// `key` for text slots, or a generic prompt for an unlabelled menu.
 fn placeholder_label(p: &PromptPlaceholder) -> &str {
-    p.label.as_deref().unwrap_or(&p.key)
+    p.display_label()
 }
 
 /// Insert or replace a template in a config list, matching by name.
@@ -919,11 +922,12 @@ mod tests {
     fn resolve_makes_select_from_inline_options() {
         let template = PromptTemplate::new(
             "t".to_string(),
-            "Deploy {{env|dev|staging|prod}} as {{user}}".to_string(),
+            "Deploy {{env: dev|staging|prod}} as {{user}}".to_string(),
         );
         let slots = resolve_placeholders(&template);
         assert_eq!(slots.len(), 2);
-        // Piped slot → Select with those options.
+        // Labelled menu → Select with those options, carrying the heading.
+        assert_eq!(slots[0].label.as_deref(), Some("env"));
         match &slots[0].kind {
             PlaceholderKind::Select { options } => {
                 assert_eq!(options, &vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]);
@@ -935,11 +939,30 @@ mod tests {
     }
 
     #[test]
+    fn resolve_makes_bare_menu_select_with_every_option() {
+        // No label: every `|` segment is selectable (the reported bug fix).
+        let template =
+            PromptTemplate::new("t".to_string(), "Use {{dev|staging|prod}}".to_string());
+        let slots = resolve_placeholders(&template);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].label, None);
+        match &slots[0].kind {
+            PlaceholderKind::Select { options } => assert_eq!(
+                options,
+                &vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]
+            ),
+            other => panic!("expected Select, got {other:?}"),
+        }
+        // The first option is the seeded default, so it is selectable.
+        assert_eq!(placeholder_default(&slots[0]), "dev");
+    }
+
+    #[test]
     fn resolve_explicit_definition_overrides_inline_options() {
         // A config-authored placeholder wins even when the body has `|options`.
         let mut template = PromptTemplate::new(
             "t".to_string(),
-            "Deploy {{env|dev|prod}}".to_string(),
+            "Deploy {{env: dev|prod}}".to_string(),
         );
         template.placeholders = vec![PromptPlaceholder {
             key: "env".to_string(),

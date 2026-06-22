@@ -1,7 +1,7 @@
 # Prompt Library
 
-- **Status:** In progress _(phase 1 shipped; multi-source picker landed;
-  phase 2 fill-in flow and phase 3 select-menus/polish remain)_
+- **Status:** In progress _(phases 1–2 shipped; multi-source picker, fill-in
+  flow, and select-menus landed; phase 3 tags/skill and phase 4 polish remain)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -268,12 +268,12 @@ New `src/ui/dialogs/prompt_library.rs` (model on
 
 ### Phase 2 — Fill-in placeholders
 
-- [ ] `{{slot}}` inference from body
-- [ ] `PlaceholderFill` mode + UI + substitution
-- [ ] `Text` / `MultiLine` placeholder kinds with defaults
-- [ ] "Save to library" action from the `LatestPrompt` menu
-  (save a previous prompt as a template)
-- [ ] Tests: `render_template` (filled, missing optional, repeated
+- [x] `{{slot}}` inference from body
+- [x] `PlaceholderFill` mode + UI + substitution
+- [x] `Text` / `MultiLine` placeholder kinds with defaults
+- [x] "Save to library" action from the `LatestPrompt` menu
+  (save a previous prompt as a template — `s` in the recent-prompts menu)
+- [x] Tests: `render_template` (filled, missing optional, repeated
   slot, no-slot); placeholder inference
 
 ### Phase 3 — Declarative templates & select menus
@@ -292,11 +292,15 @@ New `src/ui/dialogs/prompt_library.rs` (model on
 - [x] Source badges (`User` / `Project` / `Global`), color-coded by
   source, + duplicate-to-user (`y`). Edit/delete are blocked on
   read-only sources with a "duplicate first" hint.
-- [ ] `Select` placeholder kind (option lists) + explicit
-  `placeholders` authoring via config.json
+- [x] `Select` placeholder kind (option lists) + explicit
+  `placeholders` authoring via config.json. Authored inline in the body as
+  `{{name|opt1|opt2}}` (key before the first `|`, options after); a bare
+  `{{name}}` stays free text. Explicit config-authored `placeholders` defs
+  (label / kind / default / required) still win over inferred slots.
 - [ ] Tags/grouping and fuzzy filtering by tag
 - [ ] Optional `amf-add-prompt` skill (parallel to `amf-add-preset`)
-- [ ] Tests: config merge by name (project wins)
+- [ ] Tests: config merge by name (project wins) — merge logic exists in
+  `extension.rs::merge_project_extension_config` but has no dedicated test
 
 ### Phase 4 — Location handling & polish
 

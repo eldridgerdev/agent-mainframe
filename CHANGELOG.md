@@ -24,10 +24,12 @@ are tagged.
 - **Menu (pick-from-a-list) placeholders.** A slot can offer a fixed set of
   choices instead of free text: when you reach it in the fill-in flow, you pick
   from a list with `↑`/`↓` (or `j`/`k`) and `Tab` to confirm. Define one right
-  in the prompt body with `{{name|option1|option2|option3}}` — for example
-  `Deploy to {{env|dev|staging|prod}}`. Plain `{{name}}` stays a free-text slot.
+  in the prompt body by listing the choices with `|` — `{{a|b|c}}` makes every
+  segment a selectable option, for example `Deploy to {{dev|staging|prod}}`. Add
+  an optional heading with a leading `label:` — `{{env: dev|staging|prod}}` shows
+  "env" above the same three choices. Plain `{{name}}` stays a free-text slot.
   The New/Edit Prompt editor now shows a short, always-visible help line
-  explaining both forms (it no longer disappears once you start typing).
+  explaining all three forms (it no longer disappears once you start typing).
 
 - **Save a past prompt to the library.** In the recent-prompts menu
   (`leader+L`), press `s` to save the highlighted prompt as a new reusable

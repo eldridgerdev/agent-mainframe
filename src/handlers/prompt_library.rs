@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, PromptExportTarget};
+use crate::app::{App, AppMode, PromptEditorFocus, PromptExportTarget};
 use crate::editor::VimMode;
 
 /// Prompt-library picker: navigate, filter, inject, and manage templates.
@@ -151,6 +151,16 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+/// The raw string backing whichever single-line field (Name or Tags) is
+/// focused, so char/backspace edits route to the right one. Falls back to
+/// the name field when Body is focused (the caller never invokes it then).
+fn active_single_line_field(state: &mut crate::app::PromptEditorState) -> &mut String {
+    match state.focus {
+        PromptEditorFocus::Tags => &mut state.tags,
+        _ => &mut state.name,
+    }
+}
+
 /// Prompt-template editor: name field + multi-line body editor.
 pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -161,27 +171,36 @@ pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         app.cancel_prompt_editor();
         return Ok(());
     }
+    // Tab cycles Name → Tags → Body; Shift+Tab reverses.
     if key.code == KeyCode::Tab {
         if let AppMode::PromptEditor(state) = &mut app.mode {
-            state.name_field_active = !state.name_field_active;
+            state.focus = state.focus.next();
+        }
+        return Ok(());
+    }
+    if key.code == KeyCode::BackTab {
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = state.focus.prev();
         }
         return Ok(());
     }
 
-    let name_active = matches!(&app.mode, AppMode::PromptEditor(state) if state.name_field_active);
-    if name_active {
+    // Name and Tags are single-line text fields edited the same way.
+    let single_line = matches!(&app.mode, AppMode::PromptEditor(state)
+        if matches!(state.focus, PromptEditorFocus::Name | PromptEditorFocus::Tags));
+    if single_line {
         match key.code {
-            // Name is a single line; Enter saves the whole template.
+            // Single-line fields; Enter saves the whole template.
             KeyCode::Enter => app.submit_prompt_editor()?,
             KeyCode::Esc => app.cancel_prompt_editor(),
             KeyCode::Backspace => {
                 if let AppMode::PromptEditor(state) = &mut app.mode {
-                    state.name.pop();
+                    active_single_line_field(state).pop();
                 }
             }
             KeyCode::Char(c) => {
                 if let AppMode::PromptEditor(state) = &mut app.mode {
-                    state.name.push(c);
+                    active_single_line_field(state).push(c);
                 }
             }
             _ => {}

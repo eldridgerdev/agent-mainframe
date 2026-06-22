@@ -132,17 +132,13 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, entry)| {
-                    let name_score =
-                        crate::app::util::fuzzy_match_score(&entry.template.name, &state.query);
-                    let body_score =
-                        crate::app::util::fuzzy_match_score(&entry.template.body, &state.query);
-                    let best = match (name_score, body_score) {
-                        (Some(a), Some(b)) => a.min(b),
-                        (Some(a), None) => a,
-                        (None, Some(b)) => b,
-                        (None, None) => return None,
-                    };
-                    Some((idx, best))
+                    crate::prompt_library::prompt_filter_score(
+                        &entry.template.name,
+                        &entry.template.body,
+                        &entry.template.tags,
+                        &state.query,
+                    )
+                    .map(|score| (idx, score))
                 })
                 .collect();
 
@@ -320,7 +316,8 @@ impl App {
             editing_source: PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: PromptEditorFocus::Name,
             editor: TextEditor::with_vim(String::new()),
             return_to: Box::new(return_to),
         });
@@ -348,7 +345,8 @@ impl App {
             editing_source: entry.source,
             original_template,
             name: entry.template.name.clone(),
-            name_field_active: false,
+            tags: crate::prompt_library::format_tags(&entry.template.tags),
+            focus: PromptEditorFocus::Body,
             editor: TextEditor::with_vim(entry.template.body.clone()),
             return_to: Box::new(return_to),
         });
@@ -376,7 +374,8 @@ impl App {
             editing_source: PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: PromptEditorFocus::Name,
             editor: TextEditor::with_vim(text),
             return_to: Box::new(return_to),
         });
@@ -395,6 +394,7 @@ impl App {
 
         let name = state.name.trim().to_string();
         let body = state.editor.text().trim().to_string();
+        let tags = crate::prompt_library::parse_tags(&state.tags);
         if name.is_empty() {
             self.message = Some("Name cannot be empty".into());
             self.mode = AppMode::PromptEditor(state);
@@ -426,20 +426,21 @@ impl App {
                         {
                             template.name = name;
                             template.body = body;
+                            template.tags = tags;
                             template.updated_at = Utc::now();
                         }
                     }
                     None => {
-                        self.store
-                            .prompt_templates
-                            .push(PromptTemplate::new(name, body));
+                        let mut template = PromptTemplate::new(name, body);
+                        template.tags = tags;
+                        self.store.prompt_templates.push(template);
                     }
                 }
                 self.save()?;
             }
             PromptSource::Global => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 if orig.name != name {
                     self.config.extension.prompt_templates.retain(|t| t.name != orig.name);
                 }
@@ -452,7 +453,7 @@ impl App {
             }
             PromptSource::Project => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
                     self.push_toast_warning("No project repo — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -465,7 +466,7 @@ impl App {
             }
             PromptSource::Worktree => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
                     self.push_toast_warning("No worktree — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -1328,6 +1329,74 @@ mod tests {
             state.select_prev();
             assert_eq!(state.select_index, 2);
         }
+    }
+
+    #[test]
+    fn editor_save_parses_and_persists_tags() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.open_prompt_library(None);
+
+        // Compose a new template with a messy tag string.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.name = "Tagged".to_string();
+            state.tags = "#bug, Frontend  bug".to_string();
+            state.editor = crate::editor::TextEditor::new("body".to_string());
+        }
+        app.submit_prompt_editor().unwrap();
+
+        // The raw input is parsed into a clean, de-duplicated tag list.
+        let saved = app
+            .store
+            .prompt_templates
+            .iter()
+            .find(|t| t.name == "Tagged")
+            .expect("template saved");
+        assert_eq!(saved.tags, vec!["bug".to_string(), "Frontend".to_string()]);
+    }
+
+    #[test]
+    fn picker_hash_query_filters_to_tagged_templates() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut frontend = PromptTemplate::new("UI fix".to_string(), "body".to_string());
+        frontend.tags = vec!["frontend".to_string()];
+        let backend = PromptTemplate::new("API fix".to_string(), "body".to_string());
+        app.store.prompt_templates.push(frontend);
+        app.store.prompt_templates.push(backend);
+        app.open_prompt_library(None);
+
+        // A `#tag` query keeps only the template carrying that tag.
+        if let AppMode::PromptLibrary(state) = &mut app.mode {
+            state.query = "#frontend".to_string();
+        }
+        app.prompt_library_filter();
+        let AppMode::PromptLibrary(ref state) = app.mode else {
+            panic!("expected PromptLibrary mode");
+        };
+        let names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|&i| state.templates[i].template.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["UI fix"]);
     }
 
     #[test]

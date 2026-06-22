@@ -10,6 +10,24 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **`/amf:add-prompt` skill.** A new skill (parallel to `/amf:add-preset`) that
+  adds a declarative prompt template to your workspace without hand-writing
+  JSON. It writes a `prompt_templates` entry to `.amf/config.json` (project) or
+  the global `~/.config/amf/config.json`, and documents the template schema —
+  including tags, inline `{{slot}}` / `{{name|opt1|opt2}}` syntax, and explicit
+  text / multi-line / select placeholders. The template then shows up in the
+  prompt library picker as a read-only `Project`/`Global` entry.
+
+- **Tags for prompt templates.** The New/Edit Prompt dialog now has a `Tags`
+  field (Tab cycles Name → Tags → Body); enter a comma- or space-separated
+  list and AMF stores it with the template. Tags show as `#chips` in the
+  picker's preview pane. In the picker's search (`/`), the query now also
+  matches tags, and a `#`-prefixed query filters by tag only — `#frontend`
+  narrows to templates tagged `frontend`, and a bare `#` lists every tagged
+  template.
+
 ### Changed
 
 - The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with

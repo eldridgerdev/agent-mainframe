@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::app::{PlaceholderFillState, PromptEditorState, PromptLibraryState};
+use crate::app::{PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState};
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -62,7 +62,7 @@ pub fn draw_prompt_library(
         ])
     } else if state.query.is_empty() {
         Line::from(Span::styled(
-            "Press / to search",
+            "Press / to search (use #tag to filter by tag)",
             Style::default().fg(theme.text_muted.to_color()),
         ))
     } else {
@@ -152,6 +152,25 @@ pub fn draw_prompt_library(
                 )));
                 lines.push(Line::from(""));
             }
+        }
+        // Tag chips, e.g. `#bug #frontend`, above the body preview.
+        if !entry.template.tags.is_empty() {
+            let chips: Vec<Span> = entry
+                .template
+                .tags
+                .iter()
+                .flat_map(|tag| {
+                    [
+                        Span::styled(
+                            format!("#{tag}"),
+                            Style::default().fg(theme.info.to_color()),
+                        ),
+                        Span::raw(" "),
+                    ]
+                })
+                .collect();
+            lines.push(Line::from(chips));
+            lines.push(Line::from(""));
         }
         for line in entry.template.body.lines() {
             lines.push(Line::from(Span::styled(
@@ -264,6 +283,8 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         .constraints([
             Constraint::Length(1), // name label
             Constraint::Length(1), // name field
+            Constraint::Length(1), // tags label
+            Constraint::Length(1), // tags field
             Constraint::Length(1), // spacer
             Constraint::Length(1), // body label
             Constraint::Length(2), // placeholder help (always visible)
@@ -282,34 +303,56 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         }
     };
 
-    frame.render_widget(
-        Paragraph::new(Span::styled("Name", active_marker(state.name_field_active))),
-        chunks[0],
-    );
-    let name_line = if state.name_field_active {
-        Line::from(vec![
-            Span::styled(state.name.clone(), Style::default().fg(theme.text.to_color())),
-            Span::styled("█", Style::default().fg(theme.primary.to_color())),
-        ])
-    } else if state.name.is_empty() {
-        Line::from(Span::styled(
-            "(unnamed)",
-            Style::default().fg(theme.text_muted.to_color()),
-        ))
-    } else {
-        Line::from(Span::styled(
-            state.name.clone(),
-            Style::default().fg(theme.text.to_color()),
-        ))
+    // A single-line text field: shows a cursor when focused, a muted
+    // placeholder when empty + unfocused, else the plain value.
+    let single_line_field = |value: &str, active: bool, placeholder: &'static str| {
+        if active {
+            Line::from(vec![
+                Span::styled(value.to_string(), Style::default().fg(theme.text.to_color())),
+                Span::styled("█", Style::default().fg(theme.primary.to_color())),
+            ])
+        } else if value.is_empty() {
+            Line::from(Span::styled(
+                placeholder,
+                Style::default().fg(theme.text_muted.to_color()),
+            ))
+        } else {
+            Line::from(Span::styled(
+                value.to_string(),
+                Style::default().fg(theme.text.to_color()),
+            ))
+        }
     };
-    frame.render_widget(Paragraph::new(name_line), chunks[1]);
+
+    let name_focused = state.focus == PromptEditorFocus::Name;
+    let tags_focused = state.focus == PromptEditorFocus::Tags;
+    let body_focused = state.focus == PromptEditorFocus::Body;
 
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Prompt body",
-            active_marker(!state.name_field_active),
+        Paragraph::new(Span::styled("Name", active_marker(name_focused))),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new(single_line_field(&state.name, name_focused, "(unnamed)")),
+        chunks[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Span::styled("Tags", active_marker(tags_focused))),
+        chunks[2],
+    );
+    frame.render_widget(
+        Paragraph::new(single_line_field(
+            &state.tags,
+            tags_focused,
+            "(comma-separated, optional)",
         )),
         chunks[3],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Span::styled("Prompt body", active_marker(body_focused))),
+        chunks[5],
     );
 
     // Always-visible placeholder help, kept off the editor so it stays put
@@ -324,13 +367,13 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         key_span("{{label: a|b|c}}"),
         muted(" labelled menu"),
     ]);
-    frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), chunks[4]);
+    frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), chunks[6]);
 
     // Help lives on its own line above, so the editor placeholder is empty.
     let body_lines = editor_lines(&state.editor, theme, "");
     frame.render_widget(
         Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[5],
+        chunks[7],
     );
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
@@ -345,7 +388,7 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         hint("Ctrl+Q"),
         label(" cancel"),
     ]);
-    frame.render_widget(Paragraph::new(footer), chunks[6]);
+    frame.render_widget(Paragraph::new(footer), chunks[8]);
 }
 
 /// Fill-in flow: one slot at a time with a `current/total` progress

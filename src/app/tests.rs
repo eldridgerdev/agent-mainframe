@@ -369,9 +369,10 @@ fn app_config_default_input_request_wait_is_one_point_five_seconds() {
 }
 
 #[test]
-fn app_config_default_tmux_control_mode_is_enabled() {
+fn app_config_default_tmux_control_mode_is_disabled() {
+    // Direct transport is the default; control mode is opt-in.
     let config = AppConfig::default();
-    assert!(config.tmux_control_mode);
+    assert!(!config.tmux_control_mode);
 }
 
 #[test]
@@ -420,13 +421,71 @@ fn app_config_invalid_input_request_wait_falls_back_to_default_duration() {
 #[test]
 fn app_config_missing_tmux_control_mode_uses_default() {
     let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
-    assert!(config.tmux_control_mode);
+    assert!(!config.tmux_control_mode);
 }
 
 #[test]
 fn app_config_tmux_control_mode_can_be_disabled() {
     let config: AppConfig = serde_json::from_str(r#"{"tmux_control_mode":false}"#).unwrap();
     assert!(!config.tmux_control_mode);
+}
+
+#[test]
+fn app_config_tmux_control_mode_can_be_enabled() {
+    let config: AppConfig = serde_json::from_str(r#"{"tmux_control_mode":true}"#).unwrap();
+    assert!(config.tmux_control_mode);
+}
+
+#[test]
+fn migrate_app_config_flips_pre_v1_defaults() {
+    // A config written before versioning: control mode on, old popup hold.
+    let mut config: AppConfig = serde_json::from_str(
+        r#"{"tmux_control_mode":true,"diff_review_popup_hold_secs":3.0}"#,
+    )
+    .unwrap();
+    assert_eq!(config.config_version, 0);
+
+    let changed = crate::app::setup::migrate_app_config(&mut config);
+
+    assert!(changed);
+    assert!(!config.tmux_control_mode);
+    assert_eq!(config.diff_review_popup_hold_secs, 1.5);
+    assert_eq!(config.config_version, crate::app::APP_CONFIG_VERSION);
+}
+
+#[test]
+fn migrate_app_config_preserves_deliberate_pre_v1_values() {
+    // Pre-v1 config that already chose non-default values: only the
+    // version is stamped, the user's choices are kept.
+    let mut config: AppConfig = serde_json::from_str(
+        r#"{"tmux_control_mode":false,"diff_review_popup_hold_secs":5.0}"#,
+    )
+    .unwrap();
+
+    let changed = crate::app::setup::migrate_app_config(&mut config);
+
+    assert!(changed);
+    assert!(!config.tmux_control_mode);
+    assert_eq!(config.diff_review_popup_hold_secs, 5.0);
+    assert_eq!(config.config_version, crate::app::APP_CONFIG_VERSION);
+}
+
+#[test]
+fn migrate_app_config_is_noop_when_current() {
+    // An already-current config (e.g. someone who re-enabled control mode
+    // after migrating) is left untouched and triggers no rewrite.
+    let mut config = AppConfig {
+        config_version: crate::app::APP_CONFIG_VERSION,
+        tmux_control_mode: true,
+        diff_review_popup_hold_secs: 3.0,
+        ..AppConfig::default()
+    };
+
+    let changed = crate::app::setup::migrate_app_config(&mut config);
+
+    assert!(!changed);
+    assert!(config.tmux_control_mode);
+    assert_eq!(config.diff_review_popup_hold_secs, 3.0);
 }
 
 #[test]

@@ -78,6 +78,34 @@ are tagged.
   config template now immediately explains this instead of arming a confirm
   dialog that then refuses to act.
 
+- **Direct tmux transport is now the default.** AMF no longer attaches a
+  persistent control-mode (`-CC`) client to drive agent panes; it talks to
+  tmux directly, the same way it always has on Windows. This is what fixes the
+  long-standing garbled-pane corruption (see Fixed). Control mode remains
+  available as an opt-in via `tmux_control_mode: true` in `config.json` (or the
+  `AMF_TMUX_INPUT_TRANSPORT` / `AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT` env
+  vars). The periodic automatic pane refresh and the SIGWINCH re-anchor bounce
+  now run only in control mode, where they're needed — direct mode re-captures
+  the full pane each frame and self-heals, so it no longer flickers from those.
+
+- The diff-review popup now holds for **1.5s** by default instead of 3s.
+
+  **Migration:** on first launch after upgrading, AMF rewrites `config.json`
+  once to apply the new defaults — a persisted `tmux_control_mode: true` is set
+  to `false` and a `diff_review_popup_hold_secs` of `3.0` becomes `1.5`. Values
+  you previously customized away from those old defaults are left untouched, and
+  the file is stamped with a `config_version` so the migration never runs twice
+  (re-enable control mode afterward and it stays enabled).
+
+### Fixed
+
+- **Garbled / mangled agent panes on Linux and macOS.** The persistent
+  control-mode tmux clients AMF attached to each session could desync Claude
+  Code's incremental renderer, leaving stale cells in the pane grid (the input
+  box bleeding into the divider above it). Windows was never affected because
+  that transport is Unix-only. Defaulting to the direct transport removes the
+  extra clients and the corruption with them.
+
 ## [v0.25.0] - 2026-06-19
 
 ### Added

@@ -1320,7 +1320,9 @@ fn run_loop<B: Backend>(
         // SIGWINCH pair (shrink one row, then restore) does it. Two-phase
         // so the main thread never sleeps: shrink now, restore a later
         // iteration once the dwell has elapsed and tmux has delivered the
-        // first SIGWINCH. See VIEW_REANCHOR_BOUNCE_INTERVAL.
+        // first SIGWINCH. This repairs Claude's actual tmux grid, so it is
+        // required for both direct and control-mode transports. See
+        // VIEW_REANCHOR_BOUNCE_INTERVAL.
         if let Some((session, window, cols, full_rows, shrunk_at)) =
             pending_reanchor_restore.clone()
         {
@@ -1335,7 +1337,6 @@ fn run_loop<B: Backend>(
                 last_reanchor_bounce = Instant::now();
             }
         } else if pane_live
-            && TmuxManager::uses_control_pty_input()
             && !app.has_pending_view_input()
             && viewport_stable_since.elapsed() >= VIEWPORT_RESIZE_DEBOUNCE
             && last_reanchor_bounce.elapsed() >= app::VIEW_REANCHOR_BOUNCE_INTERVAL

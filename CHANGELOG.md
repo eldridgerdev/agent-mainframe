@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.26.0] - 2026-06-22
+
 ### Added
 
 - **Fill-in placeholders for prompt templates.** Injecting a template that

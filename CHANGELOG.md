@@ -10,6 +10,8 @@ are tagged.
 
 ## [Unreleased]
 
+## [v0.26.1] - 2026-06-22
+
 ### Fixed
 
 - Claude panes now keep their periodic automatic repaint when direct tmux

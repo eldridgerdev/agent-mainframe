@@ -65,11 +65,12 @@ doc always says exactly what remains.
 
 - [Prompt library](prompt-library-plan.md) — _In progress._ Save
   reusable prompts and inject them into a session (compose box when on,
-  paste without sending when off). Phase 1 (SQLite-backed save & inject)
-  has shipped, plus a multi-source picker (`User` / `Project` / `Global`
-  with badges) and export to `config.json`. Fill-in `{{placeholders}}`,
-  select-menu templates, export/display location unification, and showing
-  the on-disk destination path remain.
+  paste without sending when off). Phases 1–2 have shipped: SQLite-backed
+  save & inject, a multi-source picker (`User` / `Project` / `Global` /
+  `Worktree` with badges), export to `config.json`, fill-in
+  `{{placeholders}}`, and select-menu slots authored inline as
+  `{{name|a|b|c}}`. Tags/grouping, an `amf-add-prompt` skill, export/display
+  location unification, and showing the on-disk destination path remain.
 - [Startup performance](startup-performance-plan.md) — _In progress._
   Parser repair and sidebar concurrency fixes shipped in PR #308;
   indexed Codex transcript access and sequenced startup I/O are

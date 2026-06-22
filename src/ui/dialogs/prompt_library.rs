@@ -314,23 +314,15 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
 
     // Always-visible placeholder help, kept off the editor so it stays put
     // while typing. Explains both the text-slot and the option-list forms.
+    let key_span = |s: &'static str| Span::styled(s, Style::default().fg(theme.primary.to_color()));
+    let muted = |s: &'static str| Span::styled(s, Style::default().fg(theme.text_muted.to_color()));
     let help = Line::from(vec![
-        Span::styled(
-            "{{name}}",
-            Style::default().fg(theme.primary.to_color()),
-        ),
-        Span::styled(
-            " fill-in slot \u{00b7} options: ",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-        Span::styled(
-            "{{env|dev|staging|prod}}",
-            Style::default().fg(theme.primary.to_color()),
-        ),
-        Span::styled(
-            " shows a menu to pick from",
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
+        key_span("{{name}}"),
+        muted(" fill-in slot \u{00b7} "),
+        key_span("{{a|b|c}}"),
+        muted(" menu \u{00b7} "),
+        key_span("{{label: a|b|c}}"),
+        muted(" labelled menu"),
     ]);
     frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), chunks[4]);
 
@@ -386,7 +378,7 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
 
     let label = state
         .current_placeholder()
-        .map(|p| p.label.as_deref().unwrap_or(&p.key).to_string())
+        .map(|p| p.display_label().to_string())
         .unwrap_or_default();
     let required = state
         .current_placeholder()

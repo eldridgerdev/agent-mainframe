@@ -455,14 +455,54 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) 
     refreshed
 }
 
+/// Apply one-time, version-gated migrations to a freshly loaded config.
+/// Returns `true` if anything changed and the file should be rewritten.
+///
+/// Each step only runs when `config_version` is below its version, and
+/// only rewrites a value that still equals the old default — a user who
+/// deliberately set the value after migrating is never clobbered, because
+/// the version bump stops the step from firing twice.
+pub(crate) fn migrate_app_config(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    if config.config_version < 1 {
+        // v1: the persistent control-mode (-CC PTY) transport corrupts the
+        // agent pane on Unix, so move pre-flip configs to the new direct
+        // default. Also shorten the diff-review popup hold from its old 3.0s
+        // default to the new 1.5s.
+        if config.tmux_control_mode {
+            config.tmux_control_mode = false;
+            changed = true;
+        }
+        if (config.diff_review_popup_hold_secs - 3.0).abs() < f64::EPSILON {
+            config.diff_review_popup_hold_secs = 1.5;
+            changed = true;
+        }
+    }
+
+    if config.config_version < crate::app::APP_CONFIG_VERSION {
+        config.config_version = crate::app::APP_CONFIG_VERSION;
+        changed = true;
+    }
+
+    changed
+}
+
 pub fn load_config() -> AppConfig {
     let config_path = crate::project::amf_config_dir().join("config.json");
 
     let config = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
+        let mut config: AppConfig = std::fs::read_to_string(&config_path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if migrate_app_config(&mut config) {
+            let _ = std::fs::write(
+                &config_path,
+                serde_json::to_string_pretty(&config).unwrap_or_default(),
+            );
+        }
+        config
     } else {
         let config = AppConfig::default();
         let dir = config_path.parent().unwrap();

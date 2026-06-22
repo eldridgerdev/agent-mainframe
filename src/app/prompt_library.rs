@@ -6,7 +6,7 @@ use chrono::Utc;
 use super::*;
 use crate::editor::TextEditor;
 use crate::prompt_library::{
-    PlaceholderKind, PromptPlaceholder, PromptSource, PromptTemplate, infer_placeholder_keys,
+    PlaceholderKind, PromptPlaceholder, PromptSource, PromptTemplate, infer_placeholder_slots,
     render_template,
 };
 
@@ -192,15 +192,18 @@ impl App {
         from_view: Option<ViewState>,
     ) {
         let values: Vec<String> = placeholders.iter().map(placeholder_default).collect();
-        let input = TextEditor::new(values.first().cloned().unwrap_or_default());
-        self.mode = AppMode::PlaceholderFill(PlaceholderFillState {
+        let mut state = PlaceholderFillState {
             template,
             placeholders,
             values,
             current: 0,
-            input,
+            input: TextEditor::new(String::new()),
+            select_index: 0,
             from_view,
-        });
+        };
+        // Seed the first field's editor + select highlight.
+        state.enter(0);
+        self.mode = AppMode::PlaceholderFill(state);
         self.message = None;
     }
 
@@ -209,7 +212,7 @@ impl App {
     pub fn placeholder_fill_next(&mut self) -> Result<()> {
         let at_last = match &mut self.mode {
             AppMode::PlaceholderFill(state) => {
-                state.values[state.current] = state.input.text().to_string();
+                state.commit_current();
                 state.current + 1 >= state.placeholders.len()
             }
             _ => return Ok(()),
@@ -218,8 +221,8 @@ impl App {
             return self.submit_placeholder_fill();
         }
         if let AppMode::PlaceholderFill(state) = &mut self.mode {
-            state.current += 1;
-            state.input = TextEditor::new(state.values[state.current].clone());
+            let next = state.current + 1;
+            state.enter(next);
         }
         Ok(())
     }
@@ -227,10 +230,10 @@ impl App {
     /// Save the current field, then step back to the previous slot.
     pub fn placeholder_fill_prev(&mut self) {
         if let AppMode::PlaceholderFill(state) = &mut self.mode {
-            state.values[state.current] = state.input.text().to_string();
+            state.commit_current();
             if state.current > 0 {
-                state.current -= 1;
-                state.input = TextEditor::new(state.values[state.current].clone());
+                let prev = state.current - 1;
+                state.enter(prev);
             }
         }
     }
@@ -241,7 +244,7 @@ impl App {
     pub fn submit_placeholder_fill(&mut self) -> Result<()> {
         let (rendered, from_view) = match &mut self.mode {
             AppMode::PlaceholderFill(state) => {
-                state.values[state.current] = state.input.text().to_string();
+                state.commit_current();
 
                 let missing = state
                     .placeholders
@@ -249,8 +252,7 @@ impl App {
                     .zip(state.values.iter())
                     .position(|(p, v)| p.required && v.trim().is_empty());
                 if let Some(missing) = missing {
-                    state.current = missing;
-                    state.input = TextEditor::new(state.values[missing].clone());
+                    state.enter(missing);
                     let label = placeholder_label(&state.placeholders[missing]).to_string();
                     self.message = Some(format!("\"{label}\" is required"));
                     return Ok(());
@@ -755,16 +757,26 @@ fn merge_prompt_library_entries(
 /// otherwise a synthesized `Text` slot. Explicit placeholders whose key never
 /// appears in the body are skipped — filling them would substitute nothing.
 fn resolve_placeholders(template: &PromptTemplate) -> Vec<PromptPlaceholder> {
-    infer_placeholder_keys(&template.body)
+    infer_placeholder_slots(&template.body)
         .into_iter()
-        .map(|key| match template.placeholders.iter().find(|p| p.key == key) {
-            Some(explicit) => explicit.clone(),
-            None => PromptPlaceholder {
+        .map(|(key, options)| {
+            // An explicit config-authored definition always wins.
+            if let Some(explicit) = template.placeholders.iter().find(|p| p.key == key) {
+                return explicit.clone();
+            }
+            // Inline `{{key|a|b}}` options become a Select; a bare `{{key}}`
+            // becomes a free-text slot.
+            let kind = if options.is_empty() {
+                PlaceholderKind::Text { default: None }
+            } else {
+                PlaceholderKind::Select { options }
+            };
+            PromptPlaceholder {
                 key,
                 label: None,
-                kind: PlaceholderKind::Text { default: None },
+                kind,
                 required: false,
-            },
+            }
         })
         .collect()
 }
@@ -901,6 +913,46 @@ mod tests {
         assert_eq!(slots[0].label.as_deref(), Some("Your name"));
         assert!(slots[0].required);
         assert_eq!(placeholder_default(&slots[0]), "Ada");
+    }
+
+    #[test]
+    fn resolve_makes_select_from_inline_options() {
+        let template = PromptTemplate::new(
+            "t".to_string(),
+            "Deploy {{env|dev|staging|prod}} as {{user}}".to_string(),
+        );
+        let slots = resolve_placeholders(&template);
+        assert_eq!(slots.len(), 2);
+        // Piped slot → Select with those options.
+        match &slots[0].kind {
+            PlaceholderKind::Select { options } => {
+                assert_eq!(options, &vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]);
+            }
+            other => panic!("expected Select, got {other:?}"),
+        }
+        // Bare slot → Text.
+        assert!(matches!(slots[1].kind, PlaceholderKind::Text { default: None }));
+    }
+
+    #[test]
+    fn resolve_explicit_definition_overrides_inline_options() {
+        // A config-authored placeholder wins even when the body has `|options`.
+        let mut template = PromptTemplate::new(
+            "t".to_string(),
+            "Deploy {{env|dev|prod}}".to_string(),
+        );
+        template.placeholders = vec![PromptPlaceholder {
+            key: "env".to_string(),
+            label: Some("Environment".to_string()),
+            kind: PlaceholderKind::Text {
+                default: Some("dev".to_string()),
+            },
+            required: true,
+        }];
+        let slots = resolve_placeholders(&template);
+        assert_eq!(slots.len(), 1);
+        assert!(matches!(slots[0].kind, PlaceholderKind::Text { .. }));
+        assert!(slots[0].required);
     }
 
     #[test]
@@ -1204,6 +1256,55 @@ mod tests {
         // next() on the last slot submits.
         app.placeholder_fill_next().unwrap();
         assert!(!matches!(app.mode, AppMode::PlaceholderFill(_)));
+    }
+
+    #[test]
+    fn select_slot_navigates_options_and_records_choice() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut template =
+            PromptTemplate::new("sel".to_string(), "Use {{lang}}".to_string());
+        template.placeholders = vec![PromptPlaceholder {
+            key: "lang".to_string(),
+            label: None,
+            kind: PlaceholderKind::Select {
+                options: vec!["rust".to_string(), "go".to_string(), "python".to_string()],
+            },
+            required: false,
+        }];
+        app.store.prompt_templates.push(template);
+        app.open_prompt_library(None);
+
+        app.inject_selected_template().unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        // Select slot starts highlighted on its default (first option).
+        assert!(state.is_select());
+        assert_eq!(state.select_index, 0);
+        assert_eq!(state.values[0], "rust");
+
+        // Navigate to "python" and record the choice (mirrors the handler).
+        if let AppMode::PlaceholderFill(state) = &mut app.mode {
+            state.select_next();
+            state.select_next();
+            assert_eq!(state.select_index, 2);
+            state.commit_current();
+            assert_eq!(state.values[0], "python");
+
+            // Wrap-around backwards from index 0 lands on the last option.
+            state.select_index = 0;
+            state.select_prev();
+            assert_eq!(state.select_index, 2);
+        }
     }
 
     #[test]

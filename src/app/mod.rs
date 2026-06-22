@@ -353,9 +353,18 @@ impl ZaiPlanConfig {
     }
 }
 
+/// On-disk schema version for [`AppConfig`]. Bump this whenever a new
+/// migration step is added to `migrate_app_config`; pre-existing config
+/// files have no `config_version` field and so read as 0.
+pub const APP_CONFIG_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Schema version, used to gate one-time migrations. Missing in
+    /// configs written before versioning, which deserialize it as 0.
+    #[serde(default)]
+    pub config_version: u32,
     pub nerd_font: bool,
     pub leader_timeout_seconds: u64,
     pub input_request_wait_seconds: f64,
@@ -397,13 +406,19 @@ pub struct ProjectsConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            config_version: APP_CONFIG_VERSION,
             nerd_font: true,
             leader_timeout_seconds: 5,
             input_request_wait_seconds: 1.5,
-            tmux_control_mode: true,
+            // Direct tmux transport by default: the persistent control-mode
+            // (-CC PTY) clients desync Claude Code's incremental renderer and
+            // cause the long-standing mangled-pane corruption on Linux/macOS.
+            // Control mode stays available as an opt-in (config /
+            // AMF_TMUX_INPUT_TRANSPORT / AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT).
+            tmux_control_mode: false,
             diff_review_viewer: DiffReviewViewer::default(),
             diff_viewer_layout: DiffViewerLayout::Unified,
-            diff_review_popup_hold_secs: 3.0,
+            diff_review_popup_hold_secs: 1.5,
             zai: None,
             opencode_theme: Some("catppuccin-frappe".to_string()),
             projects: ProjectsConfig::default(),

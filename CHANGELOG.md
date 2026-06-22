@@ -19,8 +19,15 @@ are tagged.
   `Shift+Tab` goes back, and `Ctrl+S` injects at any point. Slots are filled in
   the order they appear in the prompt, pre-seeded with any configured defaults,
   and required slots block injection until filled. Templates without slots
-  inject immediately as before. Slots default to free-text fields; richer types
-  (multi-line, select menus) are honored when declared in a template's config.
+  inject immediately as before.
+
+- **Menu (pick-from-a-list) placeholders.** A slot can offer a fixed set of
+  choices instead of free text: when you reach it in the fill-in flow, you pick
+  from a list with `↑`/`↓` (or `j`/`k`) and `Tab` to confirm. Define one right
+  in the prompt body with `{{name|option1|option2|option3}}` — for example
+  `Deploy to {{env|dev|staging|prod}}`. Plain `{{name}}` stays a free-text slot.
+  The New/Edit Prompt editor now shows a short, always-visible help line
+  explaining both forms (it no longer disappears once you start typing).
 
 - **Save a past prompt to the library.** In the recent-prompts menu
   (`leader+L`), press `s` to save the highlighted prompt as a new reusable
@@ -71,7 +78,33 @@ are tagged.
   config template now immediately explains this instead of arming a confirm
   dialog that then refuses to act.
 
+- **Direct tmux transport is now the default.** AMF no longer attaches a
+  persistent control-mode (`-CC`) client to drive agent panes; it talks to
+  tmux directly, the same way it always has on Windows. This is what fixes the
+  long-standing garbled-pane corruption (see Fixed). Control mode remains
+  available as an opt-in via `tmux_control_mode: true` in `config.json` (or the
+  `AMF_TMUX_INPUT_TRANSPORT` / `AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT` env
+  vars). The periodic automatic pane refresh and the SIGWINCH re-anchor bounce
+  now run only in control mode, where they're needed — direct mode re-captures
+  the full pane each frame and self-heals, so it no longer flickers from those.
+
+- The diff-review popup now holds for **1.5s** by default instead of 3s.
+
+  **Migration:** on first launch after upgrading, AMF rewrites `config.json`
+  once to apply the new defaults — a persisted `tmux_control_mode: true` is set
+  to `false` and a `diff_review_popup_hold_secs` of `3.0` becomes `1.5`. Values
+  you previously customized away from those old defaults are left untouched, and
+  the file is stamped with a `config_version` so the migration never runs twice
+  (re-enable control mode afterward and it stays enabled).
+
 ### Fixed
+
+- **Garbled / mangled agent panes on Linux and macOS.** The persistent
+  control-mode tmux clients AMF attached to each session could desync Claude
+  Code's incremental renderer, leaving stale cells in the pane grid (the input
+  box bleeding into the divider above it). Windows was never affected because
+  that transport is Unix-only. Defaulting to the direct transport removes the
+  extra clients and the corruption with them.
 
 - Pressing `A` on the dashboard now opens the agent-harness setup picker as
   expected. The key was only wired into the `Ctrl+Space` leader chord, so a

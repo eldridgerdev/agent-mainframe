@@ -41,6 +41,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("n", "Create new feature"),
         ("B", "Create batch features"),
         ("O", "Open AMF settings project"),
+        ("A", "Manage agent harnesses"),
         ("d", "Delete project/feature/session"),
         ("D", "View debug log"),
         ("P", "Open syntax parser picker"),

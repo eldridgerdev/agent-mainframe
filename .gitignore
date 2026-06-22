@@ -6,7 +6,20 @@ IDEAS.md
 .claude/settings.local.json
 .claude/settings.json
 .codex/
+
+# AMF / opencode runtime-generated artifacts — never part of a branch's
+# real changes. (.amf/config.json is intentional shared config and is
+# force-tracked despite this dir-wide ignore.)
 .amf/
+tui.json
+
+# .claude/ runtime files are also ignored via .claude/.gitignore; listed
+# here too so fresh checkouts/worktrees ignore them before that file exists.
+.claude/review-notes.md
+.claude/final-review-feedback.md
+.claude/latest-prompt.txt
+.claude/notifications/
+.claude/skills/amf-*/
 
 CLAUDE.local.md
 PLAN.md

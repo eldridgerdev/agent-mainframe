@@ -106,6 +106,11 @@ are tagged.
   that transport is Unix-only. Defaulting to the direct transport removes the
   extra clients and the corruption with them.
 
+- Diff/review mode no longer shows AMF-generated runtime files as if they
+  were branch changes. The change-tracker log (`.amf/change-history.json`)
+  and the opencode TUI state (`tui.json`) are now gitignored and untracked,
+  so the review surface reflects only the real changes on your branch.
+
 ## [v0.25.0] - 2026-06-19
 
 ### Added

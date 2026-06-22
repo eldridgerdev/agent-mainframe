@@ -86,6 +86,13 @@ pub enum SessionKind {
     Custom,
 }
 
+impl SessionKind {
+    /// Whether this window hosts one of AMF's built-in agent harnesses.
+    pub fn is_agent_harness(&self) -> bool {
+        matches!(self, Self::Claude | Self::Opencode | Self::Codex | Self::Pi)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentKind {

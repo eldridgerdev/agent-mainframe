@@ -1,7 +1,8 @@
 # Prompt Library
 
-- **Status:** In progress _(phases 1–2 shipped; multi-source picker, fill-in
-  flow, and select-menus landed; phase 3 tags/skill and phase 4 polish remain)_
+- **Status:** In progress _(phases 1–3 shipped in v0.26.0: multi-source picker,
+  fill-in flow, and inline select-menus landed; phase 3 tags + phase 4 polish
+  remain, plus phase 5 editor/injection enhancements)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -335,6 +336,25 @@ New `src/ui/dialogs/prompt_library.rs` (model on
    - Editor: when editing a `User` template, a small hint that saving
      writes to the local SQLite store (not version-controlled) vs. an
      exported config entry.
+
+### Phase 5 — Editor & injection enhancements
+
+- [ ] **VIM support in the prompt library editing surfaces.** `TextEditor`
+  already implements vim mode (used by compose / steering), so the New/Edit
+  Prompt body editor and any multi-line (`MultiLine`) placeholder fill field
+  should honor the same vim keybindings and respect the user's vim toggle.
+  Surface a small mode indicator and verify normal/insert/visual behave the
+  same as in the compose box. Add a test that the editor enters vim normal
+  mode on `Esc` and that motions/operators reach the prompt body.
+- [ ] **Inject an agent skill into the prompt.** Add a way to pick an agent
+  skill (the user-invocable skills available in the workspace) and inject a
+  reference to it — or its expanded content — into the prompt being composed
+  or filled. Likely shapes: a dedicated `Skill` placeholder kind whose option
+  list is the available skills, or a picker hotkey in the editor/fill flow
+  that inserts the chosen skill's invocation (e.g. `/skill-name`) at the
+  cursor. Resolve where the skill list comes from (same source the command
+  picker uses) and whether injection inserts the invocation token vs. the
+  skill body text.
 
 ## Resolved decisions
 

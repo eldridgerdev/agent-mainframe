@@ -12,6 +12,10 @@ are tagged.
 
 ### Fixed
 
+- Claude panes now keep their periodic automatic repaint when direct tmux
+  transport is active, preventing the embedded UI from becoming mangled on
+  Linux even though control mode is disabled by default.
+
 - Adding a session to a stopped feature now starts the feature automatically,
   so the new session opens immediately and the dashboard returns to a green
   status. If AMF cannot start the feature or create the session, it now shows

@@ -14,10 +14,19 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
-## `A` does not open harness setup from the dashboard
+## ~~`A` does not open harness setup from the dashboard~~ (Fixed)
 
-- **Status:** Backlog
+- **Status:** Fixed (2026-06-21)
 - **Reported:** 2026-06-21
+- **Root cause:** The `KeyCode::Char('A') => app.open_harness_setup(false)`
+  arm was inside `handle_normal_leader_key` (the Ctrl+Space chord handler),
+  not `handle_normal_key`. A bare `A` on the dashboard fell through to
+  `_ => {}`; only `Ctrl+Space` then `A` opened the picker. The remap-block
+  lead was a red herring — with default (empty) keybindings the remap is a
+  no-op.
+- **Fix:** Moved the arm into `handle_normal_key` alongside the other bare
+  capital actions, added `A` to the dashboard help overlay, and added a
+  regression test (`bare_uppercase_a_opens_harness_setup_from_dashboard`).
 
 ### Repro
 

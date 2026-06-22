@@ -6692,3 +6692,30 @@ fn prompt_library_export_to_global_updates_extension_config() {
         .unwrap();
     assert_eq!(app.config.extension.prompt_templates.len(), 1);
 }
+
+#[test]
+fn bare_uppercase_a_opens_harness_setup_from_dashboard() {
+    // Regression: the `A` dispatch used to live in the leader-chord
+    // handler, so a bare `A` on the dashboard did nothing. It must be
+    // handled in the normal key handler like the other capital actions.
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Normal;
+    let key = crossterm::event::KeyEvent::new(
+        KeyCode::Char('A'),
+        crossterm::event::KeyModifiers::NONE,
+    );
+    crate::handlers::handle_normal_key(&mut app, key).unwrap();
+    assert!(matches!(app.mode, AppMode::HarnessSetup(_)));
+}

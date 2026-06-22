@@ -71,6 +71,13 @@ are tagged.
   config template now immediately explains this instead of arming a confirm
   dialog that then refuses to act.
 
+### Fixed
+
+- Pressing `A` on the dashboard now opens the agent-harness setup picker as
+  expected. The key was only wired into the `Ctrl+Space` leader chord, so a
+  bare `A` did nothing. It is now a top-level dashboard action (and listed in
+  the `?` help overlay) alongside the other capital-letter shortcuts.
+
 ## [v0.25.0] - 2026-06-19
 
 ### Added

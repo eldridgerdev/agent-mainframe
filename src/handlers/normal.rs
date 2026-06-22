@@ -63,6 +63,9 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('O') => {
             app.open_settings_project()?;
         }
+        KeyCode::Char('A') => {
+            app.open_harness_setup(false);
+        }
         KeyCode::Char('n') => {
             if app.selected_project().is_some() {
                 app.start_create_feature();
@@ -357,9 +360,6 @@ fn handle_normal_leader_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('r') => {
             app.refresh_status_and_notifications();
-        }
-        KeyCode::Char('A') => {
-            app.open_harness_setup(false);
         }
         _ => {}
     }

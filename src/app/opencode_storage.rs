@@ -65,6 +65,7 @@ pub(crate) fn sidebar_input_signature(workdir: &Path, preferred_session_id: Opti
     sidebar_input_signature_from_roots(&storage_root, &sidecar_root, preferred_session_id)
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 fn read_sidebar_data_from_roots(
     storage_root: &Path,
     sidecar_root: &Path,
@@ -397,17 +398,6 @@ fn parse_session_file(path: &Path) -> Option<OpencodeSessionRecord> {
 fn parse_message_file(path: &Path) -> Option<OpencodeMessage> {
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<OpencodeMessage>(&contents).ok()
-}
-
-fn read_sidecar(
-    sidecar_root: &Path,
-    preferred_session_id: Option<&str>,
-) -> Option<OpencodeSidebarData> {
-    read_sidecar_at_time(
-        sidecar_root,
-        preferred_session_id,
-        chrono::Utc::now().timestamp(),
-    )
 }
 
 fn read_sidecar_at_time(

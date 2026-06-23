@@ -469,7 +469,7 @@ automatically with defaults on first run.
 | `leader_timeout_seconds` | number | `5` | Leader chord timeout in viewing mode. |
 | `input_request_wait_seconds` | number | `1.5` | Startup grace period before AMF refreshes background input-request state while viewing a session. Increase it if startup refreshes interfere with the embedded pane; decrease it for faster pending-input updates. |
 | `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
-| `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI: `"amf"` uses the in-app reviewer and `"nvim"` uses the legacy tmux/neovim popup. Older `"custom"` and `"legacy"` values are still accepted. |
+| `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI. Only the in-app reviewer is supported; the value is retained for compatibility (the legacy `"nvim"`/`"legacy"`/`"custom"` values are accepted and map to the in-app reviewer). |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |

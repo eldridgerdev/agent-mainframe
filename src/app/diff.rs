@@ -292,29 +292,6 @@ impl App {
         Some((view, workdir))
     }
 
-    fn populate_diff_viewer_state(&self, state: &mut DiffViewerState) {
-        match crate::diff::load_snapshot(&state.workdir) {
-            Ok(snapshot) => {
-                state.branch = snapshot.branch;
-                state.base_ref = snapshot.base_ref;
-                state.base_commit = snapshot.base_commit;
-                state.files = snapshot.files;
-                state.selected_file = 0;
-                state.patch_scroll = 0;
-                state.error = None;
-            }
-            Err(err) => {
-                state.branch.clear();
-                state.base_ref.clear();
-                state.base_commit.clear();
-                state.files.clear();
-                state.selected_file = 0;
-                state.patch_scroll = 0;
-                state.error = Some(err.to_string());
-            }
-        }
-    }
-
     fn diff_viewer_patch_line_count(&self) -> usize {
         match &self.mode {
             AppMode::DiffViewer(state) => state

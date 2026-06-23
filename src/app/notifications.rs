@@ -34,6 +34,7 @@ struct IpcMsg {
     change_id: Option<String>,
     old_snippet: Option<String>,
     new_snippet: Option<String>,
+    #[allow(dead_code)] // parsed from hook JSON, not surfaced yet
     content_preview: Option<String>,
     response_file: Option<String>,
     original_file: Option<String>,
@@ -1115,6 +1116,7 @@ impl App {
             change_id: Option<String>,
             old_snippet: Option<String>,
             new_snippet: Option<String>,
+            #[allow(dead_code)] // parsed from hook JSON, not surfaced yet
             content_preview: Option<String>,
             response_file: Option<String>,
             original_file: Option<String>,

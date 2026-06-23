@@ -14,19 +14,6 @@ pub fn draw_help(frame: &mut Frame, scroll_offset: usize, theme: &Theme) {
     draw_help_at(frame, area, scroll_offset, theme);
 }
 
-pub fn draw_help_bottom_right(frame: &mut Frame, scroll_offset: usize, theme: &Theme) {
-    let viewport = frame.area();
-    let width = (viewport.width.saturating_mul(55) / 100).max(40);
-    let height = (viewport.height.saturating_mul(70) / 100).max(12);
-    let area = Rect::new(
-        viewport.x + viewport.width.saturating_sub(width + 1),
-        viewport.y + viewport.height.saturating_sub(height + 1),
-        width,
-        height,
-    );
-    draw_help_at(frame, area, scroll_offset, theme);
-}
-
 fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &Theme) {
     crate::ui::draw_modal_overlay(frame, area, theme);
 

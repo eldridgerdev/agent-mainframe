@@ -1,5 +1,4 @@
 use crate::project::SessionKind;
-use crate::worktree::WorktreeManager;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -24,29 +23,11 @@ pub struct ClaudeTaskState {
 }
 
 impl ClaudeTaskState {
-    pub fn current_task(&self) -> Option<&ClaudeTask> {
-        self.tasks.iter().find(|task| task.status == "in_progress")
-    }
-
     pub fn completed_count(&self) -> usize {
         self.tasks
             .iter()
             .filter(|task| task.status == "completed")
             .count()
-    }
-
-    pub fn pending_count(&self) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| task.status == "pending")
-            .count()
-    }
-
-    pub fn last_completed_task(&self) -> Option<&ClaudeTask> {
-        self.tasks
-            .iter()
-            .rev()
-            .find(|task| task.status == "completed")
     }
 }
 
@@ -76,22 +57,6 @@ pub fn slugify(s: &str) -> String {
         .join("-")
 }
 
-pub fn detect_repo_path() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    WorktreeManager::repo_root(&cwd)
-        .unwrap_or(cwd)
-        .to_string_lossy()
-        .into_owned()
-}
-
-pub fn detect_branch() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    WorktreeManager::current_branch(&cwd)
-        .ok()
-        .flatten()
-        .unwrap_or_default()
-}
-
 pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("latest-prompt.txt")
 }
@@ -110,10 +75,6 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
                 .ok()
                 .flatten()
         })
-}
-
-pub fn read_latest_prompt_entry(workdir: &Path) -> Option<PromptEntry> {
-    read_all_prompts(workdir).into_iter().next()
 }
 
 pub fn fuzzy_match_score(candidate: &str, query: &str) -> Option<usize> {
@@ -207,10 +168,6 @@ pub(crate) fn read_latest_prompt_for_session(
             (None, None) => std::cmp::Ordering::Equal,
         })
         .map(|entry| entry.text)
-}
-
-pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
-    read_all_prompts_for_session(workdir, None, None)
 }
 
 pub(crate) fn read_all_prompts_for_session(

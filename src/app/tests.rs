@@ -3,9 +3,7 @@ use super::setup::{
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
-use super::util::{
-    latest_prompt_path, read_all_prompts, read_latest_prompt, shorten_path, slugify,
-};
+use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
@@ -340,17 +338,6 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
-fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
-    let workdir = TempDir::new().unwrap();
-    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
-    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
-    std::fs::write(&codex_path, "codex prompt history").unwrap();
-
-    let prompts = read_all_prompts(workdir.path());
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].text, "codex prompt history");
-}
-
 // ── AppConfig defaults ───────────────────────────────────
 
 #[test]
@@ -507,9 +494,10 @@ fn app_config_diff_review_viewer_deserializes_amf() {
 }
 
 #[test]
-fn app_config_diff_review_viewer_deserializes_nvim() {
+fn app_config_diff_review_viewer_nvim_maps_to_amf() {
+    // The legacy vimdiff viewer was retired; old configs still load.
     let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"nvim"}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -521,7 +509,7 @@ fn app_config_diff_review_viewer_accepts_custom_alias() {
 #[test]
 fn app_config_diff_review_viewer_accepts_legacy_alias() {
     let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"legacy"}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -3536,24 +3524,6 @@ fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is
     ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
-fn call_ensure_hooks_for_with_config(
-    workdir: &TempDir,
-    mode: VibeMode,
-    agent: AgentKind,
-    is_worktree: bool,
-    config: &AppConfig,
-) {
-    let repo = workdir.path(); // repo = workdir in tests
-    super::setup::ensure_notification_hooks_with_config(
-        workdir.path(),
-        repo,
-        &mode,
-        &agent,
-        is_worktree,
-        config,
-    );
-}
-
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
     call_ensure_hooks_for(workdir, mode, AgentKind::Claude, true);
 }
@@ -3716,37 +3686,6 @@ fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_defa
     assert!(
         cmds.iter().any(|c| c.contains("custom-diff-review.sh")),
         "Vibeless PreToolUse should include custom-diff-review; got: {cmds:?}"
-    );
-}
-
-#[test]
-fn vibeless_pre_tool_use_can_use_legacy_diff_review_when_configured() {
-    let workdir = TempDir::new().unwrap();
-    let scripts_dir = workdir
-        .path()
-        .join("plugins")
-        .join("diff-review")
-        .join("scripts");
-    std::fs::create_dir_all(&scripts_dir).unwrap();
-    std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
-
-    let config = AppConfig {
-        diff_review_viewer: DiffReviewViewer::Nvim,
-        ..AppConfig::default()
-    };
-    call_ensure_hooks_for_with_config(
-        &workdir,
-        VibeMode::Vibeless,
-        AgentKind::Claude,
-        true,
-        &config,
-    );
-
-    let s = read_settings(&workdir);
-    let cmds = hook_commands_for(&s, "PreToolUse");
-    assert!(
-        cmds.iter().any(|c| c.contains("diff-review.sh")),
-        "Vibeless PreToolUse should include legacy diff-review; got: {cmds:?}"
     );
 }
 

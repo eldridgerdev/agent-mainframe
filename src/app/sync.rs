@@ -74,6 +74,7 @@ struct SessionStatusJob {
     workdir: PathBuf,
     created_at: chrono::DateTime<chrono::Utc>,
     existing_source: Option<TokenUsageSource>,
+    #[allow(dead_code)] // set during job construction, not read yet
     existing_source_match: Option<TokenUsageSourceMatch>,
     claude_session_id: Option<String>,
     custom_status_text: Option<String>,
@@ -369,12 +370,14 @@ impl App {
         }
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn sync_session_status(&mut self) {
         let mut tracker = std::mem::take(&mut self.token_tracker);
         self.sync_session_status_with_tracker(&mut tracker);
         self.token_tracker = tracker;
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub(crate) fn sync_session_status_with_tracker(&mut self, tracker: &mut SessionTokenTracker) {
         let pricing = self.config.token_pricing.clone();
         let mut discovered_sources = false;
@@ -868,20 +871,3 @@ impl App {
     }
 }
 
-pub fn cleanup_stale_thinking_files() {
-    let Ok(entries) = std::fs::read_dir("/tmp/amf-thinking") else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata() {
-            if let Ok(modified) = metadata.modified() {
-                if let Ok(elapsed) = modified.elapsed() {
-                    if elapsed > std::time::Duration::from_secs(10) {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-    }
-}

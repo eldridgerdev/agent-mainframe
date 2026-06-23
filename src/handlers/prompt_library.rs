@@ -119,12 +119,15 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             let has_selection =
                 matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
             if has_selection {
+                let from_view = match &app.mode {
+                    AppMode::PromptLibrary(state) => state.from_view.clone(),
+                    _ => None,
+                };
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = true;
                     state.confirm_delete = false;
                 }
-                app.message =
-                    Some("Export to: (g) global  (p) project  (w) worktree  ·  Esc cancel".into());
+                app.message = Some(app.build_export_menu_message(from_view.as_ref()));
             }
         }
         KeyCode::Char('d') => {

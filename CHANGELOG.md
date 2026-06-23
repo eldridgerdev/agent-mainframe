@@ -12,6 +12,52 @@ are tagged.
 
 ### Added
 
+- **`/amf:add-prompt` skill.** A new skill (parallel to `/amf:add-preset`) that
+  adds a declarative prompt template to your workspace without hand-writing
+  JSON. It writes a `prompt_templates` entry to `.amf/config.json` (project) or
+  the global `~/.config/amf/config.json`, and documents the template schema —
+  including tags, inline `{{slot}}` / `{{name|opt1|opt2}}` syntax, and explicit
+  text / multi-line / select placeholders. The template then shows up in the
+  prompt library picker as a read-only `Project`/`Global` entry.
+
+- **Tags for prompt templates.** The New/Edit Prompt dialog now has a `Tags`
+  field (Tab cycles Name → Tags → Body); enter a comma- or space-separated
+  list and AMF stores it with the template. Tags show as `#chips` in the
+  picker's preview pane. In the picker's search (`/`), the query now also
+  matches tags, and a `#`-prefixed query filters by tag only — `#frontend`
+  narrows to templates tagged `frontend`, and a bare `#` lists every tagged
+  template.
+
+### Changed
+
+- The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with
+  the same workflow and keybindings as Claude Code. Start typing to compose,
+  use `Ctrl+E` or `leader+e` to switch between compose and direct input, and
+  use drafts, prompt templates, multiline input, clipboard paste, and image
+  attachments without changing workflows between agent harnesses. Terminal,
+  editor, and custom sessions continue to use direct input.
+
+### Fixed
+
+- Claude panes now keep their periodic automatic repaint when direct tmux
+  transport is active, preventing the embedded UI from becoming mangled on
+  Linux even though control mode is disabled by default.
+
+- Adding a session to a stopped feature now starts the feature automatically,
+  so the new session opens immediately and the dashboard returns to a green
+  status. If AMF cannot start the feature or create the session, it now shows
+  an error toast instead of appearing to do nothing.
+
+### Migration
+
+- No migration is required. The composer is enabled by default for all
+  built-in agent harness sessions; use `leader+e` per session to opt into
+  direct input.
+
+## [v0.26.0] - 2026-06-22
+
+### Added
+
 - **Fill-in placeholders for prompt templates.** Injecting a template that
   contains `{{slot}}` markers now walks you through one field at a time,
   collecting a value for each slot before the prompt is delivered. A `2/3`
@@ -24,10 +70,12 @@ are tagged.
 - **Menu (pick-from-a-list) placeholders.** A slot can offer a fixed set of
   choices instead of free text: when you reach it in the fill-in flow, you pick
   from a list with `↑`/`↓` (or `j`/`k`) and `Tab` to confirm. Define one right
-  in the prompt body with `{{name|option1|option2|option3}}` — for example
-  `Deploy to {{env|dev|staging|prod}}`. Plain `{{name}}` stays a free-text slot.
+  in the prompt body by listing the choices with `|` — `{{a|b|c}}` makes every
+  segment a selectable option, for example `Deploy to {{dev|staging|prod}}`. Add
+  an optional heading with a leading `label:` — `{{env: dev|staging|prod}}` shows
+  "env" above the same three choices. Plain `{{name}}` stays a free-text slot.
   The New/Edit Prompt editor now shows a short, always-visible help line
-  explaining both forms (it no longer disappears once you start typing).
+  explaining all three forms (it no longer disappears once you start typing).
 
 - **Save a past prompt to the library.** In the recent-prompts menu
   (`leader+L`), press `s` to save the highlighted prompt as a new reusable

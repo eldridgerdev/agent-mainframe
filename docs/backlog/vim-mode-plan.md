@@ -104,6 +104,18 @@ woven into the ranking below rather than listed separately:
 - [ ] **Marks** — `m<char>` and jump `` `<char> `` / `'<char>`.
 - [ ] **Macros** — `q<reg>` record, `@<reg>` / `@@` replay.
 
+### Editor behavior & persistence
+
+Not editing features, but related vim-mode polish:
+
+- [ ] **Persist the Plain ↔ Vim toggle.** Today the compose editor's vim
+  mode is chosen per session and resets each launch. Save whether vim is
+  enabled so the choice survives restarts — store it as a user preference in
+  `AppConfig` (`config.json`), like other persisted defaults, and seed new
+  `TextEditor` instances (compose, steering, and any future prompt-library
+  editor) from it on creation. Toggling vim at runtime should update the
+  persisted value so the next session starts in the same mode.
+
 ## Notes
 
 - Surfaces in scope today: the Compose box and the Steering Prompt.

@@ -35,6 +35,10 @@ const AMF_SKILLS: &[(&str, &str)] = &[
         include_str!("../../skills/amf-add-preset/SKILL.md"),
     ),
     (
+        "add-prompt",
+        include_str!("../../skills/amf-add-prompt/SKILL.md"),
+    ),
+    (
         "configure",
         include_str!("../../skills/amf-configure/SKILL.md"),
     ),

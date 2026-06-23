@@ -126,10 +126,10 @@ pub fn handle_view_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Resul
         return handle_scroll_key(app, key, visible_rows);
     }
 
-    // Compose interception: printable keys in a Claude view open the
-    // local compose box instead of typing into Claude Code's input.
+    // Compose interception: printable keys in an agent view open the
+    // local compose box instead of typing into the harness's input.
     // Navigation, Enter, Esc, and modified keys still pass through so
-    // CC's own dialogs stay drivable.
+    // harness-owned dialogs stay drivable.
     if let AppMode::Viewing(view) = &app.mode
         && app.compose_intercept_active(view)
         && let KeyCode::Char(c) = key.code
@@ -698,6 +698,40 @@ mod tests {
     }
 
     #[test]
+    fn typing_printable_char_opens_compose_for_every_agent_harness() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Opencode,
+            SessionKind::Codex,
+            SessionKind::Pi,
+        ] {
+            let repo = TempDir::new().unwrap();
+            let mut app = app_for_viewing_repo(repo.path());
+            if let AppMode::Viewing(view) = &mut app.mode {
+                view.session_kind = kind.clone();
+                view.window = kind_label(&kind).to_string();
+            }
+
+            handle_view_key(&mut app, key(KeyCode::Char('h')), 20).unwrap();
+
+            assert!(
+                matches!(&app.mode, AppMode::Compose(state) if state.editor.text() == "h" && state.view.session_kind == kind),
+                "composer did not open for {kind:?}"
+            );
+        }
+    }
+
+    fn kind_label(kind: &SessionKind) -> &'static str {
+        match kind {
+            SessionKind::Claude => "claude",
+            SessionKind::Opencode => "opencode",
+            SessionKind::Codex => "codex",
+            SessionKind::Pi => "pi",
+            _ => "other",
+        }
+    }
+
+    #[test]
     fn compose_draft_survives_close_and_reopen() {
         let repo = TempDir::new().unwrap();
         let mut app = app_for_viewing_repo(repo.path());
@@ -822,6 +856,40 @@ mod tests {
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
         assert!(!app.compose_direct_targets.contains("amf-feature:claude"));
+    }
+
+    #[test]
+    fn leader_e_toggles_direct_input_for_every_agent_harness() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Opencode,
+            SessionKind::Codex,
+            SessionKind::Pi,
+        ] {
+            let repo = TempDir::new().unwrap();
+            let mut app = app_for_viewing_repo(repo.path());
+            let window = kind_label(&kind).to_string();
+            if let AppMode::Viewing(view) = &mut app.mode {
+                view.session_kind = kind.clone();
+                view.window = window.clone();
+            }
+
+            app.activate_leader();
+            handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+            assert!(
+                app.compose_direct_targets
+                    .contains(&format!("amf-feature:{window}")),
+                "direct input did not enable for {kind:?}"
+            );
+
+            app.activate_leader();
+            handle_view_key(&mut app, key(KeyCode::Char('e')), 20).unwrap();
+            assert!(
+                !app.compose_direct_targets
+                    .contains(&format!("amf-feature:{window}")),
+                "composer did not re-enable for {kind:?}"
+            );
+        }
     }
 
     #[test]

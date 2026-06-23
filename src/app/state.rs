@@ -637,6 +637,36 @@ impl PromptLibraryState {
     }
 }
 
+/// Which field of the prompt editor currently has focus. `Tab` cycles
+/// Name → Tags → Body (and `Shift+Tab` the reverse). Name and Tags are
+/// single-line text fields; Body is the multi-line `TextEditor`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptEditorFocus {
+    Name,
+    Tags,
+    Body,
+}
+
+impl PromptEditorFocus {
+    /// The next field in the Name → Tags → Body → Name cycle.
+    pub fn next(self) -> Self {
+        match self {
+            PromptEditorFocus::Name => PromptEditorFocus::Tags,
+            PromptEditorFocus::Tags => PromptEditorFocus::Body,
+            PromptEditorFocus::Body => PromptEditorFocus::Name,
+        }
+    }
+
+    /// The previous field in the cycle (reverse of `next`).
+    pub fn prev(self) -> Self {
+        match self {
+            PromptEditorFocus::Name => PromptEditorFocus::Body,
+            PromptEditorFocus::Tags => PromptEditorFocus::Name,
+            PromptEditorFocus::Body => PromptEditorFocus::Tags,
+        }
+    }
+}
+
 /// Create/edit dialog for a user template. `editing_id` is `None` for a
 /// new template. `return_to` is where to land after save/cancel — the
 /// picker it was opened from, or the underlying `Viewing` mode when
@@ -646,10 +676,13 @@ pub struct PromptEditorState {
     /// Where the template lives; determines which store/file is written on save.
     pub editing_source: crate::prompt_library::PromptSource,
     /// Original template for config-file sources (Project/Global/Worktree),
-    /// preserving id/description/tags/placeholders across edits.
+    /// preserving id/description/placeholders across edits.
     pub original_template: Option<crate::prompt_library::PromptTemplate>,
     pub name: String,
-    pub name_field_active: bool,
+    /// Raw comma/space-separated tag input; parsed into the template's
+    /// `tags` on save (see `prompt_library::parse_tags`).
+    pub tags: String,
+    pub focus: PromptEditorFocus,
     pub editor: TextEditor,
     pub return_to: Box<AppMode>,
 }

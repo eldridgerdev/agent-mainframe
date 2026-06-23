@@ -436,6 +436,40 @@ mod tests {
     }
 
     #[test]
+    fn prompt_templates_merged_by_name_project_wins() {
+        let global = ExtensionConfig {
+            prompt_templates: vec![
+                PromptTemplate::new("shared".to_string(), "global body".to_string()),
+                PromptTemplate::new("global-only".to_string(), "g".to_string()),
+            ],
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            prompt_templates: vec![
+                PromptTemplate::new("shared".to_string(), "project body".to_string()),
+                PromptTemplate::new("project-only".to_string(), "p".to_string()),
+            ],
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        // "shared" must appear exactly once (project version).
+        let shared: Vec<_> = merged
+            .prompt_templates
+            .iter()
+            .filter(|t| t.name == "shared")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].body, "project body");
+        // Both unique entries should be present.
+        assert!(merged.prompt_templates.iter().any(|t| t.name == "global-only"));
+        assert!(merged.prompt_templates.iter().any(|t| t.name == "project-only"));
+        assert_eq!(merged.prompt_templates.len(), 3);
+    }
+
+    #[test]
     fn keybindings_project_overrides_per_action() {
         let mut global_bindings = HashMap::new();
         global_bindings.insert("quit".to_string(), 'q');

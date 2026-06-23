@@ -94,9 +94,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     let view_keybinds: Vec<(&str, &str)> = vec![
         ("Ctrl+Q", "Exit view"),
         ("Ctrl+Space", "Open leader command menu"),
-        ("any text key", "Open compose input (Claude sessions)"),
+        ("any text key", "Open compose input (agent sessions)"),
         ("s", "Steering coach (experimental)"),
-        ("e", "Toggle compose/direct input (Claude)"),
+        ("e", "Toggle compose/direct input (agent sessions)"),
         ("d", "Diff viewer"),
         ("m", "Markdown file picker/viewer"),
         ("b", "Show/hide sidebar"),

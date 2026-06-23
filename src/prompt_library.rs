@@ -85,6 +85,22 @@ pub struct PromptPlaceholder {
     pub required: bool,
 }
 
+impl PromptPlaceholder {
+    /// The heading shown for this slot in the fill-in flow: an explicit
+    /// `label`, else the `key` for text slots. A bare menu (`{{a|b|c}}`) has no
+    /// label and its key is the raw token text, so it falls back to a generic
+    /// prompt rather than exposing that internal key.
+    pub fn display_label(&self) -> &str {
+        if let Some(label) = self.label.as_deref().filter(|l| !l.is_empty()) {
+            return label;
+        }
+        match self.kind {
+            PlaceholderKind::Select { .. } => "Choose an option",
+            _ => &self.key,
+        }
+    }
+}
+
 fn new_template_id() -> String {
     Uuid::new_v4().to_string()
 }
@@ -144,9 +160,10 @@ pub fn render_template(body: &str, values: &[(String, String)]) -> String {
         if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
             if let Some(close) = body[i + 2..].find("}}") {
                 let raw = &body[i + 2..i + 2 + close];
-                // A token may carry inline options (`{{key|a|b}}`); the lookup
-                // key is the part before the first `|`.
-                let (key, _options) = parse_placeholder_token(raw);
+                // A token may carry inline options (`{{a|b|c}}` or
+                // `{{label: a|b|c}}`); `parse_placeholder_token` derives the
+                // lookup key.
+                let key = parse_placeholder_token(raw).key;
                 let replacement = values
                     .iter()
                     .find(|(k, _)| k == key)
@@ -164,54 +181,170 @@ pub fn render_template(body: &str, values: &[(String, String)]) -> String {
     out
 }
 
-/// Split the inside of a `{{...}}` token into its lookup key and any inline
-/// options. `{{name}}` → (`"name"`, `[]`); `{{env|dev|prod}}` →
-/// (`"env"`, `["dev", "prod"]`). Whitespace around each part is trimmed and
-/// empty options are dropped, so `{{x| a | b |}}` yields `["a", "b"]`.
-pub fn parse_placeholder_token(inner: &str) -> (&str, Vec<String>) {
-    match inner.split_once('|') {
-        Some((key, rest)) => {
-            let options = rest
-                .split('|')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .collect();
-            (key.trim(), options)
+/// The result of parsing the inside of a `{{...}}` token: its lookup `key`,
+/// an optional display `label`, and any inline `options`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedToken<'a> {
+    /// Identifies the slot for substitution and dedup. For a labelled menu it
+    /// is the label; for a bare menu it is the whole token text; for a free
+    /// text slot it is the trimmed token.
+    pub key: &'a str,
+    /// Present only when the author wrote a `label:` prefix on a menu.
+    pub label: Option<&'a str>,
+    /// Inline choices; empty for a free-text slot.
+    pub options: Vec<String>,
+}
+
+/// Split the inside of a `{{...}}` token into its key, optional label, and
+/// inline options. A `|` introduces an option list; a `:` *before the first*
+/// `|` names the menu:
+///
+/// - `{{name}}` → free text, key `"name"`, no options.
+/// - `{{dev|staging|prod}}` → menu, every segment is an option, key is the
+///   whole token text (`"dev|staging|prod"`), no label.
+/// - `{{env: dev|staging|prod}}` → menu labelled `"env"`, key `"env"`, options
+///   `["dev", "staging", "prod"]`.
+///
+/// Whitespace around each part is trimmed and empty options are dropped, so
+/// `{{x: a | b |}}` yields `["a", "b"]`.
+pub fn parse_placeholder_token(inner: &str) -> ParsedToken<'_> {
+    let trimmed = inner.trim();
+    let Some(pipe) = trimmed.find('|') else {
+        // No options: a plain free-text slot keyed on its name.
+        return ParsedToken {
+            key: trimmed,
+            label: None,
+            options: Vec::new(),
+        };
+    };
+
+    let head = &trimmed[..pipe];
+    let tail = &trimmed[pipe + 1..];
+
+    // A `:` in the head before any `|` labels the menu; otherwise the head is
+    // itself the first option.
+    let (label, first_option) = match head.find(':') {
+        Some(colon) => {
+            let label = head[..colon].trim();
+            let first = head[colon + 1..].trim();
+            (
+                if label.is_empty() { None } else { Some(label) },
+                first,
+            )
         }
-        None => (inner.trim(), Vec::new()),
+        None => (None, head.trim()),
+    };
+
+    let mut options = Vec::new();
+    if !first_option.is_empty() {
+        options.push(first_option.to_string());
+    }
+    options.extend(
+        tail.split('|')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string),
+    );
+
+    // A labelled menu keys on its label so a config-authored placeholder can
+    // target it; a bare menu keys on the whole token text (stable + unique).
+    let key = label.unwrap_or(trimmed);
+    ParsedToken {
+        key,
+        label,
+        options,
     }
 }
 
-/// Extract the distinct slots from a body in first-seen order, each as its
-/// lookup key plus any inline options (`{{env|dev|prod}}`). When a key recurs,
-/// the options from its first occurrence are kept.
-pub fn infer_placeholder_slots(body: &str) -> Vec<(String, Vec<String>)> {
-    let mut slots: Vec<(String, Vec<String>)> = Vec::new();
+/// A distinct slot inferred from a body, in first-seen order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InferredSlot {
+    pub key: String,
+    pub label: Option<String>,
+    pub options: Vec<String>,
+}
+
+/// Extract the distinct slots from a body in first-seen order. When a key
+/// recurs, the label/options from its first occurrence are kept.
+pub fn infer_placeholder_slots(body: &str) -> Vec<InferredSlot> {
+    let mut slots: Vec<InferredSlot> = Vec::new();
     let mut rest = body;
     while let Some(open) = rest.find("{{") {
         let after = &rest[open + 2..];
         let Some(close) = after.find("}}") else {
             break;
         };
-        let (key, options) = parse_placeholder_token(&after[..close]);
-        if !key.is_empty() && !slots.iter().any(|(k, _)| k == key) {
-            slots.push((key.to_string(), options));
+        let parsed = parse_placeholder_token(&after[..close]);
+        if !parsed.key.is_empty() && !slots.iter().any(|s| s.key == parsed.key) {
+            slots.push(InferredSlot {
+                key: parsed.key.to_string(),
+                label: parsed.label.map(ToString::to_string),
+                options: parsed.options,
+            });
         }
         rest = &after[close + 2..];
     }
     slots
 }
 
-/// Extract the distinct `{{key}}` token names from a body, in first-seen
-/// order. Inline options (`{{key|a|b}}`) are ignored here — see
-/// `infer_placeholder_slots` for the key + options form.
+/// Extract the distinct slot keys from a body, in first-seen order. Inline
+/// options and labels are ignored here — see `infer_placeholder_slots` for the
+/// full form.
 #[allow(dead_code)] // exercised only by unit tests
 pub fn infer_placeholder_keys(body: &str) -> Vec<String> {
     infer_placeholder_slots(body)
         .into_iter()
-        .map(|(key, _)| key)
+        .map(|s| s.key)
         .collect()
+}
+
+/// Parse the editor's raw tag input into a clean tag list. Tags are separated
+/// by commas or whitespace; a leading `#` is stripped, original case is kept,
+/// and empties and case-insensitive duplicates are dropped. So
+/// `"#bug, Frontend  bug"` yields `["bug", "Frontend"]`.
+pub fn parse_tags(input: &str) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for raw in input.split(|c: char| c == ',' || c.is_whitespace()) {
+        let tag = raw.trim().trim_start_matches('#').trim();
+        if tag.is_empty() {
+            continue;
+        }
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
+}
+
+/// Render a tag list back into the comma-separated form shown (and re-parsed)
+/// by the editor's tag field.
+pub fn format_tags(tags: &[String]) -> String {
+    tags.join(", ")
+}
+
+/// Score a template against the picker query, returning the best (lowest)
+/// fuzzy score across its name, body, and tags, or `None` when nothing
+/// matches. A query beginning with `#` is a tag-only filter (the `#` is
+/// stripped); a bare `#` surfaces every tagged template (a light "group by
+/// tagged" view) and hides untagged ones.
+pub fn prompt_filter_score(name: &str, body: &str, tags: &[String], query: &str) -> Option<usize> {
+    use crate::app::util::fuzzy_match_score;
+    if let Some(rest) = query.strip_prefix('#') {
+        let needle = rest.trim();
+        if needle.is_empty() {
+            return if tags.is_empty() { None } else { Some(0) };
+        }
+        return tags.iter().filter_map(|t| fuzzy_match_score(t, needle)).min();
+    }
+    let tag_best = tags.iter().filter_map(|t| fuzzy_match_score(t, query)).min();
+    [
+        fuzzy_match_score(name, query),
+        fuzzy_match_score(body, query),
+        tag_best,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 #[cfg(test)]
@@ -258,36 +391,116 @@ mod tests {
     }
 
     #[test]
-    fn parse_token_splits_key_and_options() {
-        assert_eq!(parse_placeholder_token("name"), ("name", vec![]));
-        assert_eq!(parse_placeholder_token(" name "), ("name", vec![]));
+    fn parse_token_free_text_slot() {
+        // No `|`: a plain text slot keyed on its (trimmed) name, colons and all.
+        assert_eq!(parse_placeholder_token("name").key, "name");
+        assert!(parse_placeholder_token("name").options.is_empty());
+        assert_eq!(parse_placeholder_token(" name ").key, "name");
+        assert_eq!(parse_placeholder_token("ticket:id").key, "ticket:id");
+    }
+
+    #[test]
+    fn parse_token_bare_menu_lists_every_segment() {
+        // No label: every `|` segment is an option; key is the whole token.
+        let parsed = parse_placeholder_token("dev|staging|prod");
+        assert_eq!(parsed.label, None);
+        assert_eq!(parsed.key, "dev|staging|prod");
         assert_eq!(
-            parse_placeholder_token("env|dev|staging|prod"),
-            ("env", vec!["dev".to_string(), "staging".to_string(), "prod".to_string()])
+            parsed.options,
+            vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_token_labelled_menu_splits_on_colon() {
+        // `label:` before the first `|` names the menu and is not an option.
+        let parsed = parse_placeholder_token("env: dev|staging|prod");
+        assert_eq!(parsed.label, Some("env"));
+        assert_eq!(parsed.key, "env");
+        assert_eq!(
+            parsed.options,
+            vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]
         );
         // Whitespace trimmed, empty options dropped.
-        assert_eq!(
-            parse_placeholder_token("x| a | b |"),
-            ("x", vec!["a".to_string(), "b".to_string()])
-        );
+        let parsed = parse_placeholder_token("x: a | b |");
+        assert_eq!(parsed.key, "x");
+        assert_eq!(parsed.options, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]
-    fn infer_slots_carries_options() {
-        let slots = infer_placeholder_slots("Deploy {{env|dev|prod}} as {{user}}");
+    fn infer_slots_carries_label_and_options() {
+        let slots = infer_placeholder_slots("Deploy {{env: dev|prod}} as {{user}}");
         assert_eq!(slots.len(), 2);
-        assert_eq!(slots[0].0, "env");
-        assert_eq!(slots[0].1, vec!["dev".to_string(), "prod".to_string()]);
-        assert_eq!(slots[1].0, "user");
-        assert!(slots[1].1.is_empty());
+        assert_eq!(slots[0].key, "env");
+        assert_eq!(slots[0].label.as_deref(), Some("env"));
+        assert_eq!(slots[0].options, vec!["dev".to_string(), "prod".to_string()]);
+        assert_eq!(slots[1].key, "user");
+        assert_eq!(slots[1].label, None);
+        assert!(slots[1].options.is_empty());
     }
 
     #[test]
-    fn render_ignores_inline_options_and_matches_key() {
+    fn render_labelled_menu_matches_label_key() {
         let values = vec![("env".to_string(), "staging".to_string())];
         assert_eq!(
-            render_template("Deploy to {{env|dev|staging|prod}}", &values),
+            render_template("Deploy to {{env: dev|staging|prod}}", &values),
             "Deploy to staging"
         );
+    }
+
+    #[test]
+    fn render_bare_menu_matches_raw_token_key() {
+        let values = vec![("dev|staging|prod".to_string(), "staging".to_string())];
+        assert_eq!(
+            render_template("Deploy to {{dev|staging|prod}}", &values),
+            "Deploy to staging"
+        );
+    }
+
+    #[test]
+    fn parse_tags_splits_strips_hash_and_dedups() {
+        // Commas and whitespace both separate; `#` stripped; case-insensitive
+        // dedup keeps the first spelling; empties dropped.
+        assert_eq!(
+            parse_tags("#bug, Frontend  bug ,, #frontend"),
+            vec!["bug".to_string(), "Frontend".to_string()]
+        );
+        assert!(parse_tags("   ").is_empty());
+        assert!(parse_tags("").is_empty());
+    }
+
+    #[test]
+    fn format_tags_round_trips_through_parse() {
+        let tags = vec!["bug".to_string(), "Frontend".to_string()];
+        assert_eq!(format_tags(&tags), "bug, Frontend");
+        assert_eq!(parse_tags(&format_tags(&tags)), tags);
+    }
+
+    #[test]
+    fn filter_score_matches_name_body_or_tag() {
+        let tags = vec!["frontend".to_string()];
+        // Name match.
+        assert!(prompt_filter_score("Fix login", "body", &tags, "login").is_some());
+        // Body match.
+        assert!(prompt_filter_score("name", "refactor auth", &tags, "auth").is_some());
+        // Tag match (no `#`).
+        assert!(prompt_filter_score("name", "body", &tags, "frontend").is_some());
+        // No match anywhere.
+        assert!(prompt_filter_score("name", "body", &tags, "zzz").is_none());
+    }
+
+    #[test]
+    fn filter_score_hash_prefix_matches_tags_only() {
+        let tags = vec!["frontend".to_string()];
+        // `#`-prefixed query matches the tag but not name/body text.
+        assert!(prompt_filter_score("frontend", "frontend", &[], "#frontend").is_none());
+        assert!(prompt_filter_score("name", "body", &tags, "#front").is_some());
+    }
+
+    #[test]
+    fn filter_score_bare_hash_surfaces_only_tagged() {
+        // Bare `#` keeps tagged templates, hides untagged ones.
+        assert!(prompt_filter_score("n", "b", &["x".to_string()], "#").is_some());
+        assert!(prompt_filter_score("n", "b", &[], "#").is_none());
     }
 }

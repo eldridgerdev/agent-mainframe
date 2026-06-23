@@ -21,6 +21,10 @@ are tagged.
 
 ### Fixed
 
+- Pasting images into the prompt composer now works on Windows/WSL. The
+  composer reads screenshots and copied images from the Windows clipboard,
+  and when you send a prompt the image now reliably arrives with your text
+  instead of being left behind in the agent's input box.
 - Claude panes now keep their periodic automatic repaint when direct tmux
   transport is active, preventing the embedded UI from becoming mangled on
   Linux even though control mode is disabled by default.

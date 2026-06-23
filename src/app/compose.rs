@@ -43,10 +43,57 @@ const BUILTIN_COMMANDS: &[(&str, &str, bool)] = &[
     ("vim", "Toggle vim editing mode", false),
 ];
 
-/// How long Claude Code gets to read an image off the clipboard after
-/// the forwarded Ctrl+V, before the clipboard may be overwritten by
-/// the next image in the same submission.
+/// Fallback delay after a forwarded Ctrl+V when we cannot confirm the
+/// image landed by watching the pane (e.g. on a non-WSL native clipboard
+/// where ingestion is effectively instant, or if capture fails).
 const COMPOSE_IMAGE_PASTE_DELAY: std::time::Duration = std::time::Duration::from_millis(350);
+
+/// How long to wait for the harness to render the image placeholder
+/// after a forwarded Ctrl+V before giving up and proceeding anyway. The
+/// harness reads the *Windows* clipboard via PowerShell on WSL, which is
+/// slow and variable, so we poll for the placeholder rather than guess a
+/// fixed delay — otherwise Enter races ahead, the text submits on its
+/// own, and the image is left sitting in the harness input box.
+const COMPOSE_IMAGE_INGEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// Poll cadence while waiting for the image placeholder to appear.
+const COMPOSE_IMAGE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Count rendered image placeholders (`[Image #N]`) in the harness input
+/// region, used to detect when a pasted image has been ingested. Only the
+/// pane tail is inspected: the scrollback transcript may itself mention
+/// "[Image #N]" (e.g. a conversation about image paste) and would
+/// otherwise pollute the count.
+fn count_image_placeholders(pane: &str) -> usize {
+    const INPUT_TAIL_LINES: usize = 8;
+    let lines: Vec<&str> = pane.lines().collect();
+    let start = lines.len().saturating_sub(INPUT_TAIL_LINES);
+    lines[start..]
+        .iter()
+        .map(|line| line.matches("[Image #").count())
+        .sum()
+}
+
+/// Wait until the harness shows one more `[Image #N]` placeholder than
+/// `baseline`, signalling the pasted image was ingested, then settle
+/// briefly. Returns early on timeout as a best-effort fallback.
+fn wait_for_image_ingested(session: &str, window: &str, baseline: usize) {
+    let start = std::time::Instant::now();
+    loop {
+        let count = crate::tmux::TmuxManager::capture_pane(session, window)
+            .map(|pane| count_image_placeholders(&pane))
+            .unwrap_or(0);
+        if count > baseline {
+            // Let the harness settle the input line before the next
+            // paste or the final Enter.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            return;
+        }
+        if start.elapsed() >= COMPOSE_IMAGE_INGEST_TIMEOUT {
+            return;
+        }
+        std::thread::sleep(COMPOSE_IMAGE_POLL_INTERVAL);
+    }
+}
 
 pub(crate) fn compose_target_key(session: &str, window: &str) -> String {
     format!("{session}:{window}")
@@ -379,11 +426,21 @@ impl App {
                     ComposePart::Image(idx) => {
                         let image = &state.images[*idx];
                         crate::app::util::copy_image_to_clipboard(&image.data, &image.mime)?;
-                        // The harness reads the clipboard when it
-                        // receives Ctrl+V; give it time to ingest the
-                        // image before the clipboard changes again.
-                        self.tmux.send_key_name(&session, &window, "C-v")?;
-                        std::thread::sleep(COMPOSE_IMAGE_PASTE_DELAY);
+                        // The harness reads the clipboard when it receives
+                        // Ctrl+V. On WSL that read goes through PowerShell
+                        // and is slow, so wait for the rendered placeholder
+                        // before moving on (next image's clipboard write or
+                        // the final Enter); otherwise the image is dropped.
+                        if crate::app::util::is_wsl() {
+                            let baseline = crate::tmux::TmuxManager::capture_pane(&session, &window)
+                                .map(|pane| count_image_placeholders(&pane))
+                                .unwrap_or(0);
+                            self.tmux.send_key_name(&session, &window, "C-v")?;
+                            wait_for_image_ingested(&session, &window, baseline);
+                        } else {
+                            self.tmux.send_key_name(&session, &window, "C-v")?;
+                            std::thread::sleep(COMPOSE_IMAGE_PASTE_DELAY);
+                        }
                     }
                 }
             }
@@ -526,4 +583,23 @@ fn frontmatter_description(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod compose_image_tests {
+    use super::count_image_placeholders;
+
+    #[test]
+    fn counts_image_placeholders_in_pane() {
+        assert_eq!(count_image_placeholders(""), 0);
+        assert_eq!(count_image_placeholders("> just some text"), 0);
+        assert_eq!(count_image_placeholders("> testing [Image #1]"), 1);
+        // The pane includes scrollback, so a newly pasted image bumps the
+        // count above the baseline even with prior placeholders present.
+        let before = count_image_placeholders("history [Image #1]\n> caption");
+        let after = count_image_placeholders("history [Image #1]\n> caption [Image #2]");
+        assert_eq!(before, 1);
+        assert_eq!(after, 2);
+        assert!(after > before);
+    }
 }

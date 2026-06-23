@@ -621,6 +621,12 @@ pub struct LatestPromptState {
 pub struct PromptLibraryEntry {
     pub template: crate::prompt_library::PromptTemplate,
     pub source: crate::prompt_library::PromptSource,
+    /// Resolved on-disk location this entry is read from / written to:
+    /// the SQLite store for `User`, the relevant `.amf/config.json` for
+    /// config sources. Filled in by `rebuild_prompt_library`; `None` when
+    /// the scope has no resolvable location (no project context, or the
+    /// empty test store path).
+    pub source_path: Option<PathBuf>,
 }
 
 /// Picker over the merged, source-tagged prompt library. Mirrors the
@@ -698,6 +704,10 @@ pub struct PromptEditorState {
     pub focus: PromptEditorFocus,
     pub editor: TextEditor,
     pub return_to: Box<AppMode>,
+    /// Where a save will land, for the editor's destination hint: the
+    /// SQLite store for `User`, the relevant `.amf/config.json` otherwise.
+    /// `None` when unresolvable (no project context, or the test store).
+    pub dest_path: Option<PathBuf>,
 }
 
 /// Collects a value for each `{{slot}}` in a template before injection.

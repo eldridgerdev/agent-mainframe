@@ -374,6 +374,8 @@ impl App {
             return;
         };
 
+        let dest_path =
+            self.template_source_path(crate::prompt_library::PromptSource::User, None);
         self.mode = AppMode::PromptEditor(crate::app::PromptEditorState {
             editing_id: None,
             editing_source: crate::prompt_library::PromptSource::User,
@@ -383,6 +385,7 @@ impl App {
             focus: crate::app::PromptEditorFocus::Name,
             editor: crate::editor::TextEditor::with_vim(text),
             return_to: Box::new(AppMode::Viewing(state.view)),
+            dest_path,
         });
     }
 

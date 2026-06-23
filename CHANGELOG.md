@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Prompt library shows where each template lives.** The picker preview pane
+  now displays the resolved source file for the selected entry — the local
+  SQLite store for your own (`User`) templates, or the `.amf/config.json` path
+  for `Project` / `Worktree` / `Global` templates. The export prompt (`x`) now
+  names each target's exact path before you choose — e.g.
+  `(g) ~/.config/amf/config.json   (p) <repo>/.amf/config.json` — so you can
+  confirm which repo a template lands in. The New/Edit dialog adds a hint
+  showing where a save will be written, calling out that `User` templates live
+  in the local store and aren't version-controlled.
+
 - **`/amf:add-prompt` skill.** A new skill (parallel to `/amf:add-preset`) that
   adds a declarative prompt template to your workspace without hand-writing
   JSON. It writes a `prompt_templates` entry to `.amf/config.json` (project) or
@@ -29,6 +39,13 @@ are tagged.
   template.
 
 ### Changed
+
+- **New/Edit Prompt dialog redesign.** Each field (Name, Tags, Prompt body)
+  now sits in its own labelled box with clear spacing instead of stacking
+  flush against each other. The focused field's border highlights, the
+  placeholder-syntax legend moved onto the body box's bottom border, the key
+  hints moved onto the dialog's bottom border, and the "where this saves"
+  hint sits at the bottom — so the form is much easier to scan.
 
 - The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with
   the same workflow and keybindings as Claude Code. Start typing to compose,

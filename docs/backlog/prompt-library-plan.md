@@ -3,7 +3,10 @@
 - **Status:** In progress _(phases 1–3 shipped in v0.26.0: multi-source picker,
   fill-in flow, and inline select-menus landed; tags + tag filtering, the
   config-merge test, and the amf-add-prompt skill now done — phase 3 complete.
-  Remaining: phase 4 polish + phase 5 editor/injection enhancements)_
+  Phase 4 done: export/display resolver unified + destination paths surfaced
+  in the picker, export confirm, and editor. Remaining: phase 5
+  editor/injection enhancements — VIM support in the editor surfaces and
+  injecting an agent skill into the prompt.)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -317,7 +320,7 @@ New `src/ui/dialogs/prompt_library.rs` (model on
 
 ### Phase 4 — Location handling & polish
 
-- [ ] **Unify the project export/display repo resolution.** Two
+- [x] **Unify the project export/display repo resolution.** Two
   different resolvers disagree on what "project" means:
    - `resolve_library_repo` (picker display) uses the viewed feature's
      `project.repo` or the selected project's `repo` — i.e. the
@@ -333,21 +336,30 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   Fix: point `resolve_export_repo`'s fallback at the same selection-based
   `resolve_library_repo` logic so display and export always agree, and
   the export always targets the project's main repo. Add a test covering
-  the dashboard-export-then-reopen round-trip.
-- [ ] **Show the destination path in the UI.** Make where a prompt lives
-  / will be written explicit:
-   - Picker: show the resolved source file path for the selected entry
-     (e.g. in the preview pane header or footer) — SQLite DB for `User`,
-     the `config.json` path for `Project` / `Global`.
-   - Export confirm: the `x` → `g`/`p` prompt should name the exact
-     target path *before* writing (the success toast already shows the
-     project path after the fact, and global currently only says
-     "global config"); show the global `~/.config/amf/config.json` path
-     too, and ideally the project path up front so the user can confirm
-     which repo it lands in (ties into the resolver-unification item).
-   - Editor: when editing a `User` template, a small hint that saving
-     writes to the local SQLite store (not version-controlled) vs. an
-     exported config entry.
+  the dashboard-export-then-reopen round-trip. _(Done: `resolve_export_repo`
+  delegates to `resolve_library_repo`; regression test
+  `dashboard_export_then_reopen_shows_project_template`.)_
+- [x] **Show the destination path in the UI.** Make where a prompt lives
+  / will be written explicit. A single `template_source_path(source,
+  from_view)` resolver (reusing `resolve_library_repo` /
+  `resolve_worktree_dir`) backs all three surfaces, so the shown path
+  always matches where a write lands:
+   - Picker: the preview pane reserves a muted footer line showing the
+     selected entry's resolved source file — the SQLite store for `User`,
+     the relevant `.amf/config.json` for `Project` / `Worktree` /
+     `Global`. Precomputed into `PromptLibraryEntry.source_path` at build
+     time so the UI stays a pure renderer.
+   - Export confirm: the `x` → `g`/`p`/`w` prompt now names each target's
+     exact path *before* writing (`build_export_menu_message`), e.g.
+     `(g) ~/.config/amf/config.json   (p) <repo>/.amf/config.json`, with
+     `(unavailable)` for scopes lacking context.
+   - Editor: a destination hint (reusing the spacer line) — `User`
+     templates note they save to the local store (not version-controlled);
+     config sources show the target `config.json` path. Backed by
+     `PromptEditorState.dest_path`.
+   - Tests: `picker_entries_carry_resolved_source_paths` (Project →
+     repo config.json, User → `None` under the test store) and
+     `export_menu_message_names_target_paths`.
 
 ### Phase 5 — Editor & injection enhancements
 

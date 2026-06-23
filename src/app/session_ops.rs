@@ -231,18 +231,6 @@ impl App {
         Ok(())
     }
 
-    /// Add a custom session type as a tracked FeatureSession.
-    /// If the feature's tmux session is already running, also
-    /// creates the window and sends the command immediately.
-    pub fn add_custom_session_type(
-        &mut self,
-        pi: usize,
-        fi: usize,
-        config: &crate::extension::CustomSessionConfig,
-    ) -> Result<bool> {
-        self.add_custom_session_type_named(pi, fi, config, config.name.clone())
-    }
-
     pub fn add_custom_session_type_named(
         &mut self,
         pi: usize,
@@ -548,23 +536,6 @@ impl App {
         self.message = Some(format!("Added '{}'", label));
 
         Ok(())
-    }
-
-    pub fn add_claude_session(&mut self) -> Result<()> {
-        let (pi, fi) = match &self.selection {
-            Selection::Feature(pi, fi) | Selection::Session(pi, fi, _) => (*pi, *fi),
-            _ => return Ok(()),
-        };
-        let Some(kind) = self
-            .store
-            .projects
-            .get(pi)
-            .and_then(|p| p.features.get(fi))
-            .map(|f| session_kind_for_agent(&f.agent))
-        else {
-            return Ok(());
-        };
-        self.add_agent_session_for_picker(pi, fi, kind, None)
     }
 
     pub fn remove_session(&mut self) -> Result<()> {

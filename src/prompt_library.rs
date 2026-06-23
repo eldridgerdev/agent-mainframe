@@ -130,15 +130,6 @@ impl PromptTemplate {
             updated_at: now,
         }
     }
-
-    /// First non-empty line of the body, for preview rows.
-    pub fn preview_line(&self) -> &str {
-        self.body
-            .lines()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("")
-            .trim()
-    }
 }
 
 /// Substitute `{{key}}` tokens in `body` with the provided values.
@@ -215,6 +206,7 @@ pub fn infer_placeholder_slots(body: &str) -> Vec<(String, Vec<String>)> {
 /// Extract the distinct `{{key}}` token names from a body, in first-seen
 /// order. Inline options (`{{key|a|b}}`) are ignored here — see
 /// `infer_placeholder_slots` for the key + options form.
+#[allow(dead_code)] // exercised only by unit tests
 pub fn infer_placeholder_keys(body: &str) -> Vec<String> {
     infer_placeholder_slots(body)
         .into_iter()

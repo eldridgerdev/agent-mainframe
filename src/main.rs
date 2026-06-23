@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod app;
 mod automation;
 mod claude;
@@ -1221,7 +1219,7 @@ fn run_loop<B: Backend>(
                 // Results applied asynchronously via poll_session_status_bg().
             } else if startup_claude_hooks_pending {
                 let started_at = Instant::now();
-                let refreshed = app::setup::refresh_claude_hooks_for_store(&app.store, &app.config);
+                let refreshed = app::setup::refresh_claude_hooks_for_store(&app.store);
                 app.perf
                     .record_duration("startup.refresh_claude_hooks", started_at.elapsed());
                 app.log_info(

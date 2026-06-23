@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use super::detect::{HighlightLanguage, detect_language};
-use super::model::{HighlightRequest, HighlightedLine, HighlightedText};
+use super::model::{HighlightRequest, HighlightedText};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CacheKey {
@@ -46,22 +46,6 @@ pub fn highlight_source(request: HighlightRequest<'_>) -> HighlightedText {
     }
 
     highlighted
-}
-
-pub fn highlight_line(
-    path: Option<&std::path::Path>,
-    language_hint: Option<&str>,
-    source: &str,
-) -> HighlightedLine {
-    highlight_source(HighlightRequest {
-        path,
-        language_hint,
-        source,
-    })
-    .lines
-    .into_iter()
-    .next()
-    .unwrap_or_default()
 }
 
 fn cache() -> &'static Mutex<HashMap<CacheKey, HighlightedText>> {

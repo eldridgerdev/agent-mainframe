@@ -136,11 +136,6 @@ impl App {
         }
     }
 
-    pub(crate) fn selection_index(&self) -> Option<usize> {
-        let items = self.visible_items();
-        self.selection_index_in_items(&items)
-    }
-
     pub fn select_next(&mut self) {
         let items = self.visible_items();
         if items.is_empty() {
@@ -175,6 +170,7 @@ impl App {
         self.reload_extension_config();
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn ensure_selection_visible(&mut self, visible_height: usize) {
         let items = self.visible_items();
         self.ensure_selection_visible_for_items(&items, visible_height);
@@ -264,15 +260,4 @@ impl App {
         }
     }
 
-    pub fn selected_session(&self) -> Option<(&Project, &Feature, &FeatureSession)> {
-        match &self.selection {
-            Selection::Session(pi, fi, si) => {
-                let project = self.store.projects.get(*pi)?;
-                let feature = project.features.get(*fi)?;
-                let session = feature.sessions.get(*si)?;
-                Some((project, feature, session))
-            }
-            _ => None,
-        }
-    }
 }

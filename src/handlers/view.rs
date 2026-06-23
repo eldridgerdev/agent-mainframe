@@ -49,21 +49,6 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 }
 
-fn send_literal(app: &mut App, session: &str, window: &str, text: &str) -> Result<()> {
-    let started_at = Instant::now();
-    let result = app.tmux.send_literal(session, window, text);
-    app.perf
-        .record_duration("view.send_literal", started_at.elapsed());
-    if result.is_ok() {
-        if TmuxManager::uses_control_pty_input() {
-            app.request_view_snapshot_pane_burst();
-        } else {
-            app.request_view_snapshot_burst();
-        }
-    }
-    result
-}
-
 fn send_key_name(
     app: &mut App,
     session: &str,

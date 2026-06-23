@@ -97,6 +97,21 @@ are tagged.
   the file is stamped with a `config_version` so the migration never runs twice
   (re-enable control mode afterward and it stays enabled).
 
+- **Retired the legacy vimdiff diff-review viewer.** The native in-app AMF diff
+  viewer is now the only reviewer; the neovim/vimdiff popup path and its bundled
+  `plugins/diff-review` scripts have been removed. Existing configs that still
+  set `diff_review_viewer = "nvim"` (or the old `"legacy"` alias) keep working —
+  the value now deserializes to the AMF viewer instead of erroring.
+
+### Maintenance
+
+- Repo cleanup pass: removed dead code across the codebase (unreferenced tmux
+  helpers, orphaned methods/constants, and a never-run test) and dropped the
+  crate-wide `#![allow(dead_code)]` so new dead code is caught going forward.
+  Items intentionally retained (write-only fields, serde/API types, and
+  test-only helpers) now carry targeted `#[allow(dead_code)]` annotations. No
+  behavior change; all tests pass.
+
 ### Fixed
 
 - **Garbled / mangled agent panes on Linux and macOS.** The persistent

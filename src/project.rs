@@ -397,6 +397,7 @@ impl<'de> Deserialize<'de> for Feature {
 
 impl Feature {
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn new(
         name: String,
         branch: String,
@@ -682,16 +683,6 @@ pub struct ProjectStore {
 impl ProjectStore {
     pub fn has_any_harnesses(&self) -> bool {
         !self.available_harnesses.is_empty()
-    }
-
-    pub fn add_harness(&mut self, kind: AgentKind) {
-        if !self.available_harnesses.contains(&kind) {
-            self.available_harnesses.push(kind);
-        }
-    }
-
-    pub fn remove_harness(&mut self, kind: &AgentKind) {
-        self.available_harnesses.retain(|k| k != kind);
     }
 
     pub fn merge_from(&mut self, other: ProjectStore) {
@@ -1179,6 +1170,7 @@ pub fn amf_config_dir() -> PathBuf {
         .join("amf")
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 pub fn global_store_path() -> PathBuf {
     amf_config_dir().join("projects.json")
 }
@@ -1191,6 +1183,7 @@ pub fn db_path() -> PathBuf {
     global_db_path()
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 pub fn store_path() -> PathBuf {
     global_store_path()
 }

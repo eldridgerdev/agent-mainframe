@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use crate::tmux::TmuxManager;
-
 pub struct ClaudeLauncher;
 
 /// Minimum Claude Code version that supports Remote Control
@@ -160,11 +158,6 @@ impl ClaudeLauncher {
         }
     }
 
-    /// Launch Claude Code interactively in a tmux session window
-    pub fn launch_interactive(session: &str, window: &str, resume_id: Option<&str>) -> Result<()> {
-        TmuxManager::launch_claude(session, window, resume_id, &[])
-    }
-
     /// Run a headless Claude command and return the output
     pub fn run_headless(workdir: &Path, prompt: &str) -> Result<String> {
         let binary = Self::resolve_binary();
@@ -193,22 +186,6 @@ impl ClaudeLauncher {
             .context("Failed to spawn claude in headless mode")
     }
 
-    /// Run a headless Claude command and return JSON output
-    pub fn run_headless_json(workdir: &Path, prompt: &str) -> Result<String> {
-        let binary = Self::resolve_binary();
-        let output = Command::new(&binary)
-            .args(["-p", prompt, "--output-format", "json"])
-            .current_dir(workdir)
-            .output()
-            .context("Failed to run claude in headless mode")?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("claude headless command failed: {}", stderr);
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
 }
 
 #[cfg(test)]

@@ -43,23 +43,6 @@ impl WorktreeManager {
         Ok(PathBuf::from(root))
     }
 
-    /// Return the primary worktree path for a repository.
-    pub fn primary_worktree_root(path: &Path) -> Result<PathBuf> {
-        let output = Command::new("git")
-            .args(["worktree", "list", "--porcelain"])
-            .current_dir(path)
-            .output()
-            .context("Failed to list git worktrees")?;
-
-        if !output.status.success() {
-            bail!("git worktree list failed");
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        parse_primary_worktree_root(&stdout)
-            .context("Failed to determine primary worktree root from git worktree list")
-    }
-
     /// Check if a path is a git worktree (not the main working tree)
     pub fn is_worktree(path: &Path) -> bool {
         let output = Command::new("git")
@@ -402,6 +385,7 @@ impl WorktreeManager {
     }
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 fn parse_primary_worktree_root(stdout: &str) -> Result<PathBuf> {
     stdout
         .lines()

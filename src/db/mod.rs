@@ -91,6 +91,7 @@ impl AmfDb {
         debug_log::load_recent(&self.conn, limit)
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn load_session_status(&self, session_id: &str) -> Result<Option<String>> {
         session_status::load(&self.conn, session_id)
     }

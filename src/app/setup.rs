@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::project::{AgentKind, ProjectStore, VibeMode};
 use crate::theme::ThemeManager;
 
-use super::{AppConfig, DiffReviewViewer};
+use super::AppConfig;
 
 const NOTIFY_SH: &str = include_str!("../../scripts/notify.sh");
 const CLEAR_NOTIFY_SH: &str = include_str!("../../scripts/clear-notify.sh");
@@ -422,7 +422,7 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
             if !matches!(feature.agent, AgentKind::Opencode) {
                 continue;
             }
-            ensure_opencode_plugins(&feature.workdir, &project.repo, &feature.mode);
+            ensure_opencode_plugins(&feature.workdir, &feature.mode);
             refreshed += 1;
         }
     }
@@ -432,7 +432,7 @@ pub fn refresh_opencode_plugins_for_store(store: &ProjectStore) -> usize {
     refreshed
 }
 
-pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) -> usize {
+pub fn refresh_claude_hooks_for_store(store: &ProjectStore) -> usize {
     if hooks_already_current() {
         return 0;
     }
@@ -442,13 +442,12 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore, config: &AppConfig) 
             if !matches!(feature.agent, AgentKind::Claude) {
                 continue;
             }
-            ensure_notification_hooks_with_config(
+            ensure_notification_hooks(
                 &feature.workdir,
                 &project.repo,
                 &feature.mode,
                 &feature.agent,
                 feature.is_worktree,
-                config,
             );
             refreshed += 1;
         }
@@ -598,7 +597,7 @@ pub fn remove_old_diff_review_plugin(repo: &Path) {
     }
 }
 
-fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
+fn ensure_opencode_plugins(workdir: &Path, mode: &VibeMode) {
     let plugins_dir = workdir.join(".opencode").join("plugins");
     let _ = std::fs::create_dir_all(&plugins_dir);
     let _ = ThemeManager::inject_opencode_themes(workdir);
@@ -607,18 +606,21 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
     let bundled_input_request = bundled_plugins_dir.join("input-request.js");
     let dst_input_request = plugins_dir.join("input-request.js");
 
-    let dst_diff_review_js = plugins_dir.join("diff-review.js");
-    let dst_diff_review_sh = plugins_dir.join("diff-review.sh");
     let dst_change_tracker = plugins_dir.join("change-tracker.js");
     let dst_sidebar_state = plugins_dir.join("sidebar-state.js");
-    let dst_feedback_prompt = plugins_dir.join("feedback-prompt.sh");
-    let dst_explain = plugins_dir.join("explain.sh");
-    let _ = std::fs::remove_file(&dst_diff_review_js);
-    let _ = std::fs::remove_file(&dst_diff_review_sh);
+
+    // Remove stale script-based diff-review artifacts injected by older
+    // versions (the native AMF diff viewer replaced them).
+    for stale in [
+        "diff-review.js",
+        "diff-review.sh",
+        "feedback-prompt.sh",
+        "explain.sh",
+    ] {
+        let _ = std::fs::remove_file(plugins_dir.join(stale));
+    }
     let _ = std::fs::remove_file(&dst_change_tracker);
     let _ = std::fs::remove_file(&dst_sidebar_state);
-    let _ = std::fs::remove_file(&dst_feedback_prompt);
-    let _ = std::fs::remove_file(&dst_explain);
 
     if bundled_input_request.exists() {
         let _ = std::fs::copy(&bundled_input_request, &dst_input_request);
@@ -627,38 +629,6 @@ fn ensure_opencode_plugins(workdir: &Path, repo: &Path, mode: &VibeMode) {
 
     if matches!(mode, VibeMode::Vibeless) {
         let _ = std::fs::write(&dst_change_tracker, CHANGE_TRACKER_JS);
-
-        let src_diff_review_js = repo
-            .join(".opencode")
-            .join("plugins")
-            .join("diff-review.js");
-        let src_diff_review_sh = repo
-            .join(".opencode")
-            .join("plugins")
-            .join("diff-review.sh");
-
-        if src_diff_review_js.exists() {
-            let _ = std::fs::copy(&src_diff_review_js, &dst_diff_review_js);
-        }
-
-        if src_diff_review_sh.exists() {
-            let _ = std::fs::copy(&src_diff_review_sh, &dst_diff_review_sh);
-        }
-
-        let src_feedback_prompt = repo
-            .join(".opencode")
-            .join("plugins")
-            .join("feedback-prompt.sh");
-
-        if src_feedback_prompt.exists() {
-            let _ = std::fs::copy(&src_feedback_prompt, &dst_feedback_prompt);
-        }
-
-        let src_explain = repo.join(".opencode").join("plugins").join("explain.sh");
-
-        if src_explain.exists() {
-            let _ = std::fs::copy(&src_explain, &dst_explain);
-        }
     }
 }
 
@@ -799,15 +769,8 @@ pub fn cleanup_agent_injected_files(workdir: &Path, agent: &AgentKind) {
     }
 }
 
-fn resolve_diff_review_command(
-    workdir: &Path,
-    repo: &Path,
-    viewer: &DiffReviewViewer,
-) -> Option<String> {
-    let script_name = match viewer {
-        DiffReviewViewer::Amf => "custom-diff-review.sh",
-        DiffReviewViewer::Nvim => "diff-review.sh",
-    };
+fn resolve_diff_review_command(workdir: &Path, repo: &Path) -> Option<String> {
+    let script_name = "custom-diff-review.sh";
     let script_suffix = ["plugins", "diff-review", "scripts", script_name];
     let amf_root = std::env::current_exe()
         .ok()
@@ -841,19 +804,7 @@ pub fn ensure_notification_hooks(
     repo: &Path,
     mode: &VibeMode,
     agent: &AgentKind,
-    is_worktree: bool,
-) {
-    let config = load_config();
-    ensure_notification_hooks_with_config(workdir, repo, mode, agent, is_worktree, &config);
-}
-
-pub fn ensure_notification_hooks_with_config(
-    workdir: &Path,
-    repo: &Path,
-    mode: &VibeMode,
-    agent: &AgentKind,
     _is_worktree: bool,
-    config: &AppConfig,
 ) {
     // Feature creation / restart should not depend on startup having
     // already staged the helper scripts into ~/.config/amf.
@@ -861,7 +812,7 @@ pub fn ensure_notification_hooks_with_config(
     remove_old_diff_review_plugin(repo);
 
     if matches!(agent, AgentKind::Opencode) {
-        ensure_opencode_plugins(workdir, repo, mode);
+        ensure_opencode_plugins(workdir, mode);
         ensure_amf_skills(workdir, agent);
         return;
     }
@@ -905,7 +856,7 @@ pub fn ensure_notification_hooks_with_config(
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
-        resolve_diff_review_command(workdir, repo, &config.diff_review_viewer)
+        resolve_diff_review_command(workdir, repo)
     } else {
         None
     };

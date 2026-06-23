@@ -52,11 +52,6 @@ pub struct TextSelection {
 }
 
 impl TextSelection {
-    pub fn clear(&mut self) {
-        self.has_selection = false;
-        self.is_selecting = false;
-    }
-
     pub fn normalized(&self) -> (u16, u16, u16, u16) {
         if self.start_row < self.end_row
             || (self.start_row == self.end_row && self.start_col <= self.end_col)
@@ -117,14 +112,6 @@ impl ViewState {
             sidebar_visible: true,
             todos_expanded: false,
         }
-    }
-
-    pub fn has_sidebar(&self) -> bool {
-        self.sidebar_session_kind().is_some()
-    }
-
-    pub fn has_claude_sidebar(&self) -> bool {
-        self.session_kind == SessionKind::Claude && self.sidebar_visible
     }
 
     pub fn sidebar_session_kind(&self) -> Option<SessionKind> {
@@ -977,6 +964,7 @@ pub struct ConfigWizardFieldEditor {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // summary-prefetch payload, populated but not read back yet
 pub struct PendingSummary {
     pub tmux_session: String,
     pub workdir: PathBuf,
@@ -985,7 +973,9 @@ pub struct PendingSummary {
 
 #[derive(Debug, Clone, Default)]
 pub struct SummaryState {
+    #[allow(dead_code)] // populated but not read back yet
     pub pending: Vec<PendingSummary>,
+    #[allow(dead_code)] // populated but not read back yet
     pub last_status: std::collections::HashMap<String, crate::project::ProjectStatus>,
     pub generating: std::collections::HashSet<String>,
 }
@@ -1110,8 +1100,10 @@ pub struct BuiltinSessionOption {
 pub struct DiffReviewState {
     pub session_id: String,
     pub workdir: PathBuf,
+    #[allow(dead_code)] // populated but not read yet
     pub file_path: String,
     pub relative_path: String,
+    #[allow(dead_code)] // populated but not read yet
     pub change_id: String,
     pub tool: String,
     pub old_snippet: String,
@@ -1238,10 +1230,6 @@ pub struct BackgroundDeletion {
 }
 
 impl BackgroundDeletion {
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.project_name, self.feature_name)
-    }
-
     pub fn from_deleting_state(state: DeletingFeatureState) -> Self {
         Self {
             project_name: state.project_name,
@@ -1260,6 +1248,7 @@ impl BackgroundDeletion {
 }
 
 pub struct BackgroundHook {
+    #[allow(dead_code)] // retained for the background-hook key, not read directly
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
@@ -1280,10 +1269,6 @@ pub struct BackgroundHook {
 }
 
 impl BackgroundHook {
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.workdir.display(), self.script)
-    }
-
     pub fn from_running_state(state: RunningHookState) -> Self {
         Self {
             script: state.script,
@@ -1363,6 +1348,7 @@ pub enum CreateFeatureStep {
     Worktree,
     Mode,
     SessionName,
+    #[allow(dead_code)] // not constructed yet
     TaskPrompt,
     ConfirmSuperVibe,
 }
@@ -1415,6 +1401,7 @@ pub struct CreateFeatureState {
     pub preset_index: usize,
     pub task_prompt: String,
     pub prompt_analysis: PromptAnalysis,
+    #[allow(dead_code)] // populated but not read yet
     pub prepared_launch: Option<PreparedFeatureLaunch>,
 }
 
@@ -1519,6 +1506,7 @@ pub struct PreparedFeatureLaunch {
     pub remote_control: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
+    #[allow(dead_code)] // populated but not read yet
     pub startup_prompt: Option<String>,
 }
 
@@ -1539,10 +1527,6 @@ pub struct CreateBatchFeaturesState {
 }
 
 impl CreateBatchFeaturesState {
-    pub fn new() -> Self {
-        Self::with_workspace(None)
-    }
-
     pub fn with_workspace(workspace_path: Option<String>) -> Self {
         let repo_path = if let Some(ws) = workspace_path {
             ws

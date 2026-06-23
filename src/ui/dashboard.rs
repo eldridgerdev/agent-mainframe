@@ -15,7 +15,6 @@ const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
 const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 32;
 const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
 const SIDEBAR_WORK_VALUE_CHARS: usize = 28;
-const SIDEBAR_TODO_VALUE_CHARS: usize = 26;
 const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("i", "Pending inputs"),
     ("?", "Help"),

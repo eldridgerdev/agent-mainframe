@@ -83,10 +83,7 @@ pub struct PromptAnalysis {
 }
 
 impl PromptAnalysis {
-    pub fn present_checks(&self) -> impl Iterator<Item = &PromptCheck> {
-        self.checks.iter().filter(|check| check.present)
-    }
-
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn missing_checks(&self) -> impl Iterator<Item = &PromptCheck> {
         self.checks.iter().filter(|check| !check.present)
     }

@@ -545,20 +545,6 @@ impl App {
         Ok(())
     }
 
-    pub fn open_markdown_viewer_for_command(
-        &mut self,
-        from_view: Option<ViewState>,
-        _plan_only: bool,
-    ) -> Result<()> {
-        let Some(view) = from_view else {
-            self.message = Some("No feature selected".into());
-            return Ok(());
-        };
-
-        self.mode = AppMode::Viewing(view);
-        self.open_markdown_viewer_from_view()
-    }
-
     pub fn open_markdown_viewer_path(
         &mut self,
         path: PathBuf,

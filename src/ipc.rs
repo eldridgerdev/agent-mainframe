@@ -54,6 +54,7 @@ impl Drop for IpcGuard {
 /// Each connection is handled in its own short-lived thread.
 /// The server thread exits when the listener errors or when the
 /// receiver side is dropped (channel disconnected).
+#[allow(dead_code)] // exercised only by unit tests; prod uses start_with_wakeup
 pub fn start(path: &Path) -> Result<IpcGuard> {
     start_with_wakeup(path, None)
 }

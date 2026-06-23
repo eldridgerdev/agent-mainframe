@@ -142,10 +142,12 @@ impl TextEditor {
         &self.text
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn keymap(&self) -> EditorKeymap {
         self.keymap
     }

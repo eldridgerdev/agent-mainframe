@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::{
@@ -124,6 +124,7 @@ impl Drop for PersistentTmuxInputClient {
 }
 
 enum TmuxInputWriter {
+    #[allow(dead_code)] // alternate transport, not constructed currently
     Pipe(std::process::ChildStdin),
     #[cfg(unix)]
     Pty(File),
@@ -297,6 +298,7 @@ impl TmuxRuntime {
         }
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     fn owns_tmux_env_client(&self, tmux_env: Option<&str>) -> bool {
         let Some(tmux_env) = tmux_env else {
             return false;
@@ -538,17 +540,6 @@ impl TmuxManager {
         Self::shell_env_with(extra)
     }
 
-    pub fn shell_tmux_command(args: &[&str]) -> String {
-        let runtime = Self::runtime();
-        let mut parts = vec![Self::shell_quote(&runtime.binary.to_string_lossy())];
-        if let Some(socket) = &runtime.socket {
-            parts.push("-S".to_string());
-            parts.push(Self::shell_quote(&socket.to_string_lossy()));
-        }
-        parts.extend(args.iter().map(|arg| Self::shell_quote(arg)));
-        parts.join(" ")
-    }
-
     fn pane_default_terminal() -> Option<String> {
         if let Some(value) = std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL") {
             let value = value.to_string_lossy().trim().to_string();
@@ -569,6 +560,7 @@ impl TmuxManager {
             || std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL").is_some()
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     fn global_default_terminal_args(
         term: &str,
         bootstrap_session: Option<&str>,
@@ -814,12 +806,6 @@ impl TmuxManager {
                     let _ = tx.send(text);
                 }
             });
-        }
-    }
-
-    fn drain_child_output<R: Read + Send + 'static>(reader: Option<R>) {
-        if let Some(reader) = reader {
-            std::thread::spawn(move || for _ in BufReader::new(reader).lines() {});
         }
     }
 
@@ -1372,72 +1358,6 @@ impl TmuxManager {
     }
 
     /// Create a new tmux session with a Claude Code window and a terminal window
-    pub fn create_session(session: &str, workdir: &Path) -> Result<()> {
-        if Self::session_exists(session) {
-            bail!("tmux session '{}' already exists", session);
-        }
-
-        let workdir_str = workdir.to_string_lossy();
-        Self::set_global_default_terminal_if_needed()?;
-
-        // Create detached session with first window named "claude"
-        Self::run_with_private_socket_recovery(
-            &[
-                "new-session",
-                "-d",
-                "-s",
-                session,
-                "-n",
-                "claude",
-                "-c",
-                &workdir_str,
-            ],
-            "Failed to create tmux session",
-            "tmux new-session failed",
-        )?;
-
-        Self::set_session_default_terminal_if_needed(session)?;
-
-        // Create second window named "terminal"
-        let target = format!("{}:", session);
-        Self::run(
-            &[
-                "new-window",
-                "-t",
-                &target,
-                "-n",
-                "terminal",
-                "-c",
-                &workdir_str,
-            ],
-            "Failed to create terminal window",
-            "tmux new-window failed",
-        )?;
-
-        // Select the first window (claude)
-        let claude_window = format!("{}:claude", session);
-        Self::run(
-            &["select-window", "-t", &claude_window],
-            "Failed to select tmux window",
-            "tmux select-window failed",
-        )?;
-
-        // Set status bar hint for navigating back
-        Self::run(
-            &[
-                "set-option",
-                "-t",
-                session,
-                "status-right",
-                " #[fg=cyan]prefix+s#[default]: sessions ",
-            ],
-            "Failed to set tmux status hint",
-            "tmux set-option failed",
-        )?;
-
-        Ok(())
-    }
-
     /// Create a new tmux session with a single named first
     /// window.
     pub fn create_session_with_window(
@@ -1529,22 +1449,6 @@ impl TmuxManager {
     }
 
     /// List window names for a tmux session.
-    pub fn list_windows(session: &str) -> Result<Vec<String>> {
-        let output = Self::command()
-            .args(["list-windows", "-t", session, "-F", "#{window_name}"])
-            .output()
-            .context("Failed to list tmux windows")?;
-
-        if !output.status.success() {
-            return Ok(Vec::new());
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(String::from)
-            .collect())
-    }
-
     /// Launch Claude Code in a specific window of a session
     pub fn launch_claude(
         session: &str,
@@ -1644,35 +1548,6 @@ impl TmuxManager {
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send pi command to tmux",
             "tmux send-keys failed",
-        )
-    }
-
-    /// Check if we're currently running inside a tmux session
-    pub fn is_inside_tmux() -> bool {
-        let tmux_env = std::env::var("TMUX").ok();
-        Self::runtime().owns_tmux_env_client(tmux_env.as_deref())
-    }
-
-    /// Get the name of the current tmux session (only works inside tmux)
-    pub fn current_session() -> Option<String> {
-        let output = Self::command()
-            .args(["display-message", "-p", "#{session_name}"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if name.is_empty() { None } else { Some(name) }
-        } else {
-            None
-        }
-    }
-
-    /// Switch the tmux client to a different session (only works inside tmux)
-    pub fn switch_client(session: &str) -> Result<()> {
-        Self::run(
-            &["switch-client", "-t", session],
-            "Failed to switch tmux client",
-            "tmux switch-client failed",
         )
     }
 
@@ -2034,25 +1909,6 @@ impl TmuxManager {
         }
     }
 
-    /// Enter tmux copy mode for a pane
-    pub fn enter_copy_mode(session: &str, window: &str) -> Result<()> {
-        let target = format!("{}:{}", session, window);
-        Self::run(
-            &["copy-mode", "-t", &target],
-            "Failed to enter tmux copy mode",
-            "tmux copy-mode failed",
-        )
-    }
-
-    /// Exit tmux copy mode for a pane (send q to exit)
-    pub fn exit_copy_mode(session: &str, window: &str) -> Result<()> {
-        let target = format!("{}:{}", session, window);
-        Self::run(
-            &["send-keys", "-t", &target, "-X", "cancel"],
-            "Failed to exit tmux copy mode",
-            "tmux send-keys failed",
-        )
-    }
 }
 
 // ── TmuxOps trait implementation ─────────────────────────────────────────────

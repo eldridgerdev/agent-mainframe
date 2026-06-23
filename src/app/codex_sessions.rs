@@ -50,21 +50,6 @@ pub fn fetch_codex_sessions(workdir: &Path) -> Result<Vec<CodexSessionInfo>> {
     fetch_codex_sessions_from_root(workdir, &sessions_root)
 }
 
-pub fn session_info_for_workdir(
-    workdir: &Path,
-    session_id: &str,
-) -> Result<Option<CodexSessionInfo>> {
-    if let Some(path) = indexed_rollout_path(workdir, session_id) {
-        return Ok(
-            parse_codex_session_file(&path, workdir).filter(|session| session.id == session_id)
-        );
-    }
-    let Some(sessions_root) = codex_sessions_root() else {
-        return Ok(None);
-    };
-    session_info_for_workdir_from_root(workdir, session_id, &sessions_root)
-}
-
 fn fetch_codex_sessions_from_root(
     workdir: &Path,
     sessions_root: &Path,
@@ -98,6 +83,7 @@ fn fetch_codex_sessions_from_root(
     Ok(sessions)
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 fn session_info_for_workdir_from_root(
     workdir: &Path,
     session_id: &str,
@@ -197,18 +183,6 @@ pub fn latest_prompt_for_workdir(workdir: &Path) -> Result<Option<String>> {
     latest_prompt_for_workdir_from_root(workdir, &sessions_root)
 }
 
-pub fn latest_prompt_for_session_id(workdir: &Path, session_id: &str) -> Result<Option<String>> {
-    if let Some(path) = indexed_rollout_path(workdir, session_id) {
-        return Ok(prompt_history_from_file(&path, workdir, session_id)
-            .and_then(|prompts| prompts.into_iter().max_by_key(|prompt| prompt.timestamp))
-            .map(|prompt| prompt.text));
-    }
-    let Some(sessions_root) = codex_sessions_root() else {
-        return Ok(None);
-    };
-    latest_prompt_for_session_id_from_root(workdir, session_id, &sessions_root)
-}
-
 pub fn sidebar_metadata_for_session_id(
     workdir: &Path,
     session_id: &str,
@@ -291,6 +265,7 @@ fn latest_prompt_for_workdir_from_root(
     Ok(newest_prompt.map(|(_, prompt)| prompt))
 }
 
+#[allow(dead_code)] // exercised only by unit tests
 fn latest_prompt_for_session_id_from_root(
     workdir: &Path,
     session_id: &str,

@@ -59,10 +59,14 @@ pub struct ClaudeUsageData {
 pub struct ZaiUsageData {
     pub today_tokens: u64,
     pub today_calls: u64,
+    #[allow(dead_code)] // deserialized from the z.ai usage API, not surfaced yet
     pub monthly_tokens: u64,
+    #[allow(dead_code)] // deserialized from the z.ai usage API, not surfaced yet
     pub weekly_tokens: u64,
+    #[allow(dead_code)] // deserialized from the z.ai usage API, not surfaced yet
     pub five_hour_tokens: u64,
     pub monthly_token_limit: Option<u64>,
+    #[allow(dead_code)] // deserialized from the z.ai usage API, not surfaced yet
     pub monthly_usage_pct: Option<f64>,
     pub weekly_token_limit: Option<u64>,
     pub weekly_usage_pct: Option<f64>,
@@ -163,70 +167,6 @@ struct Credentials {
 struct OAuthCreds {
     access_token: String,
     subscription_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpencodeMessage {
-    #[serde(default)]
-    time: Option<OpencodeTime>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpencodeTime {
-    created: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpencodePart {
-    #[serde(rename = "type")]
-    part_type: String,
-    tokens: Option<OpencodeTokens>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpencodeTokens {
-    input: u64,
-    output: u64,
-    #[serde(default)]
-    cache: Option<OpencodeCache>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpencodeCache {
-    #[serde(default)]
-    read: u64,
-    #[serde(default)]
-    write: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ZaiAuth {
-    #[serde(rename = "zai-coding-plan")]
-    zai_coding_plan: Option<ZaiApiKey>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ZaiApiKey {
-    key: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ZaiUsageResponse {
-    data: ZaiApiResponseData,
-}
-
-#[derive(Debug, Deserialize)]
-struct ZaiApiResponseData {
-    #[serde(rename = "totalUsage")]
-    total_usage: ZaiTotalUsage,
-}
-
-#[derive(Debug, Deserialize)]
-struct ZaiTotalUsage {
-    #[serde(rename = "totalModelCallCount")]
-    total_model_call_count: u64,
-    #[serde(rename = "totalTokensUsage")]
-    total_tokens_usage: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -874,99 +814,6 @@ fn claude_today_signature(today: &str) -> u64 {
 
     hash_metadata_for_paths(&mut hasher, files);
     hasher.finish()
-}
-
-fn calculate_five_hour_usage(_data: &std::sync::MutexGuard<UsageData>) -> u64 {
-    let five_hours_ago = chrono::Local::now() - chrono::Duration::hours(5);
-    let five_hours_ago_ts = five_hours_ago.timestamp_millis();
-
-    let Some(data_dir) = dirs::data_dir().map(|d| d.join("opencode").join("storage")) else {
-        return 0;
-    };
-
-    let message_path = data_dir.join("message");
-    let part_path = data_dir.join("part");
-
-    if !is_real_dir(&message_path) {
-        return 0;
-    }
-
-    let mut total_tokens: u64 = 0;
-
-    let Ok(session_dirs) = std::fs::read_dir(&message_path) else {
-        return 0;
-    };
-
-    for session_entry in session_dirs.flatten() {
-        if !session_entry
-            .file_type()
-            .map(|t| t.is_dir())
-            .unwrap_or(false)
-        {
-            continue;
-        }
-
-        let session_path = session_entry.path();
-        let Ok(message_files) = std::fs::read_dir(&session_path) else {
-            continue;
-        };
-
-        for msg_entry in message_files.flatten() {
-            let msg_path = msg_entry.path();
-            if msg_path.extension().map(|e| e != "json").unwrap_or(true) {
-                continue;
-            }
-
-            let Ok(contents) = std::fs::read_to_string(&msg_path) else {
-                continue;
-            };
-
-            let Ok(msg) = serde_json::from_str::<OpencodeMessage>(&contents) else {
-                continue;
-            };
-
-            let Some(time) = msg.time else {
-                continue;
-            };
-
-            if time.created < five_hours_ago_ts {
-                continue;
-            }
-
-            let msg_id = msg_path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-            let part_dir = part_path.join(msg_id);
-            if !is_real_dir(&part_dir) {
-                continue;
-            }
-
-            let Ok(part_files) = std::fs::read_dir(&part_dir) else {
-                continue;
-            };
-
-            for part_entry in part_files.flatten() {
-                let part_file = part_entry.path();
-                if part_file.extension().map(|e| e != "json").unwrap_or(true) {
-                    continue;
-                }
-
-                let Ok(part_contents) = std::fs::read_to_string(&part_file) else {
-                    continue;
-                };
-
-                let Ok(part) = serde_json::from_str::<OpencodePart>(&part_contents) else {
-                    continue;
-                };
-
-                if part.part_type == "step-finish"
-                    && let Some(tokens) = part.tokens
-                {
-                    total_tokens += tokens.input + tokens.output;
-                }
-            }
-        }
-    }
-
-    total_tokens
 }
 
 fn calculate_codex_usage() -> CodexUsageData {

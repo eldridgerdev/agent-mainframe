@@ -98,3 +98,11 @@ doc always says exactly what remains.
   comments, multi-line/markdown feedback and notes, on-demand
   walkthroughs, finish gating, resumable state, base-ref selection, and
   PR integration.
+- [PR comment review](pr-comment-review-plan.md) — _Backlog._ Triage a
+  GitHub PR's comments (inline, review summaries, conversation, bots)
+  inside AMF and, per comment, inject a token-minimal fix into the live
+  agent session, post an AI-drafted reply, or skip. Token efficiency is
+  the core constraint: the TUI fetches/triages with zero agent tokens,
+  fix prompts carry only comment + diff hunk + `file:line`, threads are
+  cached by head SHA. Split into read-only MVP → fix injection →
+  replies/resolution → throughput epics.

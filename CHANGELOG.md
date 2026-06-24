@@ -64,6 +64,13 @@ are tagged.
   combined counts like `2d3w`. A leading `0` still jumps to the start of the
   line unless you are already typing a count (`10w`).
 
+- Began work on **PR comment review**: a forthcoming workflow to triage a
+  GitHub pull request's comments inside AMF and act on each one (inject a
+  fix into the live agent session, post a reply, or skip) without leaving
+  the dashboard. This release lays the groundwork only — there is no new
+  command yet — but the design is published in the backlog and viewable in
+  AMF's in-app plan viewer.
+
 ### Changed
 
 - **New/Edit Prompt dialog redesign.** Each field (Name, Tags, Prompt body)

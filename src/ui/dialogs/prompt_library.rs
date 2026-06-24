@@ -6,7 +6,10 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState};
+use crate::app::{
+    PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState, SkillPickerState,
+};
+use crate::editor::VimMode;
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -311,6 +314,10 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
         label(" switch  "),
         hint("Ctrl+S"),
         label(" save  "),
+        hint("Ctrl+T"),
+        label(" vim  "),
+        hint("Ctrl+K"),
+        label(" skill  "),
         hint("Esc"),
         label(" cancel (×2 in body)  "),
         hint("Ctrl+Q"),
@@ -423,8 +430,13 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     } else {
         Style::default().fg(theme.text_muted.to_color())
     };
+    let body_title = match state.editor.vim_mode() {
+        Some(VimMode::Insert) => " Prompt body [Vim Insert] ",
+        Some(VimMode::Normal) => " Prompt body [Vim Normal] ",
+        None => " Prompt body ",
+    };
     let body_block = Block::default()
-        .title(Span::styled(" Prompt body ", body_title_style))
+        .title(Span::styled(body_title, body_title_style))
         .title_bottom(help)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(body_border))
@@ -530,6 +542,18 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
             Style::default().fg(theme.warning.to_color()),
         ));
     }
+    // Surface the vim state for multi-line fields (the only slots vim applies
+    // to), matching the prompt-body editor's indicator.
+    if let Some(mode) = state.input.vim_mode().filter(|_| state.current_is_multiline()) {
+        let indicator = match mode {
+            VimMode::Insert => "  [Vim Insert]",
+            VimMode::Normal => "  [Vim Normal]",
+        };
+        label_spans.push(Span::styled(
+            indicator,
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
+    }
     frame.render_widget(Paragraph::new(Line::from(label_spans)), chunks[0]);
 
     // Always-visible help, tailored to the slot kind. Kept separate from the
@@ -596,10 +620,130 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
         label(" prev  "),
         hint("Ctrl+S"),
         label(" inject  "),
-        hint("Esc"),
-        label(" cancel"),
     ]);
+    // Vim is only a meaningful toggle on multi-line slots.
+    if state.current_is_multiline() {
+        footer_spans.extend([hint("Ctrl+T"), label(" vim  ")]);
+    }
+    // Skill injection works on any text slot (not select menus).
+    if !state.is_select() {
+        footer_spans.extend([hint("Ctrl+K"), label(" skill  ")]);
+    }
+    footer_spans.extend([hint("Esc"), label(" cancel")]);
     frame.render_widget(Paragraph::new(Line::from(footer_spans)), chunks[4]);
+}
+
+/// Skill picker: a search-as-you-type list of the workspace's agent skills,
+/// launched from an editing surface. Selecting one inserts its `/skill-name`
+/// invocation at the editor cursor.
+pub fn draw_skill_picker(frame: &mut Frame, state: &SkillPickerState, theme: &Theme) {
+    let area = centered_rect(64, 60, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let total = state.skills.len();
+    let shown = state.filtered.len();
+    let title = if state.query.is_empty() {
+        format!(" Insert Skill ({total}) ")
+    } else {
+        format!(" Insert Skill ({shown}/{total}) ")
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // query line
+            Constraint::Min(1),    // list
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    // Query line, always editable (typing filters).
+    let query_line = Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(theme.warning.to_color())),
+        Span::styled(state.query.clone(), Style::default().fg(theme.text.to_color())),
+        Span::styled("█", Style::default().fg(theme.primary.to_color())),
+    ]);
+    frame.render_widget(Paragraph::new(query_line), chunks[0]);
+
+    if state.filtered.is_empty() {
+        let empty = if total == 0 {
+            "No agent skills found in ~/.claude/skills or .claude/skills."
+        } else {
+            "No skills match your filter."
+        };
+        frame.render_widget(
+            Paragraph::new(empty)
+                .style(Style::default().fg(theme.text_muted.to_color()))
+                .wrap(Wrap { trim: true }),
+            chunks[1],
+        );
+    } else {
+        let visible = chunks[1].height as usize;
+        let scroll_offset = if state.selected >= visible {
+            state.selected - visible + 1
+        } else {
+            0
+        };
+        let width = chunks[1].width as usize;
+        let items: Vec<ListItem> = state
+            .filtered
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible)
+            .filter_map(|(pos, skill_idx)| {
+                let skill = state.skills.get(*skill_idx)?;
+                let selected = pos == state.selected;
+                let name_style = if selected {
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text.to_color())
+                };
+                let marker = if selected { "▸ " } else { "  " };
+                let name = format!("/{}", skill.name);
+                let mut spans = vec![
+                    Span::styled(marker.to_string(), name_style),
+                    Span::styled(name.clone(), name_style),
+                ];
+                // Append a muted, truncated description when there's room.
+                if !skill.description.is_empty() {
+                    let used = marker.len() + name.len() + 3;
+                    let room = width.saturating_sub(used);
+                    if room > 4 {
+                        spans.push(Span::styled(
+                            format!("  — {}", truncate(&skill.description, room)),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ));
+                    }
+                }
+                Some(ListItem::new(Line::from(spans)))
+            })
+            .collect();
+        frame.render_widget(List::new(items), chunks[1]);
+    }
+
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            hint("↑/↓"),
+            label(" navigate  "),
+            hint("Enter"),
+            label(" insert  "),
+            hint("Esc"),
+            label(" cancel"),
+        ])),
+        chunks[2],
+    );
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

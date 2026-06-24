@@ -174,6 +174,31 @@ pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         app.cancel_prompt_editor();
         return Ok(());
     }
+    // Ctrl+K opens the agent-skill picker; selecting a skill inserts its
+    // `/skill-name` invocation into the body at the cursor. Only on the body.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
+        if matches!(&app.mode, AppMode::PromptEditor(state)
+            if matches!(state.focus, PromptEditorFocus::Body))
+        {
+            app.open_skill_picker();
+        }
+        return Ok(());
+    }
+    // Ctrl+T toggles vim on the body editor, mirroring the compose box. Only
+    // meaningful while the multi-line body is focused.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
+        if let AppMode::PromptEditor(state) = &mut app.mode
+            && matches!(state.focus, PromptEditorFocus::Body)
+        {
+            state.editor.toggle_vim();
+            app.message = Some(if state.editor.vim_mode().is_some() {
+                "Vim mode enabled".into()
+            } else {
+                "Vim mode disabled".into()
+            });
+        }
+        return Ok(());
+    }
     // Tab cycles Name → Tags → Body; Shift+Tab reverses.
     if key.code == KeyCode::Tab {
         if let AppMode::PromptEditor(state) = &mut app.mode {
@@ -231,6 +256,32 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // Ctrl+S submits from anywhere (collecting the current field first).
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         app.submit_placeholder_fill()?;
+        return Ok(());
+    }
+
+    // Ctrl+K opens the agent-skill picker on text slots, inserting the chosen
+    // skill's `/skill-name` invocation at the cursor. Select slots have no
+    // editor to insert into.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
+        let is_select = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.is_select());
+        if !is_select {
+            app.open_skill_picker();
+        }
+        return Ok(());
+    }
+
+    // Ctrl+T toggles vim on a multi-line fill field (no-op on single-line /
+    // select slots, where Enter advances the field).
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
+        if let AppMode::PlaceholderFill(state) = &mut app.mode
+            && state.toggle_input_vim()
+        {
+            app.message = Some(if state.input.vim_mode().is_some() {
+                "Vim mode enabled".into()
+            } else {
+                "Vim mode disabled".into()
+            });
+        }
         return Ok(());
     }
 

@@ -450,6 +450,37 @@ pub(crate) fn build_compose_catalog(workdir: &Path) -> Vec<ComposeCommandEntry> 
     catalog
 }
 
+/// The available agent skills — global (`~/.claude/skills`) plus the
+/// project's own (`{workdir}/.claude/skills`) — deduped by name with the
+/// project copy winning. Same scan the compose catalog uses for skills, but
+/// without the slash-command entries, for the prompt-library skill picker.
+pub(crate) fn build_skill_catalog(workdir: Option<&Path>) -> Vec<ComposeCommandEntry> {
+    let mut catalog: Vec<ComposeCommandEntry> = Vec::new();
+    let push_unique = |catalog: &mut Vec<ComposeCommandEntry>, entry: ComposeCommandEntry| {
+        if !catalog
+            .iter()
+            .any(|existing| existing.name.eq_ignore_ascii_case(&entry.name))
+        {
+            catalog.push(entry);
+        }
+    };
+
+    // Project skills first so they win the name collision over global ones.
+    if let Some(workdir) = workdir {
+        for entry in scan_skills_dir(&workdir.join(".claude").join("skills")) {
+            push_unique(&mut catalog, entry);
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        for entry in scan_skills_dir(&home.join(".claude").join("skills")) {
+            push_unique(&mut catalog, entry);
+        }
+    }
+
+    catalog.sort_by(|a, b| a.name.cmp(&b.name));
+    catalog
+}
+
 fn scan_command_dir(dir: &Path, source: ComposeCommandSource) -> Vec<ComposeCommandEntry> {
     let mut raw = Vec::new();
     scan_commands_recursive(dir, dir, source.label(), &mut raw);

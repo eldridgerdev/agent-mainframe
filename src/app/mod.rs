@@ -25,6 +25,7 @@ mod session_config;
 mod session_ops;
 mod session_titles;
 pub mod setup;
+mod skill_picker;
 mod state;
 mod steering;
 mod switcher;

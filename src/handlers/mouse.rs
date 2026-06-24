@@ -2,7 +2,8 @@ use anyhow::Result;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
-use crate::app::{App, AppMode, Selection, VisibleItem};
+use crate::app::{App, AppMode, CreateFeatureStep, Selection, VisibleItem};
+use crate::project::AgentKind;
 use crate::tmux::TmuxManager;
 
 static mut LAST_CLICK_TIME: Option<Instant> = None;
@@ -29,9 +30,38 @@ pub fn handle_mouse(app: &mut App, mouse: MouseEvent, visible_rows: u16) -> Resu
         MouseEventKind::Up(button) => {
             handle_release(app, mouse.column, mouse.row, button)?;
         }
+        MouseEventKind::Moved => {
+            handle_move(app, mouse.row, visible_rows);
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn handle_move(app: &mut App, row: u16, visible_rows: u16) {
+    let AppMode::CreatingFeature(state) = &mut app.mode else {
+        return;
+    };
+    if state.step != CreateFeatureStep::Mode {
+        return;
+    }
+
+    let full_height = visible_rows.saturating_add(3);
+    let dialog_top = full_height.saturating_mul(5) / 100;
+    let inner_top = dialog_top.saturating_add(1);
+    let relative_row = row.saturating_sub(inner_top);
+
+    state.mode_focus = match relative_row {
+        8..=11 => 0,
+        13..=17 => 1,
+        19 => 2,
+        20 => 3,
+        21 if state.agent == AgentKind::Claude => 4,
+        22 if state.agent == AgentKind::Claude => 5,
+        21 => 4,
+        23 if state.agent == AgentKind::Claude => 6,
+        _ => state.mode_focus,
+    };
 }
 
 fn handle_scroll_up(app: &mut App, visible_rows: u16) {

@@ -12,6 +12,19 @@ are tagged.
 
 ### Added
 
+- **Insert an agent skill into a prompt.** While editing a prompt body (or
+  filling a text placeholder), press `Ctrl+K` to open a search-as-you-type
+  picker of the agent skills available in your workspace — the same
+  `~/.claude/skills` and project `.claude/skills` the compose `/command` popup
+  draws from. Selecting one inserts its `/skill-name` invocation at the cursor,
+  so the agent expands the skill when the prompt is delivered.
+
+- **Vim editing in the prompt library.** The New/Edit Prompt body editor now
+  supports a vim keymap you can toggle with `Ctrl+T` (just like the compose
+  box), and the box title shows `[Vim Insert]` / `[Vim Normal]` so you always
+  know which mode you're in. Multi-line placeholder fill fields gain the same
+  `Ctrl+T` toggle, and the choice carries across slots while you fill them in.
+
 - **Prompt library shows where each template lives.** The picker preview pane
   now displays the resolved source file for the selected entry — the local
   SQLite store for your own (`User`) templates, or the `.amf/config.json` path

@@ -1220,6 +1220,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_placeholder_fill(frame, state, &app.theme);
     }
 
+    if let AppMode::SkillPicker(state) = &app.mode {
+        super::dialogs::draw_skill_picker(frame, state, &app.theme);
+    }
+
     if let AppMode::ConfigWizard(state) = &mut app.mode {
         super::dialogs::draw_config_wizard_dialog(frame, state, &app.theme);
     }

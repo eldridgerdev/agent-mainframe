@@ -1,12 +1,12 @@
 # Prompt Library
 
-- **Status:** In progress _(phases 1–3 shipped in v0.26.0: multi-source picker,
-  fill-in flow, and inline select-menus landed; tags + tag filtering, the
-  config-merge test, and the amf-add-prompt skill now done — phase 3 complete.
-  Phase 4 done: export/display resolver unified + destination paths surfaced
-  in the picker, export confirm, and editor. Remaining: phase 5
-  editor/injection enhancements — VIM support in the editor surfaces and
-  injecting an agent skill into the prompt.)_
+- **Status:** All phases complete _(phases 1–3 shipped in v0.26.0:
+  multi-source picker, fill-in flow, and inline select-menus landed; tags + tag
+  filtering, the config-merge test, and the amf-add-prompt skill — phase 3
+  complete. Phase 4 done: export/display resolver unified + destination paths
+  surfaced in the picker, export confirm, and editor. Phase 5 done: VIM support
+  in the editor/fill surfaces (Ctrl+T toggle + mode indicator) and agent-skill
+  injection (Ctrl+K skill picker inserting `/skill-name` at the cursor).)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -363,14 +363,23 @@ New `src/ui/dialogs/prompt_library.rs` (model on
 
 ### Phase 5 — Editor & injection enhancements
 
-- [ ] **VIM support in the prompt library editing surfaces.** `TextEditor`
+- [x] **VIM support in the prompt library editing surfaces.** `TextEditor`
   already implements vim mode (used by compose / steering), so the New/Edit
   Prompt body editor and any multi-line (`MultiLine`) placeholder fill field
   should honor the same vim keybindings and respect the user's vim toggle.
   Surface a small mode indicator and verify normal/insert/visual behave the
   same as in the compose box. Add a test that the editor enters vim normal
-  mode on `Esc` and that motions/operators reach the prompt body.
-- [ ] **Inject an agent skill into the prompt.** Add a way to pick an agent
+  mode on `Esc` and that motions/operators reach the prompt body. _(Done: the
+  body editor gains a `Ctrl+T` vim toggle (mirroring the compose box) plus a
+  `[Vim Insert]`/`[Vim Normal]` indicator in the box title; `MultiLine`
+  placeholder-fill fields get the same `Ctrl+T` toggle, a persisted
+  `PlaceholderFillState.vim_enabled` so the choice survives moving between
+  slots, and a matching indicator on the slot label. Single-line/`Select`
+  slots stay plain so `Enter` keeps advancing the field. Tests:
+  `editor_enters_vim_normal_on_escape_and_motions_reach_body` (Esc → Normal,
+  `0`/`dw` mutate the body) and
+  `multiline_fill_field_honors_vim_toggle_across_slots`.)_
+- [x] **Inject an agent skill into the prompt.** Add a way to pick an agent
   skill (the user-invocable skills available in the workspace) and inject a
   reference to it — or its expanded content — into the prompt being composed
   or filled. Likely shapes: a dedicated `Skill` placeholder kind whose option
@@ -378,7 +387,19 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   that inserts the chosen skill's invocation (e.g. `/skill-name`) at the
   cursor. Resolve where the skill list comes from (same source the command
   picker uses) and whether injection inserts the invocation token vs. the
-  skill body text.
+  skill body text. _(Done: chose the **picker-hotkey** shape over a placeholder
+  kind — `Ctrl+K` in the prompt-body editor and in non-select fill fields opens
+  a search-as-you-type `SkillPicker` and inserts the chosen skill's
+  **invocation token** `/skill-name ` at the cursor (the agent expands it at
+  delivery, so templates stay compact and never go stale). The list comes from
+  the same `.claude/skills` scan the compose `/command` popup uses, via a new
+  `build_skill_catalog(workdir)` (global + project, deduped by name, project
+  wins). New `src/app/skill_picker.rs` + `src/handlers/skill_picker.rs` +
+  `draw_skill_picker`; `AppMode::SkillPicker` carries a `return_to` editing
+  mode it restores on insert/cancel. Tests:
+  `build_skill_catalog_discovers_project_skill`,
+  `skill_picker_inserts_invocation_at_cursor_and_returns_to_editor`, and
+  `skill_picker_filter_ranks_by_query_and_cancel_restores_editor`.)_
 
 ## Resolved decisions
 

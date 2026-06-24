@@ -714,6 +714,10 @@ pub struct PlaceholderFillState {
     pub input: TextEditor,
     /// Highlighted option index for a `Select` slot; ignored otherwise.
     pub select_index: usize,
+    /// Whether the user has turned vim on for the fill fields. Persisted on
+    /// the state (not the editor) so the choice survives `enter()` rebuilding
+    /// `input` when moving between slots. Only applies to multi-line slots.
+    pub vim_enabled: bool,
     pub from_view: Option<ViewState>,
 }
 
@@ -753,13 +757,35 @@ impl PlaceholderFillState {
     pub fn enter(&mut self, idx: usize) {
         self.current = idx;
         let value = self.values.get(idx).cloned().unwrap_or_default();
+        let is_multiline = matches!(
+            self.placeholders.get(idx).map(|p| &p.kind),
+            Some(crate::prompt_library::PlaceholderKind::MultiLine { .. })
+        );
         self.select_index = match self.placeholders.get(idx).map(|p| &p.kind) {
             Some(crate::prompt_library::PlaceholderKind::Select { options }) => {
                 options.iter().position(|o| o == &value).unwrap_or(0)
             }
             _ => 0,
         };
-        self.input = TextEditor::new(value);
+        // Vim applies only to multi-line slots; single-line/select slots use
+        // Enter to advance, so a plain editor keeps that behaviour intact.
+        self.input = if self.vim_enabled && is_multiline {
+            TextEditor::with_vim(value)
+        } else {
+            TextEditor::new(value)
+        };
+    }
+
+    /// Toggle vim on the active multi-line field, remembering the choice for
+    /// later slots. No-op (and reports `false`) on non-multi-line slots, where
+    /// vim would hijack Enter's "advance field" behaviour.
+    pub fn toggle_input_vim(&mut self) -> bool {
+        if !self.current_is_multiline() {
+            return false;
+        }
+        self.input.toggle_vim();
+        self.vim_enabled = self.input.vim_mode().is_some();
+        true
     }
 
     /// Record the active slot's value into `values`: the chosen option for a
@@ -796,6 +822,31 @@ impl PlaceholderFillState {
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
+}
+
+/// A search-as-you-type picker over the workspace's agent skills, launched
+/// from a prompt-editing surface (the prompt editor body or a text fill
+/// field). Selecting an entry inserts its `/skill-name` invocation at the
+/// editor cursor; `return_to` holds the editing mode to restore afterwards.
+pub struct SkillPickerState {
+    /// All available skills (global + project), name-sorted.
+    pub skills: Vec<ComposeCommandEntry>,
+    /// Indices into `skills` matching the current query, best match first.
+    pub filtered: Vec<usize>,
+    pub query: String,
+    pub selected: usize,
+    /// The editing mode to return to on select/cancel — `PromptEditor` or
+    /// `PlaceholderFill`. Boxed because `AppMode` is large.
+    pub return_to: Box<AppMode>,
+}
+
+impl SkillPickerState {
+    /// The currently highlighted skill, if any survive the filter.
+    pub fn selected_skill(&self) -> Option<&ComposeCommandEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|idx| self.skills.get(*idx))
+    }
 }
 
 pub enum AppMode {
@@ -845,6 +896,7 @@ pub enum AppMode {
     PromptLibrary(PromptLibraryState),
     PromptEditor(PromptEditorState),
     PlaceholderFill(PlaceholderFillState),
+    SkillPicker(SkillPickerState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),

@@ -201,6 +201,7 @@ impl App {
             current: 0,
             input: TextEditor::new(String::new()),
             select_index: 0,
+            vim_enabled: false,
             from_view,
         };
         // Seed the first field's editor + select highlight.
@@ -1529,6 +1530,108 @@ mod tests {
     }
 
     #[test]
+    fn editor_enters_vim_normal_on_escape_and_motions_reach_body() {
+        use crate::app::{App, AppMode};
+        use crate::handlers::handle_prompt_editor_key;
+        use crate::editor::VimMode;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Open a fresh editor on the body field. It starts in vim insert mode.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = PromptEditorFocus::Body;
+            state.editor = crate::editor::TextEditor::with_vim("hello world".to_string());
+        }
+
+        let press = |app: &mut App, code: KeyCode| {
+            handle_prompt_editor_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+        };
+
+        // Esc switches to vim normal mode rather than cancelling the dialog.
+        press(&mut app, KeyCode::Esc);
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("Esc in vim insert must stay in the editor, not cancel");
+        };
+        assert_eq!(state.editor.vim_mode(), Some(VimMode::Normal));
+
+        // A normal-mode motion + operator reaches the prompt body: `0` to the
+        // line start, then `dw` deletes the first word.
+        press(&mut app, KeyCode::Char('0'));
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('w'));
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("expected to remain in the editor");
+        };
+        assert_eq!(state.editor.text(), "world");
+    }
+
+    #[test]
+    fn multiline_fill_field_honors_vim_toggle_across_slots() {
+        use crate::app::{App, AppMode};
+        use crate::handlers::handle_placeholder_fill_key;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut template =
+            PromptTemplate::new("ml".to_string(), "Note: {{note}}\nThen {{step}}".to_string());
+        template.placeholders = vec![
+            PromptPlaceholder {
+                key: "note".to_string(),
+                label: None,
+                kind: PlaceholderKind::MultiLine { default: None },
+                required: false,
+            },
+            PromptPlaceholder {
+                key: "step".to_string(),
+                label: None,
+                kind: PlaceholderKind::MultiLine { default: None },
+                required: false,
+            },
+        ];
+        app.store.prompt_templates.push(template);
+        app.open_prompt_library(None);
+        app.inject_selected_template().unwrap();
+
+        // The multi-line field starts plain; Ctrl+T turns vim on.
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        handle_placeholder_fill_key(&mut app, ctrl_t).unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        assert!(state.vim_enabled);
+        assert!(state.input.vim_mode().is_some());
+
+        // Advancing to the next multi-line slot keeps vim on (the choice is
+        // persisted on the state, not the rebuilt editor).
+        handle_placeholder_fill_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        assert_eq!(state.current, 1);
+        assert!(state.input.vim_mode().is_some());
+    }
+
+    #[test]
     fn fill_blocks_submit_on_empty_required_slot() {
         use crate::app::{App, AppMode};
         use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -1557,5 +1660,121 @@ mod tests {
         app.submit_placeholder_fill().unwrap();
         assert!(matches!(app.mode, AppMode::PlaceholderFill(_)));
         assert!(app.message.as_deref().unwrap_or("").contains("required"));
+    }
+
+    #[test]
+    fn build_skill_catalog_discovers_project_skill() {
+        use std::fs;
+
+        let workdir = tempfile::TempDir::new().unwrap();
+        let skill_dir = workdir.path().join(".claude").join("skills").join("my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Does a thing\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let catalog = crate::app::compose::build_skill_catalog(Some(workdir.path()));
+        let entry = catalog
+            .iter()
+            .find(|e| e.name == "my-skill")
+            .expect("project skill discovered");
+        assert_eq!(entry.description, "Does a thing");
+    }
+
+    #[test]
+    fn skill_picker_inserts_invocation_at_cursor_and_returns_to_editor() {
+        use crate::app::{App, AppMode, SkillPickerState};
+        use crate::app::{ComposeCommandEntry, ComposeCommandSource};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Stand up a prompt editor focused on the body with some existing text.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = PromptEditorFocus::Body;
+            state.editor = crate::editor::TextEditor::new("before ".to_string());
+        }
+        let return_to = std::mem::replace(&mut app.mode, AppMode::Normal);
+
+        // Open the skill picker over that editor with a single skill, then
+        // insert it.
+        app.mode = AppMode::SkillPicker(SkillPickerState {
+            skills: vec![ComposeCommandEntry {
+                name: "review".to_string(),
+                description: "Review the diff".to_string(),
+                source: ComposeCommandSource::Skill,
+                interactive: false,
+            }],
+            filtered: vec![0],
+            query: String::new(),
+            selected: 0,
+            return_to: Box::new(return_to),
+        });
+        app.insert_selected_skill();
+
+        // The invocation token lands at the cursor and we're back in the editor.
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("expected to return to the prompt editor");
+        };
+        assert_eq!(state.editor.text(), "before /review ");
+    }
+
+    #[test]
+    fn skill_picker_filter_ranks_by_query_and_cancel_restores_editor() {
+        use crate::app::{App, AppMode, SkillPickerState};
+        use crate::app::{ComposeCommandEntry, ComposeCommandSource};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        app.start_new_prompt_template();
+        let return_to = std::mem::replace(&mut app.mode, AppMode::Normal);
+        let skill = |name: &str| ComposeCommandEntry {
+            name: name.to_string(),
+            description: String::new(),
+            source: ComposeCommandSource::Skill,
+            interactive: false,
+        };
+        app.mode = AppMode::SkillPicker(SkillPickerState {
+            skills: vec![skill("build"), skill("review"), skill("run")],
+            filtered: vec![0, 1, 2],
+            query: String::new(),
+            selected: 0,
+            return_to: Box::new(return_to),
+        });
+
+        // Typing narrows the list to fuzzy matches.
+        if let AppMode::SkillPicker(state) = &mut app.mode {
+            state.query = "rev".to_string();
+        }
+        app.skill_picker_filter();
+        let AppMode::SkillPicker(ref state) = app.mode else {
+            panic!("expected skill picker");
+        };
+        let names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|&i| state.skills[i].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["review"]);
+
+        // Cancelling drops back to the editor without inserting anything.
+        app.cancel_skill_picker();
+        assert!(matches!(app.mode, AppMode::PromptEditor(_)));
     }
 }

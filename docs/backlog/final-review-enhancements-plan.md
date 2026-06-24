@@ -92,7 +92,7 @@ any order.
 - [x] Multi-line feedback editor (reuse `TextEditor`)
 - [x] Line / hunk-level comments (unified view; side-by-side
       navigates + stores comments but has no inline marker yet)
-- [ ] On-demand walkthrough for noteless files
+- [x] On-demand walkthrough for noteless files
 - [x] Render Developer Notes as markdown
 - [ ] Finish gating + jump-to-next-undecided
 - [ ] Persist / resume review state

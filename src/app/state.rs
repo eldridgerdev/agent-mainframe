@@ -269,7 +269,8 @@ pub struct LineComment {
     pub text: String,
 }
 
-#[derive(Clone)]
+// Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
+// generation (matching `DiffReviewState`). Nothing clones this state wholesale.
 pub struct DiffViewerState {
     pub from_view: ViewState,
     pub workdir: PathBuf,
@@ -316,6 +317,14 @@ pub struct DiffViewerState {
     /// File path -> developer note parsed from `.claude/review-notes.md`
     /// (written by review mode). Shown beside the diff during final review.
     pub review_notes: std::collections::HashMap<String, String>,
+    /// File path -> walkthrough generated on demand (via headless Claude) for a
+    /// file with no developer note. Cached so it survives file switches.
+    pub generated_notes: std::collections::HashMap<String, String>,
+    /// In-flight headless process generating a walkthrough (one at a time).
+    pub walkthrough_child: Option<Child>,
+    /// Path the in-flight walkthrough is being generated for, so the result is
+    /// filed correctly even if the reviewer navigates to another file.
+    pub walkthrough_file: Option<String>,
     /// When true the developer-notes panel takes the full patch column.
     pub notes_expanded: bool,
     pub notes_scroll: usize,
@@ -354,6 +363,9 @@ impl DiffViewerState {
             feedback_sync_to_cursor: true,
             general_feedback: String::new(),
             review_notes: std::collections::HashMap::new(),
+            generated_notes: std::collections::HashMap::new(),
+            walkthrough_child: None,
+            walkthrough_file: None,
             notes_expanded: false,
             notes_scroll: 0,
             notes_rendered_lines: 0,

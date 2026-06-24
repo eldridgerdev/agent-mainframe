@@ -39,6 +39,14 @@ impl App {
     }
 
     pub fn enter_view(&mut self) -> Result<()> {
+        self.enter_view_with_options(true)
+    }
+
+    pub(crate) fn enter_view_without_auto_compose(&mut self) -> Result<()> {
+        self.enter_view_with_options(false)
+    }
+
+    fn enter_view_with_options(&mut self, auto_compose: bool) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
             Selection::Feature(pi, fi) => (*pi, *fi, None),
@@ -138,6 +146,13 @@ impl App {
             let input = self.pending_inputs.remove(idx);
             self.open_diff_review_prompt(&input);
             let _ = std::fs::remove_file(&input.file_path);
+        }
+
+        if auto_compose
+            && let AppMode::Viewing(view) = &self.mode
+            && self.compose_intercept_active(view)
+        {
+            self.open_compose_from_view(None)?;
         }
 
         Ok(())

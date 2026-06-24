@@ -6050,13 +6050,41 @@ fn bookmark_add_and_remove_current_session() {
 }
 
 #[test]
-fn jump_to_bookmark_enters_view_for_slot() {
+fn jump_to_bookmark_opens_composer_for_agent_session() {
     let store = store_with_single_claude_session();
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(1).returning(|_| true);
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.bookmark_current_session().unwrap();
+    app.mode = AppMode::Normal;
+
+    app.jump_to_bookmark(1).unwrap();
+
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.view.session, "amf-my-feat");
+            assert_eq!(state.view.window, "claude");
+            assert!(state.editor.text().is_empty());
+        }
+        _ => panic!("expected Compose mode"),
+    }
+}
+
+#[test]
+fn jump_to_bookmark_keeps_direct_agent_session_in_view() {
+    let store = store_with_single_claude_session();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.compose_direct_targets
+        .insert("amf-my-feat:claude".to_string());
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
     app.bookmark_current_session().unwrap();

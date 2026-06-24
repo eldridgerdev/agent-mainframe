@@ -545,7 +545,7 @@ impl App {
 
     pub fn open_startup_steering_prompt(&mut self, pi: usize, fi: usize) -> Result<()> {
         self.selection = Selection::Feature(pi, fi);
-        self.enter_view()?;
+        self.enter_view_without_auto_compose()?;
 
         let view = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::Viewing(view) => view,

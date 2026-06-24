@@ -18,6 +18,10 @@ are tagged.
   use drafts, prompt templates, multiline input, clipboard paste, and image
   attachments without changing workflows between agent harnesses. Terminal,
   editor, and custom sessions continue to use direct input.
+- Opening an agent session now shows the composer immediately when composer
+  input is enabled, so you can start drafting without typing a throwaway first
+  character. Sessions switched to direct input still open directly into the
+  pane.
 
 ### Fixed
 

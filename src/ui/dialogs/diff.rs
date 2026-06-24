@@ -231,7 +231,7 @@ fn review_counts(state: &DiffViewerState) -> (usize, usize) {
     (approved, rejected)
 }
 
-fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     if let Some(error) = &state.error {
         let error_widget = Paragraph::new(vec![
             Line::from(""),
@@ -293,7 +293,7 @@ fn draw_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &The
 /// Review-mode body: file list (unless the patch is focused) on the left, and a
 /// right column split into the developer-notes panel (top) over the diff. When
 /// notes are expanded the panel takes the full right column.
-fn draw_review_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_review_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let content_area = if state.focus == DiffViewerFocus::Patch {
         area
     } else {
@@ -323,7 +323,7 @@ fn draw_review_body(frame: &mut Frame, area: Rect, state: &DiffViewerState, them
     draw_patch(frame, split[1], state, theme);
 }
 
-fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let note = state
         .files
         .get(state.selected_file)
@@ -341,22 +341,36 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &DiffViewerState, them
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let paragraph = match note {
+    let notes_scroll = state.notes_scroll;
+    let (paragraph, rendered_lines) = match note {
         // Render the developer note as markdown so headings, lists, and code
         // blocks read properly. `render_markdown` pre-wraps to the panel width,
         // so the scroll offset maps to rendered visual lines.
         Some(text) => {
             let rendered =
                 crate::markdown::render_markdown(text, theme, inner.width.max(1) as usize, None);
-            Paragraph::new(rendered.lines).scroll((state.notes_scroll as u16, 0))
+            let line_count = rendered.lines.len();
+            (
+                Paragraph::new(rendered.lines).scroll((notes_scroll as u16, 0)),
+                line_count,
+            )
         }
-        None => Paragraph::new(
-            "No developer note for this file.\n\nReview mode records per-file reasoning in \
-             .claude/review-notes.md as changes are made.",
-        )
-        .wrap(Wrap { trim: false })
-        .style(Style::default().fg(theme.text_muted.to_color())),
+        None => (
+            Paragraph::new(
+                "No developer note for this file.\n\nReview mode records per-file reasoning in \
+                 .claude/review-notes.md as changes are made.",
+            )
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme.text_muted.to_color())),
+            0,
+        ),
     };
+
+    // Record the rendered (wrapped) line count and viewport height so the scroll
+    // clamp can reach the visual bottom of soft-wrapped / markdown notes.
+    state.notes_rendered_lines = rendered_lines;
+    state.notes_view_height = inner.height as usize;
+
     frame.render_widget(paragraph, inner);
 }
 

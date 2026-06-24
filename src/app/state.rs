@@ -301,6 +301,12 @@ pub struct DiffViewerState {
     /// When true the developer-notes panel takes the full patch column.
     pub notes_expanded: bool,
     pub notes_scroll: usize,
+    /// Rendered (markdown-wrapped) line count of the current note, recorded by
+    /// the renderer each frame so scroll clamping uses real visual lines.
+    pub notes_rendered_lines: usize,
+    /// Inner height of the notes panel at the last draw, used with
+    /// `notes_rendered_lines` to clamp scroll to the visual bottom.
+    pub notes_view_height: usize,
 }
 
 impl DiffViewerState {
@@ -328,6 +334,8 @@ impl DiffViewerState {
             review_notes: std::collections::HashMap::new(),
             notes_expanded: false,
             notes_scroll: 0,
+            notes_rendered_lines: 0,
+            notes_view_height: 0,
         }
     }
 }

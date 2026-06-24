@@ -326,10 +326,26 @@ fn draw_review_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
 }
 
 fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
-    let note = state
-        .files
-        .get(state.selected_file)
-        .and_then(|file| state.review_notes.get(&file.path));
+    let path = state.files.get(state.selected_file).map(|file| file.path.clone());
+    let note = path
+        .as_ref()
+        .and_then(|p| state.review_notes.get(p))
+        .cloned();
+    let generating = path.as_ref().is_some_and(|p| {
+        state.walkthrough_child.is_some() && state.walkthrough_file.as_deref() == Some(p.as_str())
+    });
+    let generated = path
+        .as_ref()
+        .and_then(|p| state.generated_notes.get(p))
+        .cloned();
+
+    // The panel titles itself after whatever it is showing, so a generated
+    // walkthrough isn't mistaken for a hand-written developer note.
+    let title = if note.is_none() && (generating || generated.is_some()) {
+        " AI Walkthrough "
+    } else {
+        " Developer Notes "
+    };
 
     let border = if state.notes_expanded {
         theme.warning.to_color()
@@ -337,35 +353,46 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
         theme.primary.to_color()
     };
     let block = Block::default()
-        .title(" Developer Notes ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let notes_scroll = state.notes_scroll;
-    let (paragraph, rendered_lines) = match note {
-        // Render the developer note as markdown so headings, lists, and code
-        // blocks read properly. `render_markdown` pre-wraps to the panel width,
-        // so the scroll offset maps to rendered visual lines.
-        Some(text) => {
-            let rendered =
-                crate::markdown::render_markdown(text, theme, inner.width.max(1) as usize, None);
-            let line_count = rendered.lines.len();
-            (
-                Paragraph::new(rendered.lines).scroll((notes_scroll as u16, 0)),
-                line_count,
-            )
-        }
-        None => (
+    // Render markdown pre-wrapped to the panel width so the scroll offset maps
+    // to rendered visual lines.
+    let render_md = |text: &str| {
+        let rendered =
+            crate::markdown::render_markdown(text, theme, inner.width.max(1) as usize, None);
+        let line_count = rendered.lines.len();
+        (
+            Paragraph::new(rendered.lines).scroll((notes_scroll as u16, 0)),
+            line_count,
+        )
+    };
+    let (paragraph, rendered_lines) = if let Some(text) = note.as_deref() {
+        render_md(text)
+    } else if generating {
+        (
+            Paragraph::new("Generating walkthrough…")
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.text_muted.to_color())),
+            0,
+        )
+    } else if let Some(text) = generated.as_deref() {
+        render_md(text)
+    } else {
+        (
             Paragraph::new(
-                "No developer note for this file.\n\nReview mode records per-file reasoning in \
+                "No developer note for this file.\n\nPress w to generate an AI walkthrough of \
+                 this file's diff. Review mode records per-file reasoning in \
                  .claude/review-notes.md as changes are made.",
             )
             .wrap(Wrap { trim: false })
             .style(Style::default().fg(theme.text_muted.to_color())),
             0,
-        ),
+        )
     };
 
     // Record the rendered (wrapped) line count and viewport height so the scroll
@@ -805,6 +832,18 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("v"),
         Span::raw(" layout"),
     ]);
+
+    // Offer the on-demand walkthrough only when the current file has no
+    // developer note (the case where the notes panel would otherwise be empty).
+    let has_note = state
+        .files
+        .get(state.selected_file)
+        .is_some_and(|file| state.review_notes.contains_key(&file.path));
+    if !has_note {
+        first_line.push(Span::raw("  "));
+        first_line.push(key("w"));
+        first_line.push(Span::raw(" gen walkthrough"));
+    }
 
     let lines = vec![Line::from(first_line), Line::from(second_line)];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);

@@ -717,6 +717,12 @@ fn run_loop<B: Backend>(
             app.show_error(e);
         }
 
+        if matches!(app.mode, app::AppMode::DiffViewer(_))
+            && let Err(e) = app.poll_review_walkthrough()
+        {
+            app.show_error(e);
+        }
+
         if matches!(app.mode, app::AppMode::SyntaxLanguagePicker(_))
             && let Err(e) = app.poll_syntax_language_picker()
         {

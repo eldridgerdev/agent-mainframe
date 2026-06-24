@@ -193,6 +193,102 @@ impl App {
         }
     }
 
+    /// Generate a walkthrough for the current file when it has no developer
+    /// note. Spawns a headless Claude explanation of the file's diff; the result
+    /// is collected by `poll_review_walkthrough` and cached in `generated_notes`
+    /// so the developer-notes panel is never empty.
+    pub fn generate_review_walkthrough(&mut self) {
+        let (workdir, path, prompt) = {
+            let AppMode::DiffViewer(state) = &self.mode else {
+                return;
+            };
+            if !state.review || state.walkthrough_child.is_some() {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let path = file.path.clone();
+            // A developer note or an already-generated walkthrough makes this a
+            // no-op.
+            if state.review_notes.contains_key(&path)
+                || state.generated_notes.contains_key(&path)
+            {
+                return;
+            }
+            if file.is_binary {
+                let path2 = path.clone();
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state
+                        .generated_notes
+                        .insert(path2, "Binary file — no walkthrough available.".to_string());
+                }
+                let _ = path;
+                return;
+            }
+            (state.workdir.clone(), path, build_walkthrough_prompt(file))
+        };
+
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+            Ok(child) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.walkthrough_child = Some(child);
+                    state.walkthrough_file = Some(path);
+                }
+            }
+            Err(err) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state
+                        .generated_notes
+                        .insert(path, format!("Walkthrough unavailable: {err}"));
+                }
+            }
+        }
+    }
+
+    /// Poll an in-flight walkthrough generation; on completion cache the output
+    /// under the file it was generated for. Mirrors
+    /// `poll_diff_review_explanation`.
+    pub fn poll_review_walkthrough(&mut self) -> Result<()> {
+        let finished = match &mut self.mode {
+            AppMode::DiffViewer(state) => match state.walkthrough_child.as_mut() {
+                Some(child) => child.try_wait()?,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let Some(status) = finished else {
+            return Ok(());
+        };
+
+        let (child, path) = match &mut self.mode {
+            AppMode::DiffViewer(state) => {
+                (state.walkthrough_child.take(), state.walkthrough_file.take())
+            }
+            _ => (None, None),
+        };
+        let (Some(child), Some(path)) = (child, path) else {
+            return Ok(());
+        };
+
+        let output = child.wait_with_output()?;
+        let note = if status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if text.is_empty() {
+                "Walkthrough was empty.".to_string()
+            } else {
+                text
+            }
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            format!("Walkthrough unavailable: {stderr}")
+        };
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.generated_notes.insert(path, note);
+        }
+        Ok(())
+    }
+
     /// Begin entering rejection feedback for the current file, pre-filling any
     /// feedback already recorded for it.
     pub fn diff_review_start_feedback(&mut self) {
@@ -518,6 +614,29 @@ impl App {
     }
 }
 
+/// Build the prompt for an on-demand walkthrough of a file's diff. Large
+/// patches are truncated to keep the headless request bounded.
+fn build_walkthrough_prompt(file: &crate::diff::DiffFile) -> String {
+    const MAX_PATCH: usize = 8000;
+    let mut patch = if file.patch.trim().is_empty() {
+        file.new_content.clone().unwrap_or_default()
+    } else {
+        file.patch.clone()
+    };
+    if patch.len() > MAX_PATCH {
+        patch.truncate(MAX_PATCH);
+        patch.push_str("\n… (diff truncated)");
+    }
+    format!(
+        "You are helping a reviewer understand a code change during final \
+         review. Concisely explain what this diff does and why it likely \
+         matters. Answer in short markdown: a sentence or two of summary, then \
+         a few bullet points for the notable changes. Do not restate the diff \
+         line by line.\n\nFile: {}\n\n```diff\n{}\n```",
+        file.path, patch
+    )
+}
+
 /// Parse `.claude/review-notes.md` into a map of file path -> note body.
 ///
 /// Review mode writes one section per changed file, headed either `## <path> —
@@ -576,7 +695,45 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 
 #[cfg(test)]
 mod tests {
-    use super::parse_review_notes;
+    use super::{build_walkthrough_prompt, parse_review_notes};
+
+    #[test]
+    fn walkthrough_prompt_includes_path_and_patch() {
+        let file = crate::diff::DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: "@@ -1 +1 @@\n-old line\n+new line".into(),
+            hunks: vec![],
+        };
+        let prompt = build_walkthrough_prompt(&file);
+        assert!(prompt.contains("File: a.rs"));
+        assert!(prompt.contains("+new line"));
+        assert!(prompt.contains("```diff"));
+    }
+
+    #[test]
+    fn walkthrough_prompt_truncates_huge_patches() {
+        let file = crate::diff::DiffFile {
+            old_path: Some("big.rs".into()),
+            path: "big.rs".into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: "+x\n".repeat(10_000),
+            hunks: vec![],
+        };
+        let prompt = build_walkthrough_prompt(&file);
+        assert!(prompt.contains("(diff truncated)"));
+    }
 
     #[test]
     fn parses_documented_and_grouped_note_formats() {

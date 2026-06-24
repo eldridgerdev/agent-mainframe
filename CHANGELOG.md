@@ -33,6 +33,13 @@ are tagged.
   precise, location-specific feedback that whole-file rejection can't express.
   `Esc` exits the cursor; `q` still finishes the review. (Inline markers are
   shown in the unified diff layout.)
+- **On-demand AI walkthrough for noteless files.** When a file in the final
+  review has no developer note in `.claude/review-notes.md`, press `w` to
+  generate a concise walkthrough of that file's diff with a headless Claude
+  run. The Developer Notes panel shows "Generating walkthrough…" while it works
+  and then renders the result as markdown (titled "AI Walkthrough"), cached per
+  file so navigating away and back doesn't re-run it — so the notes panel is
+  never empty even when the developer didn't leave a note.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

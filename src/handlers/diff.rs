@@ -116,6 +116,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.toggle_review_notes_expanded();
                 return Ok(());
             }
+            KeyCode::Char('w') => {
+                app.generate_review_walkthrough();
+                return Ok(());
+            }
             KeyCode::Char('a') => {
                 app.diff_review_approve_current();
                 return Ok(());
@@ -760,6 +764,61 @@ mod tests {
         assert!(feedback.contains("bug here"));
         assert!(feedback.contains("**Line comments:** 1"));
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn walkthrough_is_noop_when_developer_note_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state
+                .review_notes
+                .insert("a.rs".into(), "hand-written".into());
+        }
+
+        // `w` must not spawn a walkthrough when a developer note is present.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('w'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.walkthrough_child.is_none());
+                assert!(state.generated_notes.is_empty());
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn walkthrough_for_binary_file_sets_message_without_spawning() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["img.png"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].is_binary = true;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('w'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.walkthrough_child.is_none());
+                assert!(
+                    state
+                        .generated_notes
+                        .get("img.png")
+                        .is_some_and(|n| n.contains("Binary"))
+                );
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn poll_walkthrough_without_child_is_noop() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        app.poll_review_walkthrough().unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert!(state.generated_notes.is_empty()),
+            _ => panic!("expected diff viewer"),
+        }
     }
 
     #[test]

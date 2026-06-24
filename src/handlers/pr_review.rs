@@ -22,6 +22,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_select_next(),
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
+        KeyCode::Char('g') => app.open_pr_number_prompt(),
         _ => {}
     }
     Ok(())
@@ -31,6 +32,18 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
 pub fn handle_pr_review_loading_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
         app.close_pr_review();
+    }
+    Ok(())
+}
+
+/// Key handling for the manual PR-number override prompt.
+pub fn handle_pr_number_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => app.close_pr_review(),
+        KeyCode::Enter => app.submit_pr_number(),
+        KeyCode::Backspace => app.pr_number_prompt_backspace(),
+        KeyCode::Char(c) => app.pr_number_prompt_push(c),
+        _ => {}
     }
     Ok(())
 }

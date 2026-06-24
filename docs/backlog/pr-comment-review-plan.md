@@ -345,9 +345,16 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       the REST list fetch already returns full comment bodies, so there's no
       second round-trip to defer._ → `src/ui/dialogs/pr_review.rs`,
       `src/handlers/pr_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`.
-- [~] Dashboard entry key: `G` auto-detects the branch's PR (runs
-      preconditions → resolve → load) and is listed in help. _Remaining:_
-      manual PR-number override prompt. → `src/handlers/normal.rs`.
+- [x] Dashboard entry key: `G` auto-detects the branch's PR (runs
+      preconditions → resolve → load) and is listed in help. When no open PR
+      is found for the branch, AMF opens a manual PR-number override prompt
+      (`AppMode::PrNumberPrompt`): digit-only input, `Enter` resolves via
+      `gh pr view <n>` and starts the fetch, resolve failures show inline so
+      the user can correct and retry. The prompt is also reachable on demand
+      with `g` from inside the review pane (review a different PR than the
+      branch's auto-detected one). → `src/handlers/normal.rs`,
+      `src/handlers/pr_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [ ] SQLite cache keyed by `PR# + head SHA`; manual refresh key.
 - **Acceptance:** open any PR for the current branch and read every
   comment inside AMF, grouped and navigable, with zero agent tokens

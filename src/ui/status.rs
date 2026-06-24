@@ -591,6 +591,13 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::PrNumberPrompt(_) => Line::from(vec![
+            Span::raw(" Enter PR number  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" load  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PrReviewLoading(_) => Line::from(vec![
             Span::raw(" Fetching PR comments...  "),
             Span::styled("Esc", key_style()),
@@ -599,6 +606,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         AppMode::PrReview(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" move  "),
+            Span::styled("g", key_style()),
+            Span::raw(" other PR  "),
             Span::styled("Esc/q", key_style()),
             Span::raw(" close"),
         ]),

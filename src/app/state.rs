@@ -866,6 +866,19 @@ pub struct PrReviewLoadState {
     pub pr: crate::github::PrRef,
 }
 
+/// Manual PR-number override prompt: shown when the branch has no detectable
+/// open PR (or the user wants to review a different one). Collects a number,
+/// then resolves it via `gh pr view <n>` and starts the comment fetch.
+#[derive(Debug, Clone)]
+pub struct PrNumberPromptState {
+    /// Working directory of the feature whose PR we're reviewing.
+    pub workdir: PathBuf,
+    /// Digits typed so far.
+    pub input: String,
+    /// Last resolve failure, shown inline so the user can correct and retry.
+    pub error: Option<String>,
+}
+
 /// State for the full-screen PR comment-review pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
@@ -950,6 +963,8 @@ pub enum AppMode {
     BookmarkPicker(BookmarkPickerState),
     DiffViewerLoading(DiffViewerState),
     DiffViewer(DiffViewerState),
+    /// Prompting for a PR number when the branch has no auto-detectable PR.
+    PrNumberPrompt(PrNumberPromptState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen review pane.

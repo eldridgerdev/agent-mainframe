@@ -10,7 +10,60 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Insert an agent skill into a prompt.** While editing a prompt body (or
+  filling a text placeholder), press `Ctrl+K` to open a search-as-you-type
+  picker of the agent skills available in your workspace — the same
+  `~/.claude/skills` and project `.claude/skills` the compose `/command` popup
+  draws from. Selecting one inserts its `/skill-name` invocation at the cursor,
+  so the agent expands the skill when the prompt is delivered.
+
+- **Vim editing in the prompt library.** The New/Edit Prompt body editor now
+  supports a vim keymap you can toggle with `Ctrl+T` (just like the compose
+  box), and the box title shows `[Vim Insert]` / `[Vim Normal]` so you always
+  know which mode you're in. Multi-line placeholder fill fields gain the same
+  `Ctrl+T` toggle, and the choice carries across slots while you fill them in.
+
+- **Prompt library shows where each template lives.** The picker preview pane
+  now displays the resolved source file for the selected entry — the local
+  SQLite store for your own (`User`) templates, or the `.amf/config.json` path
+  for `Project` / `Worktree` / `Global` templates. The export prompt (`x`) now
+  names each target's exact path before you choose — e.g.
+  `(g) ~/.config/amf/config.json   (p) <repo>/.amf/config.json` — so you can
+  confirm which repo a template lands in. The New/Edit dialog adds a hint
+  showing where a save will be written, calling out that `User` templates live
+  in the local store and aren't version-controlled.
+
+- **`/amf:add-prompt` skill.** A new skill (parallel to `/amf:add-preset`) that
+  adds a declarative prompt template to your workspace without hand-writing
+  JSON. It writes a `prompt_templates` entry to `.amf/config.json` (project) or
+  the global `~/.config/amf/config.json`, and documents the template schema —
+  including tags, inline `{{slot}}` / `{{name|opt1|opt2}}` syntax, and explicit
+  text / multi-line / select placeholders. The template then shows up in the
+  prompt library picker as a read-only `Project`/`Global` entry.
+
+- **Tags for prompt templates.** The New/Edit Prompt dialog now has a `Tags`
+  field (Tab cycles Name → Tags → Body); enter a comma- or space-separated
+  list and AMF stores it with the template. Tags show as `#chips` in the
+  picker's preview pane. In the picker's search (`/`), the query now also
+  matches tags, and a `#`-prefixed query filters by tag only — `#frontend`
+  narrows to templates tagged `frontend`, and a bare `#` lists every tagged
+  template.
+
+- The vim-mode editor now accepts numeric count prefixes, so you can repeat
+  motions and edits the way you would in vim: `3w`, `5j`, `2dd`, `d3w`, and
+  combined counts like `2d3w`. A leading `0` still jumps to the start of the
+  line unless you are already typing a count (`10w`).
+
 ### Changed
+
+- **New/Edit Prompt dialog redesign.** Each field (Name, Tags, Prompt body)
+  now sits in its own labelled box with clear spacing instead of stacking
+  flush against each other. The focused field's border highlights, the
+  placeholder-syntax legend moved onto the body box's bottom border, the key
+  hints moved onto the dialog's bottom border, and the "where this saves"
+  hint sits at the bottom — so the form is much easier to scan.
 
 - The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with
   the same workflow and keybindings as Claude Code. Start typing to compose,
@@ -18,12 +71,25 @@ are tagged.
   use drafts, prompt templates, multiline input, clipboard paste, and image
   attachments without changing workflows between agent harnesses. Terminal,
   editor, and custom sessions continue to use direct input.
+- Opening an agent session now shows the composer immediately when composer
+  input is enabled, so you can start drafting without typing a throwaway first
+  character. Sessions switched to direct input still open directly into the
+  pane.
 
 ### Fixed
 
+- Pasting images into the prompt composer now works on Windows/WSL. The
+  composer reads screenshots and copied images from the Windows clipboard,
+  and when you send a prompt the image now reliably arrives with your text
+  instead of being left behind in the agent's input box.
 - Claude panes now keep their periodic automatic repaint when direct tmux
   transport is active, preventing the embedded UI from becoming mangled on
   Linux even though control mode is disabled by default.
+
+- Adding a session to a stopped feature now starts the feature automatically,
+  so the new session opens immediately and the dashboard returns to a green
+  status. If AMF cannot start the feature or create the session, it now shows
+  an error toast instead of appearing to do nothing.
 
 ### Migration
 
@@ -121,6 +187,21 @@ are tagged.
   you previously customized away from those old defaults are left untouched, and
   the file is stamped with a `config_version` so the migration never runs twice
   (re-enable control mode afterward and it stays enabled).
+
+- **Retired the legacy vimdiff diff-review viewer.** The native in-app AMF diff
+  viewer is now the only reviewer; the neovim/vimdiff popup path and its bundled
+  `plugins/diff-review` scripts have been removed. Existing configs that still
+  set `diff_review_viewer = "nvim"` (or the old `"legacy"` alias) keep working —
+  the value now deserializes to the AMF viewer instead of erroring.
+
+### Maintenance
+
+- Repo cleanup pass: removed dead code across the codebase (unreferenced tmux
+  helpers, orphaned methods/constants, and a never-run test) and dropped the
+  crate-wide `#![allow(dead_code)]` so new dead code is caught going forward.
+  Items intentionally retained (write-only fields, serde/API types, and
+  test-only helpers) now carry targeted `#[allow(dead_code)]` annotations. No
+  behavior change; all tests pass.
 
 ### Fixed
 

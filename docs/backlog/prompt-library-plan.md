@@ -1,8 +1,12 @@
 # Prompt Library
 
-- **Status:** In progress _(phases 1–3 shipped in v0.26.0: multi-source picker,
-  fill-in flow, and inline select-menus landed; phase 3 tags + phase 4 polish
-  remain, plus phase 5 editor/injection enhancements)_
+- **Status:** All phases complete _(phases 1–3 shipped in v0.26.0:
+  multi-source picker, fill-in flow, and inline select-menus landed; tags + tag
+  filtering, the config-merge test, and the amf-add-prompt skill — phase 3
+  complete. Phase 4 done: export/display resolver unified + destination paths
+  surfaced in the picker, export confirm, and editor. Phase 5 done: VIM support
+  in the editor/fill surfaces (Ctrl+T toggle + mode indicator) and agent-skill
+  injection (Ctrl+K skill picker inserting `/skill-name` at the cursor).)_
 - **Owner:** unassigned
 - **Relates to:** compose box (`src/app/compose.rs`),
   `AppMode::LatestPrompt` (`src/app/view.rs`), `session_bookmarks`
@@ -298,14 +302,25 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   `{{name|opt1|opt2}}` (key before the first `|`, options after); a bare
   `{{name}}` stays free text. Explicit config-authored `placeholders` defs
   (label / kind / default / required) still win over inferred slots.
-- [ ] Tags/grouping and fuzzy filtering by tag
-- [ ] Optional `amf-add-prompt` skill (parallel to `amf-add-preset`)
-- [ ] Tests: config merge by name (project wins) — merge logic exists in
-  `extension.rs::merge_project_extension_config` but has no dedicated test
+- [x] Tags/grouping and fuzzy filtering by tag. A `Tags` field in the
+  New/Edit dialog (Tab cycles Name → Tags → Body) authors the existing
+  `PromptTemplate.tags`; the picker fuzzy-matches tags alongside name/body, a
+  `#tag` query filters by tag only, and a bare `#` surfaces every tagged
+  template (light grouping). Tags render as `#chips` in the preview pane.
+- [x] Optional `amf-add-prompt` skill (parallel to `amf-add-preset`).
+  `.claude/skills/amf-add-prompt/SKILL.md` adds/updates a `prompt_templates`
+  entry in `.amf/config.json` (project) or `~/.config/amf/config.json`'s
+  `extension` block (global), documenting the `PromptTemplate` schema, inline
+  `{{slot}}` / `{{name|opt1|opt2}}` syntax, and the explicit `placeholders`
+  array (text / multi_line / select).
+- [x] Tests: config merge by name (project wins). `extension.rs` test
+  `prompt_templates_merged_by_name_project_wins` covers a `shared` name in
+  both global + project (project body wins, appears once) plus the
+  global-only / project-only entries surviving.
 
 ### Phase 4 — Location handling & polish
 
-- [ ] **Unify the project export/display repo resolution.** Two
+- [x] **Unify the project export/display repo resolution.** Two
   different resolvers disagree on what "project" means:
    - `resolve_library_repo` (picker display) uses the viewed feature's
      `project.repo` or the selected project's `repo` — i.e. the
@@ -321,32 +336,50 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   Fix: point `resolve_export_repo`'s fallback at the same selection-based
   `resolve_library_repo` logic so display and export always agree, and
   the export always targets the project's main repo. Add a test covering
-  the dashboard-export-then-reopen round-trip.
-- [ ] **Show the destination path in the UI.** Make where a prompt lives
-  / will be written explicit:
-   - Picker: show the resolved source file path for the selected entry
-     (e.g. in the preview pane header or footer) — SQLite DB for `User`,
-     the `config.json` path for `Project` / `Global`.
-   - Export confirm: the `x` → `g`/`p` prompt should name the exact
-     target path *before* writing (the success toast already shows the
-     project path after the fact, and global currently only says
-     "global config"); show the global `~/.config/amf/config.json` path
-     too, and ideally the project path up front so the user can confirm
-     which repo it lands in (ties into the resolver-unification item).
-   - Editor: when editing a `User` template, a small hint that saving
-     writes to the local SQLite store (not version-controlled) vs. an
-     exported config entry.
+  the dashboard-export-then-reopen round-trip. _(Done: `resolve_export_repo`
+  delegates to `resolve_library_repo`; regression test
+  `dashboard_export_then_reopen_shows_project_template`.)_
+- [x] **Show the destination path in the UI.** Make where a prompt lives
+  / will be written explicit. A single `template_source_path(source,
+  from_view)` resolver (reusing `resolve_library_repo` /
+  `resolve_worktree_dir`) backs all three surfaces, so the shown path
+  always matches where a write lands:
+   - Picker: the preview pane reserves a muted footer line showing the
+     selected entry's resolved source file — the SQLite store for `User`,
+     the relevant `.amf/config.json` for `Project` / `Worktree` /
+     `Global`. Precomputed into `PromptLibraryEntry.source_path` at build
+     time so the UI stays a pure renderer.
+   - Export confirm: the `x` → `g`/`p`/`w` prompt now names each target's
+     exact path *before* writing (`build_export_menu_message`), e.g.
+     `(g) ~/.config/amf/config.json   (p) <repo>/.amf/config.json`, with
+     `(unavailable)` for scopes lacking context.
+   - Editor: a destination hint (reusing the spacer line) — `User`
+     templates note they save to the local store (not version-controlled);
+     config sources show the target `config.json` path. Backed by
+     `PromptEditorState.dest_path`.
+   - Tests: `picker_entries_carry_resolved_source_paths` (Project →
+     repo config.json, User → `None` under the test store) and
+     `export_menu_message_names_target_paths`.
 
 ### Phase 5 — Editor & injection enhancements
 
-- [ ] **VIM support in the prompt library editing surfaces.** `TextEditor`
+- [x] **VIM support in the prompt library editing surfaces.** `TextEditor`
   already implements vim mode (used by compose / steering), so the New/Edit
   Prompt body editor and any multi-line (`MultiLine`) placeholder fill field
   should honor the same vim keybindings and respect the user's vim toggle.
   Surface a small mode indicator and verify normal/insert/visual behave the
   same as in the compose box. Add a test that the editor enters vim normal
-  mode on `Esc` and that motions/operators reach the prompt body.
-- [ ] **Inject an agent skill into the prompt.** Add a way to pick an agent
+  mode on `Esc` and that motions/operators reach the prompt body. _(Done: the
+  body editor gains a `Ctrl+T` vim toggle (mirroring the compose box) plus a
+  `[Vim Insert]`/`[Vim Normal]` indicator in the box title; `MultiLine`
+  placeholder-fill fields get the same `Ctrl+T` toggle, a persisted
+  `PlaceholderFillState.vim_enabled` so the choice survives moving between
+  slots, and a matching indicator on the slot label. Single-line/`Select`
+  slots stay plain so `Enter` keeps advancing the field. Tests:
+  `editor_enters_vim_normal_on_escape_and_motions_reach_body` (Esc → Normal,
+  `0`/`dw` mutate the body) and
+  `multiline_fill_field_honors_vim_toggle_across_slots`.)_
+- [x] **Inject an agent skill into the prompt.** Add a way to pick an agent
   skill (the user-invocable skills available in the workspace) and inject a
   reference to it — or its expanded content — into the prompt being composed
   or filled. Likely shapes: a dedicated `Skill` placeholder kind whose option
@@ -354,7 +387,19 @@ New `src/ui/dialogs/prompt_library.rs` (model on
   that inserts the chosen skill's invocation (e.g. `/skill-name`) at the
   cursor. Resolve where the skill list comes from (same source the command
   picker uses) and whether injection inserts the invocation token vs. the
-  skill body text.
+  skill body text. _(Done: chose the **picker-hotkey** shape over a placeholder
+  kind — `Ctrl+K` in the prompt-body editor and in non-select fill fields opens
+  a search-as-you-type `SkillPicker` and inserts the chosen skill's
+  **invocation token** `/skill-name ` at the cursor (the agent expands it at
+  delivery, so templates stay compact and never go stale). The list comes from
+  the same `.claude/skills` scan the compose `/command` popup uses, via a new
+  `build_skill_catalog(workdir)` (global + project, deduped by name, project
+  wins). New `src/app/skill_picker.rs` + `src/handlers/skill_picker.rs` +
+  `draw_skill_picker`; `AppMode::SkillPicker` carries a `return_to` editing
+  mode it restores on insert/cancel. Tests:
+  `build_skill_catalog_discovers_project_skill`,
+  `skill_picker_inserts_invocation_at_cursor_and_returns_to_editor`, and
+  `skill_picker_filter_ranks_by_query_and_cancel_restores_editor`.)_
 
 ## Resolved decisions
 

@@ -108,6 +108,7 @@ impl Default for SessionTokenTracker {
 }
 
 impl SessionTokenTracker {
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn new(home_dir: Option<PathBuf>, data_dir: Option<PathBuf>) -> Self {
         Self {
             home_dir,
@@ -1026,6 +1027,7 @@ fn parse_codex_session_meta(path: &Path) -> Option<CodexSessionMeta> {
 
 #[derive(Debug, Deserialize)]
 struct CodexSessionEvent {
+    #[allow(dead_code)] // deserialized but not read yet
     timestamp: Option<String>,
     #[serde(rename = "type")]
     event_type: String,
@@ -1149,12 +1151,6 @@ struct OpencodeCache {
     read: u64,
     #[serde(default)]
     write: u64,
-}
-
-fn parse_rfc3339_seconds(value: &str) -> Option<i64> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc).timestamp())
 }
 
 #[cfg(test)]

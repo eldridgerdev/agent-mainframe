@@ -1,5 +1,4 @@
 use crate::project::SessionKind;
-use crate::worktree::WorktreeManager;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -24,29 +23,11 @@ pub struct ClaudeTaskState {
 }
 
 impl ClaudeTaskState {
-    pub fn current_task(&self) -> Option<&ClaudeTask> {
-        self.tasks.iter().find(|task| task.status == "in_progress")
-    }
-
     pub fn completed_count(&self) -> usize {
         self.tasks
             .iter()
             .filter(|task| task.status == "completed")
             .count()
-    }
-
-    pub fn pending_count(&self) -> usize {
-        self.tasks
-            .iter()
-            .filter(|task| task.status == "pending")
-            .count()
-    }
-
-    pub fn last_completed_task(&self) -> Option<&ClaudeTask> {
-        self.tasks
-            .iter()
-            .rev()
-            .find(|task| task.status == "completed")
     }
 }
 
@@ -76,22 +57,6 @@ pub fn slugify(s: &str) -> String {
         .join("-")
 }
 
-pub fn detect_repo_path() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    WorktreeManager::repo_root(&cwd)
-        .unwrap_or(cwd)
-        .to_string_lossy()
-        .into_owned()
-}
-
-pub fn detect_branch() -> String {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    WorktreeManager::current_branch(&cwd)
-        .ok()
-        .flatten()
-        .unwrap_or_default()
-}
-
 pub fn latest_prompt_path(workdir: &Path) -> PathBuf {
     workdir.join(".claude").join("latest-prompt.txt")
 }
@@ -110,10 +75,6 @@ pub fn read_latest_prompt(workdir: &Path) -> Option<String> {
                 .ok()
                 .flatten()
         })
-}
-
-pub fn read_latest_prompt_entry(workdir: &Path) -> Option<PromptEntry> {
-    read_all_prompts(workdir).into_iter().next()
 }
 
 pub fn fuzzy_match_score(candidate: &str, query: &str) -> Option<usize> {
@@ -207,10 +168,6 @@ pub(crate) fn read_latest_prompt_for_session(
             (None, None) => std::cmp::Ordering::Equal,
         })
         .map(|entry| entry.text)
-}
-
-pub fn read_all_prompts(workdir: &Path) -> Vec<PromptEntry> {
-    read_all_prompts_for_session(workdir, None, None)
 }
 
 pub(crate) fn read_all_prompts_for_session(
@@ -882,6 +839,40 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// Round-trips an image and text through the real Windows clipboard.
+    /// Only meaningful under WSL; a no-op elsewhere so CI stays green.
+    #[test]
+    fn wsl_clipboard_round_trips_image_and_text() {
+        if !is_wsl() {
+            return;
+        }
+
+        // 1x1 red PNG.
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x37, 0x82,
+            0x9e, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        copy_image_to_clipboard(PNG, "image/png").expect("copy image to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Image { data, mime } => {
+                assert!(!data.is_empty());
+                assert_eq!(mime, "image/png");
+                assert_eq!(&data[..8], &PNG[..8], "should read back PNG bytes");
+            }
+            ClipboardContent::Text(t) => panic!("expected image, got text: {t:?}"),
+        }
+
+        copy_to_clipboard("amf-wsl-roundtrip").expect("copy text to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Text(t) => assert_eq!(t, "amf-wsl-roundtrip"),
+            ClipboardContent::Image { .. } => panic!("expected text, got image"),
+        }
+    }
+
     #[test]
     fn reads_opencode_prompts_from_selected_session_storage() {
         let temp = TempDir::new().unwrap();
@@ -993,8 +984,47 @@ mod tests {
     }
 }
 
+/// Returns true when running under WSL, where the Windows clipboard is
+/// reachable via `powershell.exe`/`clip.exe` rather than `wl-paste`/`xclip`
+/// (which are usually absent and cannot see the Windows clipboard anyway).
+pub fn is_wsl() -> bool {
+    use std::sync::OnceLock;
+    static IS_WSL: OnceLock<bool> = OnceLock::new();
+    *IS_WSL.get_or_init(|| {
+        if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+            return true;
+        }
+        std::fs::read_to_string("/proc/version")
+            .map(|v| {
+                let v = v.to_ascii_lowercase();
+                v.contains("microsoft") || v.contains("wsl")
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Translate a Linux path to its Windows form (`\\wsl.localhost\...`) so a
+/// Windows process launched from WSL can reach it. Returns None when
+/// `wslpath` is unavailable or fails.
+fn wsl_windows_path(path: &std::path::Path) -> Option<String> {
+    let out = std::process::Command::new("wslpath")
+        .arg("-w")
+        .arg(path)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 pub fn copy_to_clipboard(text: &str) -> anyhow::Result<()> {
     use std::io::Write;
+    // On WSL, push text to the Windows clipboard via clip.exe.
+    if is_wsl() && copy_to_clipboard_wsl(text).is_ok() {
+        return Ok(());
+    }
     // Try wl-copy (Wayland)
     if let Ok(mut child) = std::process::Command::new("wl-copy")
         .stdin(std::process::Stdio::piped())
@@ -1048,6 +1078,11 @@ pub enum ClipboardContent {
 /// Read the system clipboard, preferring image content over text so a
 /// copied screenshot pastes as an image rather than a file path.
 pub fn read_clipboard() -> anyhow::Result<ClipboardContent> {
+    if is_wsl()
+        && let Some(content) = read_clipboard_wsl()
+    {
+        return Ok(content);
+    }
     if let Some(content) = read_clipboard_wayland() {
         return Ok(content);
     }
@@ -1148,6 +1183,11 @@ fn read_clipboard_x11() -> Option<ClipboardContent> {
 /// them via its own Ctrl+V image paste.
 pub fn copy_image_to_clipboard(data: &[u8], mime: &str) -> anyhow::Result<()> {
     use std::io::Write;
+    // On WSL, hand the image to the Windows clipboard so the harness's
+    // own Ctrl+V image paste can ingest it.
+    if is_wsl() && copy_image_to_clipboard_wsl(data).is_ok() {
+        return Ok(());
+    }
     if let Ok(mut child) = std::process::Command::new("wl-copy")
         .args(["--type", mime])
         .stdin(std::process::Stdio::piped())
@@ -1177,4 +1217,99 @@ pub fn copy_image_to_clipboard(data: &[u8], mime: &str) -> anyhow::Result<()> {
     Err(anyhow::anyhow!(
         "No clipboard utility found (wl-copy or xclip)"
     ))
+}
+
+/// Read the Windows clipboard from WSL via `powershell.exe`. A single
+/// invocation prefers an image (e.g. a screenshot), which it saves to a
+/// temp PNG we then read; otherwise it returns the clipboard text.
+fn read_clipboard_wsl() -> Option<ClipboardContent> {
+    let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
+    let win_path = wsl_windows_path(&tmp)?;
+    let script = format!(
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+         Add-Type -AssemblyName System.Windows.Forms; \
+         Add-Type -AssemblyName System.Drawing; \
+         $img=[System.Windows.Forms.Clipboard]::GetImage(); \
+         if($img -ne $null){{ \
+           $img.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png); \
+           Write-Output 'AMFIMAGE' \
+         }} else {{ Write-Output 'AMFTEXT'; Get-Clipboard -Raw }}",
+        path = win_path.replace('\'', "''")
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", &script])
+        .output()
+        .ok()?;
+
+    let result = if output.status.success() {
+        let raw = String::from_utf8_lossy(&output.stdout);
+        if raw.starts_with("AMFIMAGE") {
+            std::fs::read(&tmp).ok().map(|data| ClipboardContent::Image {
+                data,
+                mime: "image/png".to_string(),
+            })
+        } else if let Some(rest) = raw.strip_prefix("AMFTEXT") {
+            // Drop the marker line and any single trailing newline that
+            // PowerShell appends, then normalise CRLF to LF.
+            let text = rest
+                .strip_prefix("\r\n")
+                .or_else(|| rest.strip_prefix('\n'))
+                .unwrap_or(rest);
+            let text = text
+                .strip_suffix("\r\n")
+                .or_else(|| text.strip_suffix('\n'))
+                .unwrap_or(text);
+            Some(ClipboardContent::Text(text.replace("\r\n", "\n")))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// Push text onto the Windows clipboard from WSL via `clip.exe`.
+fn copy_to_clipboard_wsl(text: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("clip.exe")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("clip.exe exited with {status}"))
+    }
+}
+
+/// Place image bytes on the Windows clipboard from WSL. The bytes are
+/// written to a temp file that `powershell.exe` loads and sets via
+/// `Clipboard::SetImage`.
+fn copy_image_to_clipboard_wsl(data: &[u8]) -> anyhow::Result<()> {
+    let tmp = std::env::temp_dir().join(format!("amf-clip-{}.png", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, data)?;
+    let win_path = wsl_windows_path(&tmp)
+        .ok_or_else(|| anyhow::anyhow!("wslpath could not translate temp path"))?;
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         Add-Type -AssemblyName System.Drawing; \
+         $img=[System.Drawing.Image]::FromFile('{path}'); \
+         [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()",
+        path = win_path.replace('\'', "''")
+    );
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-STA", "-Command", &script])
+        .status();
+    let _ = std::fs::remove_file(&tmp);
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(anyhow::anyhow!("powershell SetImage exited with {s}")),
+        Err(e) => Err(anyhow::anyhow!("failed to launch powershell: {e}")),
+    }
 }

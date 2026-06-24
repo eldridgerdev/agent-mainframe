@@ -25,6 +25,7 @@ mod session_config;
 mod session_ops;
 mod session_titles;
 pub mod setup;
+mod skill_picker;
 mod state;
 mod steering;
 mod switcher;
@@ -54,7 +55,7 @@ use std::time::{Duration, Instant};
 
 use crate::debug::{DebugLog, LogEntry};
 use crate::extension::{
-    ExtensionConfig, FeaturePreset, load_global_extension_config, merge_project_extension_config,
+    ExtensionConfig, load_global_extension_config, merge_project_extension_config,
 };
 use crate::perf::PerfCollector;
 use crate::project::{
@@ -389,11 +390,12 @@ pub struct AppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DiffReviewViewer {
+    // The native AMF diff viewer is the only supported reviewer. The legacy
+    // vimdiff/neovim popup (`nvim`/`legacy`) has been retired; those values
+    // are still accepted and map to the AMF viewer so old configs keep loading.
     #[default]
-    #[serde(rename = "amf", alias = "custom")]
+    #[serde(rename = "amf", alias = "custom", alias = "nvim", alias = "legacy")]
     Amf,
-    #[serde(rename = "nvim", alias = "legacy")]
-    Nvim,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2119,6 +2121,7 @@ impl App {
         self.schedule_sidebar_load_for_feature(pi, fi);
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     fn build_latest_prompt_cache(store: &ProjectStore) -> HashMap<String, String> {
         let mut cache = HashMap::new();
 
@@ -2136,6 +2139,7 @@ impl App {
         cache
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     fn build_sidebar_plan_cache(store: &ProjectStore) -> HashMap<String, String> {
         let mut cache = HashMap::new();
 
@@ -2331,6 +2335,7 @@ impl App {
             .map(String::as_str)
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn sidebar_plan_for_session(&self, tmux_session: &str) -> Option<&str> {
         self.sidebar_plan_cache
             .get(tmux_session)
@@ -2428,6 +2433,7 @@ impl App {
         self.request_codex_sidebar_metadata_for_session(&workdir, &session_id);
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn cached_codex_session_title(&self, workdir: &Path, session_id: &str) -> Option<&str> {
         let cache_key = Self::codex_sidebar_cache_key(workdir, session_id);
         self.codex_session_title_cache
@@ -2459,13 +2465,6 @@ impl App {
             .entry(tmux_session.to_string())
             .or_default();
         state.apply_event(raw)
-    }
-
-    pub(crate) fn viewport_size(&self) -> Option<(u16, u16)> {
-        match (self.viewport_cols, self.viewport_rows) {
-            (0, _) | (_, 0) => None,
-            dims => Some(dims),
-        }
     }
 
     /// Size session windows will have when shown in the embedded view:
@@ -2554,10 +2553,6 @@ impl App {
     pub(crate) fn allows_agent_for_repo(&self, repo: &Path, agent: &AgentKind) -> bool {
         let allowed = self.allowed_agents_for_repo(repo);
         allowed.contains(agent)
-    }
-
-    pub(crate) fn allowed_feature_presets_for_repo(&self, repo: &Path) -> Vec<FeaturePreset> {
-        self.extension_for_repo(repo).allowed_feature_presets()
     }
 
     pub(crate) fn normalize_agent_for_repo(

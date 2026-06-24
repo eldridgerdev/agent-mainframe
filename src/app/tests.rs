@@ -3,9 +3,7 @@ use super::setup::{
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
-use super::util::{
-    latest_prompt_path, read_all_prompts, read_latest_prompt, shorten_path, slugify,
-};
+use super::util::{latest_prompt_path, read_latest_prompt, shorten_path, slugify};
 use super::*;
 use crate::automation::{CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest};
 use crate::extension::{ExtensionConfig, HookConfig, HookPrompt, LifecycleHooks};
@@ -340,17 +338,6 @@ fn poll_sidebar_load_results_updates_feature_caches() {
     assert!(!app.pending_sidebar_loads.contains("amf-my-feat"));
 }
 
-fn read_all_prompts_falls_back_to_codex_latest_prompt_file() {
-    let workdir = TempDir::new().unwrap();
-    let codex_path = workdir.path().join(".codex").join("latest-prompt.txt");
-    std::fs::create_dir_all(codex_path.parent().unwrap()).unwrap();
-    std::fs::write(&codex_path, "codex prompt history").unwrap();
-
-    let prompts = read_all_prompts(workdir.path());
-    assert_eq!(prompts.len(), 1);
-    assert_eq!(prompts[0].text, "codex prompt history");
-}
-
 // ── AppConfig defaults ───────────────────────────────────
 
 #[test]
@@ -507,9 +494,10 @@ fn app_config_diff_review_viewer_deserializes_amf() {
 }
 
 #[test]
-fn app_config_diff_review_viewer_deserializes_nvim() {
+fn app_config_diff_review_viewer_nvim_maps_to_amf() {
+    // The legacy vimdiff viewer was retired; old configs still load.
     let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"nvim"}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -521,7 +509,7 @@ fn app_config_diff_review_viewer_accepts_custom_alias() {
 #[test]
 fn app_config_diff_review_viewer_accepts_legacy_alias() {
     let config: AppConfig = serde_json::from_str(r#"{"diff_review_viewer":"legacy"}"#).unwrap();
-    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Nvim);
+    assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
 }
 
 #[test]
@@ -3210,6 +3198,90 @@ fn new_session_name_rejects_empty_input() {
 }
 
 #[test]
+fn adding_session_starts_stopped_feature() {
+    let mut tmux = MockTmuxOps::new();
+    let mut sequence = mockall::Sequence::new();
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(false);
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(false);
+    tmux.expect_session_exists()
+        .times(1)
+        .in_sequence(&mut sequence)
+        .return_const(true);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .times(1)
+        .returning(|_, _, _, _| Ok(()));
+    tmux.expect_select_window()
+        .times(1)
+        .returning(|_, _| Ok(()));
+    tmux.expect_create_window()
+        .withf(|session, window, _| session == "amf-my-feat" && window == "terminal")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.add_builtin_session_with_label(0, 0, SessionKind::Terminal, "Shell".into())
+        .unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.status, ProjectStatus::Idle);
+    assert_eq!(feature.sessions.len(), 2);
+    assert_eq!(feature.sessions[1].label, "Shell");
+}
+
+#[test]
+fn adding_session_start_failure_shows_error_toast() {
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(2).return_const(false);
+    tmux.expect_create_session_with_window()
+        .times(1)
+        .returning(|_, _, _| anyhow::bail!("tmux failed"));
+
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Stopped),
+        Box::new(tmux),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+    if let AppMode::SessionPicker(state) = &mut app.mode {
+        state.selected = state
+            .builtin_sessions
+            .iter()
+            .position(|session| session.kind == SessionKind::Terminal)
+            .unwrap();
+    }
+
+    crate::handlers::handle_session_picker_key(&mut app, KeyCode::Enter).unwrap();
+    crate::handlers::handle_new_session_name_key(&mut app, KeyCode::Enter).unwrap();
+
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("Error: tmux failed")
+    );
+    assert_eq!(
+        app.store.projects[0].features[0].status,
+        ProjectStatus::Stopped
+    );
+}
+
+#[test]
 fn feature_add_session_named_uses_custom_label_and_default_window() {
     let mut feature = Feature::new(
         "my-feat".to_string(),
@@ -3452,24 +3524,6 @@ fn call_ensure_hooks_for(workdir: &TempDir, mode: VibeMode, agent: AgentKind, is
     ensure_notification_hooks(workdir.path(), repo, &mode, &agent, is_worktree);
 }
 
-fn call_ensure_hooks_for_with_config(
-    workdir: &TempDir,
-    mode: VibeMode,
-    agent: AgentKind,
-    is_worktree: bool,
-    config: &AppConfig,
-) {
-    let repo = workdir.path(); // repo = workdir in tests
-    super::setup::ensure_notification_hooks_with_config(
-        workdir.path(),
-        repo,
-        &mode,
-        &agent,
-        is_worktree,
-        config,
-    );
-}
-
 fn call_ensure_hooks(workdir: &TempDir, mode: VibeMode) {
     call_ensure_hooks_for(workdir, mode, AgentKind::Claude, true);
 }
@@ -3632,37 +3686,6 @@ fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_defa
     assert!(
         cmds.iter().any(|c| c.contains("custom-diff-review.sh")),
         "Vibeless PreToolUse should include custom-diff-review; got: {cmds:?}"
-    );
-}
-
-#[test]
-fn vibeless_pre_tool_use_can_use_legacy_diff_review_when_configured() {
-    let workdir = TempDir::new().unwrap();
-    let scripts_dir = workdir
-        .path()
-        .join("plugins")
-        .join("diff-review")
-        .join("scripts");
-    std::fs::create_dir_all(&scripts_dir).unwrap();
-    std::fs::write(scripts_dir.join("diff-review.sh"), "").unwrap();
-
-    let config = AppConfig {
-        diff_review_viewer: DiffReviewViewer::Nvim,
-        ..AppConfig::default()
-    };
-    call_ensure_hooks_for_with_config(
-        &workdir,
-        VibeMode::Vibeless,
-        AgentKind::Claude,
-        true,
-        &config,
-    );
-
-    let s = read_settings(&workdir);
-    let cmds = hook_commands_for(&s, "PreToolUse");
-    assert!(
-        cmds.iter().any(|c| c.contains("diff-review.sh")),
-        "Vibeless PreToolUse should include legacy diff-review; got: {cmds:?}"
     );
 }
 
@@ -6050,13 +6073,41 @@ fn bookmark_add_and_remove_current_session() {
 }
 
 #[test]
-fn jump_to_bookmark_enters_view_for_slot() {
+fn jump_to_bookmark_opens_composer_for_agent_session() {
     let store = store_with_single_claude_session();
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().times(1).returning(|_| true);
 
     let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
     app.selection = Selection::Session(0, 0, 0);
+    let tmp = NamedTempFile::new().unwrap();
+    app.store_path = tmp.path().to_path_buf();
+    app.bookmark_current_session().unwrap();
+    app.mode = AppMode::Normal;
+
+    app.jump_to_bookmark(1).unwrap();
+
+    assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+    match &app.mode {
+        AppMode::Compose(state) => {
+            assert_eq!(state.view.session, "amf-my-feat");
+            assert_eq!(state.view.window, "claude");
+            assert!(state.editor.text().is_empty());
+        }
+        _ => panic!("expected Compose mode"),
+    }
+}
+
+#[test]
+fn jump_to_bookmark_keeps_direct_agent_session_in_view() {
+    let store = store_with_single_claude_session();
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.selection = Selection::Session(0, 0, 0);
+    app.compose_direct_targets
+        .insert("amf-my-feat:claude".to_string());
     let tmp = NamedTempFile::new().unwrap();
     app.store_path = tmp.path().to_path_buf();
     app.bookmark_current_session().unwrap();

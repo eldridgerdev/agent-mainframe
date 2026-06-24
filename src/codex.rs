@@ -60,10 +60,6 @@ fn indexed_session_from_db(
     .flatten()
 }
 
-pub fn indexed_sessions(workdir: &Path) -> Option<Vec<IndexedCodexSession>> {
-    indexed_sessions_from_db(&state_db_path()?, workdir)
-}
-
 pub fn indexed_sessions_in(home_dir: &Path, workdir: &Path) -> Option<Vec<IndexedCodexSession>> {
     indexed_sessions_from_db(&home_dir.join(".codex").join("state_5.sqlite"), workdir)
 }

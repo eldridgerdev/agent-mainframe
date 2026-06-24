@@ -39,6 +39,14 @@ impl App {
     }
 
     pub fn enter_view(&mut self) -> Result<()> {
+        self.enter_view_with_options(true)
+    }
+
+    pub(crate) fn enter_view_without_auto_compose(&mut self) -> Result<()> {
+        self.enter_view_with_options(false)
+    }
+
+    fn enter_view_with_options(&mut self, auto_compose: bool) -> Result<()> {
         let (pi, fi, target_si) = match &self.selection {
             Selection::Session(pi, fi, si) => (*pi, *fi, Some(*si)),
             Selection::Feature(pi, fi) => (*pi, *fi, None),
@@ -138,6 +146,13 @@ impl App {
             let input = self.pending_inputs.remove(idx);
             self.open_diff_review_prompt(&input);
             let _ = std::fs::remove_file(&input.file_path);
+        }
+
+        if auto_compose
+            && let AppMode::Viewing(view) = &self.mode
+            && self.compose_intercept_active(view)
+        {
+            self.open_compose_from_view(None)?;
         }
 
         Ok(())
@@ -374,14 +389,18 @@ impl App {
             return;
         };
 
+        let dest_path =
+            self.template_source_path(crate::prompt_library::PromptSource::User, None);
         self.mode = AppMode::PromptEditor(crate::app::PromptEditorState {
             editing_id: None,
             editing_source: crate::prompt_library::PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: crate::app::PromptEditorFocus::Name,
             editor: crate::editor::TextEditor::with_vim(text),
             return_to: Box::new(AppMode::Viewing(state.view)),
+            dest_path,
         });
     }
 
@@ -542,20 +561,6 @@ impl App {
         });
         self.message = None;
         Ok(())
-    }
-
-    pub fn open_markdown_viewer_for_command(
-        &mut self,
-        from_view: Option<ViewState>,
-        _plan_only: bool,
-    ) -> Result<()> {
-        let Some(view) = from_view else {
-            self.message = Some("No feature selected".into());
-            return Ok(());
-        };
-
-        self.mode = AppMode::Viewing(view);
-        self.open_markdown_viewer_from_view()
     }
 
     pub fn open_markdown_viewer_path(

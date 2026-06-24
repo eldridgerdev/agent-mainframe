@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::app::{App, AppMode, CreateFeatureStep, CreateProjectStep};
+use crate::app::{App, AppMode, CreateFeatureStep, CreateProjectStep, PromptEditorFocus};
 use crate::tmux::TmuxManager;
 
 pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
@@ -88,13 +88,20 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
         }
         AppMode::PromptEditor(_) => {
             if let AppMode::PromptEditor(state) = &mut app.mode {
-                if state.name_field_active {
-                    // The name is a single line; collapse any pasted newlines.
-                    for chunk in text.split(|c| c == '\n' || c == '\r') {
-                        state.name.push_str(chunk);
+                match state.focus {
+                    // Name and Tags are single-line; collapse pasted newlines.
+                    PromptEditorFocus::Name | PromptEditorFocus::Tags => {
+                        let field = match state.focus {
+                            PromptEditorFocus::Tags => &mut state.tags,
+                            _ => &mut state.name,
+                        };
+                        for chunk in text.split(|c| c == '\n' || c == '\r') {
+                            field.push_str(chunk);
+                        }
                     }
-                } else {
-                    state.editor.insert_str(text);
+                    PromptEditorFocus::Body => {
+                        state.editor.insert_str(text);
+                    }
                 }
             }
         }

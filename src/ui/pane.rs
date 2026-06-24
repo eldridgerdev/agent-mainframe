@@ -53,6 +53,7 @@ pub(crate) const SCROLLBAR_WIDTH: u16 = 1;
 pub(crate) struct AgentSidebarData {
     pub agent_kind: SessionKind,
     pub status_text: String,
+    #[allow(dead_code)] // populated but not rendered yet
     pub model_text: Option<String>,
     pub prompt_text: String,
     pub work_text: Option<String>,
@@ -153,6 +154,7 @@ fn rainbow_spans(text: &str, theme: &Theme) -> Vec<Span<'static>> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // exercised only by unit tests
 pub fn draw(
     frame: &mut Frame,
     view: &ViewState,

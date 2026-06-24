@@ -1,8 +1,9 @@
 # Vim mode
 
-- **Status:** Partial — Tier 1 core editing largely shipped (v0.24.0:
-  undo/redo, operator+motion, delete/yank/paste, `dd`/`yy`/`D`/`e`);
-  `c`/`cc`/`C` and Tiers 2-3 remain.
+- **Status:** Partial — Tier 1 core editing complete (undo/redo,
+  operator+motion, delete/yank/change/paste, `dd`/`yy`/`cc`/`D`/`C`/`e`).
+  Tier 2 started: **counts** (`3w`, `2dd`, `d3w`, `2d3w`) shipped; visual
+  mode, text objects, find/till, and the rest of Tiers 2-3 remain.
 - **Owner:** unassigned
 - **Relates to:** `src/editor.rs` (`TextEditor`),
   `src/ui/dialogs/editor_view.rs`; shipped vim work in v0.24.0
@@ -42,8 +43,9 @@ woven into the ranking below rather than listed separately:
   named registers remain a Tier 3 feature.
 - **Operator-pending state** — _(done)_ a small state machine so an
   operator (`d`/`c`/`y`) can wait for a motion or text object.
-- **Count accumulator** — collect leading digits and apply a repeat
-  count to motions/operators.
+- **Count accumulator** — _(done)_ leading digits collect into a repeat
+  count applied to motions and operators (`3w`, `2dd`, `d3w`, and
+  multiplied counts like `2d3w`).
 
 ## Backlog (ranked by importance)
 
@@ -73,8 +75,9 @@ woven into the ranking below rather than listed separately:
 
 ### Tier 2 — Everyday productivity
 
-- [ ] **Counts** — numeric prefixes (`3w`, `5j`, `2dd`, `d3w`).
-  (Foundational accumulator)
+- [x] **Counts** — numeric prefixes (`3w`, `5j`, `2dd`, `d3w`), with
+  operator/motion counts multiplying (`2d3w`). `0` stays the start-of-line
+  motion unless a count is already in progress. (Foundational accumulator)
 - [ ] **Visual mode** `v` and linewise `V` — selection + operate
   (`d`/`c`/`y` on the selection).
 - [ ] **Text objects** — `iw`, `aw`, then quote/bracket pairs `i"`,

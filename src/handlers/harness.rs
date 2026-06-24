@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::KeyCode;
 
 use crate::app::HarnessCheckResult;
-use crate::app::{App, AppMode, HarnessCheckStatus, HarnessSetupState};
+use crate::app::{App, AppMode, HarnessCheckStatus};
 
 pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
     let state = match &app.mode {
@@ -129,6 +129,3 @@ fn apply_harnesses(app: &mut App, harnesses: Vec<crate::project::AgentKind>) -> 
     Ok(())
 }
 
-pub fn build_harness_setup_state(app: &App, is_startup: bool) -> HarnessSetupState {
-    HarnessSetupState::new(is_startup, &app.store.available_harnesses)
-}

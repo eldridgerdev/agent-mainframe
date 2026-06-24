@@ -68,12 +68,18 @@ impl App {
             self.config.extension.prompt_templates.clone()
         };
 
-        let templates = merge_prompt_library_entries(
+        let mut templates = merge_prompt_library_entries(
             &self.store.prompt_templates,
             &global_templates,
             &project,
             &worktree_templates,
         );
+
+        // Resolve each entry's on-disk location so the picker can show where
+        // it lives (and where an edit will write back).
+        for entry in &mut templates {
+            entry.source_path = self.template_source_path(entry.source, from_view.as_ref());
+        }
 
         let filtered: Vec<usize> = (0..templates.len()).collect();
 
@@ -132,17 +138,13 @@ impl App {
                 .iter()
                 .enumerate()
                 .filter_map(|(idx, entry)| {
-                    let name_score =
-                        crate::app::util::fuzzy_match_score(&entry.template.name, &state.query);
-                    let body_score =
-                        crate::app::util::fuzzy_match_score(&entry.template.body, &state.query);
-                    let best = match (name_score, body_score) {
-                        (Some(a), Some(b)) => a.min(b),
-                        (Some(a), None) => a,
-                        (None, Some(b)) => b,
-                        (None, None) => return None,
-                    };
-                    Some((idx, best))
+                    crate::prompt_library::prompt_filter_score(
+                        &entry.template.name,
+                        &entry.template.body,
+                        &entry.template.tags,
+                        &state.query,
+                    )
+                    .map(|score| (idx, score))
                 })
                 .collect();
 
@@ -199,6 +201,7 @@ impl App {
             current: 0,
             input: TextEditor::new(String::new()),
             select_index: 0,
+            vim_enabled: false,
             from_view,
         };
         // Seed the first field's editor + select highlight.
@@ -314,15 +317,18 @@ impl App {
     /// Open a blank editor for a new template, returning to the picker
     /// on save/cancel.
     pub fn start_new_prompt_template(&mut self) {
+        let dest_path = self.template_source_path(PromptSource::User, None);
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: None,
             editing_source: PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: PromptEditorFocus::Name,
             editor: TextEditor::with_vim(String::new()),
             return_to: Box::new(return_to),
+            dest_path,
         });
     }
 
@@ -342,15 +348,20 @@ impl App {
         } else {
             Some(entry.template.clone())
         };
+        // The entry already carries its resolved location (filled at build
+        // time), so editing writes back to the same file the picker showed.
+        let dest_path = entry.source_path.clone();
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: Some(entry.template.id.clone()),
             editing_source: entry.source,
             original_template,
             name: entry.template.name.clone(),
-            name_field_active: false,
+            tags: crate::prompt_library::format_tags(&entry.template.tags),
+            focus: PromptEditorFocus::Body,
             editor: TextEditor::with_vim(entry.template.body.clone()),
             return_to: Box::new(return_to),
+            dest_path,
         });
     }
 
@@ -370,15 +381,18 @@ impl App {
         // Closing compose stashes a draft and drops us back on the view;
         // capture that Viewing mode as the editor's return target.
         self.cancel_compose();
+        let dest_path = self.template_source_path(PromptSource::User, None);
         let return_to = std::mem::replace(&mut self.mode, AppMode::Normal);
         self.mode = AppMode::PromptEditor(PromptEditorState {
             editing_id: None,
             editing_source: PromptSource::User,
             original_template: None,
             name: String::new(),
-            name_field_active: true,
+            tags: String::new(),
+            focus: PromptEditorFocus::Name,
             editor: TextEditor::with_vim(text),
             return_to: Box::new(return_to),
+            dest_path,
         });
     }
 
@@ -395,6 +409,7 @@ impl App {
 
         let name = state.name.trim().to_string();
         let body = state.editor.text().trim().to_string();
+        let tags = crate::prompt_library::parse_tags(&state.tags);
         if name.is_empty() {
             self.message = Some("Name cannot be empty".into());
             self.mode = AppMode::PromptEditor(state);
@@ -426,20 +441,21 @@ impl App {
                         {
                             template.name = name;
                             template.body = body;
+                            template.tags = tags;
                             template.updated_at = Utc::now();
                         }
                     }
                     None => {
-                        self.store
-                            .prompt_templates
-                            .push(PromptTemplate::new(name, body));
+                        let mut template = PromptTemplate::new(name, body);
+                        template.tags = tags;
+                        self.store.prompt_templates.push(template);
                     }
                 }
                 self.save()?;
             }
             PromptSource::Global => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 if orig.name != name {
                     self.config.extension.prompt_templates.retain(|t| t.name != orig.name);
                 }
@@ -452,7 +468,7 @@ impl App {
             }
             PromptSource::Project => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
                     self.push_toast_warning("No project repo — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -465,7 +481,7 @@ impl App {
             }
             PromptSource::Worktree => {
                 let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, updated_at: Utc::now(), ..orig.clone() };
+                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
                 let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
                     self.push_toast_warning("No worktree — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -684,6 +700,48 @@ impl App {
         self.resolve_library_repo(from_view)
     }
 
+    /// The on-disk location a template of `source` is read from / written to,
+    /// for display in the picker, the export confirm prompt, and the editor.
+    /// Reuses the same resolvers as display/export so the shown path always
+    /// matches where a write lands. `None` when the scope has no resolvable
+    /// location (no project/worktree context, or the empty test store path).
+    pub(crate) fn template_source_path(
+        &self,
+        source: PromptSource,
+        from_view: Option<&ViewState>,
+    ) -> Option<PathBuf> {
+        match source {
+            PromptSource::User => (!self.store_path.as_os_str().is_empty())
+                .then(|| self.store_path.clone()),
+            PromptSource::Global => {
+                Some(crate::project::amf_config_dir().join("config.json"))
+            }
+            PromptSource::Project => self
+                .resolve_library_repo(from_view)
+                .map(|repo| repo.join(".amf").join("config.json")),
+            PromptSource::Worktree => self
+                .resolve_worktree_dir(from_view)
+                .map(|dir| dir.join(".amf").join("config.json")),
+        }
+    }
+
+    /// One-line export menu naming each target's resolved destination path,
+    /// so the user confirms exactly where the template lands before writing.
+    pub fn build_export_menu_message(&self, from_view: Option<&ViewState>) -> String {
+        let target = |opt: char, source: PromptSource| match self
+            .template_source_path(source, from_view)
+        {
+            Some(path) => format!("({opt}) {}", crate::app::util::shorten_path(&path)),
+            None => format!("({opt}) {} (unavailable)", source.label().to_lowercase()),
+        };
+        format!(
+            "Export to:  {}   {}   {}   \u{00b7}  Esc cancel",
+            target('g', PromptSource::Global),
+            target('p', PromptSource::Project),
+            target('w', PromptSource::Worktree),
+        )
+    }
+
     /// Resolve the working directory for a worktree export: the active
     /// feature's `workdir` when opened from a session, else the selected
     /// feature's `workdir` on the dashboard. Returns `None` when no feature
@@ -735,17 +793,19 @@ fn merge_prompt_library_entries(
     worktree: &[PromptTemplate],
 ) -> Vec<PromptLibraryEntry> {
     let mut entries: Vec<PromptLibraryEntry> = Vec::new();
+    // `source_path` is filled by the caller (`rebuild_prompt_library`), which
+    // has the App context needed to resolve each scope's on-disk location.
     for template in user {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::User });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::User, source_path: None });
     }
     for template in worktree {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Worktree });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Worktree, source_path: None });
     }
     for template in project {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Project });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Project, source_path: None });
     }
     for template in global {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Global });
+        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Global, source_path: None });
     }
     entries
 }
@@ -1214,6 +1274,77 @@ mod tests {
     }
 
     #[test]
+    fn picker_entries_carry_resolved_source_paths() {
+        use crate::app::{App, AppMode, PromptExportTarget};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        app.store
+            .prompt_templates
+            .push(PromptTemplate::new("My prompt".to_string(), "body".to_string()));
+        app.open_prompt_library(None);
+        // Export so there is a Project-source entry to inspect too.
+        app.export_selected_template(PromptExportTarget::Project)
+            .unwrap();
+        app.open_prompt_library(None);
+
+        let AppMode::PromptLibrary(ref state) = app.mode else {
+            panic!("expected PromptLibrary mode");
+        };
+
+        // Project entries resolve to the main repo's config.json.
+        let project = state
+            .templates
+            .iter()
+            .find(|e| e.source == PromptSource::Project)
+            .expect("project entry");
+        assert_eq!(
+            project.source_path.as_deref(),
+            Some(repo.path().join(".amf").join("config.json").as_path()),
+        );
+
+        // The User entry has no real store path under the test harness
+        // (empty `store_path`), so its location resolves to `None`.
+        let user = state
+            .templates
+            .iter()
+            .find(|e| e.source == PromptSource::User)
+            .expect("user entry");
+        assert_eq!(user.source_path, None);
+    }
+
+    #[test]
+    fn export_menu_message_names_target_paths() {
+        use crate::app::App;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        let msg = app.build_export_menu_message(None);
+        // The project target names the resolved repo config path.
+        let expected = repo.path().join(".amf").join("config.json");
+        assert!(
+            msg.contains(&crate::app::util::shorten_path(&expected)),
+            "export menu should name the project path, got: {msg}"
+        );
+        // And keeps the per-target keys.
+        assert!(msg.contains("(g)") && msg.contains("(p)") && msg.contains("(w)"));
+    }
+
+    #[test]
     fn inject_plain_template_skips_fill_flow() {
         use crate::app::{App, AppMode};
         use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -1331,6 +1462,176 @@ mod tests {
     }
 
     #[test]
+    fn editor_save_parses_and_persists_tags() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.open_prompt_library(None);
+
+        // Compose a new template with a messy tag string.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.name = "Tagged".to_string();
+            state.tags = "#bug, Frontend  bug".to_string();
+            state.editor = crate::editor::TextEditor::new("body".to_string());
+        }
+        app.submit_prompt_editor().unwrap();
+
+        // The raw input is parsed into a clean, de-duplicated tag list.
+        let saved = app
+            .store
+            .prompt_templates
+            .iter()
+            .find(|t| t.name == "Tagged")
+            .expect("template saved");
+        assert_eq!(saved.tags, vec!["bug".to_string(), "Frontend".to_string()]);
+    }
+
+    #[test]
+    fn picker_hash_query_filters_to_tagged_templates() {
+        use crate::app::{App, AppMode};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut frontend = PromptTemplate::new("UI fix".to_string(), "body".to_string());
+        frontend.tags = vec!["frontend".to_string()];
+        let backend = PromptTemplate::new("API fix".to_string(), "body".to_string());
+        app.store.prompt_templates.push(frontend);
+        app.store.prompt_templates.push(backend);
+        app.open_prompt_library(None);
+
+        // A `#tag` query keeps only the template carrying that tag.
+        if let AppMode::PromptLibrary(state) = &mut app.mode {
+            state.query = "#frontend".to_string();
+        }
+        app.prompt_library_filter();
+        let AppMode::PromptLibrary(ref state) = app.mode else {
+            panic!("expected PromptLibrary mode");
+        };
+        let names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|&i| state.templates[i].template.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["UI fix"]);
+    }
+
+    #[test]
+    fn editor_enters_vim_normal_on_escape_and_motions_reach_body() {
+        use crate::app::{App, AppMode};
+        use crate::handlers::handle_prompt_editor_key;
+        use crate::editor::VimMode;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Open a fresh editor on the body field. It starts in vim insert mode.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = PromptEditorFocus::Body;
+            state.editor = crate::editor::TextEditor::with_vim("hello world".to_string());
+        }
+
+        let press = |app: &mut App, code: KeyCode| {
+            handle_prompt_editor_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+        };
+
+        // Esc switches to vim normal mode rather than cancelling the dialog.
+        press(&mut app, KeyCode::Esc);
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("Esc in vim insert must stay in the editor, not cancel");
+        };
+        assert_eq!(state.editor.vim_mode(), Some(VimMode::Normal));
+
+        // A normal-mode motion + operator reaches the prompt body: `0` to the
+        // line start, then `dw` deletes the first word.
+        press(&mut app, KeyCode::Char('0'));
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('w'));
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("expected to remain in the editor");
+        };
+        assert_eq!(state.editor.text(), "world");
+    }
+
+    #[test]
+    fn multiline_fill_field_honors_vim_toggle_across_slots() {
+        use crate::app::{App, AppMode};
+        use crate::handlers::handle_placeholder_fill_key;
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        let mut template =
+            PromptTemplate::new("ml".to_string(), "Note: {{note}}\nThen {{step}}".to_string());
+        template.placeholders = vec![
+            PromptPlaceholder {
+                key: "note".to_string(),
+                label: None,
+                kind: PlaceholderKind::MultiLine { default: None },
+                required: false,
+            },
+            PromptPlaceholder {
+                key: "step".to_string(),
+                label: None,
+                kind: PlaceholderKind::MultiLine { default: None },
+                required: false,
+            },
+        ];
+        app.store.prompt_templates.push(template);
+        app.open_prompt_library(None);
+        app.inject_selected_template().unwrap();
+
+        // The multi-line field starts plain; Ctrl+T turns vim on.
+        let ctrl_t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL);
+        handle_placeholder_fill_key(&mut app, ctrl_t).unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        assert!(state.vim_enabled);
+        assert!(state.input.vim_mode().is_some());
+
+        // Advancing to the next multi-line slot keeps vim on (the choice is
+        // persisted on the state, not the rebuilt editor).
+        handle_placeholder_fill_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        )
+        .unwrap();
+        let AppMode::PlaceholderFill(ref state) = app.mode else {
+            panic!("expected PlaceholderFill mode");
+        };
+        assert_eq!(state.current, 1);
+        assert!(state.input.vim_mode().is_some());
+    }
+
+    #[test]
     fn fill_blocks_submit_on_empty_required_slot() {
         use crate::app::{App, AppMode};
         use crate::traits::{MockTmuxOps, MockWorktreeOps};
@@ -1359,5 +1660,121 @@ mod tests {
         app.submit_placeholder_fill().unwrap();
         assert!(matches!(app.mode, AppMode::PlaceholderFill(_)));
         assert!(app.message.as_deref().unwrap_or("").contains("required"));
+    }
+
+    #[test]
+    fn build_skill_catalog_discovers_project_skill() {
+        use std::fs;
+
+        let workdir = tempfile::TempDir::new().unwrap();
+        let skill_dir = workdir.path().join(".claude").join("skills").join("my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Does a thing\n---\n\nbody\n",
+        )
+        .unwrap();
+
+        let catalog = crate::app::compose::build_skill_catalog(Some(workdir.path()));
+        let entry = catalog
+            .iter()
+            .find(|e| e.name == "my-skill")
+            .expect("project skill discovered");
+        assert_eq!(entry.description, "Does a thing");
+    }
+
+    #[test]
+    fn skill_picker_inserts_invocation_at_cursor_and_returns_to_editor() {
+        use crate::app::{App, AppMode, SkillPickerState};
+        use crate::app::{ComposeCommandEntry, ComposeCommandSource};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        // Stand up a prompt editor focused on the body with some existing text.
+        app.start_new_prompt_template();
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = PromptEditorFocus::Body;
+            state.editor = crate::editor::TextEditor::new("before ".to_string());
+        }
+        let return_to = std::mem::replace(&mut app.mode, AppMode::Normal);
+
+        // Open the skill picker over that editor with a single skill, then
+        // insert it.
+        app.mode = AppMode::SkillPicker(SkillPickerState {
+            skills: vec![ComposeCommandEntry {
+                name: "review".to_string(),
+                description: "Review the diff".to_string(),
+                source: ComposeCommandSource::Skill,
+                interactive: false,
+            }],
+            filtered: vec![0],
+            query: String::new(),
+            selected: 0,
+            return_to: Box::new(return_to),
+        });
+        app.insert_selected_skill();
+
+        // The invocation token lands at the cursor and we're back in the editor.
+        let AppMode::PromptEditor(ref state) = app.mode else {
+            panic!("expected to return to the prompt editor");
+        };
+        assert_eq!(state.editor.text(), "before /review ");
+    }
+
+    #[test]
+    fn skill_picker_filter_ranks_by_query_and_cancel_restores_editor() {
+        use crate::app::{App, AppMode, SkillPickerState};
+        use crate::app::{ComposeCommandEntry, ComposeCommandSource};
+        use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let store = project_store_at(repo.path());
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+
+        app.start_new_prompt_template();
+        let return_to = std::mem::replace(&mut app.mode, AppMode::Normal);
+        let skill = |name: &str| ComposeCommandEntry {
+            name: name.to_string(),
+            description: String::new(),
+            source: ComposeCommandSource::Skill,
+            interactive: false,
+        };
+        app.mode = AppMode::SkillPicker(SkillPickerState {
+            skills: vec![skill("build"), skill("review"), skill("run")],
+            filtered: vec![0, 1, 2],
+            query: String::new(),
+            selected: 0,
+            return_to: Box::new(return_to),
+        });
+
+        // Typing narrows the list to fuzzy matches.
+        if let AppMode::SkillPicker(state) = &mut app.mode {
+            state.query = "rev".to_string();
+        }
+        app.skill_picker_filter();
+        let AppMode::SkillPicker(ref state) = app.mode else {
+            panic!("expected skill picker");
+        };
+        let names: Vec<&str> = state
+            .filtered
+            .iter()
+            .map(|&i| state.skills[i].name.as_str())
+            .collect();
+        assert_eq!(names, vec!["review"]);
+
+        // Cancelling drops back to the editor without inserting anything.
+        app.cancel_skill_picker();
+        assert!(matches!(app.mode, AppMode::PromptEditor(_)));
     }
 }

@@ -52,11 +52,6 @@ pub struct TextSelection {
 }
 
 impl TextSelection {
-    pub fn clear(&mut self) {
-        self.has_selection = false;
-        self.is_selecting = false;
-    }
-
     pub fn normalized(&self) -> (u16, u16, u16, u16) {
         if self.start_row < self.end_row
             || (self.start_row == self.end_row && self.start_col <= self.end_col)
@@ -117,14 +112,6 @@ impl ViewState {
             sidebar_visible: true,
             todos_expanded: false,
         }
-    }
-
-    pub fn has_sidebar(&self) -> bool {
-        self.sidebar_session_kind().is_some()
-    }
-
-    pub fn has_claude_sidebar(&self) -> bool {
-        self.session_kind == SessionKind::Claude && self.sidebar_visible
     }
 
     pub fn sidebar_session_kind(&self) -> Option<SessionKind> {
@@ -629,6 +616,12 @@ pub struct LatestPromptState {
 pub struct PromptLibraryEntry {
     pub template: crate::prompt_library::PromptTemplate,
     pub source: crate::prompt_library::PromptSource,
+    /// Resolved on-disk location this entry is read from / written to:
+    /// the SQLite store for `User`, the relevant `.amf/config.json` for
+    /// config sources. Filled in by `rebuild_prompt_library`; `None` when
+    /// the scope has no resolvable location (no project context, or the
+    /// empty test store path).
+    pub source_path: Option<PathBuf>,
 }
 
 /// Picker over the merged, source-tagged prompt library. Mirrors the
@@ -658,6 +651,36 @@ impl PromptLibraryState {
     }
 }
 
+/// Which field of the prompt editor currently has focus. `Tab` cycles
+/// Name → Tags → Body (and `Shift+Tab` the reverse). Name and Tags are
+/// single-line text fields; Body is the multi-line `TextEditor`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptEditorFocus {
+    Name,
+    Tags,
+    Body,
+}
+
+impl PromptEditorFocus {
+    /// The next field in the Name → Tags → Body → Name cycle.
+    pub fn next(self) -> Self {
+        match self {
+            PromptEditorFocus::Name => PromptEditorFocus::Tags,
+            PromptEditorFocus::Tags => PromptEditorFocus::Body,
+            PromptEditorFocus::Body => PromptEditorFocus::Name,
+        }
+    }
+
+    /// The previous field in the cycle (reverse of `next`).
+    pub fn prev(self) -> Self {
+        match self {
+            PromptEditorFocus::Name => PromptEditorFocus::Body,
+            PromptEditorFocus::Tags => PromptEditorFocus::Name,
+            PromptEditorFocus::Body => PromptEditorFocus::Tags,
+        }
+    }
+}
+
 /// Create/edit dialog for a user template. `editing_id` is `None` for a
 /// new template. `return_to` is where to land after save/cancel — the
 /// picker it was opened from, or the underlying `Viewing` mode when
@@ -667,12 +690,19 @@ pub struct PromptEditorState {
     /// Where the template lives; determines which store/file is written on save.
     pub editing_source: crate::prompt_library::PromptSource,
     /// Original template for config-file sources (Project/Global/Worktree),
-    /// preserving id/description/tags/placeholders across edits.
+    /// preserving id/description/placeholders across edits.
     pub original_template: Option<crate::prompt_library::PromptTemplate>,
     pub name: String,
-    pub name_field_active: bool,
+    /// Raw comma/space-separated tag input; parsed into the template's
+    /// `tags` on save (see `prompt_library::parse_tags`).
+    pub tags: String,
+    pub focus: PromptEditorFocus,
     pub editor: TextEditor,
     pub return_to: Box<AppMode>,
+    /// Where a save will land, for the editor's destination hint: the
+    /// SQLite store for `User`, the relevant `.amf/config.json` otherwise.
+    /// `None` when unresolvable (no project context, or the test store).
+    pub dest_path: Option<PathBuf>,
 }
 
 /// Collects a value for each `{{slot}}` in a template before injection.
@@ -692,6 +722,10 @@ pub struct PlaceholderFillState {
     pub input: TextEditor,
     /// Highlighted option index for a `Select` slot; ignored otherwise.
     pub select_index: usize,
+    /// Whether the user has turned vim on for the fill fields. Persisted on
+    /// the state (not the editor) so the choice survives `enter()` rebuilding
+    /// `input` when moving between slots. Only applies to multi-line slots.
+    pub vim_enabled: bool,
     pub from_view: Option<ViewState>,
 }
 
@@ -731,13 +765,35 @@ impl PlaceholderFillState {
     pub fn enter(&mut self, idx: usize) {
         self.current = idx;
         let value = self.values.get(idx).cloned().unwrap_or_default();
+        let is_multiline = matches!(
+            self.placeholders.get(idx).map(|p| &p.kind),
+            Some(crate::prompt_library::PlaceholderKind::MultiLine { .. })
+        );
         self.select_index = match self.placeholders.get(idx).map(|p| &p.kind) {
             Some(crate::prompt_library::PlaceholderKind::Select { options }) => {
                 options.iter().position(|o| o == &value).unwrap_or(0)
             }
             _ => 0,
         };
-        self.input = TextEditor::new(value);
+        // Vim applies only to multi-line slots; single-line/select slots use
+        // Enter to advance, so a plain editor keeps that behaviour intact.
+        self.input = if self.vim_enabled && is_multiline {
+            TextEditor::with_vim(value)
+        } else {
+            TextEditor::new(value)
+        };
+    }
+
+    /// Toggle vim on the active multi-line field, remembering the choice for
+    /// later slots. No-op (and reports `false`) on non-multi-line slots, where
+    /// vim would hijack Enter's "advance field" behaviour.
+    pub fn toggle_input_vim(&mut self) -> bool {
+        if !self.current_is_multiline() {
+            return false;
+        }
+        self.input.toggle_vim();
+        self.vim_enabled = self.input.vim_mode().is_some();
+        true
     }
 
     /// Record the active slot's value into `values`: the chosen option for a
@@ -774,6 +830,31 @@ impl PlaceholderFillState {
 pub struct HelpState {
     pub from_view: Option<ViewState>,
     pub scroll_offset: usize,
+}
+
+/// A search-as-you-type picker over the workspace's agent skills, launched
+/// from a prompt-editing surface (the prompt editor body or a text fill
+/// field). Selecting an entry inserts its `/skill-name` invocation at the
+/// editor cursor; `return_to` holds the editing mode to restore afterwards.
+pub struct SkillPickerState {
+    /// All available skills (global + project), name-sorted.
+    pub skills: Vec<ComposeCommandEntry>,
+    /// Indices into `skills` matching the current query, best match first.
+    pub filtered: Vec<usize>,
+    pub query: String,
+    pub selected: usize,
+    /// The editing mode to return to on select/cancel — `PromptEditor` or
+    /// `PlaceholderFill`. Boxed because `AppMode` is large.
+    pub return_to: Box<AppMode>,
+}
+
+impl SkillPickerState {
+    /// The currently highlighted skill, if any survive the filter.
+    pub fn selected_skill(&self) -> Option<&ComposeCommandEntry> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|idx| self.skills.get(*idx))
+    }
 }
 
 pub enum AppMode {
@@ -823,6 +904,7 @@ pub enum AppMode {
     PromptLibrary(PromptLibraryState),
     PromptEditor(PromptEditorState),
     PlaceholderFill(PlaceholderFillState),
+    SkillPicker(SkillPickerState),
     ForkingFeature(ForkFeatureState),
     ThemePicker(ThemePickerState),
     SyntaxLanguagePicker(SyntaxLanguagePickerState),
@@ -952,6 +1034,7 @@ pub struct ConfigWizardFieldEditor {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // summary-prefetch payload, populated but not read back yet
 pub struct PendingSummary {
     pub tmux_session: String,
     pub workdir: PathBuf,
@@ -960,7 +1043,9 @@ pub struct PendingSummary {
 
 #[derive(Debug, Clone, Default)]
 pub struct SummaryState {
+    #[allow(dead_code)] // populated but not read back yet
     pub pending: Vec<PendingSummary>,
+    #[allow(dead_code)] // populated but not read back yet
     pub last_status: std::collections::HashMap<String, crate::project::ProjectStatus>,
     pub generating: std::collections::HashSet<String>,
 }
@@ -1085,8 +1170,10 @@ pub struct BuiltinSessionOption {
 pub struct DiffReviewState {
     pub session_id: String,
     pub workdir: PathBuf,
+    #[allow(dead_code)] // populated but not read yet
     pub file_path: String,
     pub relative_path: String,
+    #[allow(dead_code)] // populated but not read yet
     pub change_id: String,
     pub tool: String,
     pub old_snippet: String,
@@ -1213,10 +1300,6 @@ pub struct BackgroundDeletion {
 }
 
 impl BackgroundDeletion {
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.project_name, self.feature_name)
-    }
-
     pub fn from_deleting_state(state: DeletingFeatureState) -> Self {
         Self {
             project_name: state.project_name,
@@ -1235,6 +1318,7 @@ impl BackgroundDeletion {
 }
 
 pub struct BackgroundHook {
+    #[allow(dead_code)] // retained for the background-hook key, not read directly
     pub script: String,
     pub workdir: PathBuf,
     pub project_name: String,
@@ -1255,10 +1339,6 @@ pub struct BackgroundHook {
 }
 
 impl BackgroundHook {
-    pub fn key(&self) -> String {
-        format!("{}/{}", self.workdir.display(), self.script)
-    }
-
     pub fn from_running_state(state: RunningHookState) -> Self {
         Self {
             script: state.script,
@@ -1338,6 +1418,7 @@ pub enum CreateFeatureStep {
     Worktree,
     Mode,
     SessionName,
+    #[allow(dead_code)] // not constructed yet
     TaskPrompt,
     ConfirmSuperVibe,
 }
@@ -1390,6 +1471,7 @@ pub struct CreateFeatureState {
     pub preset_index: usize,
     pub task_prompt: String,
     pub prompt_analysis: PromptAnalysis,
+    #[allow(dead_code)] // populated but not read yet
     pub prepared_launch: Option<PreparedFeatureLaunch>,
 }
 
@@ -1494,6 +1576,7 @@ pub struct PreparedFeatureLaunch {
     pub remote_control: bool,
     pub steering_enabled: bool,
     pub hook_succeeded: Option<bool>,
+    #[allow(dead_code)] // populated but not read yet
     pub startup_prompt: Option<String>,
 }
 
@@ -1514,10 +1597,6 @@ pub struct CreateBatchFeaturesState {
 }
 
 impl CreateBatchFeaturesState {
-    pub fn new() -> Self {
-        Self::with_workspace(None)
-    }
-
     pub fn with_workspace(workspace_path: Option<String>) -> Self {
         let repo_path = if let Some(ws) = workspace_path {
             ws

@@ -391,6 +391,7 @@ pub fn render_markdown(
 struct MarkdownRenderer<'a> {
     theme: &'a Theme,
     width: usize,
+    #[allow(dead_code)] // set during construction, not read yet
     source_path: Option<&'a Path>,
     lines: Vec<Line<'static>>,
     inline_styles: Vec<Style>,

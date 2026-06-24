@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, AppMode, PromptExportTarget};
+use crate::app::{App, AppMode, PromptEditorFocus, PromptExportTarget};
 use crate::editor::VimMode;
 
 /// Prompt-library picker: navigate, filter, inject, and manage templates.
@@ -119,12 +119,15 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             let has_selection =
                 matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
             if has_selection {
+                let from_view = match &app.mode {
+                    AppMode::PromptLibrary(state) => state.from_view.clone(),
+                    _ => None,
+                };
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.pending_export = true;
                     state.confirm_delete = false;
                 }
-                app.message =
-                    Some("Export to: (g) global  (p) project  (w) worktree  ·  Esc cancel".into());
+                app.message = Some(app.build_export_menu_message(from_view.as_ref()));
             }
         }
         KeyCode::Char('d') => {
@@ -151,6 +154,16 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+/// The raw string backing whichever single-line field (Name or Tags) is
+/// focused, so char/backspace edits route to the right one. Falls back to
+/// the name field when Body is focused (the caller never invokes it then).
+fn active_single_line_field(state: &mut crate::app::PromptEditorState) -> &mut String {
+    match state.focus {
+        PromptEditorFocus::Tags => &mut state.tags,
+        _ => &mut state.name,
+    }
+}
+
 /// Prompt-template editor: name field + multi-line body editor.
 pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
@@ -161,27 +174,61 @@ pub fn handle_prompt_editor_key(app: &mut App, key: KeyEvent) -> Result<()> {
         app.cancel_prompt_editor();
         return Ok(());
     }
+    // Ctrl+K opens the agent-skill picker; selecting a skill inserts its
+    // `/skill-name` invocation into the body at the cursor. Only on the body.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
+        if matches!(&app.mode, AppMode::PromptEditor(state)
+            if matches!(state.focus, PromptEditorFocus::Body))
+        {
+            app.open_skill_picker();
+        }
+        return Ok(());
+    }
+    // Ctrl+T toggles vim on the body editor, mirroring the compose box. Only
+    // meaningful while the multi-line body is focused.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
+        if let AppMode::PromptEditor(state) = &mut app.mode
+            && matches!(state.focus, PromptEditorFocus::Body)
+        {
+            state.editor.toggle_vim();
+            app.message = Some(if state.editor.vim_mode().is_some() {
+                "Vim mode enabled".into()
+            } else {
+                "Vim mode disabled".into()
+            });
+        }
+        return Ok(());
+    }
+    // Tab cycles Name → Tags → Body; Shift+Tab reverses.
     if key.code == KeyCode::Tab {
         if let AppMode::PromptEditor(state) = &mut app.mode {
-            state.name_field_active = !state.name_field_active;
+            state.focus = state.focus.next();
+        }
+        return Ok(());
+    }
+    if key.code == KeyCode::BackTab {
+        if let AppMode::PromptEditor(state) = &mut app.mode {
+            state.focus = state.focus.prev();
         }
         return Ok(());
     }
 
-    let name_active = matches!(&app.mode, AppMode::PromptEditor(state) if state.name_field_active);
-    if name_active {
+    // Name and Tags are single-line text fields edited the same way.
+    let single_line = matches!(&app.mode, AppMode::PromptEditor(state)
+        if matches!(state.focus, PromptEditorFocus::Name | PromptEditorFocus::Tags));
+    if single_line {
         match key.code {
-            // Name is a single line; Enter saves the whole template.
+            // Single-line fields; Enter saves the whole template.
             KeyCode::Enter => app.submit_prompt_editor()?,
             KeyCode::Esc => app.cancel_prompt_editor(),
             KeyCode::Backspace => {
                 if let AppMode::PromptEditor(state) = &mut app.mode {
-                    state.name.pop();
+                    active_single_line_field(state).pop();
                 }
             }
             KeyCode::Char(c) => {
                 if let AppMode::PromptEditor(state) = &mut app.mode {
-                    state.name.push(c);
+                    active_single_line_field(state).push(c);
                 }
             }
             _ => {}
@@ -209,6 +256,32 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // Ctrl+S submits from anywhere (collecting the current field first).
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
         app.submit_placeholder_fill()?;
+        return Ok(());
+    }
+
+    // Ctrl+K opens the agent-skill picker on text slots, inserting the chosen
+    // skill's `/skill-name` invocation at the cursor. Select slots have no
+    // editor to insert into.
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('k') {
+        let is_select = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.is_select());
+        if !is_select {
+            app.open_skill_picker();
+        }
+        return Ok(());
+    }
+
+    // Ctrl+T toggles vim on a multi-line fill field (no-op on single-line /
+    // select slots, where Enter advances the field).
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
+        if let AppMode::PlaceholderFill(state) = &mut app.mode
+            && state.toggle_input_vim()
+        {
+            app.message = Some(if state.input.vim_mode().is_some() {
+                "Vim mode enabled".into()
+            } else {
+                "Vim mode disabled".into()
+            });
+        }
         return Ok(());
     }
 

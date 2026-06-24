@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
+#[allow(dead_code)] // exercised only by unit tests
 pub(super) fn load(conn: &Connection, session_id: &str) -> Result<Option<String>> {
     let mut stmt =
         conn.prepare_cached("SELECT status_text FROM session_status WHERE session_id = ?1")?;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::app::{App, AppMode, CreateFeatureStep, CreateProjectStep};
+use crate::app::{App, AppMode, CreateFeatureStep, CreateProjectStep, PromptEditorFocus};
 use crate::tmux::TmuxManager;
 
 pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
@@ -83,6 +83,33 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 if outcome.text_changed {
                     state.refresh_suggestions();
                     state.request_cursor_scroll();
+                }
+            }
+        }
+        AppMode::PromptEditor(_) => {
+            if let AppMode::PromptEditor(state) = &mut app.mode {
+                match state.focus {
+                    // Name and Tags are single-line; collapse pasted newlines.
+                    PromptEditorFocus::Name | PromptEditorFocus::Tags => {
+                        let field = match state.focus {
+                            PromptEditorFocus::Tags => &mut state.tags,
+                            _ => &mut state.name,
+                        };
+                        for chunk in text.split(|c| c == '\n' || c == '\r') {
+                            field.push_str(chunk);
+                        }
+                    }
+                    PromptEditorFocus::Body => {
+                        state.editor.insert_str(text);
+                    }
+                }
+            }
+        }
+        AppMode::PlaceholderFill(_) => {
+            if let AppMode::PlaceholderFill(state) = &mut app.mode {
+                // Select slots have no text field to paste into.
+                if !state.is_select() {
+                    state.input.insert_str(text);
                 }
             }
         }

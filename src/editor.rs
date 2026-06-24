@@ -108,6 +108,12 @@ pub struct TextEditor {
     pending: Option<Snapshot>,
     /// Operator awaiting a motion (e.g. `d` pressed, waiting for `w`).
     pending_op: Option<Operator>,
+    /// Leading-digit count prefix accumulated for the next motion or
+    /// operator (`3` in `3w`). `None` until a count digit is typed.
+    count: Option<usize>,
+    /// Count captured when an operator key was pressed, so a count on both
+    /// the operator and its motion multiply (`2d3w` deletes six words).
+    pending_op_count: usize,
     /// Unnamed register for yank/delete/paste.
     register: Register,
 }
@@ -125,6 +131,8 @@ impl TextEditor {
             redo_stack: Vec::new(),
             pending: None,
             pending_op: None,
+            count: None,
+            pending_op_count: 1,
             register: Register::default(),
         }
     }
@@ -142,10 +150,12 @@ impl TextEditor {
         &self.text
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn keymap(&self) -> EditorKeymap {
         self.keymap
     }
@@ -171,6 +181,7 @@ impl TextEditor {
                 self.vim_mode = VimMode::Insert;
                 self.pending = None;
                 self.pending_op = None;
+                self.count = None;
             }
         }
         self.preferred_col = None;
@@ -339,11 +350,22 @@ impl TextEditor {
     }
 
     fn handle_vim_normal_key(&mut self, key: KeyEvent) -> EditorOutcome {
+        // Leading digits form a repeat count for the next motion or
+        // operator. `0` is only a count digit once a count is already in
+        // progress; otherwise it stays the start-of-line motion.
+        if self.try_accumulate_count(key) {
+            return EditorOutcome::handled();
+        }
+
         // A pending operator (e.g. `d`) consumes the next key as its
         // motion/text-object before any normal-mode binding runs.
         if let Some(op) = self.pending_op {
             return self.apply_pending_operator(op, key);
         }
+
+        // Resolve and clear the count up front so it can never leak into
+        // the next command, whether or not this command honours it.
+        let count = self.count.take().unwrap_or(1);
 
         match key.code {
             KeyCode::Esc => EditorOutcome::handled(),
@@ -376,31 +398,40 @@ impl TextEditor {
                 outcome.cursor_moved = moved.cursor_moved;
                 outcome
             }
-            KeyCode::Char('h') if key.modifiers.is_empty() => self.move_left(),
-            KeyCode::Left => self.move_left(),
-            KeyCode::Char('l') if key.modifiers.is_empty() => self.move_right(),
-            KeyCode::Right => self.move_right(),
-            KeyCode::Char('j') if key.modifiers.is_empty() => self.move_down(),
-            KeyCode::Down => self.move_down(),
-            KeyCode::Char('k') if key.modifiers.is_empty() => self.move_up(),
-            KeyCode::Up => self.move_up(),
+            KeyCode::Char('h') if key.modifiers.is_empty() => self.repeat(count, Self::move_left),
+            KeyCode::Left => self.repeat(count, Self::move_left),
+            KeyCode::Char('l') if key.modifiers.is_empty() => self.repeat(count, Self::move_right),
+            KeyCode::Right => self.repeat(count, Self::move_right),
+            KeyCode::Char('j') if key.modifiers.is_empty() => self.repeat(count, Self::move_down),
+            KeyCode::Down => self.repeat(count, Self::move_down),
+            KeyCode::Char('k') if key.modifiers.is_empty() => self.repeat(count, Self::move_up),
+            KeyCode::Up => self.repeat(count, Self::move_up),
             KeyCode::Char('0') if key.modifiers.is_empty() => self.move_home(),
             KeyCode::Home => self.move_home(),
             KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::SHIFT) => self.move_end(),
             KeyCode::End => self.move_end(),
-            KeyCode::Char('w') if key.modifiers.is_empty() => self.move_word_forward(),
-            KeyCode::Char('b') if key.modifiers.is_empty() => self.move_word_backward(),
-            KeyCode::Char('e') if key.modifiers.is_empty() => self.move_word_end(),
+            KeyCode::Char('w') if key.modifiers.is_empty() => {
+                self.repeat(count, Self::move_word_forward)
+            }
+            KeyCode::Char('b') if key.modifiers.is_empty() => {
+                self.repeat(count, Self::move_word_backward)
+            }
+            KeyCode::Char('e') if key.modifiers.is_empty() => {
+                self.repeat(count, Self::move_word_end)
+            }
             KeyCode::Char('d') if key.modifiers.is_empty() => {
                 self.pending_op = Some(Operator::Delete);
+                self.pending_op_count = count;
                 EditorOutcome::handled()
             }
             KeyCode::Char('y') if key.modifiers.is_empty() => {
                 self.pending_op = Some(Operator::Yank);
+                self.pending_op_count = count;
                 EditorOutcome::handled()
             }
             KeyCode::Char('c') if key.modifiers.is_empty() => {
                 self.pending_op = Some(Operator::Change);
+                self.pending_op_count = count;
                 EditorOutcome::handled()
             }
             KeyCode::Char('C') if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -420,9 +451,13 @@ impl TextEditor {
                 self.apply_operator(Operator::Yank, OpTarget::Line(self.cursor, self.cursor))
             }
             KeyCode::Char('x') if key.modifiers.is_empty() => {
-                // `x` is `dl`: delete the character under the cursor,
-                // populating the register, as a single undo step.
-                let end = self.next_boundary(self.cursor);
+                // `x` is `dl`: delete the character under the cursor (or
+                // `count` characters), populating the register, as a single
+                // undo step.
+                let mut end = self.cursor;
+                for _ in 0..count {
+                    end = self.next_boundary(end);
+                }
                 self.apply_operator(Operator::Delete, OpTarget::Char(self.cursor, end))
             }
             KeyCode::Char('p') if key.modifiers.is_empty() => self.paste_after(),
@@ -677,26 +712,102 @@ impl TextEditor {
         }
     }
 
-    /// Resolve a charwise operator target for `key`, returning the byte
-    /// range `[start, end)` to operate on, or None when `key` is not a
-    /// supported charwise motion.
-    fn charwise_op_range(&self, key: KeyEvent) -> Option<(usize, usize)> {
+    /// Fold a count digit into the accumulator. `1`-`9` always count; `0`
+    /// counts only when a count is already in progress (otherwise it is the
+    /// start-of-line motion). Returns true when the key was consumed.
+    fn try_accumulate_count(&mut self, key: KeyEvent) -> bool {
+        let KeyCode::Char(c) = key.code else {
+            return false;
+        };
+        if !key.modifiers.is_empty() || !c.is_ascii_digit() {
+            return false;
+        }
+        if c == '0' && self.count.is_none() {
+            return false;
+        }
+        let digit = (c as u8 - b'0') as usize;
+        // Clamp growth so a wild prefix can't trigger an enormous loop on a
+        // small buffer; far beyond any realistic prompt edit.
+        let next = self.count.unwrap_or(0).saturating_mul(10).saturating_add(digit);
+        self.count = Some(next.min(100_000));
+        true
+    }
+
+    /// Run a motion `n` times, accumulating its outcome. Stops early once a
+    /// motion reports no movement (a buffer boundary), so a large count on a
+    /// short buffer stays cheap.
+    fn repeat(&mut self, n: usize, motion: fn(&mut Self) -> EditorOutcome) -> EditorOutcome {
+        let mut outcome = EditorOutcome::handled();
+        for _ in 0..n {
+            let step = motion(self);
+            outcome.cursor_moved |= step.cursor_moved;
+            outcome.text_changed |= step.text_changed;
+            outcome.mode_changed |= step.mode_changed;
+            if !step.cursor_moved && !step.text_changed && !step.mode_changed {
+                break;
+            }
+        }
+        outcome
+    }
+
+    /// Byte index of the end of the line `n` lines below the one containing
+    /// `idx`, clamped to the last line.
+    fn line_end_n_down(&self, idx: usize, n: usize) -> usize {
+        let mut end = self.line_end(idx);
+        for _ in 0..n {
+            if end >= self.text.len() {
+                break;
+            }
+            end = self.line_end(end + 1);
+        }
+        end
+    }
+
+    /// Byte index of the start of the line `n` lines above the one
+    /// containing `idx`, clamped to the first line.
+    fn line_start_n_up(&self, idx: usize, n: usize) -> usize {
+        let mut start = self.line_start(idx);
+        for _ in 0..n {
+            if start == 0 {
+                break;
+            }
+            start = self.line_start(start - 1);
+        }
+        start
+    }
+
+    /// Resolve a charwise operator target for `key`, applied `count` times,
+    /// returning the byte range `[start, end)` to operate on, or None when
+    /// `key` is not a supported charwise motion.
+    fn charwise_op_range(&self, key: KeyEvent, count: usize) -> Option<(usize, usize)> {
         let c = self.cursor;
+        // Repeatedly apply a single-step index function from the cursor.
+        let step_n = |step: fn(&Self, usize) -> usize| {
+            let mut idx = c;
+            for _ in 0..count {
+                idx = step(self, idx);
+            }
+            idx
+        };
         match key.code {
-            KeyCode::Char('w') if key.modifiers.is_empty() => Some((c, self.word_forward_index(c))),
-            KeyCode::Char('b') if key.modifiers.is_empty() => Some((self.word_backward_index(c), c)),
+            KeyCode::Char('w') if key.modifiers.is_empty() => {
+                Some((c, step_n(Self::word_forward_index)))
+            }
+            KeyCode::Char('b') if key.modifiers.is_empty() => {
+                Some((step_n(Self::word_backward_index), c))
+            }
             KeyCode::Char('e') if key.modifiers.is_empty() => {
                 // Inclusive: extend past the end-of-word character.
-                Some((c, self.next_boundary(self.word_end_index(c))))
+                Some((c, self.next_boundary(step_n(Self::word_end_index))))
             }
             KeyCode::Char('$') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 Some((c, self.line_end(c)))
             }
             KeyCode::Char('0') if key.modifiers.is_empty() => Some((self.line_start(c), c)),
-            KeyCode::Char('h') if key.modifiers.is_empty() => Some((self.prev_boundary(c), c)),
-            KeyCode::Left => Some((self.prev_boundary(c), c)),
-            KeyCode::Char('l') if key.modifiers.is_empty() => Some((c, self.next_boundary(c))),
-            KeyCode::Right => Some((c, self.next_boundary(c))),
+            KeyCode::Char('h') if key.modifiers.is_empty() => Some((step_n(Self::prev_boundary), c)),
+            KeyCode::Left => Some((step_n(Self::prev_boundary), c)),
+            KeyCode::Char('l') if key.modifiers.is_empty() => Some((c, step_n(Self::next_boundary))),
+            KeyCode::Right => Some((c, step_n(Self::next_boundary))),
             _ => None,
         }
     }
@@ -706,9 +817,15 @@ impl TextEditor {
     fn apply_pending_operator(&mut self, op: Operator, key: KeyEvent) -> EditorOutcome {
         if key.code == KeyCode::Esc {
             self.pending_op = None;
+            self.count = None;
             return EditorOutcome::handled();
         }
         self.pending_op = None;
+
+        // The effective repeat is the operator count times the motion
+        // count (`2d3w` deletes six words); each defaults to 1.
+        let motion_count = self.count.take().unwrap_or(1);
+        let count = self.pending_op_count.saturating_mul(motion_count).max(1);
 
         // A doubled operator (`dd`, `yy`) acts linewise on the current
         // line.
@@ -736,18 +853,27 @@ impl TextEditor {
                 .unwrap_or(false);
 
         let target = if doubled {
-            Some(OpTarget::Line(self.cursor, self.cursor))
+            // `2dd` spans the current line plus `count - 1` lines below.
+            let end = self.line_end_n_down(self.cursor, count - 1);
+            Some(OpTarget::Line(self.cursor, end))
         } else if down {
+            // `dj` removes the current line and the next; `d2j` extends one
+            // more line per count below.
             let line_end = self.line_end(self.cursor);
-            (line_end < self.text.len()).then(|| OpTarget::Line(self.cursor, line_end + 1))
+            (line_end < self.text.len())
+                .then(|| OpTarget::Line(self.cursor, self.line_end_n_down(self.cursor, count)))
         } else if up {
             let line_start = self.line_start(self.cursor);
-            (line_start > 0).then(|| OpTarget::Line(line_start - 1, self.cursor))
+            (line_start > 0)
+                .then(|| OpTarget::Line(self.line_start_n_up(self.cursor, count), self.cursor))
         } else if cw_as_ce {
-            let end = self.next_boundary(self.word_end_index(self.cursor));
-            Some(OpTarget::Char(self.cursor, end))
+            let mut end = self.cursor;
+            for _ in 0..count {
+                end = self.word_end_index(end);
+            }
+            Some(OpTarget::Char(self.cursor, self.next_boundary(end)))
         } else {
-            self.charwise_op_range(key)
+            self.charwise_op_range(key, count)
                 .map(|(start, end)| OpTarget::Char(start, end))
         };
 
@@ -1489,5 +1615,135 @@ mod tests {
         assert!(outcome.mode_changed);
         assert_eq!(editor.keymap(), EditorKeymap::Plain);
         assert_eq!(editor.vim_mode(), None);
+    }
+
+    #[test]
+    fn count_repeats_word_motion() {
+        let mut editor = normal_at_start("one two three four");
+        editor.handle_key(key(KeyCode::Char('3')));
+        let outcome = editor.handle_key(key(KeyCode::Char('w')));
+        assert!(outcome.cursor_moved);
+        // Three words forward lands on "four" (index 14).
+        assert_eq!(editor.cursor(), 14);
+    }
+
+    #[test]
+    fn multi_digit_count_accumulates() {
+        let mut editor = normal_at_start("a b c d e f g h i j k l");
+        // 11 words forward from "a" lands on the 12th word, "l" (index 22).
+        editor.handle_key(key(KeyCode::Char('1')));
+        editor.handle_key(key(KeyCode::Char('1')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.cursor(), 22);
+    }
+
+    #[test]
+    fn count_repeats_vertical_motion() {
+        let mut editor = normal_at_start("a\nb\nc\nd\ne");
+        editor.handle_key(key(KeyCode::Char('3')));
+        editor.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(editor.cursor_row_col(), (3, 0));
+    }
+
+    #[test]
+    fn count_clamps_at_buffer_boundary() {
+        let mut editor = normal_at_start("a\nb");
+        // Far more lines than exist: stops at the last line, no panic.
+        editor.handle_key(key(KeyCode::Char('9')));
+        editor.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(editor.cursor_row_col(), (1, 0));
+    }
+
+    #[test]
+    fn leading_zero_is_still_start_of_line_motion() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('w'))); // cursor at "world"
+        editor.handle_key(key(KeyCode::Char('0'))); // bare 0 = line start
+        assert_eq!(editor.cursor(), 0);
+    }
+
+    #[test]
+    fn zero_is_a_count_digit_after_a_nonzero_digit() {
+        let mut editor = normal_at_start("a b c d e f g h i j k");
+        // "10w" moves ten words forward to "k" (index 20), proving the 0
+        // accumulated rather than acting as the start-of-line motion.
+        editor.handle_key(key(KeyCode::Char('1')));
+        editor.handle_key(key(KeyCode::Char('0')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.cursor(), 20);
+    }
+
+    #[test]
+    fn count_with_x_deletes_multiple_chars() {
+        let mut editor = normal_at_start("hello");
+        editor.handle_key(key(KeyCode::Char('3')));
+        editor.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(editor.text(), "lo");
+    }
+
+    #[test]
+    fn count_before_dd_deletes_multiple_lines() {
+        let mut editor = normal_at_start("one\ntwo\nthree\nfour");
+        editor.handle_key(key(KeyCode::Char('2')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(editor.text(), "three\nfour");
+    }
+
+    #[test]
+    fn count_between_operator_and_motion_deletes_words() {
+        let mut editor = normal_at_start("one two three four");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('3')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.text(), "four");
+    }
+
+    #[test]
+    fn operator_and_motion_counts_multiply() {
+        let mut editor = normal_at_start("a b c d e f g");
+        // 2d3w == delete six words, leaving "g".
+        editor.handle_key(key(KeyCode::Char('2')));
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('3')));
+        editor.handle_key(key(KeyCode::Char('w')));
+        assert_eq!(editor.text(), "g");
+    }
+
+    #[test]
+    fn count_with_dj_deletes_extra_lines() {
+        let mut editor = normal_at_start("one\ntwo\nthree\nfour");
+        // d2j removes the current line and two below it.
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('2')));
+        editor.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(editor.text(), "four");
+    }
+
+    #[test]
+    fn cancelled_operator_clears_pending_count() {
+        let mut editor = normal_at_start("hello world");
+        editor.handle_key(key(KeyCode::Char('d')));
+        editor.handle_key(key(KeyCode::Char('2')));
+        editor.handle_key(key(KeyCode::Esc)); // cancel mid-count
+        // The dangling "2" must not repeat the next motion.
+        editor.handle_key(key(KeyCode::Char('l')));
+        assert_eq!(editor.cursor(), 1);
+        assert_eq!(editor.text(), "hello world");
+    }
+
+    #[test]
+    fn count_repeated_change_enters_insert_as_one_undo_step() {
+        let mut editor = normal_at_start("one two three");
+        editor.handle_key(key(KeyCode::Char('c')));
+        editor.handle_key(key(KeyCode::Char('2')));
+        editor.handle_key(key(KeyCode::Char('w'))); // change to end of 2nd word
+        assert_eq!(editor.vim_mode(), Some(VimMode::Insert));
+        // Like `ce`, `c2w` stops at the word end and keeps the trailing space.
+        assert_eq!(editor.text(), " three");
+        editor.handle_key(key(KeyCode::Char('X')));
+        editor.handle_key(key(KeyCode::Esc));
+        editor.handle_key(key(KeyCode::Char('u')));
+        assert_eq!(editor.text(), "one two three");
     }
 }

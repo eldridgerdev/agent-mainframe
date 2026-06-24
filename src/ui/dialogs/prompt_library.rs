@@ -3,10 +3,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
 };
 
-use crate::app::{PlaceholderFillState, PromptEditorState, PromptLibraryState};
+use crate::app::{
+    PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState, SkillPickerState,
+};
+use crate::editor::VimMode;
 use crate::theme::Theme;
 
 use super::super::dashboard::centered_rect;
@@ -62,7 +65,7 @@ pub fn draw_prompt_library(
         ])
     } else if state.query.is_empty() {
         Line::from(Span::styled(
-            "Press / to search",
+            "Press / to search (use #tag to filter by tag)",
             Style::default().fg(theme.text_muted.to_color()),
         ))
     } else {
@@ -137,8 +140,34 @@ pub fn draw_prompt_library(
     let preview_block = Block::default()
         .borders(Borders::LEFT)
         .border_style(Style::default().fg(theme.border.to_color()));
-    let preview_inner = preview_block.inner(body[1]);
+    let preview_outer = preview_block.inner(body[1]);
     frame.render_widget(preview_block, body[1]);
+
+    // Reserve the last preview line for the resolved source path, so the
+    // user always sees where the selected entry lives on disk.
+    let preview_split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(preview_outer);
+    let preview_inner = preview_split[0];
+
+    if let Some(entry) = state.selected_entry() {
+        let path_line = match &entry.source_path {
+            Some(path) => Line::from(Span::styled(
+                crate::app::util::shorten_path(path),
+                Style::default()
+                    .fg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::ITALIC),
+            )),
+            None => Line::from(Span::styled(
+                "(no saved location)",
+                Style::default()
+                    .fg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::ITALIC),
+            )),
+        };
+        frame.render_widget(Paragraph::new(path_line), preview_split[1]);
+    }
 
     if let Some(entry) = state.selected_entry() {
         let mut lines: Vec<Line> = Vec::new();
@@ -152,6 +181,25 @@ pub fn draw_prompt_library(
                 )));
                 lines.push(Line::from(""));
             }
+        }
+        // Tag chips, e.g. `#bug #frontend`, above the body preview.
+        if !entry.template.tags.is_empty() {
+            let chips: Vec<Span> = entry
+                .template
+                .tags
+                .iter()
+                .flat_map(|tag| {
+                    [
+                        Span::styled(
+                            format!("#{tag}"),
+                            Style::default().fg(theme.info.to_color()),
+                        ),
+                        Span::raw(" "),
+                    ]
+                })
+                .collect();
+            lines.push(Line::from(chips));
+            lines.push(Line::from(""));
         }
         for line in entry.template.body.lines() {
             lines.push(Line::from(Span::styled(
@@ -240,112 +288,210 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     let area = centered_rect(78, 74, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    use crate::prompt_library::PromptSource;
+
+    let name_focused = state.focus == PromptEditorFocus::Name;
+    let tags_focused = state.focus == PromptEditorFocus::Tags;
+    let body_focused = state.focus == PromptEditorFocus::Body;
+
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+
+    // ── Outer dialog frame: title above, key hints on the bottom border.
     let title = if state.editing_id.is_some() {
-        use crate::prompt_library::PromptSource;
         match state.editing_source {
             PromptSource::User => " Edit Prompt ".to_string(),
-            PromptSource::Project => " Edit Prompt [Project config] ".to_string(),
-            PromptSource::Global => " Edit Prompt [Global config] ".to_string(),
-            PromptSource::Worktree => " Edit Prompt [Worktree config] ".to_string(),
+            PromptSource::Project => " Edit Prompt — Project config ".to_string(),
+            PromptSource::Global => " Edit Prompt — Global config ".to_string(),
+            PromptSource::Worktree => " Edit Prompt — Worktree config ".to_string(),
         }
     } else {
         " New Prompt ".to_string()
     };
+    let footer = Line::from(vec![
+        label(" "),
+        hint("Tab"),
+        label(" switch  "),
+        hint("Ctrl+S"),
+        label(" save  "),
+        hint("Ctrl+T"),
+        label(" vim  "),
+        hint("Ctrl+K"),
+        label(" skill  "),
+        hint("Esc"),
+        label(" cancel (×2 in body)  "),
+        hint("Ctrl+Q"),
+        label(" cancel "),
+    ]);
     let block = Block::default()
         .title(title)
+        .title_bottom(footer)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()));
+        .border_style(Style::default().fg(theme.primary.to_color()))
+        .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // name label
-            Constraint::Length(1), // name field
+            Constraint::Length(3), // name box
             Constraint::Length(1), // spacer
-            Constraint::Length(1), // body label
-            Constraint::Length(2), // placeholder help (always visible)
-            Constraint::Min(3),    // body editor
-            Constraint::Length(1), // footer hints
+            Constraint::Length(3), // tags box
+            Constraint::Length(1), // spacer
+            Constraint::Min(4),    // body box
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // destination hint
         ])
         .split(inner);
 
-    let active_marker = |active: bool| {
-        if active {
+    // A focus-aware bordered field box: the label is the box title, the
+    // border lights up in the primary colour while the field has focus.
+    let field_block = |title_text: String, focused: bool| {
+        let border = if focused {
+            theme.primary.to_color()
+        } else {
+            theme.border.to_color()
+        };
+        let title_style = if focused {
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text_muted.to_color())
+        };
+        Block::default()
+            .title(Span::styled(format!(" {title_text} "), title_style))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border))
+            .padding(Padding::horizontal(1))
+    };
+
+    // A single-line field value: cursor when focused, muted placeholder when
+    // empty + unfocused, else the plain value.
+    let single_line_field = |value: &str, focused: bool, placeholder: &'static str| {
+        if focused {
+            Line::from(vec![
+                Span::styled(value.to_string(), Style::default().fg(theme.text.to_color())),
+                Span::styled("█", Style::default().fg(theme.primary.to_color())),
+            ])
+        } else if value.is_empty() {
+            Line::from(Span::styled(
+                placeholder,
+                Style::default().fg(theme.text_muted.to_color()),
+            ))
+        } else {
+            Line::from(Span::styled(
+                value.to_string(),
+                Style::default().fg(theme.text.to_color()),
+            ))
         }
     };
 
+    // Name field.
     frame.render_widget(
-        Paragraph::new(Span::styled("Name", active_marker(state.name_field_active))),
+        Paragraph::new(single_line_field(&state.name, name_focused, "(unnamed)"))
+            .block(field_block("Name".to_string(), name_focused)),
         chunks[0],
     );
-    let name_line = if state.name_field_active {
-        Line::from(vec![
-            Span::styled(state.name.clone(), Style::default().fg(theme.text.to_color())),
-            Span::styled("█", Style::default().fg(theme.primary.to_color())),
-        ])
-    } else if state.name.is_empty() {
-        Line::from(Span::styled(
-            "(unnamed)",
-            Style::default().fg(theme.text_muted.to_color()),
-        ))
-    } else {
-        Line::from(Span::styled(
-            state.name.clone(),
-            Style::default().fg(theme.text.to_color()),
-        ))
-    };
-    frame.render_widget(Paragraph::new(name_line), chunks[1]);
 
+    // Tags field (the hint rides in the box title to keep the value clean).
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Prompt body",
-            active_marker(!state.name_field_active),
-        )),
-        chunks[3],
+        Paragraph::new(single_line_field(&state.tags, tags_focused, "none"))
+            .block(field_block(
+                "Tags — comma-separated, optional".to_string(),
+                tags_focused,
+            )),
+        chunks[2],
     );
 
-    // Always-visible placeholder help, kept off the editor so it stays put
-    // while typing. Explains both the text-slot and the option-list forms.
+    // Body editor box, with the placeholder-syntax legend on its bottom border.
     let key_span = |s: &'static str| Span::styled(s, Style::default().fg(theme.primary.to_color()));
     let muted = |s: &'static str| Span::styled(s, Style::default().fg(theme.text_muted.to_color()));
     let help = Line::from(vec![
+        muted(" "),
         key_span("{{name}}"),
-        muted(" fill-in slot \u{00b7} "),
+        muted(" slot \u{00b7} "),
         key_span("{{a|b|c}}"),
         muted(" menu \u{00b7} "),
         key_span("{{label: a|b|c}}"),
-        muted(" labelled menu"),
+        muted(" labelled menu "),
     ]);
-    frame.render_widget(Paragraph::new(help).wrap(Wrap { trim: true }), chunks[4]);
-
-    // Help lives on its own line above, so the editor placeholder is empty.
+    let body_border = if body_focused {
+        theme.primary.to_color()
+    } else {
+        theme.border.to_color()
+    };
+    let body_title_style = if body_focused {
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
+    let body_title = match state.editor.vim_mode() {
+        Some(VimMode::Insert) => " Prompt body [Vim Insert] ",
+        Some(VimMode::Normal) => " Prompt body [Vim Normal] ",
+        None => " Prompt body ",
+    };
+    let body_block = Block::default()
+        .title(Span::styled(body_title, body_title_style))
+        .title_bottom(help)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(body_border))
+        .padding(Padding::horizontal(1));
+    // The placeholder-syntax legend on the box's bottom border already
+    // explains slots, so the empty body just shows the cursor.
     let body_lines = editor_lines(&state.editor, theme, "");
     frame.render_widget(
-        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[5],
+        Paragraph::new(body_lines)
+            .block(body_block)
+            .wrap(Wrap { trim: false }),
+        chunks[4],
     );
 
-    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
-    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
-    let footer = Line::from(vec![
-        hint("Tab"),
-        label(" switch field  "),
-        hint("Ctrl+S"),
-        label(" save  "),
-        hint("Esc"),
-        label(" cancel (×2 in body)  "),
-        hint("Ctrl+Q"),
-        label(" cancel"),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[6]);
+    // Destination hint at the bottom: where a save will land. User templates
+    // live in the local SQLite store (not version-controlled); config sources
+    // show the target config.json path.
+    let muted_style = Style::default()
+        .fg(theme.text_muted.to_color())
+        .add_modifier(Modifier::ITALIC);
+    let mut dest_lines: Vec<Line> = Vec::new();
+    match state.editing_source {
+        PromptSource::User => {
+            dest_lines.push(Line::from(Span::styled(
+                "Saves to your local store — not version-controlled",
+                muted_style,
+            )));
+            if let Some(path) = &state.dest_path {
+                dest_lines.push(Line::from(Span::styled(
+                    crate::app::util::shorten_path(path),
+                    Style::default().fg(theme.text_muted.to_color()),
+                )));
+            }
+        }
+        other => match &state.dest_path {
+            Some(path) => {
+                dest_lines.push(Line::from(Span::styled(
+                    "Saves to this config file:",
+                    muted_style,
+                )));
+                dest_lines.push(Line::from(Span::styled(
+                    crate::app::util::shorten_path(path),
+                    Style::default().fg(theme.text_muted.to_color()),
+                )));
+            }
+            None => dest_lines.push(Line::from(Span::styled(
+                format!("Saves to {} config", other.label().to_lowercase()),
+                muted_style,
+            ))),
+        },
+    }
+    frame.render_widget(
+        Paragraph::new(dest_lines).wrap(Wrap { trim: true }),
+        chunks[6],
+    );
 }
 
 /// Fill-in flow: one slot at a time with a `current/total` progress
@@ -394,6 +540,18 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
         label_spans.push(Span::styled(
             " *",
             Style::default().fg(theme.warning.to_color()),
+        ));
+    }
+    // Surface the vim state for multi-line fields (the only slots vim applies
+    // to), matching the prompt-body editor's indicator.
+    if let Some(mode) = state.input.vim_mode().filter(|_| state.current_is_multiline()) {
+        let indicator = match mode {
+            VimMode::Insert => "  [Vim Insert]",
+            VimMode::Normal => "  [Vim Normal]",
+        };
+        label_spans.push(Span::styled(
+            indicator,
+            Style::default().fg(theme.text_muted.to_color()),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(label_spans)), chunks[0]);
@@ -462,10 +620,130 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
         label(" prev  "),
         hint("Ctrl+S"),
         label(" inject  "),
-        hint("Esc"),
-        label(" cancel"),
     ]);
+    // Vim is only a meaningful toggle on multi-line slots.
+    if state.current_is_multiline() {
+        footer_spans.extend([hint("Ctrl+T"), label(" vim  ")]);
+    }
+    // Skill injection works on any text slot (not select menus).
+    if !state.is_select() {
+        footer_spans.extend([hint("Ctrl+K"), label(" skill  ")]);
+    }
+    footer_spans.extend([hint("Esc"), label(" cancel")]);
     frame.render_widget(Paragraph::new(Line::from(footer_spans)), chunks[4]);
+}
+
+/// Skill picker: a search-as-you-type list of the workspace's agent skills,
+/// launched from an editing surface. Selecting one inserts its `/skill-name`
+/// invocation at the editor cursor.
+pub fn draw_skill_picker(frame: &mut Frame, state: &SkillPickerState, theme: &Theme) {
+    let area = centered_rect(64, 60, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let total = state.skills.len();
+    let shown = state.filtered.len();
+    let title = if state.query.is_empty() {
+        format!(" Insert Skill ({total}) ")
+    } else {
+        format!(" Insert Skill ({shown}/{total}) ")
+    };
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // query line
+            Constraint::Min(1),    // list
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    // Query line, always editable (typing filters).
+    let query_line = Line::from(vec![
+        Span::styled("Filter: ", Style::default().fg(theme.warning.to_color())),
+        Span::styled(state.query.clone(), Style::default().fg(theme.text.to_color())),
+        Span::styled("█", Style::default().fg(theme.primary.to_color())),
+    ]);
+    frame.render_widget(Paragraph::new(query_line), chunks[0]);
+
+    if state.filtered.is_empty() {
+        let empty = if total == 0 {
+            "No agent skills found in ~/.claude/skills or .claude/skills."
+        } else {
+            "No skills match your filter."
+        };
+        frame.render_widget(
+            Paragraph::new(empty)
+                .style(Style::default().fg(theme.text_muted.to_color()))
+                .wrap(Wrap { trim: true }),
+            chunks[1],
+        );
+    } else {
+        let visible = chunks[1].height as usize;
+        let scroll_offset = if state.selected >= visible {
+            state.selected - visible + 1
+        } else {
+            0
+        };
+        let width = chunks[1].width as usize;
+        let items: Vec<ListItem> = state
+            .filtered
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(visible)
+            .filter_map(|(pos, skill_idx)| {
+                let skill = state.skills.get(*skill_idx)?;
+                let selected = pos == state.selected;
+                let name_style = if selected {
+                    Style::default()
+                        .fg(theme.primary.to_color())
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text.to_color())
+                };
+                let marker = if selected { "▸ " } else { "  " };
+                let name = format!("/{}", skill.name);
+                let mut spans = vec![
+                    Span::styled(marker.to_string(), name_style),
+                    Span::styled(name.clone(), name_style),
+                ];
+                // Append a muted, truncated description when there's room.
+                if !skill.description.is_empty() {
+                    let used = marker.len() + name.len() + 3;
+                    let room = width.saturating_sub(used);
+                    if room > 4 {
+                        spans.push(Span::styled(
+                            format!("  — {}", truncate(&skill.description, room)),
+                            Style::default().fg(theme.text_muted.to_color()),
+                        ));
+                    }
+                }
+                Some(ListItem::new(Line::from(spans)))
+            })
+            .collect();
+        frame.render_widget(List::new(items), chunks[1]);
+    }
+
+    let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
+    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            hint("↑/↓"),
+            label(" navigate  "),
+            hint("Enter"),
+            label(" insert  "),
+            hint("Esc"),
+            label(" cancel"),
+        ])),
+        chunks[2],
+    );
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -483,3 +761,4 @@ fn truncate(s: &str, max_chars: usize) -> String {
     out.push('…');
     out
 }
+

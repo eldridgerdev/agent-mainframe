@@ -19,13 +19,6 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    pub const ALL: [LogLevel; 4] = [
-        LogLevel::Debug,
-        LogLevel::Info,
-        LogLevel::Warn,
-        LogLevel::Error,
-    ];
-
     pub fn display(&self) -> &'static str {
         match self {
             LogLevel::Debug => "DEBUG",
@@ -33,12 +26,6 @@ impl LogLevel {
             LogLevel::Warn => "WARN",
             LogLevel::Error => "ERROR",
         }
-    }
-
-    pub fn next(&self) -> Self {
-        let all = Self::ALL.as_slice();
-        let idx = all.iter().position(|v| v == self).unwrap_or(0);
-        all[(idx + 1) % all.len()]
     }
 }
 
@@ -138,14 +125,6 @@ impl DebugLog {
 
     pub fn clear(&mut self) {
         self.entries.clear();
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 
     pub fn log_file(&self) -> &PathBuf {

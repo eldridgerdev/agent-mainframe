@@ -15,7 +15,6 @@ const SIDEBAR_PROMPT_PREVIEW_LINES: usize = 2;
 const SIDEBAR_SUMMARY_PREVIEW_COLS: usize = 32;
 const SIDEBAR_SUMMARY_PREVIEW_LINES: usize = 3;
 const SIDEBAR_WORK_VALUE_CHARS: usize = 28;
-const SIDEBAR_TODO_VALUE_CHARS: usize = 26;
 const DASHBOARD_LEADER_COMMANDS: &[(&str, &str)] = &[
     ("i", "Pending inputs"),
     ("?", "Help"),
@@ -1226,6 +1225,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::PlaceholderFill(state) = &app.mode {
         super::dialogs::draw_placeholder_fill(frame, state, &app.theme);
+    }
+
+    if let AppMode::SkillPicker(state) = &app.mode {
+        super::dialogs::draw_skill_picker(frame, state, &app.theme);
     }
 
     if let AppMode::ConfigWizard(state) = &mut app.mode {

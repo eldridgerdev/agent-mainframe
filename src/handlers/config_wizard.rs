@@ -591,42 +591,6 @@ fn save_button_focus(category: &ConfigCategory) -> usize {
     edit_field_count(category)
 }
 
-fn handle_edit_backspace(state: &mut ConfigWizardState) {
-    state.error = None;
-    match state.category {
-        ConfigCategory::CustomSessions => {
-            if state.field_focus < 9
-                && let Some(value) = state.field_values.get_mut(state.field_focus)
-            {
-                value.pop();
-            }
-        }
-        ConfigCategory::FeaturePresets => match state.field_focus {
-            0 | 1 => {
-                if let Some(value) = state.field_values.get_mut(state.field_focus) {
-                    value.pop();
-                }
-            }
-            _ => {}
-        },
-        ConfigCategory::LifecycleHooks => match state.field_focus {
-            0 | 2 | 3 => {
-                let index = match state.field_focus {
-                    0 => 0,
-                    2 => 1,
-                    _ => 2,
-                };
-                if let Some(value) = state.field_values.get_mut(index) {
-                    value.pop();
-                }
-            }
-            _ => {}
-        },
-        ConfigCategory::Keybindings => {}
-        ConfigCategory::AllowedAgents => {}
-    }
-}
-
 fn activate_current_field(state: &mut ConfigWizardState) -> bool {
     if handle_edit_space(state) {
         return true;
@@ -739,35 +703,6 @@ fn handle_edit_space(state: &mut ConfigWizardState) -> bool {
             true
         }
         _ => false,
-    }
-}
-
-fn handle_edit_char(state: &mut ConfigWizardState, c: char) {
-    state.error = None;
-    match state.category {
-        ConfigCategory::CustomSessions => {
-            if state.field_focus < 9
-                && let Some(value) = state.field_values.get_mut(state.field_focus)
-            {
-                value.push(c);
-            }
-        }
-        ConfigCategory::FeaturePresets => match state.field_focus {
-            0 | 1 => {
-                if let Some(value) = state.field_values.get_mut(state.field_focus) {
-                    value.push(c);
-                }
-            }
-            _ => {}
-        },
-        ConfigCategory::LifecycleHooks => match state.field_focus {
-            0 => state.field_values[0].push(c),
-            2 => state.field_values[1].push(c),
-            3 => state.field_values[2].push(c),
-            _ => {}
-        },
-        ConfigCategory::Keybindings => {}
-        ConfigCategory::AllowedAgents => {}
     }
 }
 

@@ -9,6 +9,7 @@ mod diff;
 mod editor;
 mod extension;
 mod fswatch;
+mod github;
 mod handlers;
 mod highlight;
 mod http_client;

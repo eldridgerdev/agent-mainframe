@@ -857,6 +857,34 @@ impl SkillPickerState {
     }
 }
 
+/// Transient state while a PR's comments are being fetched off the UI thread.
+#[derive(Debug, Clone)]
+pub struct PrReviewLoadState {
+    /// Working directory of the feature whose PR we're reviewing.
+    pub workdir: PathBuf,
+    /// The resolved PR being loaded.
+    pub pr: crate::github::PrRef,
+}
+
+/// State for the full-screen PR comment-review pane.
+#[derive(Debug, Clone)]
+pub struct PrReviewState {
+    /// Working directory of the feature whose PR we're reviewing. Retained for
+    /// the manual-refresh action (next Epic A item), which re-fetches from here.
+    #[allow(dead_code)]
+    pub workdir: PathBuf,
+    /// The fetched, normalized review.
+    pub review: crate::app::pr_review::PrReview,
+    /// Index into `review.comments` of the highlighted comment.
+    pub selected: usize,
+}
+
+impl PrReviewState {
+    pub fn selected_comment(&self) -> Option<&crate::app::pr_review::PrComment> {
+        self.review.comments.get(self.selected)
+    }
+}
+
 pub enum AppMode {
     Normal,
     CreatingProject(CreateProjectState),
@@ -894,6 +922,10 @@ pub enum AppMode {
     BookmarkPicker(BookmarkPickerState),
     DiffViewerLoading(DiffViewerState),
     DiffViewer(DiffViewerState),
+    /// Fetching a PR's comments off the UI thread; shows a loading frame.
+    PrReviewLoading(PrReviewLoadState),
+    /// Triaging a PR's comments in the full-screen review pane.
+    PrReview(PrReviewState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),

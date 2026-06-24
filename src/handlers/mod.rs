@@ -13,6 +13,7 @@ mod input;
 mod mouse;
 mod normal;
 mod picker;
+mod pr_review;
 mod prompt_library;
 mod search;
 mod skill_picker;
@@ -34,6 +35,7 @@ pub use dialog::{
     handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
 pub use diff::handle_diff_viewer_key;
+pub use pr_review::{handle_pr_review_key, handle_pr_review_loading_key};
 pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
@@ -95,6 +97,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::BookmarkPicker(_) => handle_bookmark_picker_key(app, key.code),
         AppMode::DiffViewerLoading(_) => handle_diff_viewer_key(app, key),
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key),
+        AppMode::PrReviewLoading(_) => handle_pr_review_loading_key(app, key),
+        AppMode::PrReview(_) => handle_pr_review_key(app, key),
         AppMode::DiffReviewPrompt(_) => handle_diff_review_key(app, key),
         AppMode::RunningHook(_) => handle_running_hook_key(app, key.code),
         AppMode::DeletingFeatureInProgress(_) => handle_deleting_feature_key(app, key.code),

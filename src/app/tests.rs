@@ -6829,3 +6829,98 @@ fn bare_uppercase_a_opens_harness_setup_from_dashboard() {
     crate::handlers::handle_normal_key(&mut app, key).unwrap();
     assert!(matches!(app.mode, AppMode::HarnessSetup(_)));
 }
+
+fn pr_review_test_app() -> App {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    )
+}
+
+fn pr_review_with_comments(n: u64) -> crate::app::pr_review::PrReview {
+    let comments: Vec<crate::github::ReviewComment> = (1..=n)
+        .map(|id| crate::github::ReviewComment {
+            id,
+            path: Some(format!("src/file{id}.rs")),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            diff_hunk: Some("@@".to_string()),
+            body: format!("comment {id}"),
+            user: crate::github::GhUser {
+                login: "alice".to_string(),
+                kind: "User".to_string(),
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    crate::app::pr_review::normalize(pr, comments, vec![], vec![], vec![])
+}
+
+fn enter_pr_review(app: &mut App, n: u64) {
+    app.mode = AppMode::PrReview(PrReviewState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        review: pr_review_with_comments(n),
+        selected: 0,
+    });
+}
+
+fn pr_review_selected(app: &App) -> usize {
+    match &app.mode {
+        AppMode::PrReview(state) => state.selected,
+        _ => panic!("not in PrReview mode"),
+    }
+}
+
+#[test]
+fn pr_review_navigation_clamps_at_both_ends() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 3);
+
+    // Already at top: prev is a no-op.
+    app.pr_review_select_prev();
+    assert_eq!(pr_review_selected(&app), 0);
+
+    app.pr_review_select_next();
+    assert_eq!(pr_review_selected(&app), 1);
+    app.pr_review_select_next();
+    assert_eq!(pr_review_selected(&app), 2);
+
+    // At the bottom: next is a no-op (no wrap).
+    app.pr_review_select_next();
+    assert_eq!(pr_review_selected(&app), 2);
+}
+
+#[test]
+fn pr_review_close_returns_to_dashboard() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.close_pr_review();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.pr_review_bg.is_none());
+}
+
+#[test]
+fn pr_review_open_without_selection_shows_message() {
+    // No projects/features selected, so opening should not enter a PR mode.
+    let mut app = pr_review_test_app();
+    app.open_pr_review();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.message.is_some());
+}

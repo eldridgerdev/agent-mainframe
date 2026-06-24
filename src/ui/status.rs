@@ -591,6 +591,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::PrReviewLoading(_) => Line::from(vec![
+            Span::raw(" Fetching PR comments...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
+        AppMode::PrReview(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("Esc/q", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::MarkdownLoading(_) => Line::from(vec![
             Span::raw(" Loading markdown...  "),
             Span::styled("Esc", key_style()),

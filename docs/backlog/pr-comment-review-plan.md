@@ -320,12 +320,18 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       `fetch_and_normalize` orchestration (Rust, unit-tested). _(Thread
       `thread_id` is attached per comment; full reply-chain collation for
       display lands with the UI.)_ → `src/app/pr_review.rs`.
-- [ ] `AppMode::PrReview` + `PrReviewLoading`; spawn fetch off the UI
-      thread; loading indicator.
-- [ ] Full-screen list+detail pane; metadata-first list, lazy body
-      hydration; hide/show-resolved toggle.
-- [ ] Dashboard entry key (auto-detect) + manual PR-number override
-      prompt.
+- [x] `AppMode::PrReview` + `PrReviewLoading`; spawn fetch off the UI
+      thread (background `std::thread` + channel, polled via
+      `poll_pr_review_bg` in the main loop); full-screen loading frame
+      with cancel. → `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/handlers/pr_review.rs`, `src/main.rs`.
+- [~] Full-screen list+detail pane: list (resolution marker, location,
+      author, snippet) + detail (header/flags, diff hunk, body) shipped
+      with `j/k` navigation. _Remaining:_ lazy body hydration,
+      hide/show-resolved toggle, scrolling. → `src/ui/dialogs/pr_review.rs`.
+- [~] Dashboard entry key: `G` auto-detects the branch's PR (runs
+      preconditions → resolve → load) and is listed in help. _Remaining:_
+      manual PR-number override prompt. → `src/handlers/normal.rs`.
 - [ ] SQLite cache keyed by `PR# + head SHA`; manual refresh key.
 - **Acceptance:** open any PR for the current branch and read every
   comment inside AMF, grouped and navigable, with zero agent tokens
@@ -381,6 +387,19 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
   auditable. Stretch: per-comment cost breakdown and a per-PR cumulative
   total persisted in SQLite, so re-opening a PR shows total spend to
   date.
+
+- **Active-PR indicator on the dashboard.** Show a marker next to a
+  feature in the dashboard list when its branch has an open PR — e.g. a
+  small badge or icon, ideally with the PR number and unresolved-comment
+  count (`PR #321 · 4`). Makes it obvious which features have a PR worth
+  reviewing (and how much is outstanding) before pressing `G`, and turns
+  the review entry point into something you're nudged toward rather than
+  having to remember. Must stay cheap: resolve PR state in the
+  background (reuse the `GhCli` layer) and cache it per `branch + head
+  SHA` so the dashboard never blocks or spams `gh`; refresh on the
+  existing status-sync cadence rather than per-frame. Stretch: dim/hide
+  the badge once all threads are resolved, and color it by review state
+  (changes-requested vs. approved vs. comments-only).
 
 ## Open questions
 

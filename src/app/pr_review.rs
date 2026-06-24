@@ -10,14 +10,15 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use regex::Regex;
 
-use crate::github::{GhCli, IssueComment, PrRef, Review, ReviewComment, ReviewThread};
+use super::*;
+use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread};
 
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
@@ -268,6 +269,133 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
     let kept: String = s.chars().take(max.saturating_sub(1)).collect();
     format!("{}…", kept.trim_end())
+}
+
+impl App {
+    /// Open the PR comment-review pane for the selected feature's branch.
+    ///
+    /// Runs the `gh` preconditions and resolves the PR synchronously (cheap),
+    /// then kicks the comment fetch onto a background thread. All of this
+    /// spends zero agent tokens.
+    pub fn open_pr_review(&mut self) {
+        let Some((_project, feature)) = self.selected_feature() else {
+            self.message = Some("Select a feature to review its PR".to_string());
+            return;
+        };
+        let workdir = feature.workdir.clone();
+
+        if let Err(e) = GhCli::check_available() {
+            self.show_error(e);
+            return;
+        }
+        if let Err(e) = GhCli::check_auth() {
+            self.show_error(e);
+            return;
+        }
+
+        match GhCli::resolve_pr(&workdir) {
+            Ok(PrResolution::Found(pr)) => self.start_pr_review_fetch(workdir, pr),
+            Ok(PrResolution::NoPrForBranch) => {
+                self.message =
+                    Some("No open PR for this branch (manual PR entry coming soon)".to_string());
+            }
+            Err(e) => self.show_error(e),
+        }
+    }
+
+    /// Spawn the off-thread comment fetch and enter the loading mode.
+    fn start_pr_review_fetch(&mut self, workdir: PathBuf, pr: PrRef) {
+        self.log_info(
+            "pr_review",
+            format!("fetching comments for PR #{}", pr.number),
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.pr_review_bg = Some(rx);
+
+        let thread_workdir = workdir.clone();
+        let thread_pr = pr.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(fetch_and_normalize(&thread_workdir, thread_pr));
+        });
+
+        self.mode = AppMode::PrReviewLoading(PrReviewLoadState { workdir, pr });
+    }
+
+    /// Whether a PR comment fetch is in flight.
+    pub fn pr_review_loading(&self) -> bool {
+        matches!(self.mode, AppMode::PrReviewLoading(_))
+    }
+
+    /// Poll the background PR fetch. On completion, transition to the review
+    /// pane (or report the error and return to the dashboard). Returns `true`
+    /// when state changed and a redraw is warranted.
+    pub fn poll_pr_review_bg(&mut self) -> bool {
+        let Some(rx) = self.pr_review_bg.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.pr_review_bg = None;
+                // If the user navigated away from the loading screen, drop it.
+                let AppMode::PrReviewLoading(state) = &self.mode else {
+                    return false;
+                };
+                let workdir = state.workdir.clone();
+                match result {
+                    Ok(review) => {
+                        self.log_info(
+                            "pr_review",
+                            format!("loaded {} comments", review.comments.len()),
+                        );
+                        self.mode = AppMode::PrReview(PrReviewState {
+                            workdir,
+                            review,
+                            selected: 0,
+                        });
+                    }
+                    Err(e) => {
+                        self.mode = AppMode::Normal;
+                        self.show_error(e);
+                    }
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pr_review_bg = None;
+                if matches!(self.mode, AppMode::PrReviewLoading(_)) {
+                    self.mode = AppMode::Normal;
+                    self.message = Some("PR fetch failed unexpectedly".to_string());
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// Close the review pane / cancel a pending load and return to the dashboard.
+    pub fn close_pr_review(&mut self) {
+        self.pr_review_bg = None;
+        self.mode = AppMode::Normal;
+    }
+
+    pub fn pr_review_select_next(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            let len = state.review.comments.len();
+            if len > 0 && state.selected + 1 < len {
+                state.selected += 1;
+            }
+        }
+    }
+
+    pub fn pr_review_select_prev(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && state.selected > 0
+        {
+            state.selected -= 1;
+        }
+    }
 }
 
 #[cfg(test)]

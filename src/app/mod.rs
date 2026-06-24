@@ -15,7 +15,7 @@ mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
-mod pr_review;
+pub(crate) mod pr_review;
 mod project_ops;
 mod prompt_library;
 pub mod remote_control;
@@ -559,6 +559,8 @@ pub struct App {
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
+    /// Receiver for the background PR-comment fetch (see `app::pr_review`).
+    pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1853,6 +1855,7 @@ impl App {
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            pr_review_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2033,6 +2036,7 @@ impl App {
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            pr_review_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

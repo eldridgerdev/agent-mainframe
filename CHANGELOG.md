@@ -24,6 +24,15 @@ are tagged.
   finishing a review with feedback auto-submits the "address the feedback"
   prompt to the feature's agent. Set it to `false` to paste the prompt without
   sending Enter, so you can eyeball or edit it before submitting.
+- **Line-level comments in the final review.** Press `c` in the patch to turn
+  on a per-line cursor, move it with `j`/`k` (`g`/`G` jump to the first/last
+  changed line), then `Enter` to attach a comment to that exact line — the
+  cursored row and any commented lines are marked in the gutter (`▶`/`●`).
+  Comments are written into `.claude/final-review-feedback.md` under a
+  `## Line Comments` section anchored as `### <file>:<line>`, so the agent gets
+  precise, location-specific feedback that whole-file rejection can't express.
+  `Esc` exits the cursor; `q` still finishes the review. (Inline markers are
+  shown in the unified diff layout.)
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

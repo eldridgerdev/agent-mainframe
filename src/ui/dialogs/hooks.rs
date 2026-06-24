@@ -112,6 +112,7 @@ pub fn draw_diff_review_dialog(
                 scroll: state.patch_scroll,
                 include_prologue: new_file_presentation,
                 new_file_presentation,
+                ..Default::default()
             },
             theme,
         );

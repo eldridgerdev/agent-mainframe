@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState},
-    diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind},
+    diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind, DiffLineLocation},
     editor::VimMode,
     highlight,
     theme::Theme,
@@ -56,7 +56,9 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
 
     // The review footer grows to host the multi-line feedback editor while it
     // is open; otherwise it is a two-row key hint.
-    let footer_height = if state.review && (state.feedback_editing || state.editing_general) {
+    let footer_height = if state.review
+        && (state.feedback_editing || state.editing_general || state.editing_line_comment)
+    {
         inner.height.saturating_sub(10).clamp(4, 12)
     } else {
         2
@@ -450,14 +452,50 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-fn draw_patch(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let border = if state.focus == DiffViewerFocus::Patch {
         theme.warning.to_color()
     } else {
         theme.primary.to_color()
     };
-    let file = state.files.get(state.selected_file);
     let effective_layout = effective_layout(state);
+    let (cursor_loc, commented) = review_cursor_info(state);
+
+    // Keep the comment cursor visible by nudging the patch scroll. Unified only:
+    // it's the layout with a per-line cursor and a stable row index.
+    if state.cursor_sync_to_view
+        && matches!(effective_layout, DiffViewerLayout::Unified)
+        && cursor_loc.is_some()
+    {
+        let viewport = area.height.saturating_sub(2) as usize;
+        let synced = state.files.get(state.selected_file).map(|file| {
+            let width = area.width.saturating_sub(2);
+            let mut cursor_row = None;
+            let lines = patch_lines(
+                file,
+                width,
+                theme,
+                true,
+                is_new_diff_file(file),
+                cursor_loc,
+                &commented,
+                &mut cursor_row,
+            );
+            (lines.len(), cursor_row)
+        });
+        if let Some((total_lines, Some(row))) = synced {
+            if row < state.patch_scroll {
+                state.patch_scroll = row;
+            } else if viewport > 0 && row >= state.patch_scroll + viewport {
+                state.patch_scroll = row + 1 - viewport;
+            }
+            let max = total_lines.saturating_sub(viewport.max(1));
+            state.patch_scroll = state.patch_scroll.min(max);
+        }
+        state.cursor_sync_to_view = false;
+    }
+
+    let file = state.files.get(state.selected_file);
     let title = file
         .map(|file| {
             if is_new_diff_file(file) {
@@ -479,9 +517,35 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Th
             scroll: state.patch_scroll,
             include_prologue: true,
             new_file_presentation: file.map(is_new_diff_file).unwrap_or(false),
+            cursor: cursor_loc,
+            commented,
         },
         theme,
     );
+}
+
+/// Resolve the cursored diff-line location and the set of commented locations
+/// for the file currently shown in a review viewer. Both empty outside review
+/// mode or when no cursor is active.
+fn review_cursor_info(
+    state: &DiffViewerState,
+) -> (Option<DiffLineLocation>, std::collections::HashSet<DiffLineLocation>) {
+    use std::collections::HashSet;
+    if !state.review {
+        return (None, HashSet::new());
+    }
+    let Some(file) = state.files.get(state.selected_file) else {
+        return (None, HashSet::new());
+    };
+    let cursor = state
+        .comment_cursor
+        .and_then(|idx| file.addressable_lines().get(idx).copied());
+    let commented = state
+        .line_comments
+        .get(&file.path)
+        .map(|comments| comments.iter().map(|c| c.location).collect())
+        .unwrap_or_default();
+    (cursor, commented)
 }
 
 pub(crate) struct PatchPanelOptions {
@@ -491,6 +555,25 @@ pub(crate) struct PatchPanelOptions {
     pub scroll: usize,
     pub include_prologue: bool,
     pub new_file_presentation: bool,
+    /// Review line cursor location (unified view only); highlighted when set.
+    pub cursor: Option<DiffLineLocation>,
+    /// Diff-line locations that carry a review comment (unified view only).
+    pub commented: std::collections::HashSet<DiffLineLocation>,
+}
+
+impl Default for PatchPanelOptions {
+    fn default() -> Self {
+        Self {
+            layout: DiffViewerLayout::Unified,
+            title: String::new(),
+            border_color: Color::Reset,
+            scroll: 0,
+            include_prologue: true,
+            new_file_presentation: false,
+            cursor: None,
+            commented: std::collections::HashSet::new(),
+        }
+    }
 }
 
 pub(crate) fn draw_patch_panel(
@@ -531,12 +614,16 @@ pub(crate) fn draw_patch_panel(
             frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
         }
         Some(file) => {
+            let mut cursor_row = None;
             let lines = patch_lines(
                 file,
                 area.width.saturating_sub(2),
                 theme,
                 options.include_prologue,
                 options.new_file_presentation,
+                options.cursor,
+                &options.commented,
+                &mut cursor_row,
             );
             frame.render_widget(
                 Paragraph::new(lines)
@@ -589,8 +676,59 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
 fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
 
-    if state.feedback_editing || state.editing_general {
+    if state.feedback_editing || state.editing_general || state.editing_line_comment {
         draw_feedback_editor(frame, area, state, theme);
+        return;
+    }
+
+    // While the line cursor is active, show its dedicated key hints instead of
+    // the standard scroll/verdict row.
+    if let Some(cursor) = state.comment_cursor {
+        let comment_count = state
+            .files
+            .get(state.selected_file)
+            .map(|file| {
+                state
+                    .line_comments
+                    .get(&file.path)
+                    .map(|c| c.len())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        let first = Line::from(vec![
+            Span::styled(
+                format!(" line cursor @ {} ", cursor + 1),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({comment_count} comment(s) on this file)  "),
+                Style::default().fg(theme.info.to_color()),
+            ),
+        ]);
+        let second = Line::from(vec![
+            key(" j"),
+            Span::raw("/"),
+            key("k"),
+            Span::raw(" move  "),
+            key("Enter"),
+            Span::raw(" comment  "),
+            key("n"),
+            Span::raw("/"),
+            key("p"),
+            Span::raw(" file  "),
+            key("c"),
+            Span::raw("/"),
+            key("Esc"),
+            Span::raw(" exit cursor  "),
+            key("q"),
+            Span::raw(" finish"),
+        ]);
+        frame.render_widget(
+            Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     }
 
@@ -640,7 +778,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("s"),
         Span::raw(" skip  "),
         key("f"),
-        Span::raw(" general feedback"),
+        Span::raw(" general feedback  "),
+        key("c"),
+        Span::raw(" line comments"),
     ];
     if !state.general_feedback.trim().is_empty() {
         first_line.push(Span::styled(
@@ -686,6 +826,26 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         (
             format!(" General Feedback{mode_label} "),
             theme.info.to_color(),
+        )
+    } else if state.editing_line_comment {
+        let anchor = state
+            .comment_cursor
+            .and_then(|idx| {
+                state
+                    .files
+                    .get(state.selected_file)
+                    .and_then(|file| file.addressable_lines().get(idx).copied().map(|loc| {
+                        match (loc.new_line, loc.old_line) {
+                            (Some(new_line), _) => format!("{}:{new_line}", file.path),
+                            (None, Some(old_line)) => format!("{}:{old_line} (base)", file.path),
+                            (None, None) => file.path.clone(),
+                        }
+                    }))
+            })
+            .unwrap_or_else(|| "line".to_string());
+        (
+            format!(" Line Comment — {anchor}{mode_label} "),
+            theme.warning.to_color(),
         )
     } else {
         (
@@ -834,12 +994,16 @@ fn diff_footer_lines(
     vec![Line::from(primary), Line::from(secondary)]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn patch_lines(
     file: &DiffFile,
     width: u16,
     theme: &Theme,
     include_prologue: bool,
     new_file_presentation: bool,
+    cursor: Option<DiffLineLocation>,
+    commented: &std::collections::HashSet<DiffLineLocation>,
+    cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
     if file.is_binary || file.hunks.is_empty() || content_width < 16 {
@@ -864,6 +1028,11 @@ fn patch_lines(
         hunk_header_style(theme)
     };
 
+    let annotation = |loc: DiffLineLocation| GutterAnnotation {
+        cursor: cursor == Some(loc),
+        has_comment: commented.contains(&loc),
+    };
+
     let mut lines = Vec::new();
     if include_prologue {
         for meta in patch_prologue(file) {
@@ -874,6 +1043,8 @@ fn patch_lines(
                 meta_style(meta, theme),
                 number_width,
                 text_width,
+                GutterAnnotation::default(),
+                theme,
             ));
         }
     }
@@ -889,6 +1060,8 @@ fn patch_lines(
             hunk_style,
             number_width,
             text_width,
+            GutterAnnotation::default(),
+            theme,
         ));
 
         let mut old_line = hunk.old_start;
@@ -896,6 +1069,14 @@ fn patch_lines(
         for diff_line in &hunk.lines {
             match diff_line.kind {
                 DiffLineKind::Context => {
+                    let loc = DiffLineLocation {
+                        old_line: Some(old_line),
+                        new_line: Some(new_line),
+                    };
+                    let ann = annotation(loc);
+                    if ann.cursor {
+                        *cursor_row = Some(lines.len());
+                    }
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         Some(new_line),
@@ -909,11 +1090,21 @@ fn patch_lines(
                         context_row_style(theme),
                         number_width,
                         text_width,
+                        ann,
+                        theme,
                     ));
                     old_line += 1;
                     new_line += 1;
                 }
                 DiffLineKind::Removed => {
+                    let loc = DiffLineLocation {
+                        old_line: Some(old_line),
+                        new_line: None,
+                    };
+                    let ann = annotation(loc);
+                    if ann.cursor {
+                        *cursor_row = Some(lines.len());
+                    }
                     lines.extend(wrap_gutter_line(
                         Some(old_line),
                         None,
@@ -926,10 +1117,20 @@ fn patch_lines(
                         removed_row_style(theme),
                         number_width,
                         text_width,
+                        ann,
+                        theme,
                     ));
                     old_line += 1;
                 }
                 DiffLineKind::Added => {
+                    let loc = DiffLineLocation {
+                        old_line: None,
+                        new_line: Some(new_line),
+                    };
+                    let ann = annotation(loc);
+                    if ann.cursor {
+                        *cursor_row = Some(lines.len());
+                    }
                     lines.extend(wrap_gutter_line(
                         None,
                         Some(new_line),
@@ -942,6 +1143,8 @@ fn patch_lines(
                         added_style,
                         number_width,
                         text_width,
+                        ann,
+                        theme,
                     ));
                     new_line += 1;
                 }
@@ -953,6 +1156,8 @@ fn patch_lines(
                         meta_subtle_style(theme),
                         number_width,
                         text_width,
+                        GutterAnnotation::default(),
+                        theme,
                     ));
                 }
             }
@@ -969,7 +1174,16 @@ fn side_by_side_lines(
     include_prologue: bool,
 ) -> Vec<Line<'static>> {
     if file.is_binary || file.hunks.is_empty() || width < 24 {
-        return patch_lines(file, width, theme, include_prologue, false);
+        return patch_lines(
+            file,
+            width,
+            theme,
+            include_prologue,
+            false,
+            None,
+            &std::collections::HashSet::new(),
+            &mut None,
+        );
     }
 
     let inner_width = width as usize;
@@ -978,7 +1192,16 @@ fn side_by_side_lines(
     let number_width = line_number_width(file);
     let cell_prefix_width = number_width + 2;
     if column_width <= cell_prefix_width + 6 {
-        return patch_lines(file, width, theme, include_prologue, false);
+        return patch_lines(
+            file,
+            width,
+            theme,
+            include_prologue,
+            false,
+            None,
+            &std::collections::HashSet::new(),
+            &mut None,
+        );
     }
     let cell_text_width = column_width - cell_prefix_width;
     let highlights = file_highlights(file);
@@ -1338,6 +1561,16 @@ fn raw_patch_wrapped_lines(file: &DiffFile, width: usize, theme: &Theme) -> Vec<
     lines
 }
 
+/// Per-row marker state for the review line cursor. `cursor` is the line the
+/// reviewer is positioned on; `has_comment` is a line that already carries a
+/// comment. Default (both false) renders the ordinary `│ ` gutter.
+#[derive(Clone, Copy, Default)]
+struct GutterAnnotation {
+    cursor: bool,
+    has_comment: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn wrap_gutter_line(
     old_number: Option<usize>,
     new_number: Option<usize>,
@@ -1345,10 +1578,30 @@ fn wrap_gutter_line(
     style: Style,
     number_width: usize,
     text_width: usize,
+    annotation: GutterAnnotation,
+    theme: &Theme,
 ) -> Vec<Line<'static>> {
     let wrapped = wrap_chunks(&chunks, text_width, style);
     let mut lines = Vec::with_capacity(wrapped.len());
     let row_bg = style.bg.unwrap_or(Color::Black);
+    // The cursor row gets a selection-tinted gutter and a high-contrast number
+    // colour so it reads clearly against any diff-row background.
+    let gutter_bg = if annotation.cursor {
+        theme.selection.to_color()
+    } else {
+        row_bg
+    };
+    let number_fg = if annotation.cursor {
+        theme.text.to_color()
+    } else {
+        line_number_fg(style, row_bg)
+    };
+    let (marker, marker_fg) = match (annotation.cursor, annotation.has_comment) {
+        (true, true) => ("◆ ", theme.warning.to_color()),
+        (true, false) => ("▶ ", theme.warning.to_color()),
+        (false, true) => ("● ", theme.info.to_color()),
+        (false, false) => ("│ ", line_number_fg(style, row_bg)),
+    };
     for (index, chunk_line) in wrapped.into_iter().enumerate() {
         let old_label = if index == 0 {
             line_number_label(old_number, number_width)
@@ -1360,29 +1613,30 @@ fn wrap_gutter_line(
         } else {
             blank_line_number_label(number_width)
         };
+        // The marker glyph only shows on the first visual line of a logical
+        // row; continuation lines keep the plain separator (tinted on cursor).
+        let (sep_text, sep_fg) = if index == 0 {
+            (marker, marker_fg)
+        } else {
+            ("│ ", number_fg)
+        };
         let mut line = vec![
-            Span::styled(
-                old_label,
-                Style::default()
-                    .fg(line_number_fg(style, row_bg))
-                    .bg(row_bg),
-            ),
-            Span::styled(" ", Style::default().bg(row_bg)),
-            Span::styled(
-                new_label,
-                Style::default()
-                    .fg(line_number_fg(style, row_bg))
-                    .bg(row_bg),
-            ),
-            Span::styled(" ", Style::default().bg(row_bg)),
-            Span::styled(
-                "│ ",
-                Style::default()
-                    .fg(line_number_fg(style, row_bg))
-                    .bg(row_bg),
-            ),
+            Span::styled(old_label, Style::default().fg(number_fg).bg(gutter_bg)),
+            Span::styled(" ", Style::default().bg(gutter_bg)),
+            Span::styled(new_label, Style::default().fg(number_fg).bg(gutter_bg)),
+            Span::styled(" ", Style::default().bg(gutter_bg)),
+            Span::styled(sep_text.to_string(), Style::default().fg(sep_fg).bg(gutter_bg)),
         ];
-        line.extend(chunks_to_spans(chunk_line));
+        if annotation.cursor {
+            // Bold the content of the cursor row for extra emphasis without
+            // disturbing syntax-highlight colours.
+            line.extend(chunks_to_spans(chunk_line).into_iter().map(|span| {
+                let style = span.style.add_modifier(Modifier::BOLD);
+                Span::styled(span.content, style)
+            }));
+        } else {
+            line.extend(chunks_to_spans(chunk_line));
+        }
         lines.push(Line::from(line));
     }
     lines
@@ -1955,7 +2209,16 @@ index 0000000..1111111
             }],
         };
 
-        let lines = patch_lines(&file, 100, &theme, false, true);
+        let lines = patch_lines(
+            &file,
+            100,
+            &theme,
+            false,
+            true,
+            None,
+            &std::collections::HashSet::new(),
+            &mut None,
+        );
         let indented_code_line = &lines[2];
         let default_added_fg = new_file_added_row_style(&theme).fg;
         let has_syntax_colored_token = indented_code_line.spans.iter().any(|span| {
@@ -2017,7 +2280,16 @@ index 0000000..1111111
             }],
         };
 
-        let lines = patch_lines(&file, 120, &theme, false, true);
+        let lines = patch_lines(
+            &file,
+            120,
+            &theme,
+            false,
+            true,
+            None,
+            &std::collections::HashSet::new(),
+            &mut None,
+        );
         let has_syntax_colored_token =
             lines.iter().flat_map(|line| line.spans.iter()).any(|span| {
                 !span.content.trim().is_empty()

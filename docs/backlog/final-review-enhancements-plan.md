@@ -90,7 +90,8 @@ any order.
 - [x] Paste-vs-submit toggle for the agent prompt
 - [x] Notes scroll-to-bottom precision (wrapped height)
 - [x] Multi-line feedback editor (reuse `TextEditor`)
-- [ ] Line / hunk-level comments
+- [x] Line / hunk-level comments (unified view; side-by-side
+      navigates + stores comments but has no inline marker yet)
 - [ ] On-demand walkthrough for noteless files
 - [x] Render Developer Notes as markdown
 - [ ] Finish gating + jump-to-next-undecided

@@ -83,6 +83,51 @@ impl PrComment {
             self.body.clone()
         }
     }
+
+    /// Assemble the minimal "fix" prompt for this comment: a single instruction
+    /// line, the `file:line` pointer, the (bot-stripped) comment text, and the
+    /// GitHub-provided diff hunk.
+    ///
+    /// Deliberately carries **no file contents** — the agent already has the
+    /// repo checked out and opens what it needs. This minimal context is the
+    /// single biggest token lever (plan token principle #3). The `diff_hunk` is
+    /// free: GitHub returns it per inline comment, so including it costs no
+    /// extra fetch.
+    pub fn fix_prompt(&self) -> String {
+        let mut out = String::from("Address this PR review comment.\n");
+
+        if let Some(path) = &self.path {
+            match self.line {
+                Some(line) => out.push_str(&format!("File: {path}:{line}")),
+                None => out.push_str(&format!("File: {path}")),
+            }
+            if self.outdated {
+                out.push_str("  (comment is on a line that has since changed)");
+            }
+            out.push('\n');
+        }
+
+        out.push_str(&format!(
+            "Comment (@{}): {}\n",
+            self.author,
+            self.agent_text().trim()
+        ));
+
+        if let Some(hunk) = &self.diff_hunk {
+            out.push_str("Diff hunk:\n");
+            out.push_str(hunk.trim_end());
+            out.push('\n');
+        }
+
+        out.trim_end().to_string()
+    }
+}
+
+/// Rough token estimate for a prompt preview (~4 chars/token, the usual
+/// English-text heuristic). Approximate by design — it backs the "~N tokens"
+/// hint in the fix-confirmation dialog, not a billing figure.
+pub fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
 }
 
 /// A fully normalized PR review: the resolved PR plus every triageable comment.
@@ -700,6 +745,73 @@ mod tests {
                 state: "CHANGES_REQUESTED".into()
             }
         );
+    }
+
+    fn inline_comment(body: &str, is_bot: bool) -> PrComment {
+        PrComment {
+            id: 1,
+            kind: CommentKind::Inline,
+            author: "alice".into(),
+            is_bot,
+            path: Some("src/app/sync.rs".into()),
+            line: Some(42),
+            outdated: false,
+            diff_hunk: Some("@@ -38,4 +38,5 @@\n  poll = 250;\n+ self.sync();".into()),
+            body: body.into(),
+            snippet: String::new(),
+            in_reply_to: None,
+            thread_id: None,
+            is_resolved: false,
+            triage: TriageState::Untriaged,
+            local_note: None,
+        }
+    }
+
+    #[test]
+    fn fix_prompt_includes_file_line_comment_and_hunk() {
+        let c = inline_comment("Guard this behind the lock.", false);
+        let prompt = c.fix_prompt();
+        assert!(prompt.starts_with("Address this PR review comment."));
+        assert!(prompt.contains("File: src/app/sync.rs:42"));
+        assert!(prompt.contains("Comment (@alice): Guard this behind the lock."));
+        assert!(prompt.contains("Diff hunk:"));
+        assert!(prompt.contains("+ self.sync();"));
+        // No file contents are ever injected — only the comment + hunk.
+        assert!(!prompt.contains("fn "));
+    }
+
+    #[test]
+    fn fix_prompt_strips_bot_boilerplate() {
+        let c = inline_comment("<details>noise</details>Real point.", true);
+        let prompt = c.fix_prompt();
+        assert!(prompt.contains("Comment (@alice): Real point."));
+        assert!(!prompt.contains("<details>"));
+    }
+
+    #[test]
+    fn fix_prompt_marks_outdated_and_omits_missing_pieces() {
+        let mut c = inline_comment("Still relevant?", false);
+        c.outdated = true;
+        c.diff_hunk = None;
+        let prompt = c.fix_prompt();
+        assert!(prompt.contains("(comment is on a line that has since changed)"));
+        assert!(!prompt.contains("Diff hunk:"));
+
+        // Conversation/summary comments have no path: no File line at all.
+        c.path = None;
+        c.line = None;
+        c.outdated = false;
+        let prompt = c.fix_prompt();
+        assert!(!prompt.contains("File:"));
+        assert!(prompt.contains("Comment (@alice): Still relevant?"));
+    }
+
+    #[test]
+    fn estimate_tokens_rounds_up() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abc"), 1);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
     }
 
     #[test]

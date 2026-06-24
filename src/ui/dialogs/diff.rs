@@ -3,7 +3,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use std::path::Path;
 use unicode_width::UnicodeWidthStr;
@@ -11,6 +14,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{
     app::{DiffViewerFocus, DiffViewerLayout, DiffViewerState},
     diff::{DiffFile, DiffFileStatus, DiffLine, DiffLineKind},
+    editor::VimMode,
     highlight,
     theme::Theme,
 };
@@ -28,7 +32,7 @@ struct FileHighlights {
     new: Option<highlight::HighlightedText>,
 }
 
-pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
     let area = centered_rect(96, 90, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -50,9 +54,10 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &DiffViewerState, theme: &Them
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // The review footer needs an extra row for the feedback editor.
+    // The review footer grows to host the multi-line feedback editor while it
+    // is open; otherwise it is a two-row key hint.
     let footer_height = if state.review && (state.feedback_editing || state.editing_general) {
-        3
+        inner.height.saturating_sub(10).clamp(4, 12)
     } else {
         2
     };
@@ -337,10 +342,14 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &DiffViewerState, them
     frame.render_widget(block, area);
 
     let paragraph = match note {
-        Some(text) => Paragraph::new(text.as_str())
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(theme.text.to_color()))
-            .scroll((state.notes_scroll as u16, 0)),
+        // Render the developer note as markdown so headings, lists, and code
+        // blocks read properly. `render_markdown` pre-wraps to the panel width,
+        // so the scroll offset maps to rendered visual lines.
+        Some(text) => {
+            let rendered =
+                crate::markdown::render_markdown(text, theme, inner.width.max(1) as usize, None);
+            Paragraph::new(rendered.lines).scroll((state.notes_scroll as u16, 0))
+        }
         None => Paragraph::new(
             "No developer note for this file.\n\nReview mode records per-file reasoning in \
              .claude/review-notes.md as changes are made.",
@@ -530,7 +539,7 @@ pub(crate) fn draw_patch_panel(
     }
 }
 
-fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     if state.review {
         draw_review_footer(frame, area, state, theme);
         return;
@@ -563,38 +572,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
     frame.render_widget(footer, area);
 }
 
-fn draw_review_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
+fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
 
     if state.feedback_editing || state.editing_general {
-        let (label, label_color, submit_hint) = if state.editing_general {
-            (
-                " General feedback: ",
-                theme.info.to_color(),
-                " save general feedback  ",
-            )
-        } else {
-            (" Feedback: ", theme.danger.to_color(), " submit rejection  ")
-        };
-        let lines = vec![
-            Line::from(vec![
-                Span::styled(
-                    label,
-                    Style::default().fg(label_color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}\u{2588}", state.feedback_input),
-                    Style::default().fg(theme.text.to_color()),
-                ),
-            ]),
-            Line::from(vec![
-                key(" Enter"),
-                Span::raw(submit_hint),
-                key("Esc"),
-                Span::raw(" cancel"),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+        draw_feedback_editor(frame, area, state, theme);
         return;
     }
 
@@ -672,6 +654,101 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &DiffViewerState, th
 
     let lines = vec![Line::from(first_line), Line::from(second_line)];
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Render the multi-line feedback editor (per-file rejection or general
+/// feedback) into the review footer: a titled box with the editor text and a
+/// key hint, mirroring the steering-prompt dialog.
+fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+
+    let vim = state.feedback_editor.vim_mode();
+    let mode_label = match vim {
+        Some(VimMode::Insert) => " [Vim Insert]",
+        Some(VimMode::Normal) => " [Vim Normal]",
+        None => "",
+    };
+    let (title, border_color) = if state.editing_general {
+        (
+            format!(" General Feedback{mode_label} "),
+            theme.info.to_color(),
+        )
+    } else {
+        (
+            format!(" Rejection Feedback{mode_label} "),
+            theme.danger.to_color(),
+        )
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let editor_inner = block.inner(rows[0]);
+    frame.render_widget(block, rows[0]);
+
+    let editor_lines = super::editor_view::editor_lines(
+        &state.feedback_editor,
+        theme,
+        "Write feedback for the agent. Markdown is fine.",
+    );
+    let visible_lines = editor_inner.height as usize;
+    let mut wrap_width = editor_inner.width as usize;
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&editor_lines, wrap_width);
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines =
+            super::editor_view::count_wrapped_editor_lines(&editor_lines, wrap_width);
+    }
+    super::editor_view::sync_editor_scroll(
+        &state.feedback_editor,
+        &mut state.feedback_scroll,
+        &mut state.feedback_sync_to_cursor,
+        visible_lines,
+        wrap_width,
+        total_visual_lines,
+    );
+
+    let paragraph = Paragraph::new(editor_lines)
+        .wrap(Wrap { trim: false })
+        .scroll((state.feedback_scroll.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(paragraph, editor_inner);
+
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(state.feedback_scroll)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, rows[0], &mut scrollbar_state);
+    }
+
+    let cancel_hint = if vim.is_some() {
+        key("Ctrl+Q")
+    } else {
+        key("Esc")
+    };
+    let hint = Line::from(vec![
+        key(" Tab"),
+        Span::raw(" submit  "),
+        cancel_hint,
+        Span::raw(" cancel  "),
+        key("Enter"),
+        Span::raw(" newline  "),
+        key("Ctrl+V"),
+        Span::raw(if vim.is_some() { " vim off  " } else { " vim on  " }),
+        key("Ctrl+J/K"),
+        Span::raw(" scroll"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
 }
 
 fn diff_footer_lines(

@@ -89,10 +89,10 @@ any order.
 
 - [ ] Paste-vs-submit toggle for the agent prompt
 - [ ] Notes scroll-to-bottom precision (wrapped height)
-- [ ] Multi-line feedback editor (reuse `TextEditor`)
+- [x] Multi-line feedback editor (reuse `TextEditor`)
 - [ ] Line / hunk-level comments
 - [ ] On-demand walkthrough for noteless files
-- [ ] Render Developer Notes as markdown
+- [x] Render Developer Notes as markdown
 - [ ] Finish gating + jump-to-next-undecided
 - [ ] Persist / resume review state
 - [ ] Choose base ref

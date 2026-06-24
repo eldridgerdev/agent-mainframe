@@ -10,6 +10,16 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Final review reads like a real code review.** Developer notes beside each
+  diff now render as Markdown, so headings, lists, and code blocks in your
+  `.claude/review-notes.md` show up formatted instead of as raw text.
+- **Multi-paragraph review feedback.** The rejection and general-feedback
+  editors in the final review are now full multi-line editors: press `Enter`
+  for a new line and write proper paragraphs or lists, then `Tab` to submit.
+  `Ctrl+V` toggles vim keybindings and `Esc` (or `Ctrl+Q`) cancels.
+
 ### Changed
 
 - The AMF prompt composer now works in Codex, OpenCode, and Pi sessions with

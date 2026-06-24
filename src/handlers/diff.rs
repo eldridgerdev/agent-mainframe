@@ -1,12 +1,14 @@
 use anyhow::Result;
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{App, AppMode, DiffViewerFocus};
 
 const PATCH_SCROLL_STEP: usize = 1;
 const PATCH_PAGE_STEP: usize = 20;
+const FEEDBACK_PAGE_STEP: usize = 10;
 
-pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
+pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let code = key.code;
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
     let editing_general =
         matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
@@ -15,18 +17,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
         AppMode::DiffViewer(state) if state.feedback_editing || state.editing_general
     );
 
-    // While typing feedback (per-file rejection or general), every key is text
-    // input. Enter routes to whichever editor is open.
+    // While typing feedback (per-file rejection or general) the keys drive a
+    // multi-line `TextEditor`; Enter inserts a newline, so Tab submits.
     if editing_feedback {
-        match key {
-            KeyCode::Esc => app.diff_review_cancel_feedback(),
-            KeyCode::Enter if editing_general => app.diff_review_submit_general_feedback(),
-            KeyCode::Enter => app.diff_review_submit_feedback(),
-            KeyCode::Backspace => app.diff_review_pop_feedback_char(),
-            KeyCode::Char(c) => app.diff_review_push_feedback_char(c),
-            _ => {}
-        }
-        return Ok(());
+        return handle_feedback_editor_key(app, key, editing_general);
     }
 
     // Review verdict / completion keys take precedence over the read-only
@@ -39,7 +33,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
         // With the notes panel expanded, navigation scrolls the note rather
         // than the diff.
         if notes_expanded {
-            match key {
+            match code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     app.review_notes_scroll_down(PATCH_SCROLL_STEP);
                     return Ok(());
@@ -68,7 +62,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
             }
         }
 
-        match key {
+        match code {
             KeyCode::Char('e') => {
                 app.toggle_review_notes_expanded();
                 return Ok(());
@@ -105,7 +99,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
         }
     }
 
-    match key {
+    match code {
         KeyCode::Esc | KeyCode::Char('q') => {
             app.close_diff_viewer();
         }
@@ -177,6 +171,77 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
+/// Drive the multi-line feedback editor (per-file rejection or general
+/// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
+/// Ctrl+V toggles vim, and Ctrl+J/K plus PgUp/PgDn scroll the editor.
+fn handle_feedback_editor_key(
+    app: &mut App,
+    key: KeyEvent,
+    editing_general: bool,
+) -> Result<()> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if ctrl && key.code == KeyCode::Char('q') {
+        app.diff_review_cancel_feedback();
+        return Ok(());
+    }
+    if ctrl && key.code == KeyCode::Char('v') {
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor.toggle_vim();
+        }
+        return Ok(());
+    }
+
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        match key.code {
+            KeyCode::Char('j') if ctrl => {
+                state.feedback_scroll += 1;
+                state.feedback_sync_to_cursor = false;
+                return Ok(());
+            }
+            KeyCode::Char('k') if ctrl => {
+                state.feedback_scroll = state.feedback_scroll.saturating_sub(1);
+                state.feedback_sync_to_cursor = false;
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                state.feedback_scroll += FEEDBACK_PAGE_STEP;
+                state.feedback_sync_to_cursor = false;
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                state.feedback_scroll = state.feedback_scroll.saturating_sub(FEEDBACK_PAGE_STEP);
+                state.feedback_sync_to_cursor = false;
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    match key.code {
+        KeyCode::Tab if editing_general => app.diff_review_submit_general_feedback(),
+        KeyCode::Tab => app.diff_review_submit_feedback(),
+        KeyCode::Esc
+            if matches!(
+                &app.mode,
+                AppMode::DiffViewer(state) if state.feedback_editor.vim_mode().is_none()
+            ) =>
+        {
+            app.diff_review_cancel_feedback();
+        }
+        _ => {
+            if let AppMode::DiffViewer(state) = &mut app.mode {
+                let outcome = state.feedback_editor.handle_key(key);
+                if outcome.text_changed || outcome.cursor_moved {
+                    state.feedback_sync_to_cursor = true;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +251,10 @@ mod tests {
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
 
     fn make_review_app(workdir: &Path, paths: &[&str]) -> App {
         let mut app = crate::app::App::new_for_test(
@@ -238,9 +307,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
 
-        handle_diff_viewer_key(&mut app, KeyCode::Char('a')).unwrap(); // approve a.rs -> b.rs
-        handle_diff_viewer_key(&mut app, KeyCode::Char('a')).unwrap(); // approve b.rs
-        handle_diff_viewer_key(&mut app, KeyCode::Char('q')).unwrap(); // finish
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a.rs -> b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
 
         assert!(matches!(app.mode, AppMode::Viewing(_)));
         assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
@@ -252,13 +321,13 @@ mod tests {
         let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
 
         // Reject a.rs with feedback "fix it".
-        handle_diff_viewer_key(&mut app, KeyCode::Char('r')).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
         for c in "fix it".chars() {
-            handle_diff_viewer_key(&mut app, KeyCode::Char(c)).unwrap();
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
-        handle_diff_viewer_key(&mut app, KeyCode::Enter).unwrap(); // submit -> advance to b.rs
-        handle_diff_viewer_key(&mut app, KeyCode::Char('a')).unwrap(); // approve b.rs
-        handle_diff_viewer_key(&mut app, KeyCode::Char('q')).unwrap(); // finish
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // submit -> advance to b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve b.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
 
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
@@ -270,16 +339,52 @@ mod tests {
     }
 
     #[test]
+    fn feedback_editor_accepts_multiline_input_and_tab_submits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        // Reject a.rs with a two-line note: Enter inserts a newline (not submit),
+        // Tab submits.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "first".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for c in "second".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        // Still editing after Enter (newline, not submit).
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(state) if state.feedback_editing
+        ));
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.feedback_editing);
+                match state.decisions.get("a.rs") {
+                    Some(crate::app::ReviewDecision::Reject { feedback }) => {
+                        assert_eq!(feedback, "first\nsecond");
+                    }
+                    other => panic!("expected rejection with feedback, got {other:?}"),
+                }
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
     fn general_feedback_is_written_even_when_all_approved() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
 
         // f opens the general-feedback editor; type, submit, approve, finish.
-        handle_diff_viewer_key(&mut app, KeyCode::Char('f')).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('f'))).unwrap();
         for c in "tighten error handling".chars() {
-            handle_diff_viewer_key(&mut app, KeyCode::Char(c)).unwrap();
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
-        handle_diff_viewer_key(&mut app, KeyCode::Enter).unwrap(); // save general note
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // save general note
         match &app.mode {
             AppMode::DiffViewer(state) => {
                 assert!(!state.editing_general);
@@ -288,8 +393,8 @@ mod tests {
             }
             _ => panic!("expected diff viewer"),
         }
-        handle_diff_viewer_key(&mut app, KeyCode::Char('a')).unwrap(); // approve a.rs
-        handle_diff_viewer_key(&mut app, KeyCode::Char('q')).unwrap(); // finish
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a.rs
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
 
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
@@ -384,12 +489,12 @@ mod tests {
         app.mode = AppMode::DiffViewer(state);
 
         // Reject the file with feedback, then finish.
-        handle_diff_viewer_key(&mut app, KeyCode::Char('r')).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
         for c in "fix".chars() {
-            handle_diff_viewer_key(&mut app, KeyCode::Char(c)).unwrap();
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
         }
-        handle_diff_viewer_key(&mut app, KeyCode::Enter).unwrap();
-        handle_diff_viewer_key(&mut app, KeyCode::Char('q')).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
 
         assert!(dir.path().join(".claude/final-review-feedback.md").exists());
         assert!(matches!(app.mode, AppMode::Viewing(_)));
@@ -401,9 +506,9 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
 
-        handle_diff_viewer_key(&mut app, KeyCode::Char('r')).unwrap();
-        handle_diff_viewer_key(&mut app, KeyCode::Char('x')).unwrap();
-        handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap(); // cancel feedback editor
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('x'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap(); // cancel feedback editor
 
         match &app.mode {
             AppMode::DiffViewer(state) => {
@@ -456,7 +561,7 @@ mod tests {
         }];
         app.mode = AppMode::DiffViewer(state);
 
-        handle_diff_viewer_key(&mut app, KeyCode::Char('i')).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('i'))).unwrap();
 
         match &app.mode {
             AppMode::SyntaxLanguagePicker(state) => {

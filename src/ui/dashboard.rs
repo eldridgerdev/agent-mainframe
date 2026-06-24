@@ -896,8 +896,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
-    if let AppMode::DiffViewer(state) = &app.mode {
-        draw_view_pane(frame, app, &state.from_view, false, false);
+    let diff_from_view = if let AppMode::DiffViewer(state) = &app.mode {
+        Some(state.from_view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = diff_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false, false);
+    }
+    if let AppMode::DiffViewer(state) = &mut app.mode {
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
         return;
     }

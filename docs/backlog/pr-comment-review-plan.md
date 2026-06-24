@@ -336,10 +336,15 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       `poll_pr_review_bg` in the main loop); full-screen loading frame
       with cancel. → `src/app/pr_review.rs`, `src/app/state.rs`,
       `src/handlers/pr_review.rs`, `src/main.rs`.
-- [~] Full-screen list+detail pane: list (resolution marker, location,
-      author, snippet) + detail (header/flags, diff hunk, body) shipped
-      with `j/k` navigation. _Remaining:_ lazy body hydration,
-      hide/show-resolved toggle, scrolling. → `src/ui/dialogs/pr_review.rs`.
+- [x] Full-screen list+detail pane: list (resolution marker, location,
+      author, snippet) + detail (header/flags, diff hunk, body) with `j/k`
+      navigation, `h` hide/show-resolved toggle (navigation skips hidden
+      comments; selection snaps off a now-hidden row; "N resolved hidden"
+      indicator), and detail scrolling (`^d`/`^u`, `PgUp`/`PgDn`, clamped to
+      content; resets on selection change). _Lazy body hydration is moot —
+      the REST list fetch already returns full comment bodies, so there's no
+      second round-trip to defer._ → `src/ui/dialogs/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`.
 - [~] Dashboard entry key: `G` auto-detects the branch's PR (runs
       preconditions → resolve → load) and is listed in help. _Remaining:_
       manual PR-number override prompt. → `src/handlers/normal.rs`.

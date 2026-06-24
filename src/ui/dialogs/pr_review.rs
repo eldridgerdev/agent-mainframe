@@ -94,11 +94,16 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         .split(outer[1]);
 
     draw_comment_list(frame, body[0], state, theme);
-    draw_comment_detail(frame, body[1], state.selected_comment(), theme);
+    draw_comment_detail(frame, body[1], state.selected_comment(), state.detail_scroll, theme);
 
     // Footer.
+    let toggle_hint = if state.hide_resolved {
+        "h show-resolved"
+    } else {
+        "h hide-resolved"
+    };
     let footer = Paragraph::new(Line::from(Span::styled(
-        " j/k move   esc/q close",
+        format!(" j/k move   ^d/^u scroll   {toggle_hint}   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, outer[2]);
@@ -117,12 +122,29 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
         return;
     }
 
-    let items: Vec<ListItem> = state
-        .review
-        .comments
+    let visible = state.visible_indices();
+    if visible.is_empty() {
+        let empty = Paragraph::new(Line::from(Span::styled(
+            "All comments resolved (h to show).",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .block(block);
+        frame.render_widget(empty, area);
+        return;
+    }
+
+    let mut items: Vec<ListItem> = visible
         .iter()
-        .map(|c| ListItem::new(comment_list_line(c, theme)))
+        .map(|&i| ListItem::new(comment_list_line(&state.review.comments[i], theme)))
         .collect();
+
+    let hidden = state.hidden_resolved_count();
+    if hidden > 0 {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("  ─ {hidden} resolved hidden (h to show) ─"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))));
+    }
 
     let list = List::new(items).block(block).highlight_style(
         Style::default()
@@ -131,8 +153,11 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
             .add_modifier(Modifier::BOLD),
     );
 
+    // The list renders only visible comments, so translate the absolute
+    // selection index into its position within the visible slice.
+    let highlight = visible.iter().position(|&i| i == state.selected);
     let mut list_state = ListState::default();
-    list_state.select(Some(state.selected));
+    list_state.select(highlight);
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -172,6 +197,7 @@ fn draw_comment_detail(
     frame: &mut Frame,
     area: Rect,
     comment: Option<&PrComment>,
+    scroll: usize,
     theme: &Theme,
 ) {
     let block = pane_block(theme).title(" Detail ");
@@ -244,7 +270,9 @@ fn draw_comment_detail(
         )));
     }
 
-    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let body = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll as u16, 0));
     frame.render_widget(body, inner);
 }
 

@@ -885,11 +885,39 @@ pub struct PrReviewState {
     pub review: crate::app::pr_review::PrReview,
     /// Index into `review.comments` of the highlighted comment.
     pub selected: usize,
+    /// Scroll offset (in lines) for the detail pane of the selected comment.
+    pub detail_scroll: usize,
+    /// When true, comments already resolved on GitHub are hidden from the list.
+    pub hide_resolved: bool,
 }
 
 impl PrReviewState {
     pub fn selected_comment(&self) -> Option<&crate::app::pr_review::PrComment> {
         self.review.comments.get(self.selected)
+    }
+
+    /// Indices into `review.comments` that pass the current filter, in order.
+    /// With `hide_resolved` on, GitHub-resolved comments are dropped.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        self.review
+            .comments
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !self.hide_resolved || !c.is_resolved)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Number of comments hidden by the resolved filter (0 when showing all).
+    pub fn hidden_resolved_count(&self) -> usize {
+        if !self.hide_resolved {
+            return 0;
+        }
+        self.review
+            .comments
+            .iter()
+            .filter(|c| c.is_resolved)
+            .count()
     }
 }
 

@@ -6878,6 +6878,8 @@ fn enter_pr_review(app: &mut App, n: u64) {
         workdir: std::path::PathBuf::from("/tmp/wd"),
         review: pr_review_with_comments(n),
         selected: 0,
+        detail_scroll: 0,
+        hide_resolved: false,
     });
 }
 
@@ -6923,4 +6925,121 @@ fn pr_review_open_without_selection_shows_message() {
     app.open_pr_review();
     assert!(matches!(app.mode, AppMode::Normal));
     assert!(app.message.is_some());
+}
+
+/// Enter the review pane with comments 1..=n where the given ids are resolved.
+fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
+    let comments: Vec<crate::github::ReviewComment> = (1..=n)
+        .map(|id| crate::github::ReviewComment {
+            id,
+            path: Some(format!("src/file{id}.rs")),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            diff_hunk: Some("@@".to_string()),
+            body: format!("comment {id}"),
+            user: crate::github::GhUser {
+                login: "alice".to_string(),
+                kind: "User".to_string(),
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let threads: Vec<crate::github::ReviewThread> = resolved
+        .iter()
+        .map(|&id| crate::github::ReviewThread {
+            id: format!("T{id}"),
+            is_resolved: true,
+            comment_ids: vec![id],
+        })
+        .collect();
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let review = crate::app::pr_review::normalize(pr, comments, vec![], vec![], threads);
+    app.mode = AppMode::PrReview(PrReviewState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        review,
+        selected: 0,
+        detail_scroll: 0,
+        hide_resolved: false,
+    });
+}
+
+#[test]
+fn pr_review_hide_resolved_skips_resolved_comments() {
+    // Comments 1,2,3; comment 2 is resolved on GitHub.
+    let mut app = pr_review_test_app();
+    enter_pr_review_with_resolved(&mut app, 3, &[2]);
+
+    app.pr_review_toggle_resolved();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.hide_resolved);
+            assert_eq!(state.visible_indices(), vec![0, 2]);
+            assert_eq!(state.hidden_resolved_count(), 1);
+        }
+        _ => panic!("not in PrReview mode"),
+    }
+
+    // Navigation jumps over the hidden (resolved) comment at index 1.
+    assert_eq!(pr_review_selected(&app), 0);
+    app.pr_review_select_next();
+    assert_eq!(pr_review_selected(&app), 2);
+    app.pr_review_select_prev();
+    assert_eq!(pr_review_selected(&app), 0);
+}
+
+#[test]
+fn pr_review_toggle_snaps_selection_off_hidden_comment() {
+    let mut app = pr_review_test_app();
+    enter_pr_review_with_resolved(&mut app, 3, &[2]);
+
+    // Park the selection on the resolved comment, then hide resolved.
+    app.pr_review_select_next();
+    assert_eq!(pr_review_selected(&app), 1);
+    app.pr_review_toggle_resolved();
+
+    // Index 1 is now hidden, so selection snaps to the next visible comment.
+    assert_eq!(pr_review_selected(&app), 2);
+}
+
+#[test]
+fn pr_review_detail_scroll_clamps() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1); // single short comment
+
+    // Scrolling up at the top is a no-op.
+    app.pr_review_scroll_detail_up(5);
+    match &app.mode {
+        AppMode::PrReview(state) => assert_eq!(state.detail_scroll, 0),
+        _ => panic!("not in PrReview mode"),
+    }
+
+    // Scrolling far down clamps to the detail's line count, never past it.
+    app.pr_review_scroll_detail_down(1000);
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let max = state.selected_comment().unwrap().detail_line_count() - 1;
+            assert_eq!(state.detail_scroll, max);
+        }
+        _ => panic!("not in PrReview mode"),
+    }
+}
+
+#[test]
+fn pr_review_selection_change_resets_detail_scroll() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 3);
+
+    app.pr_review_scroll_detail_down(2);
+    app.pr_review_select_next();
+    match &app.mode {
+        AppMode::PrReview(state) => assert_eq!(state.detail_scroll, 0),
+        _ => panic!("not in PrReview mode"),
+    }
 }

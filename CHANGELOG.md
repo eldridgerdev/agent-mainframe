@@ -86,6 +86,9 @@ are tagged.
 
 ### Fixed
 
+- Claude sidebars now find todo lists that Claude stores under a separate
+  task-store ID instead of the visible session ID, so the sidebar's `Todos`
+  panel shows the current checklist again.
 - Pasting now works in the prompt library editor. Bracketed-paste events
   were dropped in the New/Edit Prompt dialog and the placeholder fill flow,
   so clipboard text never landed in the name, tags, body, or fill fields.

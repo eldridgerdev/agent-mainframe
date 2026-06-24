@@ -64,12 +64,15 @@ are tagged.
   combined counts like `2d3w`. A leading `0` still jumps to the start of the
   line unless you are already typing a count (`10w`).
 
-- Began work on **PR comment review**: a forthcoming workflow to triage a
-  GitHub pull request's comments inside AMF and act on each one (inject a
-  fix into the live agent session, post a reply, or skip) without leaving
-  the dashboard. This release lays the groundwork only — there is no new
-  command yet — but the design is published in the backlog and viewable in
-  AMF's in-app plan viewer.
+- **Review a PR's comments inside AMF.** Press `G` on a feature in the
+  dashboard to open a full-screen pane listing the open pull request's
+  comments for that branch — inline review comments, review summaries, and
+  conversation comments together, each showing its file/line, author, a
+  one-line preview, and whether the thread is resolved. Navigate with
+  `j`/`k` to read the full comment and its diff context; `esc`/`q` closes.
+  Everything is fetched with the GitHub CLI and stays read-only for now —
+  acting on comments (sending a fix to the agent, replying) is coming in a
+  later release. Requires the `gh` CLI installed and authenticated.
 
 ### Changed
 

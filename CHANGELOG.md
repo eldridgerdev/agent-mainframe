@@ -40,6 +40,12 @@ are tagged.
   and then renders the result as markdown (titled "AI Walkthrough"), cached per
   file so navigating away and back doesn't re-run it — so the notes panel is
   never empty even when the developer didn't leave a note.
+- **Finish gating + jump-to-next-undecided in the final review.** Finishing a
+  review (`q`/`Esc`) while one or more files still have no verdict now asks for
+  confirmation instead of ending silently — press `q`/`y` to finish anyway,
+  `Esc` to keep reviewing, or `u` to jump straight to the next file with no
+  verdict (wrapping). The footer shows how many files are still undecided, so a
+  half-done review isn't finished by accident.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

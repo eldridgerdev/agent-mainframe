@@ -708,6 +708,37 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         return;
     }
 
+    // A pending finish confirmation overrides the normal hints: some files have
+    // no verdict and the reviewer just tried to finish.
+    if state.finish_confirm {
+        let undecided = state
+            .files
+            .iter()
+            .filter(|file| !state.decisions.contains_key(&file.path))
+            .count();
+        let first = Line::from(vec![Span::styled(
+            format!(" {undecided} file(s) have no verdict — finish anyway? "),
+            Style::default()
+                .fg(theme.warning.to_color())
+                .add_modifier(Modifier::BOLD),
+        )]);
+        let second = Line::from(vec![
+            key(" q"),
+            Span::raw("/"),
+            key("y"),
+            Span::raw(" finish anyway  "),
+            key("u"),
+            Span::raw(" next undecided  "),
+            key("Esc"),
+            Span::raw(" keep reviewing"),
+        ]);
+        frame.render_widget(
+            Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+
     // While the line cursor is active, show its dedicated key hints instead of
     // the standard scroll/verdict row.
     if let Some(cursor) = state.comment_cursor {
@@ -843,6 +874,22 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         first_line.push(Span::raw("  "));
         first_line.push(key("w"));
         first_line.push(Span::raw(" gen walkthrough"));
+    }
+
+    // Surface the jump-to-next-undecided affordance only while files still lack
+    // a verdict.
+    let undecided = state
+        .files
+        .iter()
+        .filter(|file| !state.decisions.contains_key(&file.path))
+        .count();
+    if undecided > 0 {
+        first_line.push(Span::raw("  "));
+        first_line.push(key("u"));
+        first_line.push(Span::styled(
+            format!(" next undecided ({undecided})"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ));
     }
 
     let lines = vec![Line::from(first_line), Line::from(second_line)];

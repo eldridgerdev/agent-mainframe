@@ -299,6 +299,9 @@ pub struct DiffViewerState {
     /// When true the next draw scrolls the patch to keep the comment cursor
     /// visible, mirroring `feedback_sync_to_cursor`.
     pub cursor_sync_to_view: bool,
+    /// True while a finish attempt is awaiting confirmation because some files
+    /// still have no verdict (set by `confirm_or_finish_review`).
+    pub finish_confirm: bool,
     /// True while the user is typing rejection feedback for the current file.
     pub feedback_editing: bool,
     /// True while the user is typing general (non-file) review feedback.
@@ -356,6 +359,7 @@ impl DiffViewerState {
             comment_cursor: None,
             editing_line_comment: false,
             cursor_sync_to_view: false,
+            finish_confirm: false,
             feedback_editing: false,
             editing_general: false,
             feedback_editor: TextEditor::new(String::new()),

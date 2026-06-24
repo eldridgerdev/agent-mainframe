@@ -94,7 +94,7 @@ any order.
       navigates + stores comments but has no inline marker yet)
 - [x] On-demand walkthrough for noteless files
 - [x] Render Developer Notes as markdown
-- [ ] Finish gating + jump-to-next-undecided
+- [x] Finish gating + jump-to-next-undecided
 - [ ] Persist / resume review state
 - [ ] Choose base ref
 - [ ] PR inline-comment integration

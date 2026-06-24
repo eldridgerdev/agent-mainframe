@@ -1233,6 +1233,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         _ => {}
     }
 
+    if let AppMode::PrNumberPrompt(state) = &app.mode {
+        super::dialogs::draw_pr_number_prompt(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }

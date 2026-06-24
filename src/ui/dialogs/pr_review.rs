@@ -8,9 +8,55 @@ use ratatui::{
 
 use crate::{
     app::pr_review::{CommentKind, PrComment},
-    app::{PrReviewLoadState, PrReviewState},
+    app::{PrNumberPromptState, PrReviewLoadState, PrReviewState},
     theme::Theme,
 };
+
+/// Modal prompt for a manual PR number, shown when the branch has no
+/// auto-detectable open PR. Collects digits and surfaces resolve errors inline.
+pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(50, 25, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Review PR by number ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // hint
+            Constraint::Length(2), // input
+            Constraint::Min(0),    // error
+        ])
+        .split(inner);
+
+    let hint = Paragraph::new(Line::from(Span::styled(
+        " No open PR detected for this branch — enter a number:",
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    frame.render_widget(hint, chunks[0]);
+
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled(" PR #", Style::default().fg(theme.primary.to_color())),
+        Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
+        Span::styled("\u{2588}", Style::default().fg(theme.primary.to_color())),
+    ]));
+    frame.render_widget(input, chunks[1]);
+
+    if let Some(err) = &state.error {
+        let error = Paragraph::new(Line::from(Span::styled(
+            format!(" {err}"),
+            Style::default().fg(theme.danger.to_color()),
+        )))
+        .wrap(Wrap { trim: false });
+        frame.render_widget(error, chunks[2]);
+    }
+}
 
 /// Full-screen loading frame shown while a PR's comments are fetched.
 pub fn draw_pr_review_loading(
@@ -103,7 +149,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         "h hide-resolved"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   ^d/^u scroll   {toggle_hint}   esc/q close"),
+        format!(" j/k move   ^d/^u scroll   {toggle_hint}   g other-PR   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, outer[2]);

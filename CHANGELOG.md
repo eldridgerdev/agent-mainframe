@@ -77,10 +77,13 @@ are tagged.
   `j`/`k` to read the full comment and its diff context, scroll long comments
   with `Ctrl+D`/`Ctrl+U` (or `PgDn`/`PgUp`), and press `h` to hide comments
   already resolved on GitHub so you can focus on what's still open (a counter
-  shows how many are hidden); `esc`/`q` closes. Everything is fetched with the
-  GitHub CLI and stays read-only for now — acting on comments (sending a fix to
-  the agent, replying) is coming in a later release. Requires the `gh` CLI
-  installed and authenticated.
+  shows how many are hidden); `esc`/`q` closes. If the branch has no open PR,
+  AMF prompts for a PR number instead of giving up, and you can press `g` from
+  inside the pane any time to pull up a different PR's comments by number (a bad
+  number reports the error inline so you can correct it). Everything is fetched
+  with the GitHub CLI and stays read-only for now — acting on comments (sending
+  a fix to the agent, replying) is coming in a later release. Requires the `gh`
+  CLI installed and authenticated.
 
 ### Changed
 

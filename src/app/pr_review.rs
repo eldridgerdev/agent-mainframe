@@ -295,11 +295,65 @@ impl App {
 
         match GhCli::resolve_pr(&workdir) {
             Ok(PrResolution::Found(pr)) => self.start_pr_review_fetch(workdir, pr),
-            Ok(PrResolution::NoPrForBranch) => {
-                self.message =
-                    Some("No open PR for this branch (manual PR entry coming soon)".to_string());
-            }
+            Ok(PrResolution::NoPrForBranch) => self.prompt_pr_number(workdir, None),
             Err(e) => self.show_error(e),
+        }
+    }
+
+    /// Open the manual PR-number override prompt. Used when the branch has no
+    /// auto-detectable open PR; `error` seeds an inline message after a failed
+    /// resolve so the user can correct the number and retry.
+    fn prompt_pr_number(&mut self, workdir: PathBuf, error: Option<String>) {
+        self.mode = AppMode::PrNumberPrompt(PrNumberPromptState {
+            workdir,
+            input: String::new(),
+            error,
+        });
+    }
+
+    /// Open the manual PR-number prompt from inside the review pane, so the
+    /// user can review a different PR than the branch's auto-detected one.
+    pub fn open_pr_number_prompt(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrReview(state) => state.workdir.clone(),
+            AppMode::PrReviewLoading(state) => state.workdir.clone(),
+            _ => return,
+        };
+        self.prompt_pr_number(workdir, None);
+    }
+
+    /// Append a digit to the PR-number prompt (non-digits are ignored).
+    pub fn pr_number_prompt_push(&mut self, c: char) {
+        if let AppMode::PrNumberPrompt(state) = &mut self.mode
+            && c.is_ascii_digit()
+        {
+            state.input.push(c);
+        }
+    }
+
+    /// Delete the last digit from the PR-number prompt.
+    pub fn pr_number_prompt_backspace(&mut self) {
+        if let AppMode::PrNumberPrompt(state) = &mut self.mode {
+            state.input.pop();
+        }
+    }
+
+    /// Resolve the typed PR number and, on success, start the comment fetch.
+    /// On failure the prompt stays open with an inline error so the user can
+    /// retry. Spends zero agent tokens (one `gh pr view <n>` call).
+    pub fn submit_pr_number(&mut self) {
+        let AppMode::PrNumberPrompt(state) = &self.mode else {
+            return;
+        };
+        let workdir = state.workdir.clone();
+        let Ok(number) = state.input.trim().parse::<u32>() else {
+            self.prompt_pr_number(workdir, Some("Enter a PR number, e.g. 321".to_string()));
+            return;
+        };
+
+        match GhCli::fetch_pr_by_number(&workdir, number) {
+            Ok(pr) => self.start_pr_review_fetch(workdir, pr),
+            Err(e) => self.prompt_pr_number(workdir, Some(e.to_string())),
         }
     }
 

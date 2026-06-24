@@ -51,6 +51,11 @@ are tagged.
   narrows to templates tagged `frontend`, and a bare `#` lists every tagged
   template.
 
+- The vim-mode editor now accepts numeric count prefixes, so you can repeat
+  motions and edits the way you would in vim: `3w`, `5j`, `2dd`, `d3w`, and
+  combined counts like `2d3w`. A leading `0` still jumps to the start of the
+  line unless you are already typing a count (`10w`).
+
 ### Changed
 
 - **New/Edit Prompt dialog redesign.** Each field (Name, Tags, Prompt body)

@@ -262,6 +262,13 @@ pub enum ReviewDecision {
     Reject { feedback: String },
 }
 
+/// A reviewer comment anchored to a specific diff line during a final review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineComment {
+    pub location: crate::diff::DiffLineLocation,
+    pub text: String,
+}
+
 #[derive(Clone)]
 pub struct DiffViewerState {
     pub from_view: ViewState,
@@ -280,6 +287,17 @@ pub struct DiffViewerState {
     pub review: bool,
     /// File path -> verdict. Skipped files have no entry.
     pub decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// File path -> line-level comments anchored to specific diff lines.
+    pub line_comments: std::collections::HashMap<String, Vec<LineComment>>,
+    /// Active line-comment cursor: index into the current file's
+    /// `addressable_lines()`. `None` when the line cursor is inactive.
+    pub comment_cursor: Option<usize>,
+    /// True while typing a comment for the cursored line (reuses
+    /// `feedback_editor`).
+    pub editing_line_comment: bool,
+    /// When true the next draw scrolls the patch to keep the comment cursor
+    /// visible, mirroring `feedback_sync_to_cursor`.
+    pub cursor_sync_to_view: bool,
     /// True while the user is typing rejection feedback for the current file.
     pub feedback_editing: bool,
     /// True while the user is typing general (non-file) review feedback.
@@ -325,6 +343,10 @@ impl DiffViewerState {
             error: None,
             review: false,
             decisions: std::collections::HashMap::new(),
+            line_comments: std::collections::HashMap::new(),
+            comment_cursor: None,
+            editing_line_comment: false,
+            cursor_sync_to_view: false,
             feedback_editing: false,
             editing_general: false,
             feedback_editor: TextEditor::new(String::new()),

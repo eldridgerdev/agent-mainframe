@@ -38,6 +38,57 @@ pub struct DiffFile {
     pub hunks: Vec<DiffHunk>,
 }
 
+/// Location of a commentable diff line: its line number on the base (old)
+/// and/or current (new) side. Used to anchor line-level review comments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DiffLineLocation {
+    pub old_line: Option<usize>,
+    pub new_line: Option<usize>,
+}
+
+impl DiffFile {
+    /// Commentable diff lines (context / added / removed) across every hunk, in
+    /// display order, each tagged with its base/current line numbers. Hunk
+    /// headers and no-newline markers are not addressable. This walks the hunks
+    /// in the same order the unified patch renderer does, so an index into the
+    /// returned vector matches a rendered diff row.
+    pub fn addressable_lines(&self) -> Vec<DiffLineLocation> {
+        let mut out = Vec::new();
+        for hunk in &self.hunks {
+            let mut old_line = hunk.old_start;
+            let mut new_line = hunk.new_start;
+            for line in &hunk.lines {
+                match line.kind {
+                    DiffLineKind::Context => {
+                        out.push(DiffLineLocation {
+                            old_line: Some(old_line),
+                            new_line: Some(new_line),
+                        });
+                        old_line += 1;
+                        new_line += 1;
+                    }
+                    DiffLineKind::Removed => {
+                        out.push(DiffLineLocation {
+                            old_line: Some(old_line),
+                            new_line: None,
+                        });
+                        old_line += 1;
+                    }
+                    DiffLineKind::Added => {
+                        out.push(DiffLineLocation {
+                            old_line: None,
+                            new_line: Some(new_line),
+                        });
+                        new_line += 1;
+                    }
+                    DiffLineKind::NoNewlineMarker => {}
+                }
+            }
+        }
+        out
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiffFileStatus {
     Added,
@@ -636,6 +687,48 @@ index 1111111..2222222 100644
         assert_eq!(file.hunks[0].new_start, 1);
         assert_eq!(file.old_content, None);
         assert_eq!(file.new_content, None);
+    }
+
+    #[test]
+    fn addressable_lines_number_each_commentable_diff_line() {
+        let files = parse_unified_diff(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ line1
+-line2
++line2 updated
++line3
+",
+        )
+        .unwrap();
+        let locs = files[0].addressable_lines();
+
+        // One context, one removed, two added — markers/headers excluded.
+        assert_eq!(
+            locs,
+            vec![
+                DiffLineLocation {
+                    old_line: Some(1),
+                    new_line: Some(1)
+                },
+                DiffLineLocation {
+                    old_line: Some(2),
+                    new_line: None
+                },
+                DiffLineLocation {
+                    old_line: None,
+                    new_line: Some(2)
+                },
+                DiffLineLocation {
+                    old_line: None,
+                    new_line: Some(3)
+                },
+            ]
+        );
     }
 
     #[test]

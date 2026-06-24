@@ -62,6 +62,137 @@ impl App {
         self.diff_review_advance();
     }
 
+    /// Toggle the per-line comment cursor in the review viewer. When turning it
+    /// on, place it on the first changed (added/removed) line of the current
+    /// file, or the first line if the file is all context.
+    pub fn diff_review_toggle_line_cursor(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            if state.comment_cursor.is_some() {
+                state.comment_cursor = None;
+                return;
+            }
+            let locs = state
+                .files
+                .get(state.selected_file)
+                .map(|f| f.addressable_lines())
+                .unwrap_or_default();
+            if locs.is_empty() {
+                self.message = Some("No diff lines to comment on".to_string());
+                return;
+            }
+            let first_change = locs
+                .iter()
+                .position(|l| l.old_line.is_none() || l.new_line.is_none())
+                .unwrap_or(0);
+            state.comment_cursor = Some(first_change);
+            state.cursor_sync_to_view = true;
+        }
+    }
+
+    /// Move the comment cursor by `delta` lines (negative = up), clamped to the
+    /// current file's addressable lines.
+    pub fn diff_review_cursor_move(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(cur) = state.comment_cursor else {
+                return;
+            };
+            let len = state
+                .files
+                .get(state.selected_file)
+                .map(|f| f.addressable_lines().len())
+                .unwrap_or(0);
+            if len == 0 {
+                state.comment_cursor = None;
+                return;
+            }
+            let max = len - 1;
+            let next = if delta < 0 {
+                cur.saturating_sub((-delta) as usize)
+            } else {
+                cur.saturating_add(delta as usize).min(max)
+            };
+            state.comment_cursor = Some(next.min(max));
+            state.cursor_sync_to_view = true;
+        }
+    }
+
+    /// Open the comment editor for the cursored diff line, pre-filling any
+    /// comment already attached to it.
+    pub fn diff_review_start_line_comment(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(cur) = state.comment_cursor else {
+                return;
+            };
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let locs = file.addressable_lines();
+            let Some(loc) = locs.get(cur).copied() else {
+                return;
+            };
+            let path = file.path.clone();
+            let existing = state
+                .line_comments
+                .get(&path)
+                .and_then(|comments| comments.iter().find(|c| c.location == loc))
+                .map(|c| c.text.clone())
+                .unwrap_or_default();
+            state.feedback_editor = crate::editor::TextEditor::new(existing);
+            state.feedback_scroll = 0;
+            state.feedback_sync_to_cursor = true;
+            state.editing_line_comment = true;
+            state.feedback_editing = false;
+            state.editing_general = false;
+        }
+    }
+
+    /// Store (or, when empty, delete) the typed comment for the cursored line.
+    /// Does not advance the cursor, so a reviewer can comment several adjacent
+    /// lines.
+    pub fn diff_review_submit_line_comment(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_line_comment {
+                return;
+            }
+            let text = state.feedback_editor.text().trim().to_string();
+            let anchor = state.comment_cursor.and_then(|cur| {
+                state
+                    .files
+                    .get(state.selected_file)
+                    .and_then(|file| {
+                        file.addressable_lines()
+                            .get(cur)
+                            .copied()
+                            .map(|loc| (file.path.clone(), loc))
+                    })
+            });
+            if let Some((path, loc)) = anchor {
+                let comments = state.line_comments.entry(path).or_default();
+                comments.retain(|c| c.location != loc);
+                if !text.is_empty() {
+                    comments.push(LineComment {
+                        location: loc,
+                        text,
+                    });
+                    comments.sort_by_key(|c| {
+                        c.location
+                            .new_line
+                            .or(c.location.old_line)
+                            .unwrap_or(0)
+                    });
+                }
+            }
+            state.editing_line_comment = false;
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+    }
+
     /// Begin entering rejection feedback for the current file, pre-filling any
     /// feedback already recorded for it.
     pub fn diff_review_start_feedback(&mut self) {
@@ -118,6 +249,7 @@ impl App {
         if let AppMode::DiffViewer(state) = &mut self.mode {
             state.feedback_editing = false;
             state.editing_general = false;
+            state.editing_line_comment = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
     }
@@ -148,6 +280,10 @@ impl App {
             state.selected_file += 1;
             state.patch_scroll = 0;
             state.notes_scroll = 0;
+            if state.comment_cursor.is_some() {
+                state.comment_cursor = Some(0);
+                state.cursor_sync_to_view = true;
+            }
         }
     }
 
@@ -199,12 +335,13 @@ impl App {
     /// Finish the review: write `.claude/final-review-feedback.md` for any
     /// rejected files and return to the feature view with a summary message.
     pub fn finish_final_review(&mut self) -> Result<()> {
-        let (workdir, files, decisions, general_feedback, from_view) =
+        let (workdir, files, decisions, line_comments, general_feedback, from_view) =
             match std::mem::replace(&mut self.mode, AppMode::Normal) {
                 AppMode::DiffViewer(state) => (
                     state.workdir,
                     state.files,
                     state.decisions,
+                    state.line_comments,
                     state.general_feedback,
                     state.from_view,
                 ),
@@ -234,6 +371,19 @@ impl App {
         let skipped = total.saturating_sub(approved).saturating_sub(rejected.len());
         let general_feedback = general_feedback.trim().to_string();
 
+        // Line comments in file order (each file's comments are already sorted
+        // by line). Empty-text comments never reach here (submit deletes them).
+        let mut line_comment_sections: Vec<(String, Vec<LineComment>)> = Vec::new();
+        let mut line_comment_count = 0usize;
+        for file in &files {
+            if let Some(comments) = line_comments.get(&file.path)
+                && !comments.is_empty()
+            {
+                line_comment_count += comments.len();
+                line_comment_sections.push((file.path.clone(), comments.clone()));
+            }
+        }
+
         // The feature's agent session/window, so we can prompt it to act on the
         // feedback. Resolved before touching self.tmux to avoid borrow overlap.
         let agent_target: Option<(String, String)> = self
@@ -256,7 +406,7 @@ impl App {
                     .map(|s| (f.tmux_session.clone(), s.tmux_window.clone()))
             });
 
-        if rejected.is_empty() && general_feedback.is_empty() {
+        if rejected.is_empty() && general_feedback.is_empty() && line_comment_sections.is_empty() {
             self.message = Some(if total == 0 {
                 "Final review: no changes against the base branch".to_string()
             } else {
@@ -283,7 +433,8 @@ impl App {
             ));
             out.push_str(&format!(
                 "**Files reviewed:** {total} | **Approved:** {approved} | \
-                 **Needs work:** {} | **Skipped:** {skipped}\n\n",
+                 **Needs work:** {} | **Skipped:** {skipped} | \
+                 **Line comments:** {line_comment_count}\n\n",
                 rejected.len()
             ));
 
@@ -306,11 +457,32 @@ impl App {
                 }
             }
 
+            if !line_comment_sections.is_empty() {
+                out.push_str("## Line Comments\n\n");
+                for (file, comments) in &line_comment_sections {
+                    for comment in comments {
+                        let anchor = match (comment.location.new_line, comment.location.old_line) {
+                            (Some(new_line), _) => format!("{file}:{new_line}"),
+                            (None, Some(old_line)) => format!("{file}:{old_line} (base)"),
+                            (None, None) => file.clone(),
+                        };
+                        out.push_str(&format!("### {anchor}\n\n"));
+                        out.push_str(&comment.text);
+                        out.push_str("\n\n");
+                    }
+                }
+            }
+
             self.message = Some(match std::fs::write(&path, out) {
                 Ok(()) => {
+                    let comment_note = if line_comment_count > 0 {
+                        format!(", {line_comment_count} line comment(s)")
+                    } else {
+                        String::new()
+                    };
                     let summary = format!(
-                        "Final review: {approved} approved, {} need work, {skipped} skipped \
-                         — feedback saved to .claude/final-review-feedback.md",
+                        "Final review: {approved} approved, {} need work, {skipped} skipped\
+                         {comment_note} — feedback saved to .claude/final-review-feedback.md",
                         rejected.len()
                     );
                     match &agent_target {

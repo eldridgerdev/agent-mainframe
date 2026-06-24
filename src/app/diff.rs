@@ -113,6 +113,10 @@ impl App {
             state.selected_file += 1;
             state.patch_scroll = 0;
             state.notes_scroll = 0;
+            if state.comment_cursor.is_some() {
+                state.comment_cursor = Some(0);
+                state.cursor_sync_to_view = true;
+            }
         }
     }
 
@@ -123,6 +127,10 @@ impl App {
             state.selected_file -= 1;
             state.patch_scroll = 0;
             state.notes_scroll = 0;
+            if state.comment_cursor.is_some() {
+                state.comment_cursor = Some(0);
+                state.cursor_sync_to_view = true;
+            }
         }
     }
 

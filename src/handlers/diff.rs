@@ -14,7 +14,8 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
         &app.mode,
-        AppMode::DiffViewer(state) if state.feedback_editing || state.editing_general
+        AppMode::DiffViewer(state)
+            if state.feedback_editing || state.editing_general || state.editing_line_comment
     );
 
     // While typing feedback (per-file rejection or general) the keys drive a
@@ -62,7 +63,55 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
 
+        // With the line cursor active, navigation moves the cursor and Enter
+        // opens the comment editor for the cursored line. Esc exits cursor mode
+        // (q still finishes the review). Inactive, these keys keep their
+        // existing meaning, falling through to the bindings below.
+        let cursor_active =
+            matches!(&app.mode, AppMode::DiffViewer(state) if state.comment_cursor.is_some());
+        if cursor_active && !notes_expanded {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.diff_review_cursor_move(1);
+                    return Ok(());
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.diff_review_cursor_move(-1);
+                    return Ok(());
+                }
+                KeyCode::PageDown => {
+                    app.diff_review_cursor_move(PATCH_PAGE_STEP as isize);
+                    return Ok(());
+                }
+                KeyCode::PageUp => {
+                    app.diff_review_cursor_move(-(PATCH_PAGE_STEP as isize));
+                    return Ok(());
+                }
+                KeyCode::Char('g') => {
+                    app.diff_review_cursor_move(isize::MIN / 2);
+                    return Ok(());
+                }
+                KeyCode::Char('G') => {
+                    app.diff_review_cursor_move(isize::MAX / 2);
+                    return Ok(());
+                }
+                KeyCode::Enter | KeyCode::Char('C') => {
+                    app.diff_review_start_line_comment();
+                    return Ok(());
+                }
+                KeyCode::Esc | KeyCode::Char('c') => {
+                    app.diff_review_toggle_line_cursor();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         match code {
+            KeyCode::Char('c') => {
+                app.diff_review_toggle_line_cursor();
+                return Ok(());
+            }
             KeyCode::Char('e') => {
                 app.toggle_review_notes_expanded();
                 return Ok(());
@@ -218,8 +267,12 @@ fn handle_feedback_editor_key(
         }
     }
 
+    let editing_line_comment =
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_line_comment);
+
     match key.code {
         KeyCode::Tab if editing_general => app.diff_review_submit_general_feedback(),
+        KeyCode::Tab if editing_line_comment => app.diff_review_submit_line_comment(),
         KeyCode::Tab => app.diff_review_submit_feedback(),
         KeyCode::Esc
             if matches!(
@@ -246,7 +299,7 @@ fn handle_feedback_editor_key(
 mod tests {
     use super::*;
     use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, ViewState};
-    use crate::diff::{DiffFile, DiffFileStatus};
+    use crate::diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind};
     use crate::project::{AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode};
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::collections::HashMap;
@@ -614,6 +667,99 @@ mod tests {
             }
             _ => panic!("expected diff viewer"),
         }
+    }
+
+    /// Give the review app's single file a real hunk (one context + one added
+    /// line) so it has addressable lines to put a cursor on.
+    fn set_single_hunk(app: &mut App) {
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].hunks = vec![DiffHunk {
+                header: "@@ -1,1 +1,2 @@".into(),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 2,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " ctx".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+added line".into(),
+                    },
+                ],
+            }];
+        }
+    }
+
+    #[test]
+    fn line_cursor_activates_on_first_change_and_navigates() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // `c` activates the cursor on the first changed line (the added line,
+        // index 1; index 0 is context).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        let cursor = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.comment_cursor,
+            _ => panic!("expected diff viewer"),
+        };
+        assert_eq!(cursor(&app), Some(1));
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(cursor(&app), Some(0));
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(cursor(&app), Some(0), "clamps at the top");
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(cursor(&app), Some(1), "clamps at the bottom");
+
+        // `c` again deactivates the cursor.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        assert_eq!(cursor(&app), None);
+    }
+
+    #[test]
+    fn line_comment_is_written_to_feedback_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Activate cursor (on the added line), open the comment editor, type,
+        // and submit with Tab.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(s) if s.editing_line_comment
+        ));
+        for c in "bug here".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.editing_line_comment);
+                let comments = state.line_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comments.len(), 1);
+                assert_eq!(comments[0].text, "bug here");
+                assert_eq!(comments[0].location.new_line, Some(2));
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // Finishing with only a line comment still writes the feedback file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        let feedback =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(feedback.contains("## Line Comments"));
+        assert!(feedback.contains("### a.rs:2"));
+        assert!(feedback.contains("bug here"));
+        assert!(feedback.contains("**Line comments:** 1"));
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
     #[test]

@@ -248,6 +248,7 @@ fn read_prompts_from_opencode_storage(
 }
 
 pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Option<ClaudeTaskState> {
+    let tasks_root = claude_tasks_root();
     let session_id = session_id
         .map(str::trim)
         .filter(|session_id| !session_id.is_empty())
@@ -255,8 +256,12 @@ pub fn read_claude_task_state(workdir: &Path, session_id: Option<&str>) -> Optio
         .or_else(|| latest_claude_session_id(workdir));
 
     if let Some(session_id) = session_id.as_deref()
-        && let Some(state) = read_claude_task_state_from_task_store(session_id)
+        && let Some(state) = read_claude_task_state_from_task_store(&tasks_root, session_id)
     {
+        return Some(state);
+    }
+
+    if let Some(state) = read_latest_claude_task_state_from_task_store(&tasks_root) {
         return Some(state);
     }
 
@@ -513,12 +518,55 @@ fn latest_claude_session_id(workdir: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn read_claude_task_state_from_task_store(session_id: &str) -> Option<ClaudeTaskState> {
-    let home = std::env::var("HOME").ok()?;
-    let tasks_dir = PathBuf::from(home)
-        .join(".claude")
-        .join("tasks")
-        .join(session_id);
+fn claude_tasks_root() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .ok()
+        .map(|home| PathBuf::from(home).join(".claude").join("tasks"))
+}
+
+fn read_latest_claude_task_state_from_task_store(
+    tasks_root: &Option<PathBuf>,
+) -> Option<ClaudeTaskState> {
+    let tasks_root = tasks_root.as_ref()?;
+    if !is_real_dir(tasks_root) {
+        return None;
+    }
+
+    let mut task_dirs: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(tasks_root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !is_real_dir(&path) {
+                return None;
+            }
+            latest_modified_in_dir(&path).map(|modified| (modified, path))
+        })
+        .collect();
+    task_dirs.sort_by_key(|(modified, _)| *modified);
+    task_dirs
+        .into_iter()
+        .rev()
+        .find_map(|(_, path)| read_claude_task_state_from_task_dir(&path))
+}
+
+fn latest_modified_in_dir(dir: &Path) -> Option<std::time::SystemTime> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .max()
+}
+
+fn read_claude_task_state_from_task_store(
+    tasks_root: &Option<PathBuf>,
+    session_id: &str,
+) -> Option<ClaudeTaskState> {
+    let tasks_dir = tasks_root.as_ref()?.join(session_id);
+    read_claude_task_state_from_task_dir(&tasks_dir)
+}
+
+fn read_claude_task_state_from_task_dir(tasks_dir: &Path) -> Option<ClaudeTaskState> {
     if !is_real_dir(&tasks_dir) {
         return None;
     }
@@ -871,6 +919,66 @@ mod tests {
             ClipboardContent::Text(t) => assert_eq!(t, "amf-wsl-roundtrip"),
             ClipboardContent::Image { .. } => panic!("expected text, got image"),
         }
+    }
+
+    #[test]
+    fn latest_claude_task_store_fallback_reads_newest_task_directory() {
+        let temp = TempDir::new().unwrap();
+        let tasks_root = Some(temp.path().to_path_buf());
+        let stale_dir = temp.path().join("stale-session");
+        let fresh_dir = temp.path().join("detached-task-store");
+        let empty_dir = temp.path().join("empty-newest-store");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        std::fs::create_dir_all(&fresh_dir).unwrap();
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        std::fs::write(
+            stale_dir.join("1.json"),
+            r#"{"id":"1","subject":"Old task","status":"pending"}"#,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(
+            fresh_dir.join("1.json"),
+            r#"{"id":"1","subject":"Render cursor highlight","activeForm":"Rendering cursor + markers","status":"in_progress"}"#,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(empty_dir.join(".highwatermark"), "1").unwrap();
+
+        let state = read_latest_claude_task_state_from_task_store(&tasks_root).unwrap();
+
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks[0].subject, "Render cursor highlight");
+        assert_eq!(
+            state.tasks[0].active_form.as_deref(),
+            Some("Rendering cursor + markers")
+        );
+        assert_eq!(state.tasks[0].status, "in_progress");
+    }
+
+    #[test]
+    fn claude_task_store_prefers_exact_session_directory() {
+        let temp = TempDir::new().unwrap();
+        let tasks_root = Some(temp.path().to_path_buf());
+        let exact_dir = temp.path().join("claude-session");
+        let other_dir = temp.path().join("detached-task-store");
+        std::fs::create_dir_all(&exact_dir).unwrap();
+        std::fs::create_dir_all(&other_dir).unwrap();
+        std::fs::write(
+            exact_dir.join("1.json"),
+            r#"{"id":"1","subject":"Exact session task","status":"pending"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            other_dir.join("1.json"),
+            r#"{"id":"1","subject":"Newest detached task","status":"pending"}"#,
+        )
+        .unwrap();
+
+        let state = read_claude_task_state_from_task_store(&tasks_root, "claude-session").unwrap();
+
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks[0].subject, "Exact session task");
     }
 
     #[test]

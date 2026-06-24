@@ -1,13 +1,16 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
-    widgets::{Block, Clear},
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Clear, Paragraph},
 };
 
 use crate::app::util::{ClaudeTaskState, read_claude_task_state};
 use crate::app::{App, AppMode, CreateFeatureStep, RenameReturnTo};
-use crate::project::{Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch};
+use crate::project::{
+    Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch, VibeMode,
+};
 use crate::token_tracking::{TokenUsageProvider, TokenUsageSource};
 
 const SIDEBAR_PROMPT_PREVIEW_COLS: usize = 32;
@@ -769,6 +772,120 @@ fn draw_view_pane(
     );
 }
 
+fn draw_view_context_bar(
+    frame: &mut Frame,
+    view: &crate::app::ViewState,
+    theme: &crate::theme::Theme,
+) {
+    draw_context_bar(
+        frame,
+        &view.project_name,
+        &view.feature_name,
+        Some(&view.session_label),
+        Some(&view.vibe_mode),
+        view.review,
+        theme,
+    );
+}
+
+fn draw_feature_context_bar(
+    frame: &mut Frame,
+    project_name: &str,
+    feature_name: &str,
+    theme: &crate::theme::Theme,
+) {
+    draw_context_bar(frame, project_name, feature_name, None, None, false, theme);
+}
+
+fn draw_mode_context_bar(frame: &mut Frame, mode: &AppMode, theme: &crate::theme::Theme) {
+    if let Some(view) = mode_view_context(mode) {
+        draw_view_context_bar(frame, view, theme);
+    }
+}
+
+fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
+    match mode {
+        AppMode::Viewing(view) => Some(view),
+        AppMode::Help(state) => state.from_view.as_ref(),
+        AppMode::NotificationPicker(_, from_view) => from_view.as_ref(),
+        AppMode::CommandPicker(state) => state.from_view.as_ref(),
+        AppMode::BookmarkPicker(state) => state.from_view.as_ref(),
+        AppMode::DiffViewerLoading(state) | AppMode::DiffViewer(state) => Some(&state.from_view),
+        AppMode::SteeringPrompt(state) => Some(&state.view),
+        AppMode::Compose(state) => Some(&state.view),
+        AppMode::SessionPicker(state) => state.from_view.as_ref(),
+        AppMode::DiffReviewPrompt(state) => state.return_to_view.as_ref(),
+        AppMode::LatestPrompt(state) => Some(&state.view),
+        AppMode::PromptLibrary(state) => state.from_view.as_ref(),
+        AppMode::PromptEditor(state) => mode_view_context(state.return_to.as_ref()),
+        AppMode::PlaceholderFill(state) => state.from_view.as_ref(),
+        AppMode::SkillPicker(state) => mode_view_context(state.return_to.as_ref()),
+        AppMode::DebugLog(state) => state.from_view.as_ref(),
+        AppMode::MarkdownLoading(state) => state.from_view.as_ref(),
+        AppMode::MarkdownViewer(state) => state.from_view.as_ref(),
+        AppMode::MarkdownFilePicker(state) => state.from_view.as_ref(),
+        _ => None,
+    }
+}
+
+fn draw_context_bar(
+    frame: &mut Frame,
+    project_name: &str,
+    feature_name: &str,
+    session_label: Option<&str>,
+    vibe_mode: Option<&VibeMode>,
+    review: bool,
+    theme: &crate::theme::Theme,
+) {
+    let viewport = frame.area();
+    if viewport.width == 0 || viewport.height == 0 {
+        return;
+    }
+
+    let area = Rect::new(viewport.x, viewport.y, viewport.width, 1);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme.effective_bg())),
+        area,
+    );
+
+    let mut spans = vec![Span::raw("  ")];
+    spans.push(Span::styled(
+        project_name,
+        Style::default()
+            .fg(theme.project_title.to_color())
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" / {feature_name}"),
+        Style::default()
+            .fg(theme.warning.to_color())
+            .add_modifier(Modifier::BOLD),
+    ));
+    if let Some(session_label) = session_label {
+        spans.push(Span::styled(
+            format!(" / {session_label}"),
+            Style::default().fg(theme.text.to_color()),
+        ));
+    }
+    if let Some(vibe_mode) = vibe_mode {
+        let (label, color) = match vibe_mode {
+            VibeMode::Vibeless => (" [vibeless]", theme.mode_vibeless.to_color()),
+            VibeMode::Vibe => (" [vibe]", theme.mode_vibe.to_color()),
+            VibeMode::SuperVibe => (" [supervibe]", theme.mode_supervibe.to_color()),
+        };
+        spans.push(Span::styled(label, Style::default().fg(color)));
+    }
+    if review {
+        spans.push(Span::styled(
+            " [review experimental]",
+            Style::default().fg(theme.mode_review.to_color()),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(Clear, frame.area());
     frame.render_widget(
@@ -872,18 +989,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let scroll = state.scroll_offset;
         draw_view_pane(frame, app, view, false, false);
         super::dialogs::draw_help(frame, scroll, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
     if let AppMode::NotificationPicker(selected, Some(view)) = &app.mode {
         draw_view_pane(frame, app, view, false, false);
         super::picker::draw_notification_picker(frame, &app.pending_inputs, *selected, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
     if let AppMode::LatestPrompt(state) = &app.mode {
         draw_view_pane(frame, app, &state.view, false, false);
         super::dialogs::draw_latest_prompt_dialog(frame, state, app.message.as_deref(), &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -892,6 +1012,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     {
         draw_view_pane(frame, app, view, false, false);
         super::dialogs::draw_prompt_library(frame, state, app.message.as_deref(), &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -905,12 +1026,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::DiffViewer(state) = &mut app.mode {
         super::dialogs::draw_diff_viewer(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
     if let AppMode::DiffViewerLoading(state) = &app.mode {
         draw_view_pane(frame, app, &state.from_view, false, false);
         super::dialogs::draw_diff_viewer_loading(frame, state, &app.throbber_state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -919,6 +1042,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             draw_view_pane(frame, app, &view, false, false);
         }
         super::dialogs::draw_markdown_loading(frame, state, &app.throbber_state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -932,6 +1056,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::MarkdownViewer(state) = &mut app.mode {
         super::dialogs::draw_markdown_viewer(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
     let compose_from_view = if let AppMode::Compose(state) = &app.mode {
@@ -944,6 +1069,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::Compose(state) = &mut app.mode {
         super::dialogs::draw_compose_dialog(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -957,6 +1083,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::SteeringPrompt(state) = &mut app.mode {
         super::dialogs::draw_steering_prompt_dialog(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -966,6 +1093,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let view = state.from_view.as_ref().unwrap();
         draw_view_pane(frame, app, view, false, false);
         super::picker::draw_command_picker(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -980,6 +1108,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         let view = state.from_view.as_ref().unwrap();
         draw_view_pane(frame, app, view, false, false);
         super::picker::draw_markdown_file_picker(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -990,6 +1119,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_view_pane(frame, app, view, false, false);
         let rows = app.bookmark_picker_rows();
         super::picker::draw_bookmark_picker(frame, state, &rows, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }
 
@@ -1014,6 +1144,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
         draw_view_pane(frame, app, &temp_view, false, false);
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
+        draw_view_context_bar(frame, &temp_view, &app.theme);
         return;
     }
 
@@ -1233,6 +1364,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::ConfigWizard(state) = &mut app.mode {
         super::dialogs::draw_config_wizard_dialog(frame, state, &app.theme);
+    }
+
+    draw_mode_context_bar(frame, &app.mode, &app.theme);
+    match &app.mode {
+        AppMode::DeletingFeatureInProgress(state) => {
+            draw_feature_context_bar(frame, &state.project_name, &state.feature_name, &app.theme);
+        }
+        AppMode::RunningHook(state) => {
+            draw_feature_context_bar(frame, &state.project_name, &state.branch, &app.theme);
+        }
+        AppMode::HookPrompt(state) => match &state.next {
+            crate::app::HookNext::WorktreeCreated {
+                project_name,
+                branch,
+                ..
+            } => draw_feature_context_bar(frame, project_name, branch, &app.theme),
+            crate::app::HookNext::StartFeature { pi, fi }
+            | crate::app::HookNext::StopFeature { pi, fi } => {
+                if let Some(project) = app.store.projects.get(*pi)
+                    && let Some(feature) = project.features.get(*fi)
+                {
+                    draw_feature_context_bar(frame, &project.name, &feature.name, &app.theme);
+                }
+            }
+        },
+        _ => {}
     }
 
     super::draw_toasts(frame, &app.toasts, &app.theme);

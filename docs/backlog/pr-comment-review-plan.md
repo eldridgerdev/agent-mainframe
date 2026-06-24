@@ -371,8 +371,12 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 
 ### Epic B — Fix injection into an agent session
 
-- [ ] Minimal fix-prompt assembler (comment + diff_hunk + file:line);
-      token estimate shown.
+- [x] Minimal fix-prompt assembler (`PrComment::fix_prompt`): one instruction
+      line + `file:line` pointer + bot-stripped comment text + GitHub diff hunk,
+      with **no file contents** injected (token principle #3). Outdated comments
+      get a "line has since changed" note; conversation/summary comments omit the
+      `File:` line. Token estimate via `estimate_tokens` (~4 chars/token) for the
+      confirm-dialog "~N tokens" hint. Unit-tested. → `src/app/pr_review.rs`.
 - [ ] Fix-target session strategy: **spin up and reuse one dedicated
       review session by default**; offer "reuse the feature's existing
       live session" as an option. Reuse the existing one for the whole

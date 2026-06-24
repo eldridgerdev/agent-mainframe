@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread};
@@ -24,7 +25,7 @@ use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComm
 const SNIPPET_LEN: usize = 80;
 
 /// What kind of GitHub comment this is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommentKind {
     /// Inline review comment anchored to a file/line.
     Inline,
@@ -36,7 +37,7 @@ pub enum CommentKind {
 
 /// Local triage decision, cached in SQLite later. GitHub thread resolution is
 /// the source of truth for "done"; this is the local layer on top of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TriageState {
     #[default]
     Untriaged,
@@ -47,7 +48,7 @@ pub enum TriageState {
 }
 
 /// One normalized, display-ready comment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrComment {
     pub id: u64,
     pub kind: CommentKind,
@@ -85,7 +86,7 @@ impl PrComment {
 }
 
 /// A fully normalized PR review: the resolved PR plus every triageable comment.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrReview {
     pub pr: PrRef,
     pub comments: Vec<PrComment>,
@@ -294,9 +295,56 @@ impl App {
         }
 
         match GhCli::resolve_pr(&workdir) {
-            Ok(PrResolution::Found(pr)) => self.start_pr_review_fetch(workdir, pr),
+            Ok(PrResolution::Found(pr)) => self.enter_pr_review(workdir, pr),
             Ok(PrResolution::NoPrForBranch) => self.prompt_pr_number(workdir, None),
             Err(e) => self.show_error(e),
+        }
+    }
+
+    /// Open the review pane for a resolved PR, preferring the SQLite cache.
+    ///
+    /// A cache hit (same `PR# + head SHA`) skips the four `gh` calls entirely and
+    /// shows the stored comments instantly; a miss falls back to the background
+    /// fetch. Either path spends zero agent tokens. Manual refresh
+    /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
+    fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
+        if let Some(review) = self.load_cached_pr_review(&pr) {
+            self.log_info(
+                "pr_review",
+                format!("cache hit for PR #{} @ {}", pr.number, pr.head_sha),
+            );
+            self.mode = AppMode::PrReview(PrReviewState {
+                workdir,
+                review,
+                selected: 0,
+                detail_scroll: 0,
+                hide_resolved: false,
+            });
+            return;
+        }
+        self.start_pr_review_fetch(workdir, pr);
+    }
+
+    /// Look up a cached, normalized review for this PR's head SHA. Returns `None`
+    /// on a miss, when there's no DB, or when the cache read fails (non-fatal —
+    /// the caller just re-fetches).
+    fn load_cached_pr_review(&self, pr: &PrRef) -> Option<PrReview> {
+        self.db
+            .as_ref()?
+            .load_pr_review_cache(pr.number, &pr.head_sha)
+            .ok()
+            .flatten()
+    }
+
+    /// Persist a freshly-fetched review under its `PR# + head SHA` key so the
+    /// next open is a cache hit. A write failure is non-fatal (logged, not shown).
+    fn cache_pr_review(&mut self, review: &PrReview) {
+        let result = match self.db.as_ref() {
+            Some(db) => db.save_pr_review_cache(review),
+            None => return,
+        };
+        if let Err(e) = result {
+            self.log_warn("pr_review", format!("cache write failed: {e}"));
         }
     }
 
@@ -352,8 +400,23 @@ impl App {
         };
 
         match GhCli::fetch_pr_by_number(&workdir, number) {
-            Ok(pr) => self.start_pr_review_fetch(workdir, pr),
+            Ok(pr) => self.enter_pr_review(workdir, pr),
             Err(e) => self.prompt_pr_number(workdir, Some(e.to_string())),
+        }
+    }
+
+    /// Re-fetch the currently-open PR, bypassing the cache. Re-resolves the PR
+    /// first so a new head SHA (e.g. after pushing fixes) is picked up, then
+    /// fetches fresh comments and overwrites the cache row. Zero agent tokens.
+    pub fn refresh_pr_review(&mut self) {
+        let (workdir, number) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.number),
+            _ => return,
+        };
+        self.log_info("pr_review", format!("refreshing PR #{number}"));
+        match GhCli::fetch_pr_by_number(&workdir, number) {
+            Ok(pr) => self.start_pr_review_fetch(workdir, pr),
+            Err(e) => self.show_error(e),
         }
     }
 
@@ -402,6 +465,7 @@ impl App {
                             "pr_review",
                             format!("loaded {} comments", review.comments.len()),
                         );
+                        self.cache_pr_review(&review);
                         self.mode = AppMode::PrReview(PrReviewState {
                             workdir,
                             review,

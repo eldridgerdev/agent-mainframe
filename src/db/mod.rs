@@ -1,5 +1,6 @@
 mod debug_log;
 mod migrations;
+mod pr_review_cache;
 mod session_status;
 pub mod store;
 mod token_cache;
@@ -81,6 +82,23 @@ impl AmfDb {
 
     pub fn evict_stale_token_cache(&self) -> Result<()> {
         token_cache::evict_stale(&self.conn)
+    }
+
+    /// Cached normalized PR review for `(pr_number, head_sha)`, or `None` on miss.
+    pub fn load_pr_review_cache(
+        &self,
+        pr_number: u32,
+        head_sha: &str,
+    ) -> Result<Option<crate::app::pr_review::PrReview>> {
+        pr_review_cache::load(&self.conn, pr_number, head_sha)
+    }
+
+    pub fn save_pr_review_cache(&self, review: &crate::app::pr_review::PrReview) -> Result<()> {
+        pr_review_cache::save(&self.conn, review)
+    }
+
+    pub fn evict_stale_pr_review_cache(&self) -> Result<()> {
+        pr_review_cache::evict_stale(&self.conn)
     }
 
     pub fn append_log_entry(&self, entry: &crate::debug::LogEntry) -> Result<()> {

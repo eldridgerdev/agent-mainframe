@@ -1923,6 +1923,7 @@ impl App {
         // Seed in-memory caches from DB so first use after restart is fast.
         if let Some(ref db) = app.db {
             let _ = db.evict_stale_token_cache();
+            let _ = db.evict_stale_pr_review_cache();
             if let Ok(entries) = db.load_token_cache() {
                 app.token_tracker.seed_from_db_cache(entries);
             }

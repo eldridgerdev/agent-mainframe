@@ -9,8 +9,8 @@ const DETAIL_SCROLL_STEP: usize = 5;
 /// Key handling for the full-screen PR comment-review pane.
 ///
 /// Read-only triage for now: navigate the comment list, scroll the detail,
-/// hide/show resolved comments, and exit. Action keys (fix / reply / resolve)
-/// arrive with later epics.
+/// hide/show resolved comments, refresh from GitHub, and exit. Action keys
+/// (fix / reply / resolve) arrive with later epics.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -22,6 +22,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_select_next(),
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
+        KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('g') => app.open_pr_number_prompt(),
         _ => {}
     }

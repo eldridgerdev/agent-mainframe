@@ -149,7 +149,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         "h hide-resolved"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   ^d/^u scroll   {toggle_hint}   g other-PR   esc/q close"),
+        format!(" j/k move   ^d/^u scroll   {toggle_hint}   r refresh   g other-PR   esc/q close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, outer[2]);

@@ -87,8 +87,8 @@ any order.
 
 ## Progress
 
-- [ ] Paste-vs-submit toggle for the agent prompt
-- [ ] Notes scroll-to-bottom precision (wrapped height)
+- [x] Paste-vs-submit toggle for the agent prompt
+- [x] Notes scroll-to-bottom precision (wrapped height)
 - [x] Multi-line feedback editor (reuse `TextEditor`)
 - [ ] Line / hunk-level comments
 - [ ] On-demand walkthrough for noteless files

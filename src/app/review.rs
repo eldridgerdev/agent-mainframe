@@ -161,14 +161,14 @@ impl App {
         }
     }
 
-    /// Max scroll offset for the current file's note (in raw lines).
+    /// Max scroll offset for the current file's note, in rendered (markdown-
+    /// wrapped) visual lines. Uses the line count and viewport height recorded
+    /// by the renderer so a long soft-wrapped note scrolls fully to its visual
+    /// bottom rather than clamping at the raw line count.
     fn review_note_max_scroll(state: &DiffViewerState) -> usize {
         state
-            .files
-            .get(state.selected_file)
-            .and_then(|f| state.review_notes.get(&f.path))
-            .map(|note| note.lines().count().saturating_sub(1))
-            .unwrap_or(0)
+            .notes_rendered_lines
+            .saturating_sub(state.notes_view_height)
     }
 
     pub fn review_notes_scroll_down(&mut self, amount: usize) {
@@ -318,12 +318,19 @@ impl App {
                             let prompt = "A reviewer left feedback on these changes in \
                                  .claude/final-review-feedback.md. Please read that file and \
                                  address every item in it.";
-                            let sent = self
-                                .tmux
-                                .paste_text(session, window, prompt)
-                                .and_then(|()| self.tmux.send_key_name(session, window, "Enter"));
-                            match sent {
-                                Ok(()) => format!("{summary} — sent to agent"),
+                            let submit = self.config.final_review_submit_prompt;
+                            let pasted = self.tmux.paste_text(session, window, prompt).and_then(
+                                |()| {
+                                    if submit {
+                                        self.tmux.send_key_name(session, window, "Enter")
+                                    } else {
+                                        Ok(())
+                                    }
+                                },
+                            );
+                            match pasted {
+                                Ok(()) if submit => format!("{summary} — sent to agent"),
+                                Ok(()) => format!("{summary} — pasted to agent (not submitted)"),
                                 Err(e) => format!("{summary} (couldn't prompt agent: {e})"),
                             }
                         }

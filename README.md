@@ -470,6 +470,7 @@ automatically with defaults on first run.
 | `input_request_wait_seconds` | number | `1.5` | Startup grace period before AMF refreshes background input-request state while viewing a session. Increase it if startup refreshes interfere with the embedded pane; decrease it for faster pending-input updates. |
 | `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
 | `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI. Only the in-app reviewer is supported; the value is retained for compatibility (the legacy `"nvim"`/`"legacy"`/`"custom"` values are accepted and map to the in-app reviewer). |
+| `final_review_submit_prompt` | bool | `true` | When finishing a final review with feedback, auto-submit the "address the feedback" prompt to the feature's agent (paste + Enter). Set to `false` to paste the prompt without sending Enter, so you can eyeball or edit it before submitting. |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |

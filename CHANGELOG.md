@@ -19,6 +19,11 @@ are tagged.
   editors in the final review are now full multi-line editors: press `Enter`
   for a new line and write proper paragraphs or lists, then `Tab` to submit.
   `Ctrl+V` toggles vim keybindings and `Esc` (or `Ctrl+Q`) cancels.
+- **Paste-vs-submit toggle for the final-review prompt.** The new
+  `final_review_submit_prompt` config (default `true`) controls whether
+  finishing a review with feedback auto-submits the "address the feedback"
+  prompt to the feature's agent. Set it to `false` to paste the prompt without
+  sending Enter, so you can eyeball or edit it before submitting.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type
@@ -103,6 +108,11 @@ are tagged.
   so the new session opens immediately and the dashboard returns to a green
   status. If AMF cannot start the feature or create the session, it now shows
   an error toast instead of appearing to do nothing.
+
+- Scrolling to the bottom of a developer note in the final review now reaches
+  the true visual bottom. Long notes that soft-wrap or expand under Markdown
+  rendering were clamped to the raw line count, so the last lines stayed out
+  of view; the scroll limit now tracks the rendered (wrapped) height.
 
 ### Migration
 

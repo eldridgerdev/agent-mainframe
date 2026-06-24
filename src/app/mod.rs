@@ -386,6 +386,16 @@ pub struct AppConfig {
     /// so enabling this never forces RC onto an incompatible session.
     #[serde(default)]
     pub remote_control_default: bool,
+    /// When finishing a final review, whether to auto-submit the
+    /// "address the feedback" prompt to the feature's agent (paste +
+    /// Enter). When false, AMF pastes the prompt but does not send Enter,
+    /// so the reviewer can eyeball/edit it before submitting.
+    #[serde(default = "default_true")]
+    pub final_review_submit_prompt: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -429,6 +439,7 @@ impl Default for AppConfig {
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
             remote_control_default: false,
+            final_review_submit_prompt: true,
         }
     }
 }

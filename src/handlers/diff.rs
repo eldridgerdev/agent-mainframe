@@ -502,6 +502,103 @@ mod tests {
     }
 
     #[test]
+    fn paste_without_submit_does_not_send_enter() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let mut feature = Feature::new(
+            "feature".to_string(),
+            "feature".to_string(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        feature.status = ProjectStatus::Active;
+        let session = feature.add_session(SessionKind::Claude).clone();
+        let agent_session = feature.tmux_session.clone();
+        let agent_window = session.tmux_window.clone();
+
+        let mut project = Project::new(
+            "demo".to_string(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
+        project.features.push(feature);
+
+        // The prompt is pasted but Enter must NOT be sent: no send_key_name
+        // expectation is registered, so mockall fails if it is called.
+        let mut tmux = MockTmuxOps::new();
+        let (ps, pw) = (agent_session.clone(), agent_window.clone());
+        tmux.expect_paste_text()
+            .withf(move |session, window, text| {
+                session == ps && window == pw && text.contains("final-review-feedback.md")
+            })
+            .times(1)
+            .returning(|_, _, _| Ok(()));
+
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![project],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app =
+            App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        app.config.final_review_submit_prompt = false;
+
+        let mut state = DiffViewerState::new(
+            ViewState::new(
+                "demo".into(),
+                "feature".into(),
+                agent_session.clone(),
+                agent_window.clone(),
+                "Claude".into(),
+                SessionKind::Claude,
+                VibeMode::Vibeless,
+                true,
+            ),
+            dir.path().to_path_buf(),
+        );
+        state.review = true;
+        state.files = vec![DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        }];
+        app.mode = AppMode::DiffViewer(state);
+
+        // Reject the file with feedback, then finish.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        assert!(dir.path().join(".claude/final-review-feedback.md").exists());
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+        assert!(
+            app.message
+                .as_deref()
+                .is_some_and(|m| m.contains("not submitted"))
+        );
+    }
+
+    #[test]
     fn reject_then_escape_cancels_feedback_without_recording() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);

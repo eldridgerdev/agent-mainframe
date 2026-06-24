@@ -78,6 +78,11 @@ are tagged.
 
 ### Fixed
 
+- Pasting now works in the prompt library editor. Bracketed-paste events
+  were dropped in the New/Edit Prompt dialog and the placeholder fill flow,
+  so clipboard text never landed in the name, tags, body, or fill fields.
+  Pastes now route to the focused single-line field (newlines collapsed) or
+  the multi-line body/fill editor.
 - Pasting images into the prompt composer now works on Windows/WSL. The
   composer reads screenshots and copied images from the Windows clipboard,
   and when you send a prompt the image now reliably arrives with your text

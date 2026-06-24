@@ -31,6 +31,32 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         matches!(&app.mode, AppMode::DiffViewer(state) if state.notes_expanded);
 
     if review {
+        // A pending finish confirmation (some files have no verdict) takes
+        // precedence: y/q finish anyway, Esc cancels, and any other key clears
+        // the prompt and is handled normally (so e.g. deciding the last file
+        // then pressing q finishes cleanly).
+        let finish_confirm =
+            matches!(&app.mode, AppMode::DiffViewer(state) if state.finish_confirm);
+        if finish_confirm {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('q') => {
+                    app.finish_final_review()?;
+                    return Ok(());
+                }
+                KeyCode::Esc => {
+                    if let AppMode::DiffViewer(state) = &mut app.mode {
+                        state.finish_confirm = false;
+                    }
+                    return Ok(());
+                }
+                _ => {
+                    if let AppMode::DiffViewer(state) = &mut app.mode {
+                        state.finish_confirm = false;
+                    }
+                }
+            }
+        }
+
         // With the notes panel expanded, navigation scrolls the note rather
         // than the diff.
         if notes_expanded {
@@ -144,8 +170,12 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_viewer_select_prev_file();
                 return Ok(());
             }
+            KeyCode::Char('u') => {
+                app.diff_review_jump_next_undecided();
+                return Ok(());
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
-                app.finish_final_review()?;
+                app.confirm_or_finish_review()?;
                 return Ok(());
             }
             _ => {}
@@ -756,6 +786,9 @@ mod tests {
         }
 
         // Finishing with only a line comment still writes the feedback file.
+        // The file has no verdict, so the first q asks to confirm; the second
+        // finishes.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
@@ -817,6 +850,75 @@ mod tests {
         app.poll_review_walkthrough().unwrap();
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(state.generated_notes.is_empty()),
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn finishing_with_undecided_files_requires_confirmation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        // Approve only a.rs; b.rs has no verdict.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        // q shows the confirmation rather than finishing.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.finish_confirm));
+        // A second q finishes.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn escape_cancels_finish_confirmation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // both undecided
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.finish_confirm));
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap(); // cancel
+        match &app.mode {
+            AppMode::DiffViewer(s) => assert!(!s.finish_confirm),
+            _ => panic!("should still be reviewing"),
+        }
+    }
+
+    #[test]
+    fn deciding_during_confirmation_clears_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // undecided -> confirm
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.finish_confirm));
+        // Approving clears the confirmation and records the verdict.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(s) => {
+                assert!(!s.finish_confirm);
+                assert!(s.decisions.contains_key("a.rs"));
+            }
+            _ => panic!("expected diff viewer"),
+        }
+        // q now finishes immediately (all files decided).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn jump_to_next_undecided_skips_decided_files() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs", "c.rs"]);
+
+        // Decide a.rs and b.rs, then return to a.rs.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a -> b
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve b -> c
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('p'))).unwrap(); // c -> b
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('p'))).unwrap(); // b -> a
+
+        // u jumps past the decided a.rs/b.rs to the only undecided file, c.rs.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('u'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(s) => assert_eq!(s.selected_file, 2),
             _ => panic!("expected diff viewer"),
         }
     }

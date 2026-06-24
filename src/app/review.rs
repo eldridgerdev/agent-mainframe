@@ -428,6 +428,66 @@ impl App {
         }
     }
 
+    /// Number of files in the current review that have no verdict
+    /// (neither approved, rejected, nor explicitly skipped via `s`).
+    fn diff_review_undecided_count(state: &DiffViewerState) -> usize {
+        state
+            .files
+            .iter()
+            .filter(|file| !state.decisions.contains_key(&file.path))
+            .count()
+    }
+
+    /// Finish the review, but if some files still have no verdict, gate the
+    /// finish behind a confirmation rather than ending silently. A second
+    /// confirm (handled in the key layer) calls `finish_final_review` directly.
+    pub fn confirm_or_finish_review(&mut self) -> Result<()> {
+        let undecided = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => Self::diff_review_undecided_count(state),
+            _ => return self.finish_final_review(),
+        };
+        if undecided == 0 {
+            return self.finish_final_review();
+        }
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.finish_confirm = true;
+        }
+        self.message = Some(format!(
+            "{undecided} file(s) have no verdict — q/y to finish anyway, u to jump to the next, \
+             Esc to keep reviewing"
+        ));
+        Ok(())
+    }
+
+    /// Move the selection to the next file with no verdict (wrapping), so a
+    /// reviewer can sweep up everything they skipped past.
+    pub fn diff_review_jump_next_undecided(&mut self) {
+        let found = match &self.mode {
+            AppMode::DiffViewer(state) if state.review => {
+                let n = state.files.len();
+                (1..=n).find_map(|offset| {
+                    let idx = (state.selected_file + offset) % n;
+                    (!state.decisions.contains_key(&state.files[idx].path)).then_some(idx)
+                })
+            }
+            _ => return,
+        };
+        match found {
+            Some(idx) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.selected_file = idx;
+                    state.patch_scroll = 0;
+                    state.notes_scroll = 0;
+                    if state.comment_cursor.is_some() {
+                        state.comment_cursor = Some(0);
+                        state.cursor_sync_to_view = true;
+                    }
+                }
+            }
+            None => self.message = Some("All files have a verdict".to_string()),
+        }
+    }
+
     /// Finish the review: write `.claude/final-review-feedback.md` for any
     /// rejected files and return to the feature view with a summary message.
     pub fn finish_final_review(&mut self) -> Result<()> {

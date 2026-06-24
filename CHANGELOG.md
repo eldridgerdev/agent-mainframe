@@ -66,6 +66,11 @@ are tagged.
 
 ### Changed
 
+- **Clearer feature setup options.** The new-feature mode step now shows a
+  distinct details callout when you hover or focus optional settings like
+  Review, Plan, Chrome, Remote Control, and Steering, making the tradeoffs
+  easier to understand without crowding the mode picker.
+
 - **New/Edit Prompt dialog redesign.** Each field (Name, Tags, Prompt body)
   now sits in its own labelled box with clear spacing instead of stacking
   flush against each other. The focused field's border highlights, the

@@ -447,8 +447,8 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(if has_rc_row { 1 } else { 0 }),    // [14] remote_control
             Constraint::Length(0),                                  // [15] spacer
             Constraint::Length(1),                                  // [16] steering coach checkbox
-            Constraint::Length(0),                                  // [17] extra space
-            Constraint::Min(0),
+            Constraint::Length(1),                                  // [17] spacer before focused help
+            Constraint::Min(0),                                     // [18] focused option help
             Constraint::Length(1), // [19] hints
         ])
         .split(inner);
@@ -750,6 +750,35 @@ fn draw_create_feature_branch_mode(
     ])];
     let steering_widget = Paragraph::new(steering_lines);
     frame.render_widget(steering_widget, chunks[16]);
+
+    if state.step == CreateFeatureStep::Mode
+        && let Some(description) = state.focused_mode_description()
+    {
+        let help_area = if chunks[18].height > 3 {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(0),
+                ])
+                .split(chunks[18])[0]
+        } else {
+            chunks[18]
+        };
+        let help = Paragraph::new(Line::from(vec![
+            Span::styled("  Details  ", Style::default().fg(theme.primary.to_color())),
+            Span::styled(description, Style::default().fg(theme.text.to_color())),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(theme.primary.to_color()))
+                .style(Style::default().bg(theme.effective_selection_bg())),
+        )
+        .style(Style::default().bg(theme.effective_selection_bg()))
+        .wrap(Wrap { trim: true });
+        frame.render_widget(help, help_area);
+    }
 
     let hints = if state.step == CreateFeatureStep::Mode {
         Paragraph::new(Line::from(vec![

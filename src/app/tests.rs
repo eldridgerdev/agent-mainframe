@@ -2838,6 +2838,67 @@ fn create_feature_mode_allows_toggling_remote_control_for_claude() {
 }
 
 #[test]
+fn create_feature_mode_review_focus_describes_review_notes() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::Mode;
+        state.mode_focus = 2;
+        assert_eq!(
+            state.focused_mode_description(),
+            Some("Write developer notes with every code change for a detailed code review (may use more tokens).")
+        );
+    } else {
+        panic!("expected CreatingFeature mode");
+    }
+}
+
+#[test]
+fn create_feature_mode_harness_and_vibemode_focus_have_no_description() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::Mode;
+        state.mode_focus = 0;
+        assert_eq!(state.focused_mode_description(), None);
+
+        state.mode_focus = 1;
+        assert_eq!(state.focused_mode_description(), None);
+    } else {
+        panic!("expected CreatingFeature mode");
+    }
+}
+
+#[test]
+fn create_feature_mouse_hover_over_review_updates_mode_focus() {
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut app = app_in_creating_feature_mode(store, "my-project", "other-feat", true);
+    if let AppMode::CreatingFeature(state) = &mut app.mode {
+        state.step = CreateFeatureStep::Mode;
+        state.mode_focus = 0;
+    }
+
+    crate::handlers::handle_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 10,
+            row: 25,
+            modifiers: KeyModifiers::NONE,
+        },
+        97,
+    )
+    .unwrap();
+
+    match &app.mode {
+        AppMode::CreatingFeature(state) => assert_eq!(state.mode_focus, 2),
+        _ => panic!("expected CreatingFeature mode"),
+    }
+}
+
+#[test]
 fn create_feature_mode_remote_control_toggle_inert_when_unavailable() {
     use crossterm::event::KeyCode;
 

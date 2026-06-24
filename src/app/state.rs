@@ -1530,6 +1530,21 @@ impl CreateFeatureState {
         }
     }
 
+    pub fn focused_mode_description(&self) -> Option<&'static str> {
+        match self.mode_focus {
+            0 | 1 => None,
+            2 => Some(
+                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+            ),
+            3 => Some("Start in planning mode so the agent discusses the approach before editing."),
+            4 if self.agent == AgentKind::Claude => Some("Enable browser automation for features that need Chrome."),
+            4 => Some("Use the prompt coach to sharpen the feature request before launch."),
+            5 if self.agent == AgentKind::Claude && self.remote_control_available => Some("Enable claude.ai and mobile sync for this Claude session."),
+            5 if self.agent == AgentKind::Claude => Some("Remote Control is unavailable for the selected Claude auth provider."),
+            _ => Some("Use the prompt coach to sharpen the feature request before launch."),
+        }
+    }
+
     pub fn refresh_prompt_analysis(&mut self) {
         self.prompt_analysis = crate::app::analyze_prompt(&self.task_prompt);
     }

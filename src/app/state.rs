@@ -912,9 +912,8 @@ pub struct PrNumberPromptState {
 /// State for the full-screen PR comment-review pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
-    /// Working directory of the feature whose PR we're reviewing. Retained for
-    /// the manual-refresh action (next Epic A item), which re-fetches from here.
-    #[allow(dead_code)]
+    /// Working directory of the feature whose PR we're reviewing. Used by the
+    /// manual-refresh action (`r`) to re-resolve and re-fetch the PR.
     pub workdir: PathBuf,
     /// The fetched, normalized review.
     pub review: crate::app::pr_review::PrReview,

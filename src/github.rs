@@ -16,8 +16,8 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 
@@ -27,7 +27,7 @@ use std::process::Command;
 pub struct GhCli;
 
 /// A resolved pull request, enough to drive every subsequent `gh` call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrRef {
     pub number: u32,
     pub head_sha: String,

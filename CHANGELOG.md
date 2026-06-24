@@ -92,7 +92,10 @@ are tagged.
   number reports the error inline so you can correct it). Everything is fetched
   with the GitHub CLI and stays read-only for now — acting on comments (sending
   a fix to the agent, replying) is coming in a later release. Requires the `gh`
-  CLI installed and authenticated.
+  CLI installed and authenticated. Re-opening a PR whose latest commit hasn't
+  changed is now instant and makes no network calls — comments are cached
+  locally per PR and head commit — and pressing `r` in the pane refreshes from
+  GitHub (picking up new comments and any commits you've pushed) on demand.
 
 ### Changed
 

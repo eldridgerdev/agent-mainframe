@@ -41,6 +41,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             MIGRATION_006,
         ),
         ("Add prompt_templates table for the prompt library", MIGRATION_007),
+        (
+            "Cache normalized PR reviews keyed by PR# + head SHA",
+            MIGRATION_008,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -127,6 +131,18 @@ CREATE TABLE IF NOT EXISTS prompt_templates (
     updated_at   TEXT NOT NULL,
     sort_order   INTEGER NOT NULL DEFAULT 0
 );
+";
+
+const MIGRATION_008: &str = "
+CREATE TABLE IF NOT EXISTS pr_review_cache (
+    pr_number  INTEGER NOT NULL,
+    head_sha   TEXT NOT NULL,
+    json       TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (pr_number, head_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_review_cache_fetched
+    ON pr_review_cache(fetched_at);
 ";
 
 const MIGRATION_001: &str = "

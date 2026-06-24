@@ -355,7 +355,16 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       branch's auto-detected one). → `src/handlers/normal.rs`,
       `src/handlers/pr_review.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
       `src/ui/dialogs/pr_review.rs`.
-- [ ] SQLite cache keyed by `PR# + head SHA`; manual refresh key.
+- [x] SQLite cache keyed by `PR# + head SHA` (`pr_review_cache` table, migration
+      008; `PrReview`/`PrComment`/`PrRef` made `Serialize`/`Deserialize`). Opening
+      a PR whose head commit is unchanged is a cache hit — zero `gh` calls, instant
+      pane (`enter_pr_review`); a miss falls back to the background fetch and writes
+      the result to the cache on completion. Manual refresh key (`r`) re-resolves
+      the PR (picking up a new head SHA after a push) and re-fetches, bypassing the
+      cache and overwriting the row. Stale rows (>7 days) are evicted at startup
+      alongside the token cache. → `src/db/pr_review_cache.rs`,
+      `src/db/migrations.rs`, `src/app/pr_review.rs`, `src/github.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** open any PR for the current branch and read every
   comment inside AMF, grouped and navigable, with zero agent tokens
   spent and a cache hit on re-open.

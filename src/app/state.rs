@@ -284,9 +284,15 @@ pub struct DiffViewerState {
     pub feedback_editing: bool,
     /// True while the user is typing general (non-file) review feedback.
     pub editing_general: bool,
-    /// Active editor buffer, shared by the per-file and general editors (only
-    /// one is open at a time).
-    pub feedback_input: String,
+    /// Active editor, shared by the per-file rejection editor and the
+    /// general-feedback editor (only one is open at a time). Vim-capable so
+    /// reviewers can write multi-paragraph / list feedback.
+    pub feedback_editor: TextEditor,
+    /// Scroll offset (in wrapped visual lines) for the feedback editor.
+    pub feedback_scroll: usize,
+    /// When true, the next draw scrolls the feedback editor to keep the cursor
+    /// visible.
+    pub feedback_sync_to_cursor: bool,
     /// Overall review feedback not tied to a specific file.
     pub general_feedback: String,
     /// File path -> developer note parsed from `.claude/review-notes.md`
@@ -315,7 +321,9 @@ impl DiffViewerState {
             decisions: std::collections::HashMap::new(),
             feedback_editing: false,
             editing_general: false,
-            feedback_input: String::new(),
+            feedback_editor: TextEditor::new(String::new()),
+            feedback_scroll: 0,
+            feedback_sync_to_cursor: true,
             general_feedback: String::new(),
             review_notes: std::collections::HashMap::new(),
             notes_expanded: false,

@@ -78,7 +78,9 @@ impl App {
                     ReviewDecision::Approve => None,
                 })
                 .unwrap_or_default();
-            state.feedback_input = existing;
+            state.feedback_editor = crate::editor::TextEditor::new(existing);
+            state.feedback_scroll = 0;
+            state.feedback_sync_to_cursor = true;
             state.feedback_editing = true;
         }
     }
@@ -90,7 +92,10 @@ impl App {
             if !state.review {
                 return;
             }
-            state.feedback_input = state.general_feedback.clone();
+            state.feedback_editor =
+                crate::editor::TextEditor::new(state.general_feedback.clone());
+            state.feedback_scroll = 0;
+            state.feedback_sync_to_cursor = true;
             state.editing_general = true;
             state.feedback_editing = false;
         }
@@ -103,9 +108,9 @@ impl App {
             if !state.editing_general {
                 return;
             }
-            state.general_feedback = state.feedback_input.trim().to_string();
+            state.general_feedback = state.feedback_editor.text().trim().to_string();
             state.editing_general = false;
-            state.feedback_input.clear();
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
     }
 
@@ -113,24 +118,7 @@ impl App {
         if let AppMode::DiffViewer(state) = &mut self.mode {
             state.feedback_editing = false;
             state.editing_general = false;
-            state.feedback_input.clear();
-        }
-    }
-
-    pub fn diff_review_push_feedback_char(&mut self, c: char) {
-        if let AppMode::DiffViewer(state) = &mut self.mode
-            && (state.feedback_editing || state.editing_general)
-            && state.feedback_input.len() < 2000
-        {
-            state.feedback_input.push(c);
-        }
-    }
-
-    pub fn diff_review_pop_feedback_char(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode
-            && (state.feedback_editing || state.editing_general)
-        {
-            state.feedback_input.pop();
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
     }
 
@@ -141,14 +129,14 @@ impl App {
             if !state.feedback_editing {
                 return;
             }
-            let feedback = state.feedback_input.trim().to_string();
+            let feedback = state.feedback_editor.text().trim().to_string();
             if let Some(file) = state.files.get(state.selected_file) {
                 state
                     .decisions
                     .insert(file.path.clone(), ReviewDecision::Reject { feedback });
             }
             state.feedback_editing = false;
-            state.feedback_input.clear();
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
         self.diff_review_advance();
     }

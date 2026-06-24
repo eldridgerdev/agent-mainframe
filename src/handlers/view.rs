@@ -547,14 +547,14 @@ mod tests {
                     && state.files.iter().any(|file| file.path == "src.txt")
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
         assert!(matches!(
             &app.mode,
             AppMode::DiffViewer(state)
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
 
         app.activate_leader();
@@ -568,7 +568,7 @@ mod tests {
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 
@@ -582,7 +582,7 @@ mod tests {
         // Opening the diff viewer is async (DiffViewerLoading); drive the
         // load to completion as the event loop does before asserting.
         app.complete_diff_viewer_loading();
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
 
         assert!(matches!(
             &app.mode,
@@ -590,7 +590,7 @@ mod tests {
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('j')).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
 
         assert!(app.diff_viewer_selected_file_is_new());
         assert!(matches!(
@@ -603,21 +603,21 @@ mod tests {
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('v')).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
         assert!(matches!(
             &app.mode,
             AppMode::DiffViewer(state)
                 if matches!(state.layout, crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Char('k')).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Char('k'))).unwrap();
         assert!(!app.diff_viewer_selected_file_is_new());
         assert!(matches!(
             app.diff_viewer_layout(),
             Some(crate::app::DiffViewerLayout::SideBySide)
         ));
 
-        crate::handlers::handle_diff_viewer_key(&mut app, KeyCode::Esc).unwrap();
+        crate::handlers::handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('d')), 20).unwrap();
         // Opening the diff viewer is async (DiffViewerLoading); drive the

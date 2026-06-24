@@ -86,6 +86,26 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                 }
             }
         }
+        AppMode::PromptEditor(_) => {
+            if let AppMode::PromptEditor(state) = &mut app.mode {
+                if state.name_field_active {
+                    // The name is a single line; collapse any pasted newlines.
+                    for chunk in text.split(|c| c == '\n' || c == '\r') {
+                        state.name.push_str(chunk);
+                    }
+                } else {
+                    state.editor.insert_str(text);
+                }
+            }
+        }
+        AppMode::PlaceholderFill(_) => {
+            if let AppMode::PlaceholderFill(state) = &mut app.mode {
+                // Select slots have no text field to paste into.
+                if !state.is_select() {
+                    state.input.insert_str(text);
+                }
+            }
+        }
         _ => {}
     }
     Ok(())

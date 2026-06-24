@@ -1,17 +1,27 @@
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::App;
 
+/// Lines scrolled per detail-pane scroll keypress.
+const DETAIL_SCROLL_STEP: usize = 5;
+
 /// Key handling for the full-screen PR comment-review pane.
 ///
-/// Read-only triage for now: navigate the comment list and exit. Action keys
-/// (fix / reply / resolve) arrive with later epics.
+/// Read-only triage for now: navigate the comment list, scroll the detail,
+/// hide/show resolved comments, and exit. Action keys (fix / reply / resolve)
+/// arrive with later epics.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_pr_review(),
+        KeyCode::Char('d') if ctrl => app.pr_review_scroll_detail_down(DETAIL_SCROLL_STEP),
+        KeyCode::Char('u') if ctrl => app.pr_review_scroll_detail_up(DETAIL_SCROLL_STEP),
+        KeyCode::PageDown => app.pr_review_scroll_detail_down(DETAIL_SCROLL_STEP * 2),
+        KeyCode::PageUp => app.pr_review_scroll_detail_up(DETAIL_SCROLL_STEP * 2),
         KeyCode::Down | KeyCode::Char('j') => app.pr_review_select_next(),
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
+        KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         _ => {}
     }
     Ok(())

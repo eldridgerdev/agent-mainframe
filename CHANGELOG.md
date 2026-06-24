@@ -69,10 +69,13 @@ are tagged.
   comments for that branch — inline review comments, review summaries, and
   conversation comments together, each showing its file/line, author, a
   one-line preview, and whether the thread is resolved. Navigate with
-  `j`/`k` to read the full comment and its diff context; `esc`/`q` closes.
-  Everything is fetched with the GitHub CLI and stays read-only for now —
-  acting on comments (sending a fix to the agent, replying) is coming in a
-  later release. Requires the `gh` CLI installed and authenticated.
+  `j`/`k` to read the full comment and its diff context, scroll long comments
+  with `Ctrl+D`/`Ctrl+U` (or `PgDn`/`PgUp`), and press `h` to hide comments
+  already resolved on GitHub so you can focus on what's still open (a counter
+  shows how many are hidden); `esc`/`q` closes. Everything is fetched with the
+  GitHub CLI and stays read-only for now — acting on comments (sending a fix to
+  the agent, replying) is coming in a later release. Requires the `gh` CLI
+  installed and authenticated.
 
 ### Changed
 

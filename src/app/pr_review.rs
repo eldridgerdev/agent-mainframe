@@ -352,6 +352,8 @@ impl App {
                             workdir,
                             review,
                             selected: 0,
+                            detail_scroll: 0,
+                            hide_resolved: false,
                         });
                     }
                     Err(e) => {
@@ -382,19 +384,84 @@ impl App {
 
     pub fn pr_review_select_next(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
-            let len = state.review.comments.len();
-            if len > 0 && state.selected + 1 < len {
-                state.selected += 1;
+            let visible = state.visible_indices();
+            if let Some(next) = visible.iter().find(|&&i| i > state.selected) {
+                state.selected = *next;
+                state.detail_scroll = 0;
             }
         }
     }
 
     pub fn pr_review_select_prev(&mut self) {
-        if let AppMode::PrReview(state) = &mut self.mode
-            && state.selected > 0
-        {
-            state.selected -= 1;
+        if let AppMode::PrReview(state) = &mut self.mode {
+            let visible = state.visible_indices();
+            if let Some(prev) = visible.iter().rev().find(|&&i| i < state.selected) {
+                state.selected = *prev;
+                state.detail_scroll = 0;
+            }
         }
+    }
+
+    /// Toggle hiding GitHub-resolved comments. When the current selection
+    /// becomes hidden, snap to the nearest remaining visible comment.
+    pub fn pr_review_toggle_resolved(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.hide_resolved = !state.hide_resolved;
+            let visible = state.visible_indices();
+            if visible.is_empty() {
+                return;
+            }
+            if !visible.contains(&state.selected) {
+                // Prefer the next visible comment after the old selection,
+                // else the last visible one before it.
+                state.selected = visible
+                    .iter()
+                    .find(|&&i| i >= state.selected)
+                    .or_else(|| visible.last())
+                    .copied()
+                    .unwrap_or(0);
+                state.detail_scroll = 0;
+            }
+        }
+    }
+
+    pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.detail_scroll = state.detail_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn pr_review_scroll_detail_down(&mut self, amount: usize) {
+        let max_scroll = self.pr_review_detail_line_count().saturating_sub(1);
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.detail_scroll = (state.detail_scroll + amount).min(max_scroll);
+        }
+    }
+
+    /// Raw line count of the selected comment's detail content, used to clamp
+    /// detail scrolling. Mirrors the line structure built in
+    /// `ui::dialogs::pr_review::draw_comment_detail`.
+    fn pr_review_detail_line_count(&self) -> usize {
+        match &self.mode {
+            AppMode::PrReview(state) => {
+                state.selected_comment().map_or(0, PrComment::detail_line_count)
+            }
+            _ => 0,
+        }
+    }
+}
+
+impl PrComment {
+    /// Raw line count of this comment's detail rendering. Must stay in sync with
+    /// `ui::dialogs::pr_review::draw_comment_detail`: location header, author
+    /// line, an optional blank + diff hunk, then a blank + body.
+    pub fn detail_line_count(&self) -> usize {
+        let mut n = 2; // location header + author line
+        if let Some(hunk) = &self.diff_hunk {
+            n += 1 + hunk.lines().count();
+        }
+        n += 1 + self.body.lines().count();
+        n
     }
 }
 

@@ -35,8 +35,14 @@ the agent is only paid for the work the user explicitly asks for.
   comments, and bot reviews. Bots are listed **inline like any
   reviewer** (no special grouping), but their boilerplate is **stripped
   before any text reaches the agent**.
-- **Agent action on "fix":** inject a prompt into the **live tmux
-  session** (reuse warm context; don't cold-start headless).
+- **Agent action on "fix":** inject the prompt into a tmux agent
+  session. **Default: spin up (and reuse) one dedicated review session**
+  for all of the PR's fixes — pays per-session overhead once and
+  amortizes file reads across comments (most token-efficient for
+  multi-comment PRs). **Option: reuse the feature's existing live
+  session** when the user prefers warm in-progress context. Never a new
+  session per comment. (See the "which agent session" decision under
+  Open questions.)
 - **UI:** a **dedicated full-screen review pane** (sibling of the
   embedded tmux view / diff viewer), list on the left, detail + actions
   on the right.
@@ -75,9 +81,14 @@ This is the part to get right. Principles, in priority order:
    one instruction line. **No file contents are injected**; the agent
    already has the repo and opens what it needs. This is the single
    biggest token lever.
-4. **Reuse the warm session.** Injecting into the live agent pane reuses
-   accumulated context instead of `run_headless` re-reading the codebase
-   from cold on every comment.
+4. **One persistent session for all fixes — never one-per-comment.**
+   Default to a dedicated review session reused across every fix so the
+   per-session overhead (system prompt, tool definitions, skills) is paid
+   once and file reads are amortized across comments. A fresh session per
+   comment re-reads the same files cold and repeats that overhead N
+   times. Reusing the feature's existing live session is offered as an
+   option (warm context) but isn't the default. Either way, keep the
+   agent alive instead of cold-starting `run_headless` per comment.
 5. **Strip boilerplate before sending.** Bot comments wrap content in
    `<details>`, collapsible "prompt for AI agents" blocks, signatures,
    and badges. Strip these (and quoted diffs the agent already has) so
@@ -337,17 +348,22 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
   comment inside AMF, grouped and navigable, with zero agent tokens
   spent and a cache hit on re-open.
 
-### Epic B — Fix injection into the live session
+### Epic B — Fix injection into an agent session
 
 - [ ] Minimal fix-prompt assembler (comment + diff_hunk + file:line);
       token estimate shown.
+- [ ] Fix-target session strategy: **spin up and reuse one dedicated
+      review session by default**; offer "reuse the feature's existing
+      live session" as an option. Reuse the existing one for the whole
+      PR; never one session per comment.
 - [ ] Confirm/edit dialog; deliver via the compose/prompt-library
-      injection seam to the feature's agent window.
+      injection seam to the chosen agent window.
 - [ ] Local `TriageState` persisted in SQLite (`Fixing`/`Done`/etc.);
       manual "mark done" with no auto-advance.
-- **Acceptance:** select a comment, inject a scoped fix into the warm
-  agent session, watch it work, mark done — without leaving AMF and
-  without injecting any file contents.
+- **Acceptance:** select a comment, inject a scoped fix into the review
+  session (default dedicated, or the live session by choice), watch it
+  work, mark done — without leaving AMF and without injecting any file
+  contents.
 
 ### Epic C — Replies & resolution (GitHub writes)
 
@@ -363,6 +379,19 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 
 ### Epic D — Throughput & polish
 
+- [ ] **Pane clarity & comment readability.** The Epic A pane is
+      functional but dense. Make it easier to read and act on at a
+      glance: visually separate the comment list from the detail (clearer
+      borders/focus, selected-row emphasis), give the detail pane real
+      structure (distinct header / diff-hunk / body / thread sections with
+      spacing and subtle dividers rather than a flat wall of lines),
+      render comment bodies as Markdown (reuse the in-app Markdown
+      renderer — headings, lists, code blocks, inline code) instead of
+      raw text, syntax-highlight the diff hunk, wrap long lines sensibly,
+      and show author/kind/resolution as compact labeled chips. Add a
+      legend/footer that spells out the markers (`✓` resolved,
+      `[outdated]`, bot vs. human). Goal: a reviewer can scan the list and
+      understand any single comment without leaving the pane or squinting.
 - [ ] Opt-in batch mode: queue several "fix" decisions → one numbered
       prompt sharing file context.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).
@@ -403,6 +432,35 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 
 ## Open questions
 
+- **Which agent session runs the fixes? — DECIDED.** Default to spinning
+  up (and reusing) one **dedicated review session** for all of the PR's
+  fixes; offer **reuse-the-existing-live-session** as an option; never
+  one session per comment. Rationale and the options considered:
+  - **Reuse the existing feature session (current plan).** Warm: the
+    agent already has codebase context, and the cached prompt prefix
+    (Anthropic prompt cache, ~5-min TTL) makes continuing cheap. But the
+    session may already carry a long, unrelated conversation, so every
+    fix turn pays for that bloated context, and review work can pollute /
+    disrupt the user's in-progress work.
+  - **One dedicated review session for *all* fixes.** A single fresh
+    harness session used only for this PR's fixes, sequentially. Pays the
+    fixed per-session overhead (system prompt, tool definitions, any
+    skill injection) **once**, and amortizes file reads across comments —
+    especially valuable when several comments touch the same file. Grows
+    over a long PR, but compaction/caching handle that.
+  - **A new session per fix.** Cleanest isolation, smallest context per
+    fix — but **worst for tokens**: it repeats the fixed per-session
+    overhead N times and re-reads the same files cold for every comment.
+  - **Decision:** the **dedicated review session is the default** — the
+    pane spins one up the first time the user fixes a comment and reuses
+    it for the rest of the PR (overhead paid once, file context reused,
+    cache-friendly, and it keeps review work out of the user's working
+    session). **Reusing the feature's existing live session is an opt-in
+    choice** for when warm in-progress context is wanted. One-per-fix is
+    rejected. Relates to token principles #4 (one persistent session) and
+    #8 (opt-in batch). _Still open:_ exactly how the user toggles the
+    choice (per-PR setting vs. a key in the pane vs. config default), and
+    how the dedicated session's lifecycle/cleanup is surfaced.
 - **Reply identity:** replies post as the user's `gh` auth. Fine, but
   should AMF tag AI-drafted replies (e.g. a subtle footer) for honesty?
 - **Drafting model:** dedicated small/fast model for reply drafts vs.

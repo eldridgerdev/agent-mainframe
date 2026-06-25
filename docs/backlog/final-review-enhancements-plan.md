@@ -95,7 +95,9 @@ any order.
 - [x] On-demand walkthrough for noteless files
 - [x] Render Developer Notes as markdown
 - [x] Finish gating + jump-to-next-undecided
-- [ ] Persist / resume review state
+- [x] Persist / resume review state (incremental save to
+      `.claude/final-review-progress.json`; restored on a fresh open,
+      cleared on finish)
 - [ ] Choose base ref
 - [ ] PR inline-comment integration
 - [ ] Review history (timestamped / append)

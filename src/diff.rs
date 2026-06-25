@@ -40,7 +40,7 @@ pub struct DiffFile {
 
 /// Location of a commentable diff line: its line number on the base (old)
 /// and/or current (new) side. Used to anchor line-level review comments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct DiffLineLocation {
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,

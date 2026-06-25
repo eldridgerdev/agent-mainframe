@@ -1009,6 +1009,11 @@ fn run_loop<B: Backend>(
                     view.window.clone(),
                     ui::viewing_main_width(view, size.width),
                 )),
+                app::AppMode::Compose(state) => Some((
+                    state.view.session.clone(),
+                    state.view.window.clone(),
+                    ui::viewing_main_width(&state.view, size.width),
+                )),
                 _ => None,
             };
             if let Some((session, window, expected_cols)) = drift_target {
@@ -1275,7 +1280,12 @@ fn run_loop<B: Backend>(
             };
         }
 
-        if let app::AppMode::Viewing(ref view) = app.mode {
+        let live_view_for_sizing = match &app.mode {
+            app::AppMode::Viewing(view) => Some(view.clone()),
+            app::AppMode::Compose(state) => Some(state.view.clone()),
+            _ => None,
+        };
+        if let Some(view) = live_view_for_sizing.as_ref() {
             // The view content area is the full terminal minus the
             // 1-row header (see ui/pane.rs); the pane, the vt100
             // parser, and the rendered area must all share these

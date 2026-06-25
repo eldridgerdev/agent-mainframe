@@ -56,6 +56,12 @@ are tagged.
   auto-resolved base (`origin/HEAD` → `main` → `master`). The header shows a
   `(manual)` marker while an override is active; submitting a blank entry
   reverts to automatic resolution.
+- **Final review keeps a history.** `.claude/final-review-feedback.md` is no
+  longer overwritten each round — every review is now appended as a dated
+  `## Review — <timestamp>` section, with the newest round first under a single
+  title, so you keep a trail across rounds. The agent is prompted to address
+  only the most recent round, so accumulated history doesn't make it re-do
+  already-fixed items.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

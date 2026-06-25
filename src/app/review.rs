@@ -700,13 +700,15 @@ impl App {
                 let _ = std::fs::create_dir_all(parent);
             }
 
-            let mut out = String::new();
-            out.push_str("# Final Review Feedback\n\n");
-            out.push_str(&format!(
-                "Reviewed: {}\n\n",
+            // Build this round as a self-contained section. Rounds are
+            // prepended under a single title (see `compose_feedback_log`) so
+            // every review is preserved as a trail rather than overwritten.
+            let mut round = String::new();
+            round.push_str(&format!(
+                "## Review — {}\n\n",
                 chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
             ));
-            out.push_str(&format!(
+            round.push_str(&format!(
                 "**Files reviewed:** {total} | **Approved:** {approved} | \
                  **Needs work:** {} | **Skipped:** {skipped} | \
                  **Line comments:** {line_comment_count}\n\n",
@@ -714,26 +716,26 @@ impl App {
             ));
 
             if !general_feedback.is_empty() {
-                out.push_str("## General Feedback\n\n");
-                out.push_str(&general_feedback);
-                out.push_str("\n\n");
+                round.push_str("### General Feedback\n\n");
+                round.push_str(&general_feedback);
+                round.push_str("\n\n");
             }
 
             if !rejected.is_empty() {
-                out.push_str("## Files Needing Revision\n\n");
+                round.push_str("### Files Needing Revision\n\n");
                 for (file, feedback) in &rejected {
-                    out.push_str(&format!("### {file}\n\n"));
+                    round.push_str(&format!("#### {file}\n\n"));
                     if feedback.is_empty() {
-                        out.push_str("(No feedback provided — needs revision)\n\n");
+                        round.push_str("(No feedback provided — needs revision)\n\n");
                     } else {
-                        out.push_str(feedback);
-                        out.push_str("\n\n");
+                        round.push_str(feedback);
+                        round.push_str("\n\n");
                     }
                 }
             }
 
             if !line_comment_sections.is_empty() {
-                out.push_str("## Line Comments\n\n");
+                round.push_str("### Line Comments\n\n");
                 for (file, comments) in &line_comment_sections {
                     for comment in comments {
                         let anchor = match (comment.location.new_line, comment.location.old_line) {
@@ -741,12 +743,14 @@ impl App {
                             (None, Some(old_line)) => format!("{file}:{old_line} (base)"),
                             (None, None) => file.clone(),
                         };
-                        out.push_str(&format!("### {anchor}\n\n"));
-                        out.push_str(&comment.text);
-                        out.push_str("\n\n");
+                        round.push_str(&format!("#### {anchor}\n\n"));
+                        round.push_str(&comment.text);
+                        round.push_str("\n\n");
                     }
                 }
             }
+
+            let out = compose_feedback_log(std::fs::read_to_string(&path).ok().as_deref(), &round);
 
             self.message = Some(match std::fs::write(&path, out) {
                 Ok(()) => {
@@ -763,8 +767,10 @@ impl App {
                     match &agent_target {
                         Some((session, window)) => {
                             let prompt = "A reviewer left feedback on these changes in \
-                                 .claude/final-review-feedback.md. Please read that file and \
-                                 address every item in it.";
+                                 .claude/final-review-feedback.md. Read that file and address \
+                                 every item in the most recent review round (the first \
+                                 \"## Review\" section); earlier sections are prior rounds kept \
+                                 for history.";
                             let submit = self.config.final_review_submit_prompt;
                             let pasted = self.tmux.paste_text(session, window, prompt).and_then(
                                 |()| {
@@ -791,6 +797,33 @@ impl App {
         self.mode = AppMode::Viewing(from_view);
         Ok(())
     }
+}
+
+/// Document title that heads the feedback log. Each review round is prepended
+/// directly under it.
+const FEEDBACK_TITLE: &str = "# Final Review Feedback\n\n";
+
+/// Prepend a freshly-built review round to the existing feedback log so every
+/// round is preserved as a trail rather than overwritten. `existing` is the
+/// prior file content (if any); `round` is the new round's body (starting at
+/// its `## Review …` heading and ending with a blank line). The newest round
+/// lands directly under the single title, with prior rounds following.
+fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
+    let prior = existing
+        .map(|c| c.strip_prefix(FEEDBACK_TITLE).unwrap_or(c).trim_start())
+        .filter(|p| !p.is_empty());
+    let mut out = String::from(FEEDBACK_TITLE);
+    out.push_str(round);
+    if let Some(prior) = prior {
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(prior);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Build the prompt for an on-demand walkthrough of a file's diff. Large
@@ -874,7 +907,38 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{build_walkthrough_prompt, parse_review_notes};
+    use super::{build_walkthrough_prompt, compose_feedback_log, parse_review_notes};
+
+    #[test]
+    fn first_round_writes_title_then_round() {
+        let round = "## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n";
+        let out = compose_feedback_log(None, round);
+        assert_eq!(out, "# Final Review Feedback\n\n## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n");
+    }
+
+    #[test]
+    fn later_round_is_prepended_above_prior_rounds() {
+        let existing = "# Final Review Feedback\n\n## Review — 2026-06-24T00:00:00Z\n\nold.\n\n";
+        let round = "## Review — 2026-06-25T00:00:00Z\n\nnew.\n\n";
+        let out = compose_feedback_log(Some(existing), round);
+        // Single title, newest round first, prior round retained after it.
+        assert_eq!(out.matches("# Final Review Feedback").count(), 1);
+        let new_at = out.find("new.").unwrap();
+        let old_at = out.find("old.").unwrap();
+        assert!(new_at < old_at, "newest round should come first");
+        assert!(out.contains("## Review — 2026-06-24T00:00:00Z"));
+    }
+
+    #[test]
+    fn tolerates_prior_file_without_title() {
+        // A legacy / hand-edited file that doesn't start with the title is kept
+        // verbatim below the new round rather than dropped.
+        let existing = "## Review — 2026-06-24T00:00:00Z\n\nold.\n";
+        let out = compose_feedback_log(Some(existing), "## Review — x\n\nnew.\n\n");
+        assert!(out.starts_with("# Final Review Feedback\n\n## Review — x"));
+        assert!(out.contains("old."));
+    }
+
 
     #[test]
     fn walkthrough_prompt_includes_path_and_patch() {

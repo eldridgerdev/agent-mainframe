@@ -98,7 +98,8 @@ any order.
 - [x] Persist / resume review state (incremental save to
       `.claude/final-review-progress.json`; restored on a fresh open,
       cleared on finish)
-- [ ] Choose base ref
+- [x] Choose base ref (press `b` in the diff viewer / final review to
+      diff against any branch, tag, or commit; blank reverts to auto)
 - [ ] PR inline-comment integration
 - [ ] Review history (timestamped / append)
 - [ ] Re-review loop (changed-since-last-review)

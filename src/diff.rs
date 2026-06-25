@@ -124,8 +124,8 @@ pub enum DiffLineKind {
     NoNewlineMarker,
 }
 
-pub fn load_snapshot(workdir: &Path) -> Result<DiffSnapshot> {
-    let base = resolve_base_ref(workdir)?;
+pub fn load_snapshot(workdir: &Path, override_ref: Option<&str>) -> Result<DiffSnapshot> {
+    let base = resolve_base_ref(workdir, override_ref)?;
     let tracked_patch = git_capture(
         workdir,
         &[
@@ -274,10 +274,27 @@ fn hydrate_file_contents(workdir: &Path, base_commit: &str, files: &mut [DiffFil
     Ok(())
 }
 
-pub fn resolve_base_ref(workdir: &Path) -> Result<ResolvedBase> {
+pub fn resolve_base_ref(workdir: &Path, override_ref: Option<&str>) -> Result<ResolvedBase> {
     let branch = WorktreeManager::current_branch(workdir)?
         .filter(|branch| !branch.is_empty())
         .ok_or_else(|| anyhow!("{} is not on a named branch", workdir.display()))?;
+
+    // A reviewer-chosen base ref bypasses auto-resolution: verify it exists,
+    // then diff against the merge-base/fork-point so picking an ancestor commit
+    // diffs directly against it and picking a divergent branch diffs from the
+    // common ancestor (matching the auto-resolved semantics below).
+    if let Some(reference) = override_ref.map(str::trim).filter(|r| !r.is_empty()) {
+        if !git_ref_exists(workdir, reference) {
+            bail!("Base ref '{reference}' was not found in this repository");
+        }
+        let base_commit = fork_point_or_merge_base(workdir, reference)?
+            .ok_or_else(|| anyhow!("No common history between '{reference}' and HEAD"))?;
+        return Ok(ResolvedBase {
+            branch,
+            base_ref: reference.to_string(),
+            base_commit,
+        });
+    }
 
     let mut candidates = Vec::new();
 
@@ -740,7 +757,7 @@ index 1111111..2222222 100644
         git(repo.path(), &["checkout", "-b", "feature"]);
         std::fs::write(repo.path().join("src.txt"), "base\nline changed\n").unwrap();
 
-        let snapshot = load_snapshot(repo.path()).unwrap();
+        let snapshot = load_snapshot(repo.path(), None).unwrap();
         let file = snapshot
             .files
             .iter()
@@ -758,11 +775,50 @@ index 1111111..2222222 100644
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
         git(repo.path(), &["commit", "-am", "feature change"]);
 
-        let base = resolve_base_ref(repo.path()).unwrap();
+        let base = resolve_base_ref(repo.path(), None).unwrap();
 
         assert_eq!(base.branch, "feature");
         assert_eq!(base.base_ref, "main");
         assert_eq!(base.base_commit, rev_parse(repo.path(), "main"));
+    }
+
+    #[test]
+    fn resolve_base_ref_honors_override() {
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
+        git(repo.path(), &["commit", "-am", "feature change"]);
+        // A second commit so HEAD differs from the override target.
+        std::fs::write(repo.path().join("src.txt"), "base\nfeature\nmore\n").unwrap();
+        git(repo.path(), &["commit", "-am", "more"]);
+
+        let target = rev_parse(repo.path(), "HEAD~1");
+        let base = resolve_base_ref(repo.path(), Some(&target)).unwrap();
+
+        // The override is used verbatim as the base ref, and since it is an
+        // ancestor of HEAD the merge-base is the commit itself.
+        assert_eq!(base.base_ref, target);
+        assert_eq!(base.base_commit, target);
+    }
+
+    #[test]
+    fn resolve_base_ref_rejects_unknown_override() {
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+
+        let err = resolve_base_ref(repo.path(), Some("does-not-exist")).unwrap_err();
+        assert!(err.to_string().contains("does-not-exist"));
+    }
+
+    #[test]
+    fn resolve_base_ref_blank_override_falls_back_to_auto() {
+        let repo = init_repo_with_main();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
+        git(repo.path(), &["commit", "-am", "feature change"]);
+
+        let base = resolve_base_ref(repo.path(), Some("   ")).unwrap();
+        assert_eq!(base.base_ref, "main");
     }
 
     #[test]
@@ -781,7 +837,7 @@ index 1111111..2222222 100644
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
         git(repo.path(), &["commit", "-am", "feature change"]);
 
-        let base = resolve_base_ref(repo.path()).unwrap();
+        let base = resolve_base_ref(repo.path(), None).unwrap();
 
         assert_eq!(base.base_ref, "origin/main");
         assert_eq!(base.base_commit, rev_parse(repo.path(), "origin/main"));
@@ -794,7 +850,7 @@ index 1111111..2222222 100644
         std::fs::write(repo.path().join("src.txt"), "base\nfeature\n").unwrap();
         std::fs::write(repo.path().join("notes.md"), "todo\n").unwrap();
 
-        let snapshot = load_snapshot(repo.path()).unwrap();
+        let snapshot = load_snapshot(repo.path(), None).unwrap();
 
         assert_eq!(snapshot.branch, "feature");
         assert_eq!(snapshot.base_ref, "main");

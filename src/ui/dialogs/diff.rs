@@ -75,6 +75,72 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     draw_header(frame, chunks[0], state, theme);
     draw_body(frame, chunks[1], state, theme);
     draw_footer(frame, chunks[2], state, theme);
+
+    if state.editing_base_ref {
+        draw_base_ref_prompt(frame, state, theme);
+    }
+}
+
+/// A small centered input overlay for choosing the diff's base ref. Submitting
+/// reloads the diff against the typed ref; a blank entry reverts to the
+/// auto-resolved base.
+fn draw_base_ref_prompt(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let area = centered_rect(60, 22, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Choose Base Ref ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Branch, tag, or commit to compare against:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("› ", Style::default().fg(theme.primary.to_color())),
+            Span::styled(
+                state.base_ref_input.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::styled("▏", Style::default().fg(theme.primary.to_color())),
+        ])),
+        rows[1],
+    );
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            key("Enter"),
+            Span::raw(" apply  "),
+            key("Esc"),
+            Span::raw(" cancel  "),
+            Span::styled(
+                "(blank = auto)",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+        ])),
+        rows[3],
+    );
 }
 
 pub fn draw_diff_viewer_loading(
@@ -211,6 +277,14 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
                     .fg(theme.primary.to_color())
                     .add_modifier(Modifier::BOLD),
             ),
+            if state.override_base_ref.is_some() {
+                Span::styled(
+                    "  (manual)",
+                    Style::default().fg(theme.warning.to_color()),
+                )
+            } else {
+                Span::raw("")
+            },
         ]),
         Line::from(second_line),
     ])
@@ -825,6 +899,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         second_line.push(Span::styled(label, Style::default().fg(color)));
     }
 
+    second_line.push(key("b"));
+    second_line.push(Span::raw(" base ref  "));
     second_line.push(key("q"));
     second_line.push(Span::raw(" finish review (writes feedback)"));
 
@@ -1074,7 +1150,9 @@ fn diff_footer_lines(
         Span::styled("g/G", Style::default().fg(theme.warning.to_color())),
         Span::raw(" top/bottom  "),
         Span::styled("r", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" refresh"),
+        Span::raw(" refresh  "),
+        Span::styled("b", Style::default().fg(theme.warning.to_color())),
+        Span::raw(" base ref"),
     ]);
 
     vec![Line::from(primary), Line::from(secondary)]

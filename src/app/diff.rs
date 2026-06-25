@@ -70,7 +70,7 @@ impl App {
             .get(state.selected_file)
             .map(|file| file.path.clone());
         let selected_index = state.selected_file;
-        match crate::diff::load_snapshot(&state.workdir) {
+        match crate::diff::load_snapshot(&state.workdir, state.override_base_ref.as_deref()) {
             Ok(snapshot) => {
                 state.branch = snapshot.branch;
                 state.base_ref = snapshot.base_ref;
@@ -108,6 +108,59 @@ impl App {
 
     pub fn diff_viewer_loading(&self) -> bool {
         matches!(self.mode, AppMode::DiffViewerLoading(_))
+    }
+
+    /// Open the base-ref prompt, pre-filling it with the active override (or the
+    /// currently resolved base) so the reviewer can edit rather than retype.
+    pub fn diff_viewer_start_base_ref_edit(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.base_ref_input = state
+                .override_base_ref
+                .clone()
+                .unwrap_or_else(|| state.base_ref.clone());
+            state.editing_base_ref = true;
+        }
+    }
+
+    pub fn diff_viewer_base_ref_input(&mut self, c: char) {
+        if let AppMode::DiffViewer(state) = &mut self.mode
+            && !c.is_control()
+        {
+            state.base_ref_input.push(c);
+        }
+    }
+
+    pub fn diff_viewer_base_ref_backspace(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.base_ref_input.pop();
+        }
+    }
+
+    pub fn diff_viewer_cancel_base_ref(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.editing_base_ref = false;
+            state.base_ref_input.clear();
+        }
+    }
+
+    /// Apply the typed base ref and reload the diff against it. A blank entry
+    /// clears the override and reverts to auto-resolution.
+    pub fn diff_viewer_submit_base_ref(&mut self) {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::DiffViewer(mut state) => {
+                let trimmed = state.base_ref_input.trim().to_string();
+                state.override_base_ref = (!trimmed.is_empty()).then_some(trimmed);
+                state.editing_base_ref = false;
+                state.base_ref_input.clear();
+                state.error = None;
+                state
+            }
+            other => {
+                self.mode = other;
+                return;
+            }
+        };
+        self.mode = AppMode::DiffViewerLoading(state);
     }
 
     pub fn diff_viewer_select_next_file(&mut self) {

@@ -101,7 +101,10 @@ any order.
 - [x] Choose base ref (press `b` in the diff viewer / final review to
       diff against any branch, tag, or commit; blank reverts to auto)
 - [ ] PR inline-comment integration
-- [ ] Review history (timestamped / append)
+- [x] Review history (timestamped / append) — each round is a
+      dated `## Review — <ts>` section prepended under a single
+      title in `.claude/final-review-feedback.md`; the agent is
+      prompted to address only the most recent round
 - [ ] Re-review loop (changed-since-last-review)
 - [ ] File-list filters (undecided / rejected)
 

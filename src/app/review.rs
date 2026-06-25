@@ -1,6 +1,35 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use super::*;
+
+/// The resumable parts of an in-flight final review, persisted to
+/// `.claude/final-review-progress.json` so a long review can be paused
+/// (or survive an AMF quit / crash) and picked up where it left off.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ReviewProgress {
+    #[serde(default)]
+    decisions: std::collections::HashMap<String, ReviewDecision>,
+    #[serde(default)]
+    line_comments: std::collections::HashMap<String, Vec<LineComment>>,
+    #[serde(default)]
+    general_feedback: String,
+    #[serde(default)]
+    selected_file: usize,
+}
+
+/// Path of the saved review-progress file for a feature workdir.
+fn review_progress_path(workdir: &Path) -> PathBuf {
+    workdir.join(".claude").join("final-review-progress.json")
+}
+
+/// Best-effort load of any saved review progress for `workdir`.
+fn load_review_progress(workdir: &Path) -> Option<ReviewProgress> {
+    let content = std::fs::read_to_string(review_progress_path(workdir)).ok()?;
+    serde_json::from_str(&content).ok()
+}
 
 impl App {
     /// Open AMF's native diff viewer in final-review mode: walk every file
@@ -34,6 +63,87 @@ impl App {
         Ok(())
     }
 
+    /// Write the current review's decisions, line comments, general feedback
+    /// and file position to `.claude/final-review-progress.json`. A no-op when
+    /// not in a final review. Called after each state-changing review action so
+    /// progress is never lost — the only exit from the review viewer finishes
+    /// it, but an AMF quit/crash mid-review would otherwise discard everything.
+    pub fn persist_review_progress(&mut self) {
+        let AppMode::DiffViewer(state) = &self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        let progress = ReviewProgress {
+            decisions: state.decisions.clone(),
+            line_comments: state.line_comments.clone(),
+            general_feedback: state.general_feedback.clone(),
+            selected_file: state.selected_file,
+        };
+        let path = review_progress_path(&state.workdir);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&progress) {
+            Ok(json) => {
+                if let Err(err) = std::fs::write(&path, json) {
+                    self.log_warn(
+                        "review",
+                        format!("failed to persist review progress: {err}"),
+                    );
+                }
+            }
+            Err(err) => self.log_warn(
+                "review",
+                format!("failed to serialize review progress: {err}"),
+            ),
+        }
+    }
+
+    /// Remove any saved review progress for `workdir`. Called once a review
+    /// finishes so the next review for the feature starts fresh.
+    fn clear_review_progress(workdir: &Path) {
+        let _ = std::fs::remove_file(review_progress_path(workdir));
+    }
+
+    /// On opening a fresh final review, restore any previously saved decisions /
+    /// comments / general feedback for the feature. Skipped when the in-memory
+    /// review state already holds verdicts (e.g. an in-review `r` refresh), so a
+    /// reload never clobbers work in progress. Stale entries for paths no longer
+    /// in the diff are dropped and the file position is clamped.
+    pub fn restore_review_progress(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review
+            || !state.decisions.is_empty()
+            || !state.line_comments.is_empty()
+            || !state.general_feedback.is_empty()
+        {
+            return;
+        }
+        let Some(progress) = load_review_progress(&state.workdir) else {
+            return;
+        };
+        let known: std::collections::HashSet<&str> =
+            state.files.iter().map(|f| f.path.as_str()).collect();
+        state.decisions = progress
+            .decisions
+            .into_iter()
+            .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+        state.line_comments = progress
+            .line_comments
+            .into_iter()
+            .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+        state.general_feedback = progress.general_feedback;
+        if !state.files.is_empty() {
+            state.selected_file = progress.selected_file.min(state.files.len() - 1);
+        }
+    }
+
     /// Approve the file currently selected in the review viewer and advance.
     pub fn diff_review_approve_current(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -47,6 +157,7 @@ impl App {
             }
         }
         self.diff_review_advance();
+        self.persist_review_progress();
     }
 
     /// Skip the current file (clear any prior verdict) and advance.
@@ -60,6 +171,7 @@ impl App {
             }
         }
         self.diff_review_advance();
+        self.persist_review_progress();
     }
 
     /// Toggle the per-line comment cursor in the review viewer. When turning it
@@ -191,6 +303,7 @@ impl App {
             state.editing_line_comment = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
+        self.persist_review_progress();
     }
 
     /// Generate a walkthrough for the current file when it has no developer
@@ -339,6 +452,7 @@ impl App {
             state.editing_general = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
+        self.persist_review_progress();
     }
 
     pub fn diff_review_cancel_feedback(&mut self) {
@@ -367,6 +481,7 @@ impl App {
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
         self.diff_review_advance();
+        self.persist_review_progress();
     }
 
     fn diff_review_advance(&mut self) {
@@ -511,6 +626,10 @@ impl App {
                     return Ok(());
                 }
             };
+
+        // The review is over; drop any saved progress so the next review for
+        // this feature starts clean.
+        Self::clear_review_progress(&workdir);
 
         let total = files.len();
         let mut approved = 0usize;

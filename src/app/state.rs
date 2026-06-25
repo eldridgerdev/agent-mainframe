@@ -256,14 +256,14 @@ pub enum DiffViewerLayout {
 
 /// Per-file verdict in a final review. Absence of an entry means the file
 /// was skipped (neither approved nor rejected).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewDecision {
     Approve,
     Reject { feedback: String },
 }
 
 /// A reviewer comment anchored to a specific diff line during a final review.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineComment {
     pub location: crate::diff::DiffLineLocation,
     pub text: String,

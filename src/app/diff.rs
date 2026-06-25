@@ -99,7 +99,11 @@ impl App {
                 state.error = Some(err.to_string());
             }
         }
+        let was_review = state.review;
         self.mode = AppMode::DiffViewer(state);
+        if was_review {
+            self.restore_review_progress();
+        }
     }
 
     pub fn diff_viewer_loading(&self) -> bool {

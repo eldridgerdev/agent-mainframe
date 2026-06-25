@@ -58,6 +58,11 @@ are tagged.
   `Esc` to keep reviewing, or `u` to jump straight to the next file with no
   verdict (wrapping). The footer shows how many files are still undecided, so a
   half-done review isn't finished by accident.
+- **Pause and resume a final review.** Your verdicts, line comments, and
+  general feedback are now saved to `.claude/final-review-progress.json` as you
+  go, so a long review survives quitting AMF (or a crash). Reopening the final
+  review for the same feature restores everything where you left off; finishing
+  the review clears the saved progress so the next one starts fresh.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

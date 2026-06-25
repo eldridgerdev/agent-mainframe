@@ -7106,3 +7106,166 @@ fn pr_review_selection_change_resets_detail_scroll() {
         _ => panic!("not in PrReview mode"),
     }
 }
+
+/// Build a fresh final-review `DiffViewerState` over two modified files for the
+/// given workdir, install it as the current mode, and return nothing — the test
+/// drives `app` afterwards.
+#[cfg(test)]
+fn enter_review_with_two_files(app: &mut App, workdir: &std::path::Path) {
+    let mut state = DiffViewerState::new(
+        ViewState::new(
+            "proj".into(),
+            "feat".into(),
+            "sess".into(),
+            "claude".into(),
+            "Claude".into(),
+            SessionKind::Claude,
+            VibeMode::Vibe,
+            false,
+        ),
+        workdir.to_path_buf(),
+    );
+    state.review = true;
+    state.files = vec![
+        crate::diff::DiffFile {
+            old_path: Some("src/a.rs".into()),
+            path: "src/a.rs".into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        },
+        crate::diff::DiffFile {
+            old_path: Some("src/b.rs".into()),
+            path: "src/b.rs".into(),
+            status: crate::diff::DiffFileStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        },
+    ];
+    app.mode = AppMode::DiffViewer(state);
+}
+
+#[test]
+fn final_review_progress_persists_and_resumes() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, workdir.path());
+
+    // Approve file 0 (advances to file 1), reject file 1 with feedback, and add
+    // general feedback. Each action persists progress to disk.
+    app.diff_review_approve_current();
+    app.diff_review_start_feedback();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.feedback_editor = crate::editor::TextEditor::new("needs work".into());
+    }
+    app.diff_review_submit_feedback();
+    app.diff_review_start_general_feedback();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.feedback_editor = crate::editor::TextEditor::new("overall looks ok".into());
+    }
+    app.diff_review_submit_general_feedback();
+
+    let progress_path = workdir
+        .path()
+        .join(".claude")
+        .join("final-review-progress.json");
+    assert!(progress_path.exists(), "progress file should be written");
+
+    // Simulate closing and reopening the review: a brand-new state for the same
+    // workdir, then restore.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.restore_review_progress();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert_eq!(
+                state.decisions.get("src/a.rs"),
+                Some(&ReviewDecision::Approve)
+            );
+            assert_eq!(
+                state.decisions.get("src/b.rs"),
+                Some(&ReviewDecision::Reject {
+                    feedback: "needs work".into()
+                })
+            );
+            assert_eq!(state.general_feedback, "overall looks ok");
+        }
+        _ => panic!("expected diff viewer after restore"),
+    }
+
+    // Finishing the review clears the saved progress.
+    app.finish_final_review().unwrap();
+    assert!(
+        !progress_path.exists(),
+        "progress file should be removed after finishing"
+    );
+}
+
+#[test]
+fn restore_review_progress_skips_when_decisions_present() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Write a progress file that, if applied, would approve src/a.rs.
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("final-review-progress.json"),
+        r#"{"decisions":{"src/a.rs":"Approve"},"line_comments":{},"general_feedback":"stale","selected_file":0}"#,
+    )
+    .unwrap();
+
+    // Enter a review that already has an in-memory decision (mimicking an
+    // in-review refresh); restore must not clobber it with the disk copy.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state
+            .decisions
+            .insert("src/b.rs".into(), ReviewDecision::Approve);
+    }
+    app.restore_review_progress();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(
+                !state.decisions.contains_key("src/a.rs"),
+                "should not have merged disk progress over in-memory state"
+            );
+            assert_eq!(state.general_feedback, "");
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}

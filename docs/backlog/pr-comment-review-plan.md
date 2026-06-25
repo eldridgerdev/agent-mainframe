@@ -429,15 +429,40 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 
 ### Epic C — Replies & resolution (GitHub writes)
 
-- [ ] AI-draft reply via `run_headless` (compact prompt / small model),
-      skippable.
-- [ ] Approve/edit dialog → post reply via `gh` (inline replies +
-      conversation comments).
-- [ ] "Not-needed" flow = drafted reply + local skip note.
+- [~] ~~AI-draft reply via `run_headless` (compact prompt / small model),
+      skippable.~~ **Dropped after review.** A free-form AI draft of an
+      arbitrary reply isn't useful in practice — the replies that matter are
+      tied to a triage decision and carry information the model doesn't have
+      (the *reason* a fix isn't needed, or the *commit* that fixed it). Replies
+      are now **two contextual templates**, both deterministic (no agent
+      tokens): a "Done in `<sha>`." report and a "not needed" explanation (see
+      the two items below). If a freer drafting path is ever wanted, it should
+      assist *those* flows (e.g. phrasing a not-needed reason), not generate
+      arbitrary replies.
+- [x] Approve/edit dialog → post reply via `gh` (inline replies +
+      conversation comments). The shared reply substrate: an editable dialog
+      whose `⏎` posts — the one outward-facing action, gated on explicit
+      confirm. Inline comments reply into their thread via its root comment
+      (`GhCli::reply_to_review_comment`); conversation comments and review
+      summaries post a new conversation comment (`GhCli::post_issue_comment`).
+      A first-write 403 maps to an actionable "run `gh auth refresh -s repo`"
+      message. Driven by the two contextual reply kinds below (`ReplyKind`)
+      rather than a free-form entry. → `src/github.rs`, `src/app/pr_review.rs`,
+      `src/app/state.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
+- [x] "Not-needed" flow = reply + local skip note. `n` opens an empty reply in
+      edit mode for the user to explain *why* a fix isn't needed; posting marks
+      the comment `Skipped` and keeps the explanation as its local note
+      (persisted). The reason is the user's, not an AI guess. Unit-tested. →
+      `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`. _(Also delivers the Epic D "Done in `<sha>`"
+      template: `R` seeds a reply from the feature workdir's latest commit and,
+      on post, marks the comment `Done`.)_
 - [ ] Optional explicit `resolveReviewThread`; refresh affected thread
       after posting.
-- **Acceptance:** post an AI-drafted, user-approved reply to a thread
-  and optionally resolve it, all from the pane.
+- **Acceptance:** from the pane, reply to a comment to report a fix
+  (`Done in <sha>`) or explain why one isn't needed, and optionally resolve the
+  thread.
 
 ### Epic D — Throughput & polish
 
@@ -534,7 +559,10 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).
-- [ ] "Done in `<sha>`" reply template auto-filled from latest commit.
+- [x] "Done in `<sha>`" reply template auto-filled from latest commit. Shipped
+      with the Epic C reply work: `R` seeds a reply with the feature workdir's
+      short `HEAD` (falling back to "Done." outside a git repo), editable before
+      posting; on post the comment is marked `Done`. → `src/app/pr_review.rs`.
 - [ ] Keybinding help entry; status-bar summary (`4 open / 7`).
 - [ ] Token usage surfaced per session (tie into `token_tracking.rs`).
 - **Acceptance:** a 30-comment bot-heavy PR can be triaged quickly with

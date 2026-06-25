@@ -227,6 +227,67 @@ impl PrComment {
 
         out.trim_end().to_string()
     }
+
+    /// How a reply to this comment is posted to GitHub. Inline review comments
+    /// reply into their thread (via the thread's root comment id); everything
+    /// else (conversation comments, review summaries) posts as a new top-level
+    /// conversation comment.
+    pub fn reply_target(&self) -> ReplyTarget {
+        match self.kind {
+            CommentKind::Inline => ReplyTarget::InlineThread {
+                root_comment_id: self.in_reply_to.unwrap_or(self.id),
+            },
+            CommentKind::Conversation | CommentKind::ReviewSummary { .. } => {
+                ReplyTarget::Conversation
+            }
+        }
+    }
+}
+
+/// Where a reply is delivered on GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyTarget {
+    /// Reply into an inline review thread, appended under its root comment.
+    InlineThread { root_comment_id: u64 },
+    /// Post a new top-level comment on the PR conversation timeline.
+    Conversation,
+}
+
+/// The two contextual replies the pane posts — both tied to a triage decision
+/// rather than free-form. A reply is never arbitrary: it either reports a fix
+/// or explains why one isn't needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyKind {
+    /// "Done in `<sha>`." after a completed fix → marks the comment `Done`.
+    Done,
+    /// "Not needed because…" when declining a fix → marks the comment `Skipped`
+    /// and keeps the explanation as its local note.
+    NotNeeded,
+}
+
+impl ReplyKind {
+    /// Short label for the reply dialog title.
+    pub fn title(self) -> &'static str {
+        match self {
+            ReplyKind::Done => "Reply · mark done",
+            ReplyKind::NotNeeded => "Reply · not needed",
+        }
+    }
+}
+
+/// Short HEAD commit hash of `workdir`, used to seed a "Done in `<sha>`." reply.
+/// `None` when the directory isn't a git repo or has no commits yet.
+fn latest_commit_short_sha(workdir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(workdir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
 }
 
 /// Rough token estimate for a prompt preview (~4 chars/token, the usual
@@ -473,6 +534,7 @@ impl App {
                 hide_resolved: false,
                 fix_target: FixTarget::default(),
                 fix_confirm: None,
+                reply: None,
             });
             return;
         }
@@ -736,6 +798,7 @@ impl App {
                             hide_resolved: false,
                             fix_target: FixTarget::default(),
                             fix_confirm: None,
+                            reply: None,
                         });
                     }
                     Err(e) => {
@@ -954,6 +1017,178 @@ impl App {
         };
         let view = view.clone();
         self.deliver_prompt(prompt, Some(view))
+    }
+
+    /// Open a **"Done in `<sha>`"** reply for the selected comment, seeded from
+    /// the feature workdir's latest commit (the fix the user just made). Editable
+    /// before posting; posting marks the comment `Done`.
+    pub fn pr_review_open_reply_done(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
+                state.workdir.clone()
+            }
+            _ => return,
+        };
+        let seed = match latest_commit_short_sha(&workdir) {
+            Some(sha) => format!("Done in `{sha}`."),
+            None => "Done.".to_string(),
+        };
+        self.open_reply(ReplyKind::Done, seed);
+    }
+
+    /// Open a **"not needed"** reply for the selected comment: an empty editor
+    /// for the user to explain *why* a fix isn't needed. Posting marks the
+    /// comment `Skipped` and stores the explanation as its local note.
+    pub fn pr_review_open_reply_not_needed(&mut self) {
+        self.open_reply(ReplyKind::NotNeeded, String::new());
+    }
+
+    /// Shared entry: open the reply dialog for the selected comment with a kind
+    /// and a seeded body. No-op if a fix/reply dialog is already open or nothing
+    /// is selected.
+    fn open_reply(&mut self, kind: ReplyKind, seed: String) {
+        let comment_id = match &self.mode {
+            AppMode::PrReview(state) if state.reply.is_none() && state.fix_confirm.is_none() => {
+                state.selected_comment().map(|c| c.id)
+            }
+            _ => return,
+        };
+        let Some(comment_id) = comment_id else {
+            self.message = Some("No comment selected".into());
+            return;
+        };
+        // Not-needed replies start in edit mode (the user must type a reason);
+        // the done template is post-ready, so it opens in the confirm view.
+        let editing = matches!(kind, ReplyKind::NotNeeded);
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.reply = Some(ReplyState {
+                comment_id,
+                kind,
+                editor: TextEditor::new(seed),
+                editing,
+            });
+        }
+    }
+
+    /// Enter edit mode so keystrokes flow to the reply editor.
+    pub fn pr_review_reply_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(reply) = &mut state.reply
+        {
+            reply.editing = true;
+        }
+    }
+
+    /// Leave edit mode, returning to the confirm view (the body is kept).
+    pub fn pr_review_reply_stop_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(reply) = &mut state.reply
+        {
+            reply.editing = false;
+        }
+    }
+
+    /// Forward a key to the open reply editor (only meaningful in edit mode).
+    pub fn pr_review_reply_editor_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(reply) = &mut state.reply
+            && reply.editing
+        {
+            reply.editor.handle_key(key);
+        }
+    }
+
+    /// Close the reply dialog without posting.
+    pub fn pr_review_cancel_reply(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.reply = None;
+        }
+    }
+
+    /// Reply-dialog status for the key handler: `None` when closed, else whether
+    /// it is currently in edit mode.
+    pub fn pr_review_reply_view(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::PrReview(state) => state.reply.as_ref().map(|r| r.editing),
+            _ => None,
+        }
+    }
+
+    /// Post the (possibly edited) reply to GitHub and close the dialog. Inline
+    /// comments reply into their thread; conversation comments and review
+    /// summaries post a new conversation comment. On success the comment is
+    /// marked by the reply's kind — `Done` for a "done in `<sha>`" reply,
+    /// `Skipped` (with the body kept as the local note) for a "not needed" one.
+    /// The GitHub write runs only on the user's explicit confirm.
+    pub fn pr_review_post_reply(&mut self) -> Result<()> {
+        let prep = match &self.mode {
+            AppMode::PrReview(state) => state.reply.as_ref().and_then(|reply| {
+                let comment = state
+                    .review
+                    .comments
+                    .iter()
+                    .find(|c| c.id == reply.comment_id)?;
+                Some((
+                    state.workdir.clone(),
+                    state.review.pr.clone(),
+                    comment.reply_target(),
+                    reply.kind,
+                    reply.comment_id,
+                    reply.editor.text().trim().to_string(),
+                ))
+            }),
+            _ => return Ok(()),
+        };
+        let Some((workdir, pr, target, kind, comment_id, body)) = prep else {
+            return Ok(());
+        };
+
+        if body.is_empty() {
+            let hint = match kind {
+                ReplyKind::NotNeeded => "Explain why a fix isn't needed, or esc to cancel",
+                ReplyKind::Done => "Reply is empty — type something or esc to cancel",
+            };
+            self.message = Some(hint.into());
+            return Ok(());
+        }
+
+        let result = match target {
+            ReplyTarget::InlineThread { root_comment_id } => GhCli::reply_to_review_comment(
+                &workdir,
+                &pr.owner,
+                &pr.repo,
+                pr.number,
+                root_comment_id,
+                &body,
+            ),
+            ReplyTarget::Conversation => {
+                GhCli::post_issue_comment(&workdir, &pr.owner, &pr.repo, pr.number, &body)
+            }
+        };
+        if let Err(e) = result {
+            self.show_error(e);
+            return Ok(());
+        }
+
+        // Apply the triage outcome for this reply kind and close the dialog.
+        let (triage, note) = match kind {
+            ReplyKind::Done => (TriageState::Done, None),
+            ReplyKind::NotNeeded => (TriageState::Skipped, Some(body.clone())),
+        };
+        if let AppMode::PrReview(state) = &mut self.mode {
+            if let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id) {
+                c.triage = triage;
+                c.local_note = note.clone();
+            }
+            state.reply = None;
+        }
+        self.persist_triage(pr.number, &pr.head_sha, comment_id, triage, note.as_deref());
+        let toast = match kind {
+            ReplyKind::Done => "Posted reply · marked done",
+            ReplyKind::NotNeeded => "Posted reply · marked skipped",
+        };
+        self.push_toast_success(toast.to_string());
+        Ok(())
     }
 
     /// Resolve (and, for the dedicated strategy, lazily create) the agent
@@ -1195,6 +1430,40 @@ mod tests {
         let prompt = c.fix_prompt();
         assert!(prompt.contains("Comment (@alice): Real point."));
         assert!(!prompt.contains("<details>"));
+    }
+
+    #[test]
+    fn reply_target_inline_uses_thread_root() {
+        // A reply (in_reply_to set) targets the thread root, not its own id.
+        let mut leaf = inline_comment("thanks", false);
+        leaf.id = 55;
+        leaf.in_reply_to = Some(40);
+        assert_eq!(
+            leaf.reply_target(),
+            ReplyTarget::InlineThread {
+                root_comment_id: 40
+            }
+        );
+
+        // A root inline comment (no in_reply_to) replies to itself.
+        let root = inline_comment("nit", false);
+        assert_eq!(
+            root.reply_target(),
+            ReplyTarget::InlineThread { root_comment_id: 1 }
+        );
+    }
+
+    #[test]
+    fn reply_target_conversation_and_summary_post_issue_comment() {
+        let mut conv = inline_comment("hi", false);
+        conv.kind = CommentKind::Conversation;
+        assert_eq!(conv.reply_target(), ReplyTarget::Conversation);
+
+        let mut summary = inline_comment("changes", false);
+        summary.kind = CommentKind::ReviewSummary {
+            state: "CHANGES_REQUESTED".into(),
+        };
+        assert_eq!(summary.reply_target(), ReplyTarget::Conversation);
     }
 
     #[test]

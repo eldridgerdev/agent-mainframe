@@ -150,7 +150,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
     };
     let footer = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   R reply-done   n not-needed   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
@@ -161,6 +161,65 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
     if let Some(confirm) = &state.fix_confirm {
         draw_fix_confirm(frame, confirm, state.fix_target, theme);
     }
+    // Reply dialog overlays the pane when open.
+    if let Some(reply) = &state.reply {
+        let author = state
+            .review
+            .comments
+            .iter()
+            .find(|c| c.id == reply.comment_id)
+            .map(|c| c.author.as_str())
+            .unwrap_or("reviewer");
+        draw_reply_dialog(frame, reply, author, theme);
+    }
+}
+
+/// Reply dialog: a contextual, editable reply (a "done in `<sha>`." report or a
+/// "not needed" explanation) shown before it is posted. Posting happens only on
+/// the user's explicit confirm.
+fn draw_reply_dialog(
+    frame: &mut Frame,
+    reply: &crate::app::ReplyState,
+    author: &str,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 50, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(format!(" {} · @{author} ", reply.kind.title()))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // reply body
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let body_lines = super::editor_view::editor_lines(&reply.editor, theme, "(type a reply)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let hints = if reply.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] post   [e] edit   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
 }
 
 /// Confirm/edit dialog: shows the exact prompt that will be injected (no file

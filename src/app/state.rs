@@ -1050,6 +1050,26 @@ pub struct PrReviewState {
     /// the assembled (and editable) prompt awaiting the user's approval before
     /// it is injected into the agent session.
     pub fix_confirm: Option<FixConfirmState>,
+    /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
+    /// editable reply awaiting the user's approval before it is posted to GitHub.
+    pub reply: Option<ReplyState>,
+}
+
+/// Reply dialog for one comment. Replies are contextual, not free-form: either
+/// a "Done in `<sha>`." report of a completed fix or a "not needed" explanation.
+/// The seeded body is editable; nothing is posted until the user confirms.
+#[derive(Debug, Clone)]
+pub struct ReplyState {
+    /// GitHub id of the comment being replied to (resolves the post target).
+    pub comment_id: u64,
+    /// Which contextual reply this is (drives the seed, title, and the triage
+    /// outcome applied on post).
+    pub kind: crate::app::pr_review::ReplyKind,
+    /// The reply body, editable before posting.
+    pub editor: TextEditor,
+    /// True while keystrokes go to the editor (`e` to enter); false in the
+    /// confirm view (`⏎` post / `e` edit / `esc` cancel).
+    pub editing: bool,
 }
 
 /// Confirm/edit dialog for a fix prompt: shows the exact text that will be

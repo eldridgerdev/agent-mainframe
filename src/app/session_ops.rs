@@ -35,7 +35,11 @@ fn agent_for_session_kind(kind: &SessionKind) -> Option<AgentKind> {
 }
 
 impl App {
-    fn ensure_feature_running_for_new_session(&mut self, pi: usize, fi: usize) -> Result<()> {
+    pub(crate) fn ensure_feature_running_for_new_session(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<()> {
         if self.block_if_feature_pending_worktree_script(pi, fi) {
             anyhow::bail!("feature cannot start while its worktree script is still running");
         }
@@ -561,6 +565,84 @@ impl App {
         self.message = Some(format!("Added '{}'", label));
 
         Ok(())
+    }
+
+    /// Spin up the dedicated PR-review agent session: one agent window, labeled
+    /// [`crate::app::pr_review::REVIEW_SESSION_LABEL`], that the PR-review pane
+    /// reuses for every fix in a PR. Uses the project's preferred agent and the
+    /// feature's mode/flags, just like a picker-launched agent session, but with
+    /// a fixed label so it can be found-and-reused. Returns the new session's
+    /// index in `feature.sessions`.
+    pub(crate) fn create_dedicated_review_session(
+        &mut self,
+        pi: usize,
+        fi: usize,
+    ) -> Result<usize> {
+        self.ensure_feature_running_for_new_session(pi, fi)?;
+
+        let repo = self.store.projects[pi].repo.clone();
+        let agent = self.store.projects[pi].preferred_agent.clone();
+        let kind = session_kind_for_agent(&agent);
+
+        // Resolve before the mutable borrow of `feature` below.
+        let rc_allowed = self.remote_control_allowed();
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => anyhow::bail!("feature not found"),
+        };
+
+        let workdir = feature.workdir.clone();
+        let tmux_session = feature.tmux_session.clone();
+        let mode = feature.mode.clone();
+        let use_rc = feature.remote_control && rc_allowed;
+        let extra_args: Vec<String> = feature.mode.cli_flags(LaunchOpts {
+            enable_chrome: feature.enable_chrome,
+            remote_control: use_rc,
+            session_name: if use_rc {
+                Some(feature.name.clone())
+            } else {
+                None
+            },
+        });
+        ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
+        ensure_review_claude_md(&workdir, feature.review);
+
+        let session = feature.add_session_named(
+            kind.clone(),
+            crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+        );
+        let window = session.tmux_window.clone();
+
+        self.tmux
+            .create_window(&tmux_session, &window, &workdir)?;
+        match agent {
+            AgentKind::Claude => {
+                self.tmux
+                    .launch_claude(&tmux_session, &window, None, extra_args)?;
+            }
+            AgentKind::Opencode => {
+                self.tmux.launch_opencode(&tmux_session, &window)?;
+            }
+            AgentKind::Codex => {
+                let codex_args = crate::codex_config::launch_override_args(&workdir);
+                self.tmux
+                    .launch_codex(&tmux_session, &window, None, codex_args)?;
+            }
+            AgentKind::Pi => {
+                self.tmux.launch_pi(&tmux_session, &window)?;
+            }
+        }
+
+        feature.collapsed = false;
+        let si = feature.sessions.len() - 1;
+        self.save()?;
+        Ok(si)
     }
 
     pub fn remove_session(&mut self) -> Result<()> {

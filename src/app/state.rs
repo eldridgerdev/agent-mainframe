@@ -939,6 +939,8 @@ pub struct PrReviewState {
     pub detail_scroll: usize,
     /// When true, comments already resolved on GitHub are hidden from the list.
     pub hide_resolved: bool,
+    /// Which agent session "fix" prompts are injected into (toggle with `t`).
+    pub fix_target: crate::app::pr_review::FixTarget,
 }
 
 impl PrReviewState {

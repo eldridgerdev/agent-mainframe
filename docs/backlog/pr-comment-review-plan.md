@@ -377,12 +377,28 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       get a "line has since changed" note; conversation/summary comments omit the
       `File:` line. Token estimate via `estimate_tokens` (~4 chars/token) for the
       confirm-dialog "~N tokens" hint. Unit-tested. → `src/app/pr_review.rs`.
-- [ ] Fix-target session strategy: **spin up and reuse one dedicated
+- [x] Fix-target session strategy: **spin up and reuse one dedicated
       review session by default**; offer "reuse the feature's existing
       live session" as an option. Reuse the existing one for the whole
-      PR; never one session per comment.
+      PR; never one session per comment. The pane carries a `FixTarget`
+      (`DedicatedReview` default / `ExistingLive`), toggled with `t` and shown
+      in the footer (`f fix→dedicated`). Targeting is resolved by
+      `fix_session_index` (find-or-create the dedicated session by the stable
+      `"PR Review"` label; reuse the first agent window for existing-live) and
+      `create_dedicated_review_session` spins one up (project's preferred agent,
+      feature's mode/flags) on first fix, reused thereafter — never one per
+      comment. Pressing `f` resolves the target, ensures the feature is running,
+      and injects the minimal fix prompt via the shared compose/prompt-library
+      seam (paste-without-send), switching the user into that session to watch.
+      Unit-tested. → `src/app/pr_review.rs`, `src/app/session_ops.rs`,
+      `src/app/state.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [ ] Confirm/edit dialog; deliver via the compose/prompt-library
-      injection seam to the chosen agent window.
+      injection seam to the chosen agent window. _(Seam delivery is already
+      wired by the fix-target item: `f` injects via `deliver_prompt`
+      (paste-without-send, which is an implicit review-before-run step). What
+      remains is the dedicated confirm/edit dialog with the `~N tokens` preview
+      from the UI mock — `estimate_tokens` already exists for it.)_
 - [ ] Local `TriageState` persisted in SQLite (`Fixing`/`Done`/etc.);
       manual "mark done" with no auto-advance.
 - **Acceptance:** select a comment, inject a scoped fix into the review
@@ -417,6 +433,21 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       legend/footer that spells out the markers (`✓` resolved,
       `[outdated]`, bot vs. human). Goal: a reviewer can scan the list and
       understand any single comment without leaving the pane or squinting.
+- [ ] **PR picker — list PRs to choose from, or enter a number.** Today the
+      entry point auto-detects the branch's PR and, on a miss, drops straight to
+      the manual PR-number prompt (`AppMode::PrNumberPrompt`). Add a third path:
+      a selectable list of the repo's PRs so the user can pick one without
+      knowing its number. Fetch via `gh pr list --json
+      number,title,author,headRefName,updatedAt,isDraft,state` (in Rust, zero
+      agent tokens, reuse the `GhCli` layer), show a scrollable picker
+      (number · title · author · branch, newest first), and on select run the
+      existing resolve → load path. The manual number prompt stays available
+      from the picker (e.g. a key or a "enter a number instead" affordance) so
+      both flows live behind one entry: **search/pick a PR _or_ type its
+      number**. Default the list to open PRs with a toggle to include
+      closed/merged; consider seeding the highlight on the branch's
+      auto-detected PR when there is one. → new picker mode + handler, peer to
+      `PrNumberPrompt`; `gh pr list` wrapper in `src/github.rs`.
 - [ ] Opt-in batch mode: queue several "fix" decisions → one numbered
       prompt sharing file context.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).

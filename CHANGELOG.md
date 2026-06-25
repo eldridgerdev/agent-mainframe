@@ -110,6 +110,17 @@ are tagged.
   locally per PR and head commit — and pressing `r` in the pane refreshes from
   GitHub (picking up new comments and any commits you've pushed) on demand.
 
+- **Send a review comment to an agent as a fix.** In the PR-review pane, press
+  `f` on a comment to inject a tightly-scoped fix prompt into an agent session
+  and drop you into that session to watch it work. The prompt carries only the
+  comment, its `file:line`, and GitHub's diff hunk — no file contents — and is
+  pasted without sending so you can review or edit before it runs. By default
+  the fix goes to a dedicated "PR Review" session that AMF spins up once and
+  reuses for every fix on that PR (so the per-session overhead is paid once);
+  press `t` to switch the target to the feature's existing live session for
+  warm in-progress context. The footer shows the current target
+  (`f fix→dedicated`).
+
 ### Changed
 
 - **Clearer feature setup options.** The new-feature mode step now shows a

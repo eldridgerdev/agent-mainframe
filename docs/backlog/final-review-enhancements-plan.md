@@ -106,7 +106,10 @@ any order.
       title in `.claude/final-review-feedback.md`; the agent is
       prompted to address only the most recent round
 - [ ] Re-review loop (changed-since-last-review)
-- [ ] File-list filters (undecided / rejected)
+- [x] File-list filters (undecided / rejected) — press `F` in the final
+      review to cycle the file list through all / undecided / rejected;
+      navigation (n/p/j/k, g/G) skips hidden files and decisions advance
+      to the next visible file.
 
 ## Open questions
 

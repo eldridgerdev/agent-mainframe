@@ -485,15 +485,17 @@ impl App {
     }
 
     fn diff_review_advance(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode
-            && state.selected_file + 1 < state.files.len()
-        {
-            state.selected_file += 1;
-            state.patch_scroll = 0;
-            state.notes_scroll = 0;
-            if state.comment_cursor.is_some() {
-                state.comment_cursor = Some(0);
-                state.cursor_sync_to_view = true;
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            // Advance to the next *visible* file after the current one. Under a
+            // filter (e.g. Undecided) the file just decided drops out of the
+            // list, so this lands on the next item still needing attention.
+            let next = state
+                .visible_file_indices()
+                .into_iter()
+                .find(|&i| i > state.selected_file);
+            if let Some(idx) = next {
+                state.selected_file = idx;
+                state.on_file_changed();
             }
         }
     }
@@ -591,16 +593,46 @@ impl App {
             Some(idx) => {
                 if let AppMode::DiffViewer(state) = &mut self.mode {
                     state.selected_file = idx;
-                    state.patch_scroll = 0;
-                    state.notes_scroll = 0;
-                    if state.comment_cursor.is_some() {
-                        state.comment_cursor = Some(0);
-                        state.cursor_sync_to_view = true;
-                    }
+                    state.on_file_changed();
                 }
             }
             None => self.message = Some("All files have a verdict".to_string()),
         }
+    }
+
+    /// Cycle the review file-list filter (All → Undecided → Rejected → All). If
+    /// the active selection is hidden by the new filter, snap it onto the first
+    /// visible file at-or-after it so navigation stays anchored to the list.
+    pub fn diff_review_cycle_file_filter(&mut self) {
+        let msg = if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            state.file_filter = state.file_filter.next();
+            let visible = state.visible_file_indices();
+            if visible.is_empty() {
+                format!("Filter: {} (no matching files)", state.file_filter.label())
+            } else {
+                if !visible.contains(&state.selected_file) {
+                    let idx = visible
+                        .iter()
+                        .copied()
+                        .find(|&i| i >= state.selected_file)
+                        .unwrap_or_else(|| *visible.last().unwrap());
+                    state.selected_file = idx;
+                    state.on_file_changed();
+                }
+                format!(
+                    "Filter: {} ({}/{} files)",
+                    state.file_filter.label(),
+                    visible.len(),
+                    state.files.len()
+                )
+            }
+        } else {
+            return;
+        };
+        self.message = Some(msg);
     }
 
     /// Finish the review: write `.claude/final-review-feedback.md` for any

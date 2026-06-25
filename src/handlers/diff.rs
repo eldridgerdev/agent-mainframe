@@ -194,6 +194,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_jump_next_undecided();
                 return Ok(());
             }
+            KeyCode::Char('F') => {
+                app.diff_review_cycle_file_filter();
+                return Ok(());
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
                 app.confirm_or_finish_review()?;
                 return Ok(());
@@ -239,15 +243,22 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         }
         KeyCode::Char('g') => match app.diff_viewer_focus() {
             Some(DiffViewerFocus::FileList) => {
+                // Walk to the first (visible) file. Break when the selection
+                // stops moving so a filter whose first file isn't index 0 can't
+                // loop forever.
                 while matches!(app.diff_viewer_focus(), Some(DiffViewerFocus::FileList)) {
                     let before = match &app.mode {
                         crate::app::AppMode::DiffViewer(state) => state.selected_file,
                         _ => break,
                     };
-                    if before == 0 {
+                    app.diff_viewer_select_prev_file();
+                    let after = match &app.mode {
+                        crate::app::AppMode::DiffViewer(state) => state.selected_file,
+                        _ => break,
+                    };
+                    if after == before {
                         break;
                     }
-                    app.diff_viewer_select_prev_file();
                 }
             }
             Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_top(),
@@ -256,16 +267,18 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('G') => match app.diff_viewer_focus() {
             Some(DiffViewerFocus::FileList) => {
                 while matches!(app.diff_viewer_focus(), Some(DiffViewerFocus::FileList)) {
-                    let (before, len) = match &app.mode {
-                        crate::app::AppMode::DiffViewer(state) => {
-                            (state.selected_file, state.files.len())
-                        }
+                    let before = match &app.mode {
+                        crate::app::AppMode::DiffViewer(state) => state.selected_file,
                         _ => break,
                     };
-                    if before + 1 >= len {
+                    app.diff_viewer_select_next_file();
+                    let after = match &app.mode {
+                        crate::app::AppMode::DiffViewer(state) => state.selected_file,
+                        _ => break,
+                    };
+                    if after == before {
                         break;
                     }
-                    app.diff_viewer_select_next_file();
                 }
             }
             Some(DiffViewerFocus::Patch) => app.diff_viewer_scroll_patch_bottom(),
@@ -944,6 +957,53 @@ mod tests {
             AppMode::DiffViewer(s) => assert_eq!(s.selected_file, 2),
             _ => panic!("expected diff viewer"),
         }
+    }
+
+    #[test]
+    fn file_filter_cycles_and_navigation_skips_hidden_files() {
+        use crate::app::FileFilter;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs", "c.rs"]);
+
+        let filter = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.file_filter,
+            _ => panic!("expected diff viewer"),
+        };
+        let selected = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.selected_file,
+            _ => panic!("expected diff viewer"),
+        };
+
+        // Approve a.rs (-> b.rs) and reject c.rs, leaving b.rs undecided.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap(); // approve a -> b
+        // Reject c.rs: move to c, then reject with feedback.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap(); // b -> c
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for ch in "nope".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // submit, c is last so stays
+
+        // F cycles All -> Undecided. Only b.rs (index 1) is undecided, so the
+        // selection snaps to it.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(filter(&app), FileFilter::Undecided);
+        assert_eq!(selected(&app), 1, "snaps onto the only undecided file");
+
+        // Navigation stays put: b.rs is the only visible file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        assert_eq!(selected(&app), 1);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('p'))).unwrap();
+        assert_eq!(selected(&app), 1);
+
+        // F again -> Rejected: only c.rs (index 2) is visible.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(filter(&app), FileFilter::Rejected);
+        assert_eq!(selected(&app), 2, "snaps onto the only rejected file");
+
+        // F again wraps back to All.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(filter(&app), FileFilter::All);
     }
 
     #[test]

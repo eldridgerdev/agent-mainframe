@@ -87,6 +87,12 @@ are tagged.
   title, so you keep a trail across rounds. The agent is prompted to address
   only the most recent round, so accumulated history doesn't make it re-do
   already-fixed items.
+- **Filter the final-review file list.** Press `F` in the final review to cycle
+  the file list through all → undecided → rejected → all, so a large changeset
+  can be narrowed to just the files still needing attention. The Files panel
+  title shows the active filter and visible/total counts, navigation
+  (`n`/`p`, `j`/`k`, `g`/`G`) skips hidden files, and approving/rejecting a file
+  advances to the next visible one.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

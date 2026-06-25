@@ -19,6 +19,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::editor::TextEditor;
 use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread};
 
 /// Snippet length (chars) shown in the comment list.
@@ -419,6 +420,7 @@ impl App {
                 detail_scroll: 0,
                 hide_resolved: false,
                 fix_target: FixTarget::default(),
+                fix_confirm: None,
             });
             return;
         }
@@ -573,6 +575,7 @@ impl App {
                             detail_scroll: 0,
                             hide_resolved: false,
                             fix_target: FixTarget::default(),
+                            fix_confirm: None,
                         });
                     }
                     Err(e) => {
@@ -660,23 +663,100 @@ impl App {
         self.push_toast_success(format!("Fixes target the {label}"));
     }
 
-    /// Inject the selected comment's minimal fix prompt into the chosen agent
-    /// session and switch the user into that session to watch it (no
+    /// Open the fix confirm/edit dialog for the selected comment. Assembles the
+    /// minimal fix prompt and shows it for review (with a `~N tokens` preview)
+    /// before anything reaches the agent — nothing is injected until the user
+    /// confirms. Editing is opt-in (`e`) from the dialog.
+    pub fn pr_review_open_fix_confirm(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(comment) = state.selected_comment() else {
+            self.message = Some("No comment selected".into());
+            return;
+        };
+        let prompt = comment.fix_prompt();
+        state.fix_confirm = Some(FixConfirmState {
+            editor: TextEditor::new(prompt),
+            editing: false,
+        });
+    }
+
+    /// Whether the fix confirm/edit dialog is currently open, and if so whether
+    /// it is in edit mode. `None` means no dialog is open.
+    pub fn pr_review_fix_editing(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::PrReview(state) => state.fix_confirm.as_ref().map(|c| c.editing),
+            _ => None,
+        }
+    }
+
+    /// Close the fix confirm/edit dialog without injecting anything.
+    pub fn pr_review_cancel_fix(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.fix_confirm = None;
+        }
+    }
+
+    /// Switch the open fix dialog into edit mode so keystrokes flow to the
+    /// prompt editor. No-op when the dialog is closed or already editing.
+    pub fn pr_review_fix_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.editing = true;
+        }
+    }
+
+    /// Leave edit mode, returning to the confirm view (the prompt is kept).
+    pub fn pr_review_fix_stop_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.editing = false;
+        }
+    }
+
+    /// Forward a key to the open fix-prompt editor (only meaningful in edit
+    /// mode). Returns `true` when a dialog editor consumed the key.
+    pub fn pr_review_fix_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+            && confirm.editing
+        {
+            confirm.editor.handle_key(key);
+            return true;
+        }
+        false
+    }
+
+    /// Confirm the dialog: inject the (possibly edited) prompt into the chosen
+    /// agent session and switch the user into that session to watch it (no
     /// auto-advance). The dedicated review session is spun up on first use and
     /// reused thereafter; the existing-live target reuses the feature's running
     /// agent session. Delivery goes through the shared compose / prompt-library
     /// seam: pasted without sending so the user reviews before it runs.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
         let prompt = match &self.mode {
-            AppMode::PrReview(state) => match state.selected_comment() {
-                Some(c) => c.fix_prompt(),
-                None => {
-                    self.message = Some("No comment selected".into());
-                    return Ok(());
-                }
+            AppMode::PrReview(state) => match &state.fix_confirm {
+                // Confirming the open dialog uses its edited buffer.
+                Some(confirm) => confirm.editor.text().trim().to_string(),
+                // No dialog open (e.g. empty pane): fall back to the selection.
+                None => match state.selected_comment() {
+                    Some(c) => c.fix_prompt(),
+                    None => {
+                        self.message = Some("No comment selected".into());
+                        return Ok(());
+                    }
+                },
             },
             _ => return Ok(()),
         };
+
+        if prompt.is_empty() {
+            self.message = Some("Nothing to inject — the prompt is empty".into());
+            return Ok(());
+        }
 
         let (pi, fi, si) = match self.resolve_fix_session() {
             Ok(target) => target,

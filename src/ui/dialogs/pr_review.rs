@@ -156,6 +156,88 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, outer[2]);
+
+    // Fix confirm/edit dialog overlays the pane when open.
+    if let Some(confirm) = &state.fix_confirm {
+        draw_fix_confirm(frame, confirm, state.fix_target, theme);
+    }
+}
+
+/// Confirm/edit dialog: shows the exact prompt that will be injected (no file
+/// contents — token principle #3) with a `~N tokens` preview, and lets the user
+/// edit it before it reaches the agent.
+fn draw_fix_confirm(
+    frame: &mut Frame,
+    confirm: &crate::app::FixConfirmState,
+    target: crate::app::pr_review::FixTarget,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 70, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Inject fix into agent session ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // target line
+            Constraint::Length(1), // spacer
+            Constraint::Min(1),    // prompt body / editor
+            Constraint::Length(1), // token preview
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Will inject into the ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(
+                target.label(),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":", Style::default().fg(theme.text_muted.to_color())),
+        ])),
+        chunks[0],
+    );
+
+    let prompt_lines = super::editor_view::editor_lines(&confirm.editor, theme, "(empty prompt)");
+    frame.render_widget(
+        Paragraph::new(prompt_lines).wrap(Wrap { trim: false }),
+        chunks[2],
+    );
+
+    let tokens = crate::app::pr_review::estimate_tokens(confirm.editor.text());
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("~{tokens} tokens · no file contents included"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[3],
+    );
+
+    let hints = if confirm.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] inject   [e] edit   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[4],
+    );
 }
 
 fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme: &Theme) {

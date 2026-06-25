@@ -281,15 +281,22 @@ pub enum FileFilter {
     Undecided,
     /// Files marked as needing revision.
     Rejected,
+    /// Files whose diff changed since the last finished review round (the
+    /// re-review loop). Empty on a first review, so the cycle skips it unless a
+    /// prior snapshot exists.
+    Changed,
 }
 
 impl FileFilter {
-    /// Cycle All → Undecided → Rejected → All.
+    /// Cycle All → Undecided → Rejected → Changed → All. Callers that don't have
+    /// a prior review snapshot skip `Changed` (see
+    /// `diff_review_cycle_file_filter`).
     pub fn next(self) -> Self {
         match self {
             FileFilter::All => FileFilter::Undecided,
             FileFilter::Undecided => FileFilter::Rejected,
-            FileFilter::Rejected => FileFilter::All,
+            FileFilter::Rejected => FileFilter::Changed,
+            FileFilter::Changed => FileFilter::All,
         }
     }
 
@@ -298,6 +305,7 @@ impl FileFilter {
             FileFilter::All => "all",
             FileFilter::Undecided => "undecided",
             FileFilter::Rejected => "rejected",
+            FileFilter::Changed => "changed",
         }
     }
 }
@@ -378,8 +386,16 @@ pub struct DiffViewerState {
     /// `notes_rendered_lines` to clamp scroll to the visual bottom.
     pub notes_view_height: usize,
     /// Active file-list filter (review mode only). Narrows the file list to
-    /// undecided / rejected files for large changesets.
+    /// undecided / rejected / changed files for large changesets.
     pub file_filter: FileFilter,
+    /// Paths whose diff fingerprint differs from (or is absent in) the last
+    /// finished review snapshot — i.e. files that changed since the reviewer
+    /// last looked. Drives the `Changed` filter and the file-list marker.
+    /// Empty on a first review.
+    pub changed_since_last: std::collections::HashSet<String>,
+    /// Whether a prior review snapshot existed when this review opened. Lets the
+    /// UI and the filter cycle distinguish a first review from a re-review.
+    pub has_prior_review: bool,
 }
 
 impl DiffViewerState {
@@ -421,6 +437,8 @@ impl DiffViewerState {
             notes_rendered_lines: 0,
             notes_view_height: 0,
             file_filter: FileFilter::All,
+            changed_since_last: std::collections::HashSet::new(),
+            has_prior_review: false,
         }
     }
 
@@ -446,6 +464,7 @@ impl DiffViewerState {
                 self.decisions.get(&file.path),
                 Some(ReviewDecision::Reject { .. })
             ),
+            FileFilter::Changed => self.changed_since_last.contains(&file.path),
         }
     }
 

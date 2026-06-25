@@ -7334,3 +7334,105 @@ fn restore_review_progress_skips_when_decisions_present() {
         _ => panic!("expected diff viewer"),
     }
 }
+
+#[test]
+fn re_review_flags_changed_files_and_applies_filter() {
+    use crate::app::FileFilter;
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // First round: approve both files and finish. This records the snapshot.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+    app.finish_final_review().unwrap();
+
+    let snapshot_path = workdir
+        .path()
+        .join(".claude")
+        .join("final-review-snapshot.json");
+    assert!(snapshot_path.exists(), "snapshot should be written on finish");
+
+    // Re-open with src/b.rs's diff changed (different patch); src/a.rs is
+    // untouched.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[1].patch = "@@ -1 +1 @@\n-old\n+new".into();
+    }
+    app.apply_review_snapshot_diff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.has_prior_review, "a prior snapshot exists");
+            assert_eq!(
+                state.changed_since_last.iter().cloned().collect::<Vec<_>>(),
+                vec!["src/b.rs".to_string()],
+                "only the changed file is flagged"
+            );
+            assert_eq!(
+                state.file_filter,
+                FileFilter::Changed,
+                "a partial re-review auto-applies the changed filter"
+            );
+            assert_eq!(
+                state.selected_file, 1,
+                "selection snaps onto the changed file"
+            );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn re_review_no_changes_keeps_all_filter() {
+    use crate::app::FileFilter;
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+    app.finish_final_review().unwrap();
+
+    // Re-open with the identical diff: nothing changed since the last round.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.apply_review_snapshot_diff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.has_prior_review);
+            assert!(
+                state.changed_since_last.is_empty(),
+                "no files changed since the last review"
+            );
+            assert_eq!(
+                state.file_filter,
+                FileFilter::All,
+                "an unchanged re-review leaves the filter untouched"
+            );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}

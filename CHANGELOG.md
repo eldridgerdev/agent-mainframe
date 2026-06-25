@@ -10,6 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude panes now render immediately behind the composer when an agent session
+  opens with composer input enabled. Previously the composer could appear over a
+  blank pane until you closed it or sent input.
+
+### Migration
+
+- No migration is required.
+
+## [v0.27.0] - 2026-06-25
+
 ### Added
 
 - **Final review reads like a real code review.** Developer notes beside each

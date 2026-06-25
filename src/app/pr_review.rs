@@ -5,8 +5,8 @@
 //! token-saving transforms (bot-boilerplate stripping, one-line snippets,
 //! thread-resolution merge). See `docs/backlog/pr-comment-review-plan.md`.
 
-// Wired into the App state / UI layer in the next step; until then the model
-// and helpers are exercised only by unit tests.
+// Some helpers (token estimate for the confirm dialog, the loading-state probe)
+// are consumed by later epics; keep them until those land.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -23,6 +23,60 @@ use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComm
 
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
+
+/// Label (and de-facto identity) of the dedicated PR-review agent session. The
+/// session is found-or-created by this label so the same window is reused for
+/// every fix in a PR (plan token principle #4 — pay per-session overhead once).
+pub(crate) const REVIEW_SESSION_LABEL: &str = "PR Review";
+
+/// Which agent session a "fix" prompt is injected into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FixTarget {
+    /// A single dedicated review session, spun up once and reused for every fix
+    /// in the PR. The default: per-session overhead (system prompt, tool
+    /// definitions, skills) is paid once and file reads amortize across
+    /// comments, and review work stays out of the user's working session.
+    #[default]
+    DedicatedReview,
+    /// The feature's existing live agent session — warm in-progress context, at
+    /// the cost of carrying that session's unrelated conversation into each fix.
+    ExistingLive,
+}
+
+impl FixTarget {
+    /// Short human label for footers / toasts.
+    pub fn label(self) -> &'static str {
+        match self {
+            FixTarget::DedicatedReview => "dedicated review session",
+            FixTarget::ExistingLive => "existing live session",
+        }
+    }
+
+    /// Compact footer tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            FixTarget::DedicatedReview => "dedicated",
+            FixTarget::ExistingLive => "live",
+        }
+    }
+}
+
+/// Index of the session a fix should target within a feature, given the
+/// strategy. For [`FixTarget::DedicatedReview`], `None` means no review session
+/// exists yet and one must be created; for [`FixTarget::ExistingLive`], `None`
+/// means there is no live agent session to reuse.
+pub(crate) fn fix_session_index(feature: &Feature, target: FixTarget) -> Option<usize> {
+    match target {
+        FixTarget::ExistingLive => feature
+            .sessions
+            .iter()
+            .position(|s| s.kind.is_agent_harness()),
+        FixTarget::DedicatedReview => feature
+            .sessions
+            .iter()
+            .position(|s| s.kind.is_agent_harness() && s.label == REVIEW_SESSION_LABEL),
+    }
+}
 
 /// What kind of GitHub comment this is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -364,6 +418,7 @@ impl App {
                 selected: 0,
                 detail_scroll: 0,
                 hide_resolved: false,
+                fix_target: FixTarget::default(),
             });
             return;
         }
@@ -517,6 +572,7 @@ impl App {
                             selected: 0,
                             detail_scroll: 0,
                             hide_resolved: false,
+                            fix_target: FixTarget::default(),
                         });
                     }
                     Err(e) => {
@@ -586,6 +642,102 @@ impl App {
                 state.detail_scroll = 0;
             }
         }
+    }
+
+    /// Toggle which agent session "fix" prompts are injected into: the default
+    /// dedicated review session, or the feature's existing live session.
+    pub fn pr_review_toggle_fix_target(&mut self) {
+        let label = {
+            let AppMode::PrReview(state) = &mut self.mode else {
+                return;
+            };
+            state.fix_target = match state.fix_target {
+                FixTarget::DedicatedReview => FixTarget::ExistingLive,
+                FixTarget::ExistingLive => FixTarget::DedicatedReview,
+            };
+            state.fix_target.label()
+        };
+        self.push_toast_success(format!("Fixes target the {label}"));
+    }
+
+    /// Inject the selected comment's minimal fix prompt into the chosen agent
+    /// session and switch the user into that session to watch it (no
+    /// auto-advance). The dedicated review session is spun up on first use and
+    /// reused thereafter; the existing-live target reuses the feature's running
+    /// agent session. Delivery goes through the shared compose / prompt-library
+    /// seam: pasted without sending so the user reviews before it runs.
+    pub fn pr_review_inject_fix(&mut self) -> Result<()> {
+        let prompt = match &self.mode {
+            AppMode::PrReview(state) => match state.selected_comment() {
+                Some(c) => c.fix_prompt(),
+                None => {
+                    self.message = Some("No comment selected".into());
+                    return Ok(());
+                }
+            },
+            _ => return Ok(()),
+        };
+
+        let (pi, fi, si) = match self.resolve_fix_session() {
+            Ok(target) => target,
+            Err(e) => {
+                self.show_error(e);
+                return Ok(());
+            }
+        };
+
+        // Switch into the target session, then deliver the prompt via the shared
+        // seam (seeds the compose box when interception is on, else pastes
+        // without sending). Leaving the pane is intentional — the user watches
+        // the agent and re-opens the review (cache hit) when done.
+        self.selection = Selection::Session(pi, fi, si);
+        self.enter_view_without_auto_compose()?;
+        let AppMode::Viewing(view) = &self.mode else {
+            return Ok(());
+        };
+        let view = view.clone();
+        self.deliver_prompt(prompt, Some(view))
+    }
+
+    /// Resolve (and, for the dedicated strategy, lazily create) the agent
+    /// window that fix prompts target. Returns `(project, feature, session)`
+    /// indices. Ensures the feature's tmux session is running first.
+    fn resolve_fix_session(&mut self) -> Result<(usize, usize, usize)> {
+        let (workdir, target) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), state.fix_target),
+            _ => anyhow::bail!("not reviewing a PR"),
+        };
+        let (pi, fi) = self
+            .feature_indices_for_workdir(&workdir)
+            .ok_or_else(|| anyhow::anyhow!("could not find the feature for this PR"))?;
+
+        self.ensure_feature_running_for_new_session(pi, fi)?;
+
+        let feature = &self.store.projects[pi].features[fi];
+        if let Some(si) = fix_session_index(feature, target) {
+            return Ok((pi, fi, si));
+        }
+
+        match target {
+            FixTarget::DedicatedReview => {
+                let si = self.create_dedicated_review_session(pi, fi)?;
+                Ok((pi, fi, si))
+            }
+            FixTarget::ExistingLive => {
+                anyhow::bail!("no live agent session to reuse — switch to the dedicated target (t)")
+            }
+        }
+    }
+
+    /// Find the `(project, feature)` indices of the feature whose workdir
+    /// matches `workdir`.
+    fn feature_indices_for_workdir(&self, workdir: &Path) -> Option<(usize, usize)> {
+        self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|f| f.workdir == workdir)
+                .map(|fi| (pi, fi))
+        })
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
@@ -812,6 +964,70 @@ mod tests {
         assert_eq!(estimate_tokens("abc"), 1);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn fix_target_defaults_to_dedicated_and_has_tags() {
+        assert_eq!(FixTarget::default(), FixTarget::DedicatedReview);
+        assert_eq!(FixTarget::DedicatedReview.tag(), "dedicated");
+        assert_eq!(FixTarget::ExistingLive.tag(), "live");
+    }
+
+    #[test]
+    fn fix_session_index_prefers_dedicated_else_creates() {
+        use crate::project::{AgentKind, Feature, SessionKind, VibeMode};
+        let mut feature = Feature::new(
+            "feat".into(),
+            "branch".into(),
+            std::path::PathBuf::from("/tmp/wd"),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+
+        // Nothing running yet: both strategies report "must create / nothing to
+        // reuse".
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
+
+        // A regular live agent session satisfies existing-live but not dedicated.
+        feature.add_session_named(SessionKind::Claude, "Claude".into());
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+
+        // Once the dedicated review session exists it is reused by label, while
+        // existing-live still resolves to the first agent session.
+        feature.add_session_named(SessionKind::Claude, REVIEW_SESSION_LABEL.into());
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::DedicatedReview),
+            Some(1)
+        );
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
+    }
+
+    #[test]
+    fn fix_session_index_ignores_non_agent_sessions() {
+        use crate::project::{AgentKind, Feature, SessionKind, VibeMode};
+        let mut feature = Feature::new(
+            "feat".into(),
+            "branch".into(),
+            std::path::PathBuf::from("/tmp/wd"),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        // A terminal window is not an agent harness, so it is never a fix target.
+        feature.add_session_named(SessionKind::Terminal, "Terminal".into());
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
     }
 
     #[test]

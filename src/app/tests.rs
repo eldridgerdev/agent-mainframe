@@ -6941,6 +6941,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         selected: 0,
         detail_scroll: 0,
         hide_resolved: false,
+        fix_target: crate::app::pr_review::FixTarget::default(),
     });
 }
 
@@ -7028,6 +7029,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         selected: 0,
         detail_scroll: 0,
         hide_resolved: false,
+        fix_target: crate::app::pr_review::FixTarget::default(),
     });
 }
 

@@ -492,10 +492,11 @@ fn body_constraints(area: Rect, state: &DiffViewerState) -> [Constraint; 2] {
 }
 
 fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
-    let items: Vec<ListItem<'static>> = state
-        .files
+    let visible = state.visible_file_indices();
+    let mut items: Vec<ListItem<'static>> = visible
         .iter()
-        .map(|file| {
+        .map(|&idx| {
+            let file = &state.files[idx];
             let status_style = Style::default()
                 .fg(status_color(&file.status, theme))
                 .add_modifier(Modifier::BOLD);
@@ -527,12 +528,30 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
         })
         .collect();
 
+    // A filter that matches nothing shows a muted placeholder rather than an
+    // empty box.
+    if items.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!(" (no {} files) ", state.file_filter.label()),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))));
+    }
+
     let border = if state.focus == DiffViewerFocus::FileList {
         theme.warning.to_color()
     } else {
         theme.primary.to_color()
     };
-    let title = format!(" Files ({}) ", state.files.len());
+    let title = if state.review && state.file_filter != crate::app::FileFilter::All {
+        format!(
+            " Files ({}/{}) · {} ",
+            visible.len(),
+            state.files.len(),
+            state.file_filter.label()
+        )
+    } else {
+        format!(" Files ({}) ", state.files.len())
+    };
     let list = List::new(items)
         .block(
             Block::default()
@@ -549,7 +568,9 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
         .highlight_symbol(">");
 
     let mut list_state = ListState::default();
-    list_state.select(Some(state.selected_file));
+    // Highlight maps onto the visible subset; None when the selection is hidden
+    // by the active filter.
+    list_state.select(visible.iter().position(|&i| i == state.selected_file));
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
@@ -901,6 +922,15 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
 
     second_line.push(key("b"));
     second_line.push(Span::raw(" base ref  "));
+    second_line.push(key("F"));
+    if state.file_filter == crate::app::FileFilter::All {
+        second_line.push(Span::raw(" filter  "));
+    } else {
+        second_line.push(Span::styled(
+            format!(" filter: {}  ", state.file_filter.label()),
+            Style::default().fg(theme.info.to_color()),
+        ));
+    }
     second_line.push(key("q"));
     second_line.push(Span::raw(" finish review (writes feedback)"));
 

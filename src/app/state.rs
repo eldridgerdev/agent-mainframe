@@ -269,6 +269,39 @@ pub struct LineComment {
     pub text: String,
 }
 
+/// Which files the review file-list shows. Lets a reviewer narrow a large
+/// changeset to the work that still needs attention. Only meaningful in review
+/// mode; the read-only viewer always behaves as `All`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileFilter {
+    /// Every changed file (default).
+    #[default]
+    All,
+    /// Files with no verdict yet.
+    Undecided,
+    /// Files marked as needing revision.
+    Rejected,
+}
+
+impl FileFilter {
+    /// Cycle All → Undecided → Rejected → All.
+    pub fn next(self) -> Self {
+        match self {
+            FileFilter::All => FileFilter::Undecided,
+            FileFilter::Undecided => FileFilter::Rejected,
+            FileFilter::Rejected => FileFilter::All,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileFilter::All => "all",
+            FileFilter::Undecided => "undecided",
+            FileFilter::Rejected => "rejected",
+        }
+    }
+}
+
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
 // generation (matching `DiffReviewState`). Nothing clones this state wholesale.
 pub struct DiffViewerState {
@@ -344,6 +377,9 @@ pub struct DiffViewerState {
     /// Inner height of the notes panel at the last draw, used with
     /// `notes_rendered_lines` to clamp scroll to the visual bottom.
     pub notes_view_height: usize,
+    /// Active file-list filter (review mode only). Narrows the file list to
+    /// undecided / rejected files for large changesets.
+    pub file_filter: FileFilter,
 }
 
 impl DiffViewerState {
@@ -384,7 +420,47 @@ impl DiffViewerState {
             notes_scroll: 0,
             notes_rendered_lines: 0,
             notes_view_height: 0,
+            file_filter: FileFilter::All,
         }
+    }
+
+    /// Reset the per-file view state after the selected file changes (patch /
+    /// notes scroll, and the line-comment cursor). Centralizes what several
+    /// navigation paths previously duplicated.
+    pub fn on_file_changed(&mut self) {
+        self.patch_scroll = 0;
+        self.notes_scroll = 0;
+        if self.comment_cursor.is_some() {
+            self.comment_cursor = Some(0);
+            self.cursor_sync_to_view = true;
+        }
+    }
+
+    /// Whether `file` passes the active file-list filter. Always true outside
+    /// review mode or under the `All` filter.
+    fn file_passes_filter(&self, file: &crate::diff::DiffFile) -> bool {
+        match self.file_filter {
+            FileFilter::All => true,
+            FileFilter::Undecided => !self.decisions.contains_key(&file.path),
+            FileFilter::Rejected => matches!(
+                self.decisions.get(&file.path),
+                Some(ReviewDecision::Reject { .. })
+            ),
+        }
+    }
+
+    /// Indices into `files` of the files currently shown under the active
+    /// filter, in file order. The full list outside review / with `All`.
+    pub fn visible_file_indices(&self) -> Vec<usize> {
+        if !self.review || self.file_filter == FileFilter::All {
+            return (0..self.files.len()).collect();
+        }
+        self.files
+            .iter()
+            .enumerate()
+            .filter(|(_, file)| self.file_passes_filter(file))
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 

@@ -164,29 +164,49 @@ impl App {
     }
 
     pub fn diff_viewer_select_next_file(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode
-            && state.selected_file + 1 < state.files.len()
-        {
-            state.selected_file += 1;
-            state.patch_scroll = 0;
-            state.notes_scroll = 0;
-            if state.comment_cursor.is_some() {
-                state.comment_cursor = Some(0);
-                state.cursor_sync_to_view = true;
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let visible = state.visible_file_indices();
+            if visible.is_empty() {
+                return;
+            }
+            // Move to the next visible file. If the current selection is itself
+            // hidden (e.g. just decided under a filter), fall to the first
+            // visible file at-or-after it, then the first overall.
+            let next = match visible.iter().position(|&i| i == state.selected_file) {
+                Some(pos) if pos + 1 < visible.len() => Some(visible[pos + 1]),
+                Some(_) => None,
+                None => visible
+                    .iter()
+                    .copied()
+                    .find(|&i| i > state.selected_file)
+                    .or_else(|| visible.first().copied()),
+            };
+            if let Some(idx) = next {
+                state.selected_file = idx;
+                state.on_file_changed();
             }
         }
     }
 
     pub fn diff_viewer_select_prev_file(&mut self) {
-        if let AppMode::DiffViewer(state) = &mut self.mode
-            && state.selected_file > 0
-        {
-            state.selected_file -= 1;
-            state.patch_scroll = 0;
-            state.notes_scroll = 0;
-            if state.comment_cursor.is_some() {
-                state.comment_cursor = Some(0);
-                state.cursor_sync_to_view = true;
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let visible = state.visible_file_indices();
+            if visible.is_empty() {
+                return;
+            }
+            let prev = match visible.iter().position(|&i| i == state.selected_file) {
+                Some(pos) if pos > 0 => Some(visible[pos - 1]),
+                Some(_) => None,
+                None => visible
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&i| i < state.selected_file)
+                    .or_else(|| visible.last().copied()),
+            };
+            if let Some(idx) = prev {
+                state.selected_file = idx;
+                state.on_file_changed();
             }
         }
     }

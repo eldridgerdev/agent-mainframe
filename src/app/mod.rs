@@ -1935,6 +1935,7 @@ impl App {
         if let Some(ref db) = app.db {
             let _ = db.evict_stale_token_cache();
             let _ = db.evict_stale_pr_review_cache();
+            let _ = db.evict_stale_pr_comment_triage();
             if let Ok(entries) = db.load_token_cache() {
                 app.token_tracker.seed_from_db_cache(entries);
             }

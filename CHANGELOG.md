@@ -10,6 +10,17 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **PR review triage state sticks.** In the PR comment-review pane you can now
+  mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
+  automatically flags the comment as "fixing". These states persist across
+  re-opening the PR and restarting AMF, so a long review picks up where you left
+  off. The comment list shows a per-comment checkbox (`[ ]`/`[~]`/`[x]`/`[-]`)
+  and the detail header a `[fixing]`/`[done]`/`[skipped]` chip — distinct from
+  GitHub's own `✓` thread-resolution marker. Mark-done and skip are manual with
+  no auto-advance: the selection stays put so you can watch the agent work.
+
 ### Fixed
 
 - Claude panes now render immediately behind the composer when an agent session
@@ -18,7 +29,9 @@ are tagged.
 
 ### Migration
 
-- No migration is required.
+- No action required. AMF adds a `pr_comment_triage` table to its SQLite store
+  on first launch; triage state is keyed by PR number, comment id, and head
+  commit, and stale rows are pruned automatically after a week.
 
 ## [v0.27.0] - 2026-06-25
 

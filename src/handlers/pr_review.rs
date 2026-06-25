@@ -29,6 +29,8 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
+        KeyCode::Char('m') => app.pr_review_mark_done(),
+        KeyCode::Char('s') => app.pr_review_skip(),
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('g') => app.open_pr_number_prompt(),
         _ => {}

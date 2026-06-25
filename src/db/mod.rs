@@ -1,5 +1,6 @@
 mod debug_log;
 mod migrations;
+mod pr_comment_triage;
 mod pr_review_cache;
 mod session_status;
 pub mod store;
@@ -99,6 +100,30 @@ impl AmfDb {
 
     pub fn evict_stale_pr_review_cache(&self) -> Result<()> {
         pr_review_cache::evict_stale(&self.conn)
+    }
+
+    /// Local triage rows for `(pr_number, head_sha)` as `comment_id -> (state, note)`.
+    pub fn load_pr_comment_triage(
+        &self,
+        pr_number: u32,
+        head_sha: &str,
+    ) -> Result<std::collections::HashMap<u64, pr_comment_triage::TriageRow>> {
+        pr_comment_triage::load(&self.conn, pr_number, head_sha)
+    }
+
+    pub fn save_pr_comment_triage(
+        &self,
+        pr_number: u32,
+        head_sha: &str,
+        comment_id: u64,
+        state: crate::app::pr_review::TriageState,
+        note: Option<&str>,
+    ) -> Result<()> {
+        pr_comment_triage::upsert(&self.conn, pr_number, head_sha, comment_id, state, note)
+    }
+
+    pub fn evict_stale_pr_comment_triage(&self) -> Result<()> {
+        pr_comment_triage::evict_stale(&self.conn)
     }
 
     pub fn append_log_entry(&self, entry: &crate::debug::LogEntry) -> Result<()> {

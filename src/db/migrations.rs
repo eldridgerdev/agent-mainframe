@@ -45,6 +45,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Cache normalized PR reviews keyed by PR# + head SHA",
             MIGRATION_008,
         ),
+        (
+            "Persist local PR comment triage state (fixing/done/…)",
+            MIGRATION_009,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -143,6 +147,20 @@ CREATE TABLE IF NOT EXISTS pr_review_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_review_cache_fetched
     ON pr_review_cache(fetched_at);
+";
+
+const MIGRATION_009: &str = "
+CREATE TABLE IF NOT EXISTS pr_comment_triage (
+    pr_number  INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    head_sha   TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    note       TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (pr_number, comment_id, head_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
+    ON pr_comment_triage(updated_at);
 ";
 
 const MIGRATION_001: &str = "

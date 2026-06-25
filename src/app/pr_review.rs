@@ -90,8 +90,9 @@ pub enum CommentKind {
     Conversation,
 }
 
-/// Local triage decision, cached in SQLite later. GitHub thread resolution is
-/// the source of truth for "done"; this is the local layer on top of it.
+/// Local triage decision, persisted in SQLite (`pr_comment_triage`). GitHub
+/// thread resolution is the source of truth for "done"; this is the local layer
+/// on top of it (a fix was injected, the user marked it done, skipped it, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TriageState {
     #[default]
@@ -100,6 +101,56 @@ pub enum TriageState {
     Done,
     Skipped,
     Replied,
+}
+
+impl TriageState {
+    /// Stable token persisted in SQLite. Kept separate from the `Display`/UI
+    /// label so the on-disk encoding never shifts with cosmetic changes.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            TriageState::Untriaged => "untriaged",
+            TriageState::Fixing => "fixing",
+            TriageState::Done => "done",
+            TriageState::Skipped => "skipped",
+            TriageState::Replied => "replied",
+        }
+    }
+
+    /// Parse the persisted token back into a state; an unknown token (older or
+    /// corrupt row) falls back to [`TriageState::Untriaged`].
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "fixing" => TriageState::Fixing,
+            "done" => TriageState::Done,
+            "skipped" => TriageState::Skipped,
+            "replied" => TriageState::Replied,
+            _ => TriageState::Untriaged,
+        }
+    }
+
+    /// One-char list checkbox marker (plan legend: `[ ]` untriaged, `[x]` done,
+    /// `[-]` skipped, `[~]` fixing, `[r]` replied).
+    pub fn marker(self) -> char {
+        match self {
+            TriageState::Untriaged => ' ',
+            TriageState::Fixing => '~',
+            TriageState::Done => 'x',
+            TriageState::Skipped => '-',
+            TriageState::Replied => 'r',
+        }
+    }
+
+    /// Short label for the detail chip / toasts (`None` for untriaged — nothing
+    /// to show).
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            TriageState::Untriaged => None,
+            TriageState::Fixing => Some("fixing"),
+            TriageState::Done => Some("done"),
+            TriageState::Skipped => Some("skipped"),
+            TriageState::Replied => Some("replied"),
+        }
+    }
 }
 
 /// One normalized, display-ready comment.
@@ -408,11 +459,12 @@ impl App {
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
     fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
-        if let Some(review) = self.load_cached_pr_review(&pr) {
+        if let Some(mut review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
                 format!("cache hit for PR #{} @ {}", pr.number, pr.head_sha),
             );
+            self.apply_persisted_triage(&mut review);
             self.mode = AppMode::PrReview(PrReviewState {
                 workdir,
                 review,
@@ -447,6 +499,113 @@ impl App {
         };
         if let Err(e) = result {
             self.log_warn("pr_review", format!("cache write failed: {e}"));
+        }
+    }
+
+    /// Overlay the persisted local triage (`Fixing`/`Done`/skip notes) onto a
+    /// freshly-loaded review. The `pr_comment_triage` table — keyed by
+    /// `PR# + head SHA + comment id` — is authoritative for local triage, so it
+    /// wins over whatever the cache blob happened to serialize. A read failure
+    /// (or no DB) is non-fatal: comments just stay [`TriageState::Untriaged`].
+    fn apply_persisted_triage(&mut self, review: &mut PrReview) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let triage = match db.load_pr_comment_triage(review.pr.number, &review.pr.head_sha) {
+            Ok(map) => map,
+            Err(e) => {
+                self.log_warn("pr_review", format!("triage load failed: {e}"));
+                return;
+            }
+        };
+        for comment in &mut review.comments {
+            if let Some((state, note)) = triage.get(&comment.id) {
+                comment.triage = *state;
+                comment.local_note = note.clone();
+            }
+        }
+    }
+
+    /// Persist one comment's triage state (with an optional note) to SQLite. A
+    /// write failure is non-fatal (logged, not surfaced).
+    fn persist_triage(
+        &mut self,
+        pr_number: u32,
+        head_sha: &str,
+        comment_id: u64,
+        state: TriageState,
+        note: Option<&str>,
+    ) {
+        let result = match self.db.as_ref() {
+            Some(db) => db.save_pr_comment_triage(pr_number, head_sha, comment_id, state, note),
+            None => return,
+        };
+        if let Err(e) = result {
+            self.log_warn("pr_review", format!("triage persist failed: {e}"));
+        }
+    }
+
+    /// Set the selected comment's triage state in-memory and persist it. The
+    /// comment keeps its existing `local_note`. No-op outside the review pane or
+    /// with no selection.
+    fn pr_review_set_triage(&mut self, state: TriageState) {
+        let Some((pr_number, head_sha, comment_id, note)) = ({
+            let AppMode::PrReview(s) = &mut self.mode else {
+                return;
+            };
+            s.review.comments.get_mut(s.selected).map(|c| {
+                c.triage = state;
+                (
+                    s.review.pr.number,
+                    s.review.pr.head_sha.clone(),
+                    c.id,
+                    c.local_note.clone(),
+                )
+            })
+        }) else {
+            return;
+        };
+        self.persist_triage(pr_number, &head_sha, comment_id, state, note.as_deref());
+    }
+
+    /// Mark the selected comment done (toggles back to untriaged if it already
+    /// is). Manual, with **no auto-advance** — the user stays on the comment so
+    /// they can review the agent's work before moving on (plan: Epic B).
+    pub fn pr_review_mark_done(&mut self) {
+        let next = match self.pr_review_selected_triage() {
+            Some(TriageState::Done) => TriageState::Untriaged,
+            Some(_) => TriageState::Done,
+            None => return,
+        };
+        self.pr_review_set_triage(next);
+        let msg = match next {
+            TriageState::Done => "Marked done",
+            _ => "Cleared — back to untriaged",
+        };
+        self.push_toast_success(msg.to_string());
+    }
+
+    /// Skip the selected comment locally (toggles back to untriaged if already
+    /// skipped). Local-only — no GitHub write, no agent tokens.
+    pub fn pr_review_skip(&mut self) {
+        let next = match self.pr_review_selected_triage() {
+            Some(TriageState::Skipped) => TriageState::Untriaged,
+            Some(_) => TriageState::Skipped,
+            None => return,
+        };
+        self.pr_review_set_triage(next);
+        let msg = match next {
+            TriageState::Skipped => "Skipped",
+            _ => "Cleared — back to untriaged",
+        };
+        self.push_toast_success(msg.to_string());
+    }
+
+    /// Triage state of the currently-selected comment, if any.
+    fn pr_review_selected_triage(&self) -> Option<TriageState> {
+        match &self.mode {
+            AppMode::PrReview(s) => s.selected_comment().map(|c| c.triage),
+            _ => None,
         }
     }
 
@@ -562,12 +721,13 @@ impl App {
                 };
                 let workdir = state.workdir.clone();
                 match result {
-                    Ok(review) => {
+                    Ok(mut review) => {
                         self.log_info(
                             "pr_review",
                             format!("loaded {} comments", review.comments.len()),
                         );
                         self.cache_pr_review(&review);
+                        self.apply_persisted_triage(&mut review);
                         self.mode = AppMode::PrReview(PrReviewState {
                             workdir,
                             review,
@@ -737,19 +897,25 @@ impl App {
     /// agent session. Delivery goes through the shared compose / prompt-library
     /// seam: pasted without sending so the user reviews before it runs.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
-        let prompt = match &self.mode {
-            AppMode::PrReview(state) => match &state.fix_confirm {
-                // Confirming the open dialog uses its edited buffer.
-                Some(confirm) => confirm.editor.text().trim().to_string(),
-                // No dialog open (e.g. empty pane): fall back to the selection.
-                None => match state.selected_comment() {
-                    Some(c) => c.fix_prompt(),
-                    None => {
-                        self.message = Some("No comment selected".into());
-                        return Ok(());
-                    }
-                },
-            },
+        let (prompt, triage_key) = match &self.mode {
+            AppMode::PrReview(state) => {
+                let key = state
+                    .selected_comment()
+                    .map(|c| (state.review.pr.number, state.review.pr.head_sha.clone(), c.id));
+                let prompt = match &state.fix_confirm {
+                    // Confirming the open dialog uses its edited buffer.
+                    Some(confirm) => confirm.editor.text().trim().to_string(),
+                    // No dialog open (e.g. empty pane): fall back to the selection.
+                    None => match state.selected_comment() {
+                        Some(c) => c.fix_prompt(),
+                        None => {
+                            self.message = Some("No comment selected".into());
+                            return Ok(());
+                        }
+                    },
+                };
+                (prompt, key)
+            }
             _ => return Ok(()),
         };
 
@@ -765,6 +931,17 @@ impl App {
                 return Ok(());
             }
         };
+
+        // The fix is committed: mark the comment `Fixing` and persist before we
+        // leave the pane, so re-opening the review (cache hit) shows the state.
+        if let Some((pr_number, head_sha, comment_id)) = triage_key {
+            if let AppMode::PrReview(state) = &mut self.mode
+                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id)
+            {
+                c.triage = TriageState::Fixing;
+            }
+            self.persist_triage(pr_number, &head_sha, comment_id, TriageState::Fixing, None);
+        }
 
         // Switch into the target session, then deliver the prompt via the shared
         // seam (seeds the compose box when interception is on, else pastes
@@ -1044,6 +1221,31 @@ mod tests {
         assert_eq!(estimate_tokens("abc"), 1);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn triage_state_db_str_roundtrips() {
+        for state in [
+            TriageState::Untriaged,
+            TriageState::Fixing,
+            TriageState::Done,
+            TriageState::Skipped,
+            TriageState::Replied,
+        ] {
+            assert_eq!(TriageState::from_db_str(state.as_db_str()), state);
+        }
+        // Unknown tokens degrade to untriaged rather than erroring.
+        assert_eq!(TriageState::from_db_str("garbage"), TriageState::Untriaged);
+    }
+
+    #[test]
+    fn triage_state_labels_and_markers() {
+        assert_eq!(TriageState::Untriaged.label(), None);
+        assert_eq!(TriageState::Untriaged.marker(), ' ');
+        assert_eq!(TriageState::Done.label(), Some("done"));
+        assert_eq!(TriageState::Done.marker(), 'x');
+        assert_eq!(TriageState::Skipped.marker(), '-');
+        assert_eq!(TriageState::Fixing.marker(), '~');
     }
 
     #[test]

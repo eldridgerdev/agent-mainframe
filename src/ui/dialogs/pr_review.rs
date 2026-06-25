@@ -150,7 +150,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
     };
     let footer = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   ^d/^u scroll   f fix→{}   t target   {toggle_hint}   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
@@ -292,7 +292,8 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// One row in the comment list: a resolution marker, location, author, snippet.
+/// One row in the comment list: a local-triage checkbox, a resolution marker,
+/// location, author, snippet.
 fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     let marker = if c.is_resolved { "✓" } else { " " };
     let location = match (&c.path, c.line) {
@@ -308,6 +309,10 @@ fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     };
 
     Line::from(vec![
+        Span::styled(
+            format!("[{}] ", c.triage.marker()),
+            Style::default().fg(triage_color(c.triage, theme)),
+        ),
         Span::styled(
             format!("{marker} "),
             Style::default().fg(theme.success.to_color()),
@@ -364,6 +369,14 @@ fn draw_comment_detail(
             Style::default().fg(theme.success.to_color()),
         ));
     }
+    if let Some(label) = c.triage.label() {
+        header_spans.push(Span::styled(
+            format!("  [{label}]"),
+            Style::default()
+                .fg(triage_color(c.triage, theme))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     lines.push(Line::from(header_spans));
 
     lines.push(Line::from(vec![
@@ -405,6 +418,17 @@ fn draw_comment_detail(
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
     frame.render_widget(body, inner);
+}
+
+/// Accent color for a triage state's checkbox/chip.
+fn triage_color(state: crate::app::pr_review::TriageState, theme: &Theme) -> ratatui::style::Color {
+    use crate::app::pr_review::TriageState;
+    match state {
+        TriageState::Untriaged => theme.text_muted.to_color(),
+        TriageState::Fixing => theme.warning.to_color(),
+        TriageState::Done | TriageState::Replied => theme.success.to_color(),
+        TriageState::Skipped => theme.text_muted.to_color(),
+    }
 }
 
 fn kind_label(kind: &CommentKind) -> &'static str {

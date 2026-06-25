@@ -405,8 +405,23 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       the shared `TextEditor` / `editor_lines` rendering. Unit-tested. →
       `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
-- [ ] Local `TriageState` persisted in SQLite (`Fixing`/`Done`/etc.);
-      manual "mark done" with no auto-advance.
+- [x] Local `TriageState` persisted in SQLite (`Fixing`/`Done`/etc.); manual
+      "mark done" with no auto-advance. New `pr_comment_triage` table (migration
+      009) keyed by `PR# + comment id + head SHA`, with a `TriageState`
+      `as_db_str`/`from_db_str` encoding (unknown tokens degrade to `Untriaged`).
+      Triage is **authoritative in its own table**, not the review cache blob:
+      `apply_persisted_triage` overlays it onto every freshly-loaded review (both
+      the cache-hit and background-fetch paths) so state survives re-open and
+      restart. Injecting a fix (`f`) marks the comment `Fixing` and persists
+      before leaving the pane; `m` toggles `Done`↔`Untriaged` and `s` toggles
+      `Skipped`↔`Untriaged` — both **manual with no auto-advance** (selection
+      stays put so the user can watch the agent). The list shows a per-comment
+      `[ ]`/`[~]`/`[x]`/`[-]` checkbox and the detail header a colored
+      `[fixing]`/`[done]`/`[skipped]` chip, distinct from GitHub's `✓`
+      resolution marker. Stale rows (>7 days) evicted at startup. Unit-tested
+      (db roundtrip, head-SHA keying, state encoding). → `src/db/migrations.rs`,
+      `src/db/pr_comment_triage.rs`, `src/db/mod.rs`, `src/app/pr_review.rs`,
+      `src/app/mod.rs`, `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** select a comment, inject a scoped fix into the review
   session (default dedicated, or the live session by choice), watch it
   work, mark done — without leaving AMF and without injecting any file

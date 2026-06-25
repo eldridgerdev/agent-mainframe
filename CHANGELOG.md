@@ -111,15 +111,19 @@ are tagged.
   GitHub (picking up new comments and any commits you've pushed) on demand.
 
 - **Send a review comment to an agent as a fix.** In the PR-review pane, press
-  `f` on a comment to inject a tightly-scoped fix prompt into an agent session
-  and drop you into that session to watch it work. The prompt carries only the
-  comment, its `file:line`, and GitHub's diff hunk — no file contents — and is
-  pasted without sending so you can review or edit before it runs. By default
-  the fix goes to a dedicated "PR Review" session that AMF spins up once and
-  reuses for every fix on that PR (so the per-session overhead is paid once);
-  press `t` to switch the target to the feature's existing live session for
-  warm in-progress context. The footer shows the current target
-  (`f fix→dedicated`).
+  `f` on a comment to turn it into a tightly-scoped fix prompt for an agent
+  session. `f` now opens a confirm dialog first that shows the exact text that
+  will be sent — the comment, its `file:line`, and GitHub's diff hunk, with no
+  file contents — alongside a `~N tokens` estimate and the target session, so
+  nothing reaches the agent until you approve it. Press `e` to edit the prompt
+  in place before sending (`Esc` back to the confirmation), `Enter` to inject,
+  or `Esc` to cancel. On inject AMF drops you into the session to watch it
+  work; the prompt is pasted without auto-sending so you can still eyeball it
+  there. By default the fix goes to a dedicated "PR Review" session that AMF
+  spins up once and reuses for every fix on that PR (so the per-session
+  overhead is paid once); press `t` to switch the target to the feature's
+  existing live session for warm in-progress context. The footer shows the
+  current target (`f fix→dedicated`).
 
 ### Changed
 

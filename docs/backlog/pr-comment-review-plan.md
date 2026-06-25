@@ -393,12 +393,18 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       Unit-tested. → `src/app/pr_review.rs`, `src/app/session_ops.rs`,
       `src/app/state.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`.
-- [ ] Confirm/edit dialog; deliver via the compose/prompt-library
-      injection seam to the chosen agent window. _(Seam delivery is already
-      wired by the fix-target item: `f` injects via `deliver_prompt`
-      (paste-without-send, which is an implicit review-before-run step). What
-      remains is the dedicated confirm/edit dialog with the `~N tokens` preview
-      from the UI mock — `estimate_tokens` already exists for it.)_
+- [x] Confirm/edit dialog; deliver via the compose/prompt-library
+      injection seam to the chosen agent window. Pressing `f` now opens a
+      modal confirm/edit dialog (`FixConfirmState` on `PrReviewState`) seeded
+      with the comment's minimal fix prompt instead of injecting immediately:
+      it names the target session, shows the exact prompt that will be sent
+      (no file contents) and a live `~N tokens` preview via `estimate_tokens`,
+      and lets the user edit the buffer (`e` to edit, `esc` back to confirm)
+      before `⏎` injects through the existing `deliver_prompt`
+      (paste-without-send) seam or `esc`/`q` cancels. The prompt editor reuses
+      the shared `TextEditor` / `editor_lines` rendering. Unit-tested. →
+      `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [ ] Local `TriageState` persisted in SQLite (`Fixing`/`Done`/etc.);
       manual "mark done" with no auto-advance.
 - **Acceptance:** select a comment, inject a scoped fix into the review
@@ -448,8 +454,70 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       closed/merged; consider seeding the highlight on the branch's
       auto-detected PR when there is one. → new picker mode + handler, peer to
       `PrNumberPrompt`; `gh pr list` wrapper in `src/github.rs`.
-- [ ] Opt-in batch mode: queue several "fix" decisions → one numbered
-      prompt sharing file context.
+- [ ] **Pick the agent harness before the dedicated review session starts.**
+      Today the dedicated review session is spun up with the project's
+      `preferred_agent` (`create_dedicated_review_session` in
+      `src/app/session_ops.rs` reads `projects[pi].preferred_agent` →
+      `session_kind_for_agent`). Let the user choose the harness (Claude /
+      Codex / opencode, i.e. `AgentKind`) for the review session **before** the
+      first fix is injected, so PR triage can run on a different harness than
+      the feature's working session (e.g. a cheaper/faster model for
+      mechanical review fixes). Surface a harness picker on the first `f` for
+      the `DedicatedReview` target (reuse the existing harness-selection UI —
+      `src/ui/dialogs/harness.rs` — rather than a bespoke menu), remember the
+      choice for the rest of the PR (the session is created once and reused),
+      and fall back to `preferred_agent` as the default highlight. Only applies
+      to the dedicated target; `ExistingLive` reuses whatever harness that
+      session already runs. → `src/app/pr_review.rs`,
+      `src/app/session_ops.rs`, `src/app/state.rs`, plus the harness picker.
+- [ ] **Upgrade the fix confirm/edit dialog editor (vim + full editing).**
+      The dialog added in Epic B seeds a plain `TextEditor::new(prompt)` and
+      forwards keys to it only in edit mode — enough to tweak the prompt, but
+      it lacks the niceties the other editor-backed dialogs already have.
+      Bring it up to parity: **vim keymap support** (`TextEditor::with_vim` /
+      the `toggle_vim` toggle, with a persisted `vim_enabled` choice like
+      `PlaceholderFillState`), a visible mode/cursor indicator, scroll +
+      cursor-follow for prompts taller than the dialog (reuse
+      `editor_view::sync_editor_scroll` / `editor_cursor_visual_row` instead of
+      the current non-scrolling `Paragraph`), and the standard editing affordances
+      (undo/redo, word motions — already in `TextEditor`, just not surfaced
+      here). Decide a submit gesture that coexists with multi-line editing
+      (e.g. `Ctrl-Enter` to inject vs. `Enter` for a newline) since today
+      `Enter` only injects from the confirm view, not edit mode. → `src/app/state.rs`
+      (`FixConfirmState`), `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
+- [ ] **Fix several comments in one pass against the same dedicated session.**
+      Per-comment reuse already works (`fix_session_index` finds the dedicated
+      `"PR Review"` session by label, so every `f` reuses the same warm
+      harness). What's missing is the *throughput loop*: today each `f`
+      switches the user into the session to watch, so fixing N comments means N
+      round-trips out of and back into the pane. Let the user **select
+      multiple comments** (multi-select / a `[space]`-marked set) and inject
+      their fix prompts into the same dedicated session **in sequence without
+      leaving the pane** between each — the agent works through them while the
+      user keeps triaging, and the per-session overhead and warm file context
+      are shared across all of them (token principle #4). Each comment stays a
+      **separate** fix prompt here (sequential), which is what distinguishes
+      this from the batch item below (one combined numbered prompt). Mark each
+      as `Fixing` as it's queued. → `src/app/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+- [ ] **Combined-prompt batch: "fix all of these, then I'll come back."**
+      The walk-away workflow. Let the user mark a set of comments to fix
+      (reuse the same multi-select from the sequential item above), then build
+      **one numbered prompt** that lists every selected comment — each with its
+      `file:line` pointer, bot-stripped text, and diff hunk (still no file
+      contents) — and inject it **once** into the dedicated review session so
+      the agent works through the whole list autonomously while the user is
+      away. Differs from the sequential item above in that it's a single
+      combined prompt (shared preamble + file context across all comments → the
+      cheapest token path for a big set), and it's send-and-leave rather than
+      watch-each. Show the same confirm/edit dialog with a `~N tokens` preview
+      for the assembled batch before sending, mark every included comment
+      `Fixing` on send, and on the next refresh reconcile which threads got
+      resolved/answered. Keep the set bounded (warn past some comment/token
+      ceiling) so a single prompt doesn't blow the context window. →
+      `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).
 - [ ] "Done in `<sha>`" reply template auto-filled from latest commit.
 - [ ] Keybinding help entry; status-bar summary (`4 open / 7`).

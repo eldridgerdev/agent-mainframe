@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.27.0] - 2026-06-25
+
 ### Added
 
 - **Final review reads like a real code review.** Developer notes beside each

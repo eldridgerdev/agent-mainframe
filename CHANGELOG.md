@@ -12,6 +12,31 @@ are tagged.
 
 ### Added
 
+- **PR review triage state sticks.** In the PR comment-review pane you can now
+  mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
+  automatically flags the comment as "fixing". These states persist across
+  re-opening the PR and restarting AMF, so a long review picks up where you left
+  off. The comment list shows a per-comment checkbox (`[ ]`/`[~]`/`[x]`/`[-]`)
+  and the detail header a `[fixing]`/`[done]`/`[skipped]` chip — distinct from
+  GitHub's own `✓` thread-resolution marker. Mark-done and skip are manual with
+  no auto-advance: the selection stays put so you can watch the agent work.
+
+### Fixed
+
+- Claude panes now render immediately behind the composer when an agent session
+  opens with composer input enabled. Previously the composer could appear over a
+  blank pane until you closed it or sent input.
+
+### Migration
+
+- No action required. AMF adds a `pr_comment_triage` table to its SQLite store
+  on first launch; triage state is keyed by PR number, comment id, and head
+  commit, and stale rows are pruned automatically after a week.
+
+## [v0.27.0] - 2026-06-25
+
+### Added
+
 - **Final review reads like a real code review.** Developer notes beside each
   diff now render as Markdown, so headings, lists, and code blocks in your
   `.claude/review-notes.md` show up formatted instead of as raw text.
@@ -131,6 +156,21 @@ are tagged.
   changed is now instant and makes no network calls — comments are cached
   locally per PR and head commit — and pressing `r` in the pane refreshes from
   GitHub (picking up new comments and any commits you've pushed) on demand.
+
+- **Send a review comment to an agent as a fix.** In the PR-review pane, press
+  `f` on a comment to turn it into a tightly-scoped fix prompt for an agent
+  session. `f` now opens a confirm dialog first that shows the exact text that
+  will be sent — the comment, its `file:line`, and GitHub's diff hunk, with no
+  file contents — alongside a `~N tokens` estimate and the target session, so
+  nothing reaches the agent until you approve it. Press `e` to edit the prompt
+  in place before sending (`Esc` back to the confirmation), `Enter` to inject,
+  or `Esc` to cancel. On inject AMF drops you into the session to watch it
+  work; the prompt is pasted without auto-sending so you can still eyeball it
+  there. By default the fix goes to a dedicated "PR Review" session that AMF
+  spins up once and reuses for every fix on that PR (so the per-session
+  overhead is paid once); press `t` to switch the target to the feature's
+  existing live session for warm in-progress context. The footer shows the
+  current target (`f fix→dedicated`).
 
 ### Changed
 

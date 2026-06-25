@@ -94,3 +94,30 @@ The sidebar includes a `Todos` section with the current checklist progress.
 ### Actual
 
 The sidebar shows `Status`, `Work`, and `Prompt`, but no `Todos` section.
+
+## ~~Claude composer opens over a blank pane~~ (Fixed)
+
+- **Status:** Fixed (2026-06-25)
+- **Reported:** 2026-06-25
+- **Root cause:** Opening an agent session with composer input enabled moved AMF
+  directly into `AppMode::Compose`. The main loop only initialized pane sizing
+  for `AppMode::Viewing`, so the snapshot worker had zero pane dimensions and
+  did not capture the Claude pane behind the composer.
+- **Fix:** Treat `AppMode::Compose` as a live view for pane sizing and Claude
+  pane drift checks, so the tmux pane is resized and captured before the
+  composer overlay is drawn.
+
+### Repro
+
+1. Open a Claude Code agent session with composer input enabled.
+2. Let AMF auto-open the composer on entry.
+3. Look at the pane behind the composer.
+
+### Expected
+
+Claude Code's current pane content is visible behind the composer immediately.
+
+### Actual
+
+The composer opens, but the pane behind it is blank until the composer is
+closed or input is sent.

@@ -5,8 +5,8 @@
 //! token-saving transforms (bot-boilerplate stripping, one-line snippets,
 //! thread-resolution merge). See `docs/backlog/pr-comment-review-plan.md`.
 
-// Wired into the App state / UI layer in the next step; until then the model
-// and helpers are exercised only by unit tests.
+// Some helpers (token estimate for the confirm dialog, the loading-state probe)
+// are consumed by later epics; keep them until those land.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -19,10 +19,65 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::editor::TextEditor;
 use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread};
 
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
+
+/// Label (and de-facto identity) of the dedicated PR-review agent session. The
+/// session is found-or-created by this label so the same window is reused for
+/// every fix in a PR (plan token principle #4 — pay per-session overhead once).
+pub(crate) const REVIEW_SESSION_LABEL: &str = "PR Review";
+
+/// Which agent session a "fix" prompt is injected into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum FixTarget {
+    /// A single dedicated review session, spun up once and reused for every fix
+    /// in the PR. The default: per-session overhead (system prompt, tool
+    /// definitions, skills) is paid once and file reads amortize across
+    /// comments, and review work stays out of the user's working session.
+    #[default]
+    DedicatedReview,
+    /// The feature's existing live agent session — warm in-progress context, at
+    /// the cost of carrying that session's unrelated conversation into each fix.
+    ExistingLive,
+}
+
+impl FixTarget {
+    /// Short human label for footers / toasts.
+    pub fn label(self) -> &'static str {
+        match self {
+            FixTarget::DedicatedReview => "dedicated review session",
+            FixTarget::ExistingLive => "existing live session",
+        }
+    }
+
+    /// Compact footer tag.
+    pub fn tag(self) -> &'static str {
+        match self {
+            FixTarget::DedicatedReview => "dedicated",
+            FixTarget::ExistingLive => "live",
+        }
+    }
+}
+
+/// Index of the session a fix should target within a feature, given the
+/// strategy. For [`FixTarget::DedicatedReview`], `None` means no review session
+/// exists yet and one must be created; for [`FixTarget::ExistingLive`], `None`
+/// means there is no live agent session to reuse.
+pub(crate) fn fix_session_index(feature: &Feature, target: FixTarget) -> Option<usize> {
+    match target {
+        FixTarget::ExistingLive => feature
+            .sessions
+            .iter()
+            .position(|s| s.kind.is_agent_harness()),
+        FixTarget::DedicatedReview => feature
+            .sessions
+            .iter()
+            .position(|s| s.kind.is_agent_harness() && s.label == REVIEW_SESSION_LABEL),
+    }
+}
 
 /// What kind of GitHub comment this is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,8 +90,9 @@ pub enum CommentKind {
     Conversation,
 }
 
-/// Local triage decision, cached in SQLite later. GitHub thread resolution is
-/// the source of truth for "done"; this is the local layer on top of it.
+/// Local triage decision, persisted in SQLite (`pr_comment_triage`). GitHub
+/// thread resolution is the source of truth for "done"; this is the local layer
+/// on top of it (a fix was injected, the user marked it done, skipped it, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TriageState {
     #[default]
@@ -45,6 +101,56 @@ pub enum TriageState {
     Done,
     Skipped,
     Replied,
+}
+
+impl TriageState {
+    /// Stable token persisted in SQLite. Kept separate from the `Display`/UI
+    /// label so the on-disk encoding never shifts with cosmetic changes.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            TriageState::Untriaged => "untriaged",
+            TriageState::Fixing => "fixing",
+            TriageState::Done => "done",
+            TriageState::Skipped => "skipped",
+            TriageState::Replied => "replied",
+        }
+    }
+
+    /// Parse the persisted token back into a state; an unknown token (older or
+    /// corrupt row) falls back to [`TriageState::Untriaged`].
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "fixing" => TriageState::Fixing,
+            "done" => TriageState::Done,
+            "skipped" => TriageState::Skipped,
+            "replied" => TriageState::Replied,
+            _ => TriageState::Untriaged,
+        }
+    }
+
+    /// One-char list checkbox marker (plan legend: `[ ]` untriaged, `[x]` done,
+    /// `[-]` skipped, `[~]` fixing, `[r]` replied).
+    pub fn marker(self) -> char {
+        match self {
+            TriageState::Untriaged => ' ',
+            TriageState::Fixing => '~',
+            TriageState::Done => 'x',
+            TriageState::Skipped => '-',
+            TriageState::Replied => 'r',
+        }
+    }
+
+    /// Short label for the detail chip / toasts (`None` for untriaged — nothing
+    /// to show).
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            TriageState::Untriaged => None,
+            TriageState::Fixing => Some("fixing"),
+            TriageState::Done => Some("done"),
+            TriageState::Skipped => Some("skipped"),
+            TriageState::Replied => Some("replied"),
+        }
+    }
 }
 
 /// One normalized, display-ready comment.
@@ -353,17 +459,20 @@ impl App {
     /// fetch. Either path spends zero agent tokens. Manual refresh
     /// ([`refresh_pr_review`](Self::refresh_pr_review)) bypasses the cache.
     fn enter_pr_review(&mut self, workdir: PathBuf, pr: PrRef) {
-        if let Some(review) = self.load_cached_pr_review(&pr) {
+        if let Some(mut review) = self.load_cached_pr_review(&pr) {
             self.log_info(
                 "pr_review",
                 format!("cache hit for PR #{} @ {}", pr.number, pr.head_sha),
             );
+            self.apply_persisted_triage(&mut review);
             self.mode = AppMode::PrReview(PrReviewState {
                 workdir,
                 review,
                 selected: 0,
                 detail_scroll: 0,
                 hide_resolved: false,
+                fix_target: FixTarget::default(),
+                fix_confirm: None,
             });
             return;
         }
@@ -390,6 +499,113 @@ impl App {
         };
         if let Err(e) = result {
             self.log_warn("pr_review", format!("cache write failed: {e}"));
+        }
+    }
+
+    /// Overlay the persisted local triage (`Fixing`/`Done`/skip notes) onto a
+    /// freshly-loaded review. The `pr_comment_triage` table — keyed by
+    /// `PR# + head SHA + comment id` — is authoritative for local triage, so it
+    /// wins over whatever the cache blob happened to serialize. A read failure
+    /// (or no DB) is non-fatal: comments just stay [`TriageState::Untriaged`].
+    fn apply_persisted_triage(&mut self, review: &mut PrReview) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let triage = match db.load_pr_comment_triage(review.pr.number, &review.pr.head_sha) {
+            Ok(map) => map,
+            Err(e) => {
+                self.log_warn("pr_review", format!("triage load failed: {e}"));
+                return;
+            }
+        };
+        for comment in &mut review.comments {
+            if let Some((state, note)) = triage.get(&comment.id) {
+                comment.triage = *state;
+                comment.local_note = note.clone();
+            }
+        }
+    }
+
+    /// Persist one comment's triage state (with an optional note) to SQLite. A
+    /// write failure is non-fatal (logged, not surfaced).
+    fn persist_triage(
+        &mut self,
+        pr_number: u32,
+        head_sha: &str,
+        comment_id: u64,
+        state: TriageState,
+        note: Option<&str>,
+    ) {
+        let result = match self.db.as_ref() {
+            Some(db) => db.save_pr_comment_triage(pr_number, head_sha, comment_id, state, note),
+            None => return,
+        };
+        if let Err(e) = result {
+            self.log_warn("pr_review", format!("triage persist failed: {e}"));
+        }
+    }
+
+    /// Set the selected comment's triage state in-memory and persist it. The
+    /// comment keeps its existing `local_note`. No-op outside the review pane or
+    /// with no selection.
+    fn pr_review_set_triage(&mut self, state: TriageState) {
+        let Some((pr_number, head_sha, comment_id, note)) = ({
+            let AppMode::PrReview(s) = &mut self.mode else {
+                return;
+            };
+            s.review.comments.get_mut(s.selected).map(|c| {
+                c.triage = state;
+                (
+                    s.review.pr.number,
+                    s.review.pr.head_sha.clone(),
+                    c.id,
+                    c.local_note.clone(),
+                )
+            })
+        }) else {
+            return;
+        };
+        self.persist_triage(pr_number, &head_sha, comment_id, state, note.as_deref());
+    }
+
+    /// Mark the selected comment done (toggles back to untriaged if it already
+    /// is). Manual, with **no auto-advance** — the user stays on the comment so
+    /// they can review the agent's work before moving on (plan: Epic B).
+    pub fn pr_review_mark_done(&mut self) {
+        let next = match self.pr_review_selected_triage() {
+            Some(TriageState::Done) => TriageState::Untriaged,
+            Some(_) => TriageState::Done,
+            None => return,
+        };
+        self.pr_review_set_triage(next);
+        let msg = match next {
+            TriageState::Done => "Marked done",
+            _ => "Cleared — back to untriaged",
+        };
+        self.push_toast_success(msg.to_string());
+    }
+
+    /// Skip the selected comment locally (toggles back to untriaged if already
+    /// skipped). Local-only — no GitHub write, no agent tokens.
+    pub fn pr_review_skip(&mut self) {
+        let next = match self.pr_review_selected_triage() {
+            Some(TriageState::Skipped) => TriageState::Untriaged,
+            Some(_) => TriageState::Skipped,
+            None => return,
+        };
+        self.pr_review_set_triage(next);
+        let msg = match next {
+            TriageState::Skipped => "Skipped",
+            _ => "Cleared — back to untriaged",
+        };
+        self.push_toast_success(msg.to_string());
+    }
+
+    /// Triage state of the currently-selected comment, if any.
+    fn pr_review_selected_triage(&self) -> Option<TriageState> {
+        match &self.mode {
+            AppMode::PrReview(s) => s.selected_comment().map(|c| c.triage),
+            _ => None,
         }
     }
 
@@ -505,18 +721,21 @@ impl App {
                 };
                 let workdir = state.workdir.clone();
                 match result {
-                    Ok(review) => {
+                    Ok(mut review) => {
                         self.log_info(
                             "pr_review",
                             format!("loaded {} comments", review.comments.len()),
                         );
                         self.cache_pr_review(&review);
+                        self.apply_persisted_triage(&mut review);
                         self.mode = AppMode::PrReview(PrReviewState {
                             workdir,
                             review,
                             selected: 0,
                             detail_scroll: 0,
                             hide_resolved: false,
+                            fix_target: FixTarget::default(),
+                            fix_confirm: None,
                         });
                     }
                     Err(e) => {
@@ -586,6 +805,196 @@ impl App {
                 state.detail_scroll = 0;
             }
         }
+    }
+
+    /// Toggle which agent session "fix" prompts are injected into: the default
+    /// dedicated review session, or the feature's existing live session.
+    pub fn pr_review_toggle_fix_target(&mut self) {
+        let label = {
+            let AppMode::PrReview(state) = &mut self.mode else {
+                return;
+            };
+            state.fix_target = match state.fix_target {
+                FixTarget::DedicatedReview => FixTarget::ExistingLive,
+                FixTarget::ExistingLive => FixTarget::DedicatedReview,
+            };
+            state.fix_target.label()
+        };
+        self.push_toast_success(format!("Fixes target the {label}"));
+    }
+
+    /// Open the fix confirm/edit dialog for the selected comment. Assembles the
+    /// minimal fix prompt and shows it for review (with a `~N tokens` preview)
+    /// before anything reaches the agent — nothing is injected until the user
+    /// confirms. Editing is opt-in (`e`) from the dialog.
+    pub fn pr_review_open_fix_confirm(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(comment) = state.selected_comment() else {
+            self.message = Some("No comment selected".into());
+            return;
+        };
+        let prompt = comment.fix_prompt();
+        state.fix_confirm = Some(FixConfirmState {
+            editor: TextEditor::new(prompt),
+            editing: false,
+        });
+    }
+
+    /// Whether the fix confirm/edit dialog is currently open, and if so whether
+    /// it is in edit mode. `None` means no dialog is open.
+    pub fn pr_review_fix_editing(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::PrReview(state) => state.fix_confirm.as_ref().map(|c| c.editing),
+            _ => None,
+        }
+    }
+
+    /// Close the fix confirm/edit dialog without injecting anything.
+    pub fn pr_review_cancel_fix(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.fix_confirm = None;
+        }
+    }
+
+    /// Switch the open fix dialog into edit mode so keystrokes flow to the
+    /// prompt editor. No-op when the dialog is closed or already editing.
+    pub fn pr_review_fix_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.editing = true;
+        }
+    }
+
+    /// Leave edit mode, returning to the confirm view (the prompt is kept).
+    pub fn pr_review_fix_stop_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.editing = false;
+        }
+    }
+
+    /// Forward a key to the open fix-prompt editor (only meaningful in edit
+    /// mode). Returns `true` when a dialog editor consumed the key.
+    pub fn pr_review_fix_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+            && confirm.editing
+        {
+            confirm.editor.handle_key(key);
+            return true;
+        }
+        false
+    }
+
+    /// Confirm the dialog: inject the (possibly edited) prompt into the chosen
+    /// agent session and switch the user into that session to watch it (no
+    /// auto-advance). The dedicated review session is spun up on first use and
+    /// reused thereafter; the existing-live target reuses the feature's running
+    /// agent session. Delivery goes through the shared compose / prompt-library
+    /// seam: pasted without sending so the user reviews before it runs.
+    pub fn pr_review_inject_fix(&mut self) -> Result<()> {
+        let (prompt, triage_key) = match &self.mode {
+            AppMode::PrReview(state) => {
+                let key = state
+                    .selected_comment()
+                    .map(|c| (state.review.pr.number, state.review.pr.head_sha.clone(), c.id));
+                let prompt = match &state.fix_confirm {
+                    // Confirming the open dialog uses its edited buffer.
+                    Some(confirm) => confirm.editor.text().trim().to_string(),
+                    // No dialog open (e.g. empty pane): fall back to the selection.
+                    None => match state.selected_comment() {
+                        Some(c) => c.fix_prompt(),
+                        None => {
+                            self.message = Some("No comment selected".into());
+                            return Ok(());
+                        }
+                    },
+                };
+                (prompt, key)
+            }
+            _ => return Ok(()),
+        };
+
+        if prompt.is_empty() {
+            self.message = Some("Nothing to inject — the prompt is empty".into());
+            return Ok(());
+        }
+
+        let (pi, fi, si) = match self.resolve_fix_session() {
+            Ok(target) => target,
+            Err(e) => {
+                self.show_error(e);
+                return Ok(());
+            }
+        };
+
+        // The fix is committed: mark the comment `Fixing` and persist before we
+        // leave the pane, so re-opening the review (cache hit) shows the state.
+        if let Some((pr_number, head_sha, comment_id)) = triage_key {
+            if let AppMode::PrReview(state) = &mut self.mode
+                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id)
+            {
+                c.triage = TriageState::Fixing;
+            }
+            self.persist_triage(pr_number, &head_sha, comment_id, TriageState::Fixing, None);
+        }
+
+        // Switch into the target session, then deliver the prompt via the shared
+        // seam (seeds the compose box when interception is on, else pastes
+        // without sending). Leaving the pane is intentional — the user watches
+        // the agent and re-opens the review (cache hit) when done.
+        self.selection = Selection::Session(pi, fi, si);
+        self.enter_view_without_auto_compose()?;
+        let AppMode::Viewing(view) = &self.mode else {
+            return Ok(());
+        };
+        let view = view.clone();
+        self.deliver_prompt(prompt, Some(view))
+    }
+
+    /// Resolve (and, for the dedicated strategy, lazily create) the agent
+    /// window that fix prompts target. Returns `(project, feature, session)`
+    /// indices. Ensures the feature's tmux session is running first.
+    fn resolve_fix_session(&mut self) -> Result<(usize, usize, usize)> {
+        let (workdir, target) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), state.fix_target),
+            _ => anyhow::bail!("not reviewing a PR"),
+        };
+        let (pi, fi) = self
+            .feature_indices_for_workdir(&workdir)
+            .ok_or_else(|| anyhow::anyhow!("could not find the feature for this PR"))?;
+
+        self.ensure_feature_running_for_new_session(pi, fi)?;
+
+        let feature = &self.store.projects[pi].features[fi];
+        if let Some(si) = fix_session_index(feature, target) {
+            return Ok((pi, fi, si));
+        }
+
+        match target {
+            FixTarget::DedicatedReview => {
+                let si = self.create_dedicated_review_session(pi, fi)?;
+                Ok((pi, fi, si))
+            }
+            FixTarget::ExistingLive => {
+                anyhow::bail!("no live agent session to reuse — switch to the dedicated target (t)")
+            }
+        }
+    }
+
+    /// Find the `(project, feature)` indices of the feature whose workdir
+    /// matches `workdir`.
+    fn feature_indices_for_workdir(&self, workdir: &Path) -> Option<(usize, usize)> {
+        self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            p.features
+                .iter()
+                .position(|f| f.workdir == workdir)
+                .map(|fi| (pi, fi))
+        })
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
@@ -812,6 +1221,95 @@ mod tests {
         assert_eq!(estimate_tokens("abc"), 1);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn triage_state_db_str_roundtrips() {
+        for state in [
+            TriageState::Untriaged,
+            TriageState::Fixing,
+            TriageState::Done,
+            TriageState::Skipped,
+            TriageState::Replied,
+        ] {
+            assert_eq!(TriageState::from_db_str(state.as_db_str()), state);
+        }
+        // Unknown tokens degrade to untriaged rather than erroring.
+        assert_eq!(TriageState::from_db_str("garbage"), TriageState::Untriaged);
+    }
+
+    #[test]
+    fn triage_state_labels_and_markers() {
+        assert_eq!(TriageState::Untriaged.label(), None);
+        assert_eq!(TriageState::Untriaged.marker(), ' ');
+        assert_eq!(TriageState::Done.label(), Some("done"));
+        assert_eq!(TriageState::Done.marker(), 'x');
+        assert_eq!(TriageState::Skipped.marker(), '-');
+        assert_eq!(TriageState::Fixing.marker(), '~');
+    }
+
+    #[test]
+    fn fix_target_defaults_to_dedicated_and_has_tags() {
+        assert_eq!(FixTarget::default(), FixTarget::DedicatedReview);
+        assert_eq!(FixTarget::DedicatedReview.tag(), "dedicated");
+        assert_eq!(FixTarget::ExistingLive.tag(), "live");
+    }
+
+    #[test]
+    fn fix_session_index_prefers_dedicated_else_creates() {
+        use crate::project::{AgentKind, Feature, SessionKind, VibeMode};
+        let mut feature = Feature::new(
+            "feat".into(),
+            "branch".into(),
+            std::path::PathBuf::from("/tmp/wd"),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+
+        // Nothing running yet: both strategies report "must create / nothing to
+        // reuse".
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
+
+        // A regular live agent session satisfies existing-live but not dedicated.
+        feature.add_session_named(SessionKind::Claude, "Claude".into());
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+
+        // Once the dedicated review session exists it is reused by label, while
+        // existing-live still resolves to the first agent session.
+        feature.add_session_named(SessionKind::Claude, REVIEW_SESSION_LABEL.into());
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::DedicatedReview),
+            Some(1)
+        );
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
+    }
+
+    #[test]
+    fn fix_session_index_ignores_non_agent_sessions() {
+        use crate::project::{AgentKind, Feature, SessionKind, VibeMode};
+        let mut feature = Feature::new(
+            "feat".into(),
+            "branch".into(),
+            std::path::PathBuf::from("/tmp/wd"),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        );
+        // A terminal window is not an agent harness, so it is never a fix target.
+        feature.add_session_named(SessionKind::Terminal, "Terminal".into());
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
     }
 
     #[test]

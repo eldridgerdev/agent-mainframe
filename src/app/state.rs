@@ -1025,6 +1025,25 @@ pub struct PrReviewState {
     pub detail_scroll: usize,
     /// When true, comments already resolved on GitHub are hidden from the list.
     pub hide_resolved: bool,
+    /// Which agent session "fix" prompts are injected into (toggle with `t`).
+    pub fix_target: crate::app::pr_review::FixTarget,
+    /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
+    /// the assembled (and editable) prompt awaiting the user's approval before
+    /// it is injected into the agent session.
+    pub fix_confirm: Option<FixConfirmState>,
+}
+
+/// Confirm/edit dialog for a fix prompt: shows the exact text that will be
+/// injected (token principle #3 — no file contents), with a `~N tokens`
+/// preview, before it reaches the agent. The prompt is editable so the user can
+/// tweak it before sending.
+#[derive(Debug, Clone)]
+pub struct FixConfirmState {
+    /// The assembled fix prompt, editable before injection.
+    pub editor: TextEditor,
+    /// True while keystrokes go to the editor (`e` to enter); false in the
+    /// default confirm view (`⏎` inject / `e` edit / `esc` cancel).
+    pub editing: bool,
 }
 
 impl PrReviewState {

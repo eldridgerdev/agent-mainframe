@@ -149,10 +149,95 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         "h hide-resolved"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   ^d/^u scroll   {toggle_hint}   r refresh   g other-PR   esc/q close"),
+        format!(
+            " j/k move   f fix→{}   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
+            state.fix_target.tag()
+        ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, outer[2]);
+
+    // Fix confirm/edit dialog overlays the pane when open.
+    if let Some(confirm) = &state.fix_confirm {
+        draw_fix_confirm(frame, confirm, state.fix_target, theme);
+    }
+}
+
+/// Confirm/edit dialog: shows the exact prompt that will be injected (no file
+/// contents — token principle #3) with a `~N tokens` preview, and lets the user
+/// edit it before it reaches the agent.
+fn draw_fix_confirm(
+    frame: &mut Frame,
+    confirm: &crate::app::FixConfirmState,
+    target: crate::app::pr_review::FixTarget,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 70, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Inject fix into agent session ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // target line
+            Constraint::Length(1), // spacer
+            Constraint::Min(1),    // prompt body / editor
+            Constraint::Length(1), // token preview
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Will inject into the ",
+                Style::default().fg(theme.text_muted.to_color()),
+            ),
+            Span::styled(
+                target.label(),
+                Style::default()
+                    .fg(theme.secondary.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":", Style::default().fg(theme.text_muted.to_color())),
+        ])),
+        chunks[0],
+    );
+
+    let prompt_lines = super::editor_view::editor_lines(&confirm.editor, theme, "(empty prompt)");
+    frame.render_widget(
+        Paragraph::new(prompt_lines).wrap(Wrap { trim: false }),
+        chunks[2],
+    );
+
+    let tokens = crate::app::pr_review::estimate_tokens(confirm.editor.text());
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("~{tokens} tokens · no file contents included"),
+            Style::default().fg(theme.text_muted.to_color()),
+        ))),
+        chunks[3],
+    );
+
+    let hints = if confirm.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] inject   [e] edit   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[4],
+    );
 }
 
 fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme: &Theme) {
@@ -207,7 +292,8 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// One row in the comment list: a resolution marker, location, author, snippet.
+/// One row in the comment list: a local-triage checkbox, a resolution marker,
+/// location, author, snippet.
 fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     let marker = if c.is_resolved { "✓" } else { " " };
     let location = match (&c.path, c.line) {
@@ -223,6 +309,10 @@ fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     };
 
     Line::from(vec![
+        Span::styled(
+            format!("[{}] ", c.triage.marker()),
+            Style::default().fg(triage_color(c.triage, theme)),
+        ),
         Span::styled(
             format!("{marker} "),
             Style::default().fg(theme.success.to_color()),
@@ -279,6 +369,14 @@ fn draw_comment_detail(
             Style::default().fg(theme.success.to_color()),
         ));
     }
+    if let Some(label) = c.triage.label() {
+        header_spans.push(Span::styled(
+            format!("  [{label}]"),
+            Style::default()
+                .fg(triage_color(c.triage, theme))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     lines.push(Line::from(header_spans));
 
     lines.push(Line::from(vec![
@@ -320,6 +418,17 @@ fn draw_comment_detail(
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
     frame.render_widget(body, inner);
+}
+
+/// Accent color for a triage state's checkbox/chip.
+fn triage_color(state: crate::app::pr_review::TriageState, theme: &Theme) -> ratatui::style::Color {
+    use crate::app::pr_review::TriageState;
+    match state {
+        TriageState::Untriaged => theme.text_muted.to_color(),
+        TriageState::Fixing => theme.warning.to_color(),
+        TriageState::Done | TriageState::Replied => theme.success.to_color(),
+        TriageState::Skipped => theme.text_muted.to_color(),
+    }
 }
 
 fn kind_label(kind: &CommentKind) -> &'static str {

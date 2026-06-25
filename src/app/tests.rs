@@ -6941,6 +6941,8 @@ fn enter_pr_review(app: &mut App, n: u64) {
         selected: 0,
         detail_scroll: 0,
         hide_resolved: false,
+        fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_confirm: None,
     });
 }
 
@@ -7028,6 +7030,8 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         selected: 0,
         detail_scroll: 0,
         hide_resolved: false,
+        fix_target: crate::app::pr_review::FixTarget::default(),
+        fix_confirm: None,
     });
 }
 
@@ -7103,6 +7107,69 @@ fn pr_review_selection_change_resets_detail_scroll() {
         AppMode::PrReview(state) => assert_eq!(state.detail_scroll, 0),
         _ => panic!("not in PrReview mode"),
     }
+}
+
+fn pr_review_fix_confirm(app: &App) -> &crate::app::FixConfirmState {
+    match &app.mode {
+        AppMode::PrReview(state) => state
+            .fix_confirm
+            .as_ref()
+            .expect("fix confirm dialog should be open"),
+        _ => panic!("not in PrReview mode"),
+    }
+}
+
+#[test]
+fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+
+    assert_eq!(app.pr_review_fix_editing(), None);
+    app.pr_review_open_fix_confirm();
+
+    // Dialog opens in confirm (not edit) mode, seeded with the comment's prompt.
+    assert_eq!(app.pr_review_fix_editing(), Some(false));
+    let confirm = pr_review_fix_confirm(&app);
+    let expected = match &app.mode {
+        AppMode::PrReview(state) => state.selected_comment().unwrap().fix_prompt(),
+        _ => unreachable!(),
+    };
+    assert_eq!(confirm.editor.text(), expected);
+    assert!(confirm.editor.text().contains("Address this PR review comment."));
+}
+
+#[test]
+fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+
+    // Keys are ignored until edit mode is entered.
+    assert!(!app.pr_review_fix_editor_key(KeyEvent::from(KeyCode::Char('Z'))));
+    let before = pr_review_fix_confirm(&app).editor.text().to_string();
+
+    app.pr_review_fix_edit();
+    assert_eq!(app.pr_review_fix_editing(), Some(true));
+    assert!(app.pr_review_fix_editor_key(KeyEvent::from(KeyCode::Char('Z'))));
+    assert_eq!(pr_review_fix_confirm(&app).editor.text(), format!("{before}Z"));
+
+    // Leaving edit mode keeps the edited text; cancel closes the dialog.
+    app.pr_review_fix_stop_edit();
+    assert_eq!(app.pr_review_fix_editing(), Some(false));
+    app.pr_review_cancel_fix();
+    assert_eq!(app.pr_review_fix_editing(), None);
+}
+
+#[test]
+fn pr_review_open_fix_confirm_without_comments_shows_message() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 0);
+
+    app.pr_review_open_fix_confirm();
+    assert_eq!(app.pr_review_fix_editing(), None);
+    assert!(app.message.is_some());
 }
 
 /// Build a fresh final-review `DiffViewerState` over two modified files for the

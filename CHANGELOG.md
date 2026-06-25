@@ -51,6 +51,11 @@ are tagged.
   go, so a long review survives quitting AMF (or a crash). Reopening the final
   review for the same feature restores everything where you left off; finishing
   the review clears the saved progress so the next one starts fresh.
+- **Choose the diff base ref.** Press `b` in the branch diff viewer or final
+  review to compare against any branch, tag, or commit instead of the
+  auto-resolved base (`origin/HEAD` → `main` → `master`). The header shows a
+  `(manual)` marker while an override is active; submitting a blank entry
+  reverts to automatic resolution.
 
 - **Insert an agent skill into a prompt.** While editing a prompt body (or
   filling a text placeholder), press `Ctrl+K` to open a search-as-you-type

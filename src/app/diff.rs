@@ -103,6 +103,7 @@ impl App {
         self.mode = AppMode::DiffViewer(state);
         if was_review {
             self.restore_review_progress();
+            self.apply_review_snapshot_diff();
         }
     }
 

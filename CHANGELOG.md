@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **Final review flags what changed since last time.** Finishing a final review
+  now records a fingerprint of the diff, so the next time you review the same
+  feature AMF marks the files that changed since your last pass with a `Δ` in
+  the file list (and a `Δ N changed` count in the header). On a fresh re-review
+  where only some files changed, the file list automatically narrows to just
+  those files and lands on the first one — press `F` to cycle the filter
+  (all → undecided → rejected → changed) and see everything again. This closes
+  the loop after an agent addresses feedback: you only re-check what it touched.
 - **PR review triage state sticks.** In the PR comment-review pane you can now
   mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
   automatically flags the comment as "fixing". These states persist across

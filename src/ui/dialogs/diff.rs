@@ -253,6 +253,16 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
             format!("· {pending}"),
             Style::default().fg(theme.text_muted.to_color()),
         ));
+        // On a re-review, show how many files changed since the last round.
+        if state.has_prior_review {
+            second_line.push(Span::raw("   "));
+            second_line.push(Span::styled(
+                format!("Δ {} changed", state.changed_since_last.len()),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
     } else {
         second_line.push(Span::raw("  "));
         second_line.push(Span::styled(
@@ -516,6 +526,16 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
                 format!(" {} ", status_label(&file.status)),
                 status_style,
             ));
+            // Flag files that changed since the last finished review round so
+            // they stand out when re-reviewing.
+            if state.review && state.changed_since_last.contains(&file.path) {
+                spans.push(Span::styled(
+                    "Δ ",
+                    Style::default()
+                        .fg(theme.warning.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             spans.push(Span::styled(
                 file.path.clone(),
                 Style::default().fg(theme.text.to_color()),

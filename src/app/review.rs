@@ -31,6 +31,46 @@ fn load_review_progress(workdir: &Path) -> Option<ReviewProgress> {
     serde_json::from_str(&content).ok()
 }
 
+/// A fingerprint of the diff as it stood at the last *finished* review round,
+/// keyed by file path. Persisted to `.claude/final-review-snapshot.json` (kept
+/// across rounds, unlike the progress file) so the next review can flag which
+/// files changed since the reviewer last looked — the re-review loop.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ReviewSnapshot {
+    #[serde(default)]
+    reviewed_at: String,
+    /// file path -> diff fingerprint at the time of the last finished review.
+    #[serde(default)]
+    files: std::collections::HashMap<String, String>,
+}
+
+/// Path of the saved review-snapshot file for a feature workdir.
+fn review_snapshot_path(workdir: &Path) -> PathBuf {
+    workdir.join(".claude").join("final-review-snapshot.json")
+}
+
+/// Best-effort load of the last review snapshot for `workdir`.
+fn load_review_snapshot(workdir: &Path) -> Option<ReviewSnapshot> {
+    let content = std::fs::read_to_string(review_snapshot_path(workdir)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// A stable-enough fingerprint of a file's diff. Hashes the patch plus the
+/// status / line counts so a content change reads as "changed". This is a local
+/// cache only: `DefaultHasher` is not guaranteed stable across toolchain
+/// versions, so after an upgrade everything reads as changed — the safe default
+/// (the reviewer simply re-checks).
+fn file_fingerprint(file: &crate::diff::DiffFile) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file.patch.hash(&mut hasher);
+    file.additions.hash(&mut hasher);
+    file.deletions.hash(&mut hasher);
+    file.is_binary.hash(&mut hasher);
+    format!("{:?}", file.status).hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 impl App {
     /// Open AMF's native diff viewer in final-review mode: walk every file
     /// changed since the base ref, approving / rejecting / skipping each, then
@@ -107,6 +147,36 @@ impl App {
         let _ = std::fs::remove_file(review_progress_path(workdir));
     }
 
+    /// Record a fingerprint of the just-reviewed diff to
+    /// `.claude/final-review-snapshot.json` so the next review can flag which
+    /// files changed since (the re-review loop). Best-effort: a write failure is
+    /// logged, not surfaced — it only degrades change detection on the next
+    /// round. Unlike the progress file, this is *not* cleared on finish.
+    fn save_review_snapshot(&mut self, workdir: &Path, files: &[crate::diff::DiffFile]) {
+        let snapshot = ReviewSnapshot {
+            reviewed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            files: files
+                .iter()
+                .map(|f| (f.path.clone(), file_fingerprint(f)))
+                .collect(),
+        };
+        let path = review_snapshot_path(workdir);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(&snapshot) {
+            Ok(json) => {
+                if let Err(err) = std::fs::write(&path, json) {
+                    self.log_warn("review", format!("failed to save review snapshot: {err}"));
+                }
+            }
+            Err(err) => self.log_warn(
+                "review",
+                format!("failed to serialize review snapshot: {err}"),
+            ),
+        }
+    }
+
     /// On opening a fresh final review, restore any previously saved decisions /
     /// comments / general feedback for the feature. Skipped when the in-memory
     /// review state already holds verdicts (e.g. an in-review `r` refresh), so a
@@ -141,6 +211,81 @@ impl App {
         state.general_feedback = progress.general_feedback;
         if !state.files.is_empty() {
             state.selected_file = progress.selected_file.min(state.files.len() - 1);
+        }
+    }
+
+    /// Compare the current diff against the last finished review's snapshot and
+    /// flag the files that changed since — the re-review loop. Called after the
+    /// diff loads (initial open and every refresh), so the `Changed` filter and
+    /// the file-list marker always reflect the live diff.
+    ///
+    /// On a *pristine* open of a re-review — no decisions / feedback yet, default
+    /// filter — where some but not all files changed, it auto-applies the
+    /// `Changed` filter and snaps the selection onto the first changed file so
+    /// the reviewer immediately sees only what needs re-checking. It never
+    /// overrides a filter the reviewer is already working under (e.g. after a
+    /// refresh mid-review).
+    pub fn apply_review_snapshot_diff(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        let Some(snapshot) = load_review_snapshot(&state.workdir) else {
+            state.has_prior_review = false;
+            state.changed_since_last.clear();
+            return;
+        };
+        state.has_prior_review = true;
+        state.changed_since_last = state
+            .files
+            .iter()
+            .filter(|file| {
+                snapshot
+                    .files
+                    .get(&file.path)
+                    .map(|fp| *fp != file_fingerprint(file))
+                    .unwrap_or(true)
+            })
+            .map(|file| file.path.clone())
+            .collect();
+
+        let total = state.files.len();
+        let changed = state.changed_since_last.len();
+        // Only steer a fresh review: leave an in-progress / refreshed review's
+        // filter and selection untouched.
+        let pristine = state.decisions.is_empty()
+            && state.line_comments.is_empty()
+            && state.general_feedback.is_empty()
+            && state.file_filter == FileFilter::All;
+        if !pristine {
+            return;
+        }
+        let when = if snapshot.reviewed_at.is_empty() {
+            String::new()
+        } else {
+            format!(" (last reviewed {})", snapshot.reviewed_at)
+        };
+        if changed == 0 {
+            self.message = Some(format!(
+                "Re-review: no files changed since the last review{when}"
+            ));
+        } else if changed == total {
+            self.message = Some(format!(
+                "Re-review: all {total} file(s) changed since the last review{when}"
+            ));
+        } else {
+            // Narrow to the changed files and land on the first of them.
+            state.file_filter = FileFilter::Changed;
+            if let Some(idx) = state.visible_file_indices().into_iter().next() {
+                state.selected_file = idx;
+                state.on_file_changed();
+            }
+            self.message = Some(format!(
+                "Re-review: {changed}/{total} file(s) changed since the last \
+                 review{when} — showing changed only (F to cycle filter)"
+            ));
         }
     }
 
@@ -609,6 +754,11 @@ impl App {
                 return;
             }
             state.file_filter = state.file_filter.next();
+            // `Changed` is only meaningful when a prior review exists to compare
+            // against; otherwise skip straight past it.
+            if state.file_filter == FileFilter::Changed && !state.has_prior_review {
+                state.file_filter = state.file_filter.next();
+            }
             let visible = state.visible_file_indices();
             if visible.is_empty() {
                 format!("Filter: {} (no matching files)", state.file_filter.label())
@@ -662,6 +812,11 @@ impl App {
         // The review is over; drop any saved progress so the next review for
         // this feature starts clean.
         Self::clear_review_progress(&workdir);
+        // …but record a fingerprint of what was reviewed (even an all-approved
+        // round) so the next review can flag files that changed since.
+        if !files.is_empty() {
+            self.save_review_snapshot(&workdir, &files);
+        }
 
         let total = files.len();
         let mut approved = 0usize;

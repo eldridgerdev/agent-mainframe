@@ -17,6 +17,8 @@ tui.json
 # here too so fresh checkouts/worktrees ignore them before that file exists.
 .claude/review-notes.md
 .claude/final-review-feedback.md
+.claude/final-review-progress.json
+.claude/final-review-snapshot.json
 .claude/latest-prompt.txt
 .claude/notifications/
 .claude/skills/amf-*/

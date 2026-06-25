@@ -105,7 +105,12 @@ any order.
       dated `## Review — <ts>` section prepended under a single
       title in `.claude/final-review-feedback.md`; the agent is
       prompted to address only the most recent round
-- [ ] Re-review loop (changed-since-last-review)
+- [x] Re-review loop (changed-since-last-review) — finishing a review
+      fingerprints the diff to `.claude/final-review-snapshot.json`; the next
+      review compares against it, marks changed files with a `Δ` in the file
+      list and a header count, and on a fresh re-review where only some files
+      changed auto-applies a new `Changed` file-list filter (in the `F` cycle
+      when a prior review exists) landing on the first changed file.
 - [x] File-list filters (undecided / rejected) — press `F` in the final
       review to cycle the file list through all / undecided / rejected;
       navigation (n/p/j/k, g/G) skips hidden files and decisions advance

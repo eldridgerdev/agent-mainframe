@@ -533,21 +533,28 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       now label the PR comment-review flow as experimental, matching the way
       AMF labels other still-refining workflows. →
       `src/ui/dialogs/help.rs`, `src/ui/dialogs/pr_review.rs`, `src/ui/status.rs`.
-- [ ] **PR picker — list PRs to choose from, or enter a number.** Today the
-      entry point auto-detects the branch's PR and, on a miss, drops straight to
-      the manual PR-number prompt (`AppMode::PrNumberPrompt`). Add a third path:
-      a selectable list of the repo's PRs so the user can pick one without
-      knowing its number. Fetch via `gh pr list --json
-      number,title,author,headRefName,updatedAt,isDraft,state` (in Rust, zero
-      agent tokens, reuse the `GhCli` layer), show a scrollable picker
-      (number · title · author · branch, newest first), and on select run the
-      existing resolve → load path. The manual number prompt stays available
-      from the picker (e.g. a key or a "enter a number instead" affordance) so
-      both flows live behind one entry: **search/pick a PR _or_ type its
-      number**. Default the list to open PRs with a toggle to include
-      closed/merged; consider seeding the highlight on the branch's
-      auto-detected PR when there is one. → new picker mode + handler, peer to
-      `PrNumberPrompt`; `gh pr list` wrapper in `src/github.rs`.
+- [x] **PR picker — list PRs to choose from, or enter a number.** A new
+      `AppMode::PrPicker` (peer to `PrNumberPrompt`) shows a scrollable, full-screen
+      list of the repo's PRs (`#number · title · @author · branch`, newest-updated
+      first) so the user can open one without knowing its number. Fetched in Rust
+      via `GhCli::list_prs` (`gh pr list --json
+      number,title,author,headRefName,updatedAt,isDraft,state`, zero agent tokens;
+      `parse_pr_list_json` flattens the nested author login and sorts by
+      `updatedAt`). Reached from both entry paths: pressing `G` on a branch with no
+      auto-detectable PR opens the picker instead of jumping straight to the number
+      prompt, and `g` inside the review pane opens it seeded on the current PR.
+      `⏎` resolves the highlighted PR by number (existing resolve → load → cache
+      path), `a` toggles open-only vs. include closed/merged (re-fetch, keeping the
+      highlight on the same PR when it survives), and `#`/`g` falls through to the
+      manual number prompt so **pick-a-PR and type-a-number live behind one entry**.
+      If `gh pr list` fails outright the picker degrades to the number prompt so the
+      user is never stuck. Draft/merged/closed rows carry a `[chip]`. Footer, status
+      bar, and a new "In the PR picker" keybindings-help section list the keys.
+      Unit-tested (`parse_pr_list_json` sort + author/null handling). →
+      `src/github.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/mod.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/mod.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
+      `src/ui/dialogs/help.rs`.
 - [ ] **Pick the agent harness before the dedicated review session starts.**
       Today the dedicated review session is spun up with the project's
       `preferred_agent` (`create_dedicated_review_session` in

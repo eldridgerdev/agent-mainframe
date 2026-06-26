@@ -508,7 +508,10 @@ impl App {
 
         match GhCli::resolve_pr(&workdir) {
             Ok(PrResolution::Found(pr)) => self.enter_pr_review(workdir, pr),
-            Ok(PrResolution::NoPrForBranch) => self.prompt_pr_number(workdir, None),
+            // No PR for this branch: offer a list of the repo's PRs to pick from
+            // (the picker falls through to the number prompt on its own if the
+            // list can't be fetched).
+            Ok(PrResolution::NoPrForBranch) => self.open_pr_picker(workdir, None),
             Err(e) => self.show_error(e),
         }
     }
@@ -672,6 +675,121 @@ impl App {
         }
     }
 
+    /// Open the PR picker: a selectable list of the repo's PRs. `seed_number`
+    /// pre-highlights that PR when present (e.g. the branch's auto-detected one,
+    /// or the PR already open in the pane). Lists open PRs by default. If `gh pr
+    /// list` fails outright, falls back to the manual number prompt so the user
+    /// is never stuck. Zero agent tokens.
+    pub fn open_pr_picker(&mut self, workdir: PathBuf, seed_number: Option<u32>) {
+        match GhCli::list_prs(&workdir, false) {
+            Ok(entries) => {
+                let selected = seed_number
+                    .and_then(|n| entries.iter().position(|e| e.number == n))
+                    .unwrap_or(0);
+                self.mode = AppMode::PrPicker(PrPickerState {
+                    workdir,
+                    entries,
+                    selected,
+                    include_closed: false,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                self.log_warn("pr_review", format!("pr list failed: {e}"));
+                self.prompt_pr_number(workdir, Some(e.to_string()));
+            }
+        }
+    }
+
+    /// Open the PR picker from inside the review pane (the `g` key), seeded on the
+    /// PR currently being reviewed so it starts highlighted.
+    pub fn open_pr_picker_from_pane(&mut self) {
+        let (workdir, current) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), Some(state.review.pr.number)),
+            AppMode::PrReviewLoading(state) => (state.workdir.clone(), Some(state.pr.number)),
+            _ => return,
+        };
+        self.open_pr_picker(workdir, current);
+    }
+
+    /// Move the picker highlight down one row (clamped).
+    pub fn pr_picker_select_next(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode
+            && !state.entries.is_empty()
+        {
+            state.selected = (state.selected + 1).min(state.entries.len() - 1);
+        }
+    }
+
+    /// Move the picker highlight up one row (clamped).
+    pub fn pr_picker_select_prev(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode {
+            state.selected = state.selected.saturating_sub(1);
+        }
+    }
+
+    /// Toggle whether the picker list includes closed/merged PRs, re-fetching
+    /// with the new filter. Keeps the highlight on the same PR number when it
+    /// survives the toggle.
+    pub fn pr_picker_toggle_closed(&mut self) {
+        let (workdir, include_closed, current) = match &self.mode {
+            AppMode::PrPicker(state) => (
+                state.workdir.clone(),
+                !state.include_closed,
+                state.entries.get(state.selected).map(|e| e.number),
+            ),
+            _ => return,
+        };
+        match GhCli::list_prs(&workdir, include_closed) {
+            Ok(entries) => {
+                let selected = current
+                    .and_then(|n| entries.iter().position(|e| e.number == n))
+                    .unwrap_or(0);
+                if let AppMode::PrPicker(state) = &mut self.mode {
+                    state.entries = entries;
+                    state.selected = selected;
+                    state.include_closed = include_closed;
+                    state.error = None;
+                }
+            }
+            Err(e) => {
+                if let AppMode::PrPicker(state) = &mut self.mode {
+                    state.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    /// Resolve the highlighted PR (by number) and open it for review. On a
+    /// resolve failure the picker stays open with an inline error.
+    pub fn pr_picker_choose(&mut self) {
+        let (workdir, number) = match &self.mode {
+            AppMode::PrPicker(state) => match state.entries.get(state.selected) {
+                Some(entry) => (state.workdir.clone(), entry.number),
+                None => return,
+            },
+            _ => return,
+        };
+        match GhCli::fetch_pr_by_number(&workdir, number) {
+            Ok(pr) => self.enter_pr_review(workdir, pr),
+            Err(e) => {
+                if let AppMode::PrPicker(state) = &mut self.mode {
+                    state.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
+    /// Switch from the picker to the manual PR-number prompt (the `#` key), so
+    /// "pick a PR" and "type a number" live behind one entry point.
+    pub fn pr_picker_to_number_prompt(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrPicker(state) => state.workdir.clone(),
+            _ => return,
+        };
+        self.prompt_pr_number(workdir, None);
+    }
+
     /// Open the manual PR-number override prompt. Used when the branch has no
     /// auto-detectable open PR; `error` seeds an inline message after a failed
     /// resolve so the user can correct the number and retry.
@@ -681,17 +799,6 @@ impl App {
             input: String::new(),
             error,
         });
-    }
-
-    /// Open the manual PR-number prompt from inside the review pane, so the
-    /// user can review a different PR than the branch's auto-detected one.
-    pub fn open_pr_number_prompt(&mut self) {
-        let workdir = match &self.mode {
-            AppMode::PrReview(state) => state.workdir.clone(),
-            AppMode::PrReviewLoading(state) => state.workdir.clone(),
-            _ => return,
-        };
-        self.prompt_pr_number(workdir, None);
     }
 
     /// Append a digit to the PR-number prompt (non-digits are ignored).

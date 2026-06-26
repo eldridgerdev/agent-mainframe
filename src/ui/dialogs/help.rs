@@ -149,11 +149,40 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("s", "Skip comment (local)"),
         ("i", "Install syntax highlighting for file"),
         ("r", "Refresh comments from GitHub"),
-        ("g", "Review a different PR by number"),
+        ("g", "Pick a different PR to review"),
         ("q / Esc", "Close review pane"),
     ];
 
     for (key, desc) in &pr_review_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  In the PR picker:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let pr_picker_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate PRs"),
+        ("Enter", "Open highlighted PR for review"),
+        ("a", "Include/hide closed & merged PRs"),
+        ("#", "Enter a PR number instead"),
+        ("q / Esc", "Close picker"),
+    ];
+
+    for (key, desc) in &pr_picker_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

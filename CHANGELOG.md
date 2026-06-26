@@ -87,6 +87,13 @@ are tagged.
   the same comment, now highlighted. This matches the `i` shortcut already in the
   diff viewer. The pane footer and the keybindings help (which gained a dedicated
   "While reviewing PR comments" section) list the new key.
+- **Pick a PR to review from a list.** When you press `G` on a feature whose
+  branch has no detectable PR — or press `g` inside the review pane to switch PRs
+  — AMF now shows a scrollable list of the repo's pull requests (number · title ·
+  author · branch, newest first) so you can open one without knowing its number.
+  Press `a` to include closed/merged PRs, `#` to type a number instead (the old
+  prompt is still one keypress away), and `⏎` to open the highlighted PR. The list
+  is fetched in Rust via `gh pr list`, so it spends zero agent tokens.
 - Added the full Gruvbox Material UI theme family to the theme picker and
   config: dark/light, hard/medium/soft contrast, and material/mix/original
   foreground palettes. Use names like `gruvbox-material-dark-medium` or

@@ -1074,6 +1074,25 @@ pub struct PrNumberPromptState {
     pub error: Option<String>,
 }
 
+/// PR picker: a selectable list of the repo's pull requests, so the user can
+/// open a PR for review without knowing its number. Reached when the branch has
+/// no auto-detectable PR, or on demand from the review pane to switch PRs. The
+/// manual number prompt stays one keypress away (`#`).
+#[derive(Debug, Clone)]
+pub struct PrPickerState {
+    /// Working directory of the feature whose repo we're listing PRs for.
+    pub workdir: PathBuf,
+    /// The fetched PR rows (newest-updated first).
+    pub entries: Vec<crate::github::PrListEntry>,
+    /// Index of the highlighted row.
+    pub selected: usize,
+    /// When true the list includes closed/merged PRs (`gh pr list --state all`);
+    /// otherwise open-only. Toggled with `a`.
+    pub include_closed: bool,
+    /// Last fetch/resolve failure, shown inline.
+    pub error: Option<String>,
+}
+
 /// State for the full-screen PR comment-review pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
@@ -1203,6 +1222,8 @@ pub enum AppMode {
     DiffViewer(DiffViewerState),
     /// Prompting for a PR number when the branch has no auto-detectable PR.
     PrNumberPrompt(PrNumberPromptState),
+    /// Choosing a PR from a list (or falling through to the number prompt).
+    PrPicker(PrPickerState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen review pane.

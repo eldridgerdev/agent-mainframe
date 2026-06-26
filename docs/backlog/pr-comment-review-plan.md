@@ -458,8 +458,20 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       `src/ui/dialogs/pr_review.rs`. _(Also delivers the Epic D "Done in `<sha>`"
       template: `R` seeds a reply from the feature workdir's latest commit and,
       on post, marks the comment `Done`.)_
-- [ ] Optional explicit `resolveReviewThread`; refresh affected thread
-      after posting.
+- [x] Optional explicit `resolveReviewThread`; refresh affected thread
+      after posting. `x` toggles the selected comment's thread between resolved
+      and reopened via the GraphQL `resolveReviewThread` /
+      `unresolveReviewThread` mutation (`GhCli::set_thread_resolved`), kept
+      independent of replying (resolve without commenting). Only inline comments
+      that belong to a thread are resolvable — conversation comments / review
+      summaries (no `thread_id`) show a hint. On success the new state is applied
+      to every comment in that thread and the SQLite cache is refreshed so a
+      cache-hit re-open reflects it. Posting a reply now re-pulls thread
+      resolution (`refresh_thread_resolution`, one GraphQL call, zero agent
+      tokens) so the `✓` marker stays honest. A first-write 403 maps to the
+      actionable `gh auth refresh -s repo` message. Unit-tested (mutation parse +
+      GraphQL-error surfacing). → `src/github.rs`, `src/app/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** from the pane, reply to a comment to report a fix
   (`Done in <sha>`) or explain why one isn't needed, and optionally resolve the
   thread.

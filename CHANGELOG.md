@@ -40,6 +40,13 @@ are tagged.
   PR conversation. The first time you post, if your `gh` login lacks write
   access AMF tells you to run `gh auth refresh -s repo` rather than failing
   cryptically.
+- **Resolve PR review threads from the pane.** Press `x` on an inline review
+  comment to resolve its thread on GitHub (or reopen one that's already
+  resolved) without leaving AMF — the `✓` marker updates immediately. Resolving
+  is independent of replying, so you can close out a thread with or without a
+  comment. After you post a reply AMF also re-checks thread resolution, so the
+  list stays in sync if a comment got resolved meanwhile. Conversation comments
+  and review summaries have no thread to resolve and say so.
 - **PR review triage state sticks.** In the PR comment-review pane you can now
   mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
   automatically flags the comment as "fixing". These states persist across

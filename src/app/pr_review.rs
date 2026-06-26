@@ -1183,12 +1183,103 @@ impl App {
             state.reply = None;
         }
         self.persist_triage(pr.number, &pr.head_sha, comment_id, triage, note.as_deref());
+        // Posting can flip a thread's resolution (e.g. GitHub auto-resolves, or
+        // the reviewer resolved meanwhile), so re-pull thread state to keep the
+        // `✓` marker honest. Zero agent tokens — one GraphQL call.
+        self.refresh_thread_resolution();
         let toast = match kind {
             ReplyKind::Done => "Posted reply · marked done",
             ReplyKind::NotNeeded => "Posted reply · marked skipped",
         };
         self.push_toast_success(toast.to_string());
         Ok(())
+    }
+
+    /// Toggle GitHub resolution of the selected comment's review thread via the
+    /// GraphQL `resolveReviewThread` / `unresolveReviewThread` mutation. Only
+    /// inline comments that belong to a thread can be resolved; conversation
+    /// comments and review summaries have no thread, so this is a no-op with a
+    /// hint. Independent of replying (the user may resolve without commenting).
+    ///
+    /// On success the new state is applied to every comment in that thread and
+    /// the SQLite cache is refreshed so a later cache-hit re-open reflects it.
+    /// Zero agent tokens.
+    pub fn pr_review_toggle_resolve(&mut self) {
+        let info = match &self.mode {
+            AppMode::PrReview(state) => state
+                .selected_comment()
+                .map(|c| (state.workdir.clone(), c.thread_id.clone(), c.is_resolved)),
+            _ => return,
+        };
+        let Some((workdir, thread_id, is_resolved)) = info else {
+            self.message = Some("No comment selected".into());
+            return;
+        };
+        let Some(thread_id) = thread_id else {
+            self.message = Some("This comment has no resolvable review thread".into());
+            return;
+        };
+
+        let desired = !is_resolved;
+        let now_resolved = match GhCli::set_thread_resolved(&workdir, &thread_id, desired) {
+            Ok(state) => state,
+            Err(e) => {
+                self.show_error(e);
+                return;
+            }
+        };
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            for c in &mut state.review.comments {
+                if c.thread_id.as_deref() == Some(thread_id.as_str()) {
+                    c.is_resolved = now_resolved;
+                }
+            }
+        }
+        self.recache_current_review();
+        let msg = if now_resolved {
+            "Thread resolved"
+        } else {
+            "Thread reopened"
+        };
+        self.push_toast_success(msg.to_string());
+    }
+
+    /// Re-fetch GitHub review-thread resolution state and apply it to the
+    /// in-memory review (and cache). One GraphQL call, zero agent tokens. A
+    /// failure is non-fatal — the existing markers just stay as they were.
+    fn refresh_thread_resolution(&mut self) {
+        let (workdir, pr) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), state.review.pr.clone()),
+            _ => return,
+        };
+        let threads = match GhCli::review_threads(&workdir, &pr.owner, &pr.repo, pr.number) {
+            Ok(threads) => threads,
+            Err(e) => {
+                self.log_warn("pr_review", format!("thread refresh failed: {e}"));
+                return;
+            }
+        };
+        let index = index_threads(&threads);
+        if let AppMode::PrReview(state) = &mut self.mode {
+            for c in &mut state.review.comments {
+                if let Some((tid, resolved)) = index.get(&c.id) {
+                    c.thread_id = Some(tid.clone());
+                    c.is_resolved = *resolved;
+                }
+            }
+        }
+        self.recache_current_review();
+    }
+
+    /// Re-persist the current in-memory review to the SQLite cache so a later
+    /// cache-hit re-open reflects resolution changes made in the pane.
+    fn recache_current_review(&mut self) {
+        let review = match &self.mode {
+            AppMode::PrReview(state) => state.review.clone(),
+            _ => return,
+        };
+        self.cache_pr_review(&review);
     }
 
     /// Resolve (and, for the dedicated strategy, lazily create) the agent

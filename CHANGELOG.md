@@ -550,9 +550,9 @@ are tagged.
 
 ### Changed
 
-- Review mode, final review, plan mode, and the steering coach now show
-  an experimental label in the UI, so users can tell these workflows are
-  still being refined before they opt into them.
+- Review mode, final review, PR comment review, plan mode, and the steering
+  coach now show an experimental label in the UI, so users can tell these
+  workflows are still being refined before they opt into them.
 
 ### Fixed
 

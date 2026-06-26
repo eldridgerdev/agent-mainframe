@@ -159,7 +159,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
@@ -465,6 +465,15 @@ fn draw_comment_detail(
     if let Some(hunk) = &c.diff_hunk {
         lines.push(divider(width, theme));
         lines.push(section_label("Diff hunk", theme));
+        // When the hunk's language is recognized but its parser isn't installed,
+        // the highlighter silently falls back to plain marker coloring. Surface
+        // the `i` affordance so the user can install it without guessing.
+        if let Some(hint) = syntax_install_hint(c.path.as_deref()) {
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::default().fg(theme.warning.to_color()),
+            )));
+        }
         lines.extend(diff_hunk_lines(hunk, c.path.as_deref(), theme));
     }
 
@@ -706,6 +715,21 @@ fn triage_color(state: crate::app::pr_review::TriageState, theme: &Theme) -> rat
         TriageState::Done | TriageState::Replied => theme.success.to_color(),
         TriageState::Skipped => theme.text_muted.to_color(),
     }
+}
+
+/// A muted hint nudging the user toward `i` when the comment's file maps to a
+/// known highlight language whose parser isn't installed yet. Returns `None` for
+/// comments with no path, unrecognized languages, or already-installed parsers.
+fn syntax_install_hint(path: Option<&str>) -> Option<String> {
+    let path = path?;
+    let (language, status) =
+        crate::highlight::language_install_state_for_path(std::path::Path::new(path))?;
+    matches!(status, crate::highlight::HighlightInstallState::Available).then(|| {
+        format!(
+            "{} highlighting not installed — press i",
+            language.picker_title()
+        )
+    })
 }
 
 fn kind_label(kind: &CommentKind) -> &'static str {

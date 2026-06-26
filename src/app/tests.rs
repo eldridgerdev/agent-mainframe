@@ -6984,6 +6984,47 @@ fn pr_review_close_returns_to_dashboard() {
 }
 
 #[test]
+fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2); // comments have paths src/file{id}.rs (Rust)
+
+    app.open_syntax_language_picker_for_selected_diff_file();
+
+    match &app.mode {
+        AppMode::SyntaxLanguagePicker(state) => {
+            assert_eq!(
+                state.languages[state.selected].language,
+                crate::highlight::HighlightLanguage::Rust
+            );
+            // The picker returns to the same review pane on close.
+            assert!(matches!(state.return_to.as_deref(), Some(AppMode::PrReview(_))));
+        }
+        other => panic!(
+            "expected syntax picker, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+}
+
+#[test]
+fn pr_review_i_is_noop_for_comment_without_file_path() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    // Conversation/summary comments carry no path — nothing to highlight.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review.comments[0].path = None;
+    }
+
+    app.open_syntax_language_picker_for_selected_diff_file();
+
+    assert!(
+        matches!(app.mode, AppMode::PrReview(_)),
+        "expected to stay in the review pane, got {:?}",
+        std::mem::discriminant(&app.mode)
+    );
+}
+
+#[test]
 fn pr_review_open_without_selection_shows_message() {
     // No projects/features selected, so opening should not enter a PR mode.
     let mut app = pr_review_test_app();

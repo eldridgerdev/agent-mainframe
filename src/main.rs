@@ -818,7 +818,7 @@ fn run_loop<B: Backend>(
             // the periodic reseed; the direct (pipe/capture) path rebuilds a
             // fresh parser per frame and self-heals, so its refresh timestamp
             // never updates and this deadline would otherwise floor the poll.
-            if pane_live && TmuxManager::uses_control_pty_input() {
+            if pane_live && app.config.view_auto_refresh && TmuxManager::uses_control_pty_input() {
                 deadlines
                     .register_after(last_view_refresh_request, app::VIEW_DRIFT_RESEED_INTERVAL);
             }
@@ -989,6 +989,7 @@ fn run_loop<B: Backend>(
         }
 
         if pane_live
+            && app.config.view_auto_refresh
             && TmuxManager::uses_control_pty_input()
             && !startup_loading
             && !handled_user_events
@@ -1358,6 +1359,7 @@ fn run_loop<B: Backend>(
                 last_reanchor_bounce = Instant::now();
             }
         } else if pane_live
+            && app.config.view_auto_refresh
             && !app.has_pending_view_input()
             && viewport_stable_since.elapsed() >= VIEWPORT_RESIZE_DEBOUNCE
             && last_reanchor_bounce.elapsed() >= app::VIEW_REANCHOR_BOUNCE_INTERVAL

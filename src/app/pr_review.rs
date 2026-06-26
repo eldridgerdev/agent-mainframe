@@ -543,6 +543,8 @@ impl App {
                 detail_content_lines: 0,
                 hide_resolved: false,
                 fix_target: FixTarget::default(),
+                review_harness: None,
+                harness_pick: None,
                 fix_confirm: None,
                 reply: None,
             });
@@ -912,6 +914,8 @@ impl App {
                             detail_content_lines: 0,
                             hide_resolved: false,
                             fix_target: FixTarget::default(),
+                            review_harness: None,
+                            harness_pick: None,
                             fix_confirm: None,
                             reply: None,
                         });
@@ -1005,7 +1009,16 @@ impl App {
     /// minimal fix prompt and shows it for review (with a `~N tokens` preview)
     /// before anything reaches the agent — nothing is injected until the user
     /// confirms. Editing is opt-in (`e`) from the dialog.
+    ///
+    /// For the dedicated-review target, the first fix of a PR first opens the
+    /// harness picker (which harness the review session should run) — the fix
+    /// confirm follows once the user picks. Subsequent fixes (harness already
+    /// chosen, or a dedicated session already exists) go straight to the dialog.
     pub fn pr_review_open_fix_confirm(&mut self) {
+        if self.pr_review_needs_harness_pick() {
+            self.pr_review_open_harness_pick();
+            return;
+        }
         let AppMode::PrReview(state) = &mut self.mode else {
             return;
         };
@@ -1018,6 +1031,119 @@ impl App {
             editor: TextEditor::new(prompt),
             editing: false,
         });
+    }
+
+    /// Whether the first `f` should pick a harness before injecting: only for
+    /// the dedicated-review target, when no harness has been chosen yet *and* no
+    /// dedicated session already exists (a cache re-open inherits the running
+    /// session's harness, so don't ask again).
+    fn pr_review_needs_harness_pick(&self) -> bool {
+        let AppMode::PrReview(state) = &self.mode else {
+            return false;
+        };
+        if state.fix_target != FixTarget::DedicatedReview || state.review_harness.is_some() {
+            return false;
+        }
+        match self.feature_indices_for_workdir(&state.workdir) {
+            Some((pi, fi)) => {
+                let feature = &self.store.projects[pi].features[fi];
+                fix_session_index(feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL)
+                    .is_none()
+            }
+            // No feature resolved yet — let the inject path surface the error.
+            None => false,
+        }
+    }
+
+    /// Open the single-select harness picker for the dedicated review session,
+    /// highlighting the project's preferred agent by default. No-op if a comment
+    /// isn't selected or no harnesses are available.
+    fn pr_review_open_harness_pick(&mut self) {
+        let workdir = match &self.mode {
+            AppMode::PrReview(state) => state.workdir.clone(),
+            _ => return,
+        };
+        let agents = self.allowed_agents_for_project_path(&workdir);
+        if agents.is_empty() {
+            // Nothing to choose — fall back to the default and inject directly.
+            return self.pr_review_skip_harness_pick();
+        }
+        let preferred = self
+            .feature_indices_for_workdir(&workdir)
+            .map(|(pi, _)| self.store.projects[pi].preferred_agent.clone());
+        let selected = preferred
+            .and_then(|p| agents.iter().position(|a| *a == p))
+            .unwrap_or(0);
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.harness_pick = Some(HarnessPickState { agents, selected });
+        }
+    }
+
+    /// Skip harness selection (e.g. no choices available): open the fix confirm
+    /// dialog directly, leaving `review_harness` at its default fallback.
+    fn pr_review_skip_harness_pick(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.harness_pick = None;
+            let Some(comment) = state.selected_comment() else {
+                self.message = Some("No comment selected".into());
+                return;
+            };
+            state.fix_confirm = Some(FixConfirmState {
+                editor: TextEditor::new(comment.fix_prompt()),
+                editing: false,
+            });
+        }
+    }
+
+    /// Whether the harness picker is currently open over the review pane.
+    pub fn pr_review_harness_picking(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::PrReview(state) if state.harness_pick.is_some()
+        )
+    }
+
+    /// Move the harness-picker highlight (`+1`/`-1`, wrapping).
+    pub fn pr_review_harness_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.harness_pick
+            && !pick.agents.is_empty()
+        {
+            let len = pick.agents.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// Confirm the harness picker: remember the choice for the rest of the PR
+    /// and continue into the fix confirm dialog.
+    pub fn pr_review_harness_pick_confirm(&mut self) {
+        let chosen = match &self.mode {
+            AppMode::PrReview(state) => state
+                .harness_pick
+                .as_ref()
+                .and_then(|p| p.agents.get(p.selected).cloned()),
+            _ => return,
+        };
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.harness_pick = None;
+            state.review_harness = chosen.clone();
+        }
+        if let Some(agent) = &chosen {
+            self.push_toast_success(format!(
+                "Review session will run {}",
+                agent.display_name()
+            ));
+        }
+        // Continue into the fix confirm dialog for the selected comment.
+        self.pr_review_open_fix_confirm();
+    }
+
+    /// Cancel the harness picker without choosing — aborts this fix; the user
+    /// can press `f` again. `review_harness` stays unset so the picker reappears.
+    pub fn pr_review_harness_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.harness_pick = None;
+        }
     }
 
     /// Whether the fix confirm/edit dialog is currently open, and if so whether
@@ -1401,8 +1527,12 @@ impl App {
     /// window that fix prompts target. Returns `(project, feature, session)`
     /// indices. Ensures the feature's tmux session is running first.
     fn resolve_fix_session(&mut self) -> Result<(usize, usize, usize)> {
-        let (workdir, target) = match &self.mode {
-            AppMode::PrReview(state) => (state.workdir.clone(), state.fix_target),
+        let (workdir, target, harness) = match &self.mode {
+            AppMode::PrReview(state) => (
+                state.workdir.clone(),
+                state.fix_target,
+                state.review_harness.clone(),
+            ),
             _ => anyhow::bail!("not reviewing a PR"),
         };
         let (pi, fi) = self
@@ -1418,7 +1548,8 @@ impl App {
 
         match target {
             FixTarget::DedicatedReview => {
-                let si = self.create_dedicated_review_session(pi, fi, REVIEW_SESSION_LABEL, None)?;
+                let si =
+                    self.create_dedicated_review_session(pi, fi, REVIEW_SESSION_LABEL, harness)?;
                 Ok((pi, fi, si))
             }
             FixTarget::ExistingLive => {

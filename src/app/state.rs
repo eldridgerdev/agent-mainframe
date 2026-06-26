@@ -1119,6 +1119,16 @@ pub struct PrReviewState {
     pub hide_resolved: bool,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// Harness chosen for the dedicated review session, picked once before the
+    /// first fix is injected and reused for the rest of the PR. `None` until the
+    /// user picks (or when the dedicated session already exists / isn't the
+    /// target). Lets PR triage run on a different harness than the feature's
+    /// working session.
+    pub review_harness: Option<AgentKind>,
+    /// When `Some`, the harness picker is open over the pane: the user is
+    /// choosing which agent harness the dedicated review session will run before
+    /// the first fix is injected.
+    pub harness_pick: Option<HarnessPickState>,
     /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
     /// the assembled (and editable) prompt awaiting the user's approval before
     /// it is injected into the agent session.
@@ -1126,6 +1136,18 @@ pub struct PrReviewState {
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
+}
+
+/// Single-select harness picker shown before the dedicated PR-review session is
+/// spun up, so the user can run triage fixes on a different harness than the
+/// feature's working session. Highlights the project's preferred agent by
+/// default.
+#[derive(Debug, Clone)]
+pub struct HarnessPickState {
+    /// The harnesses to choose from (the repo's allowed agents).
+    pub agents: Vec<AgentKind>,
+    /// Index into `agents` of the highlighted choice.
+    pub selected: usize,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either

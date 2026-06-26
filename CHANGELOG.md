@@ -104,10 +104,25 @@ are tagged.
   Press `a` to include closed/merged PRs, `#` to type a number instead (the old
   prompt is still one keypress away), and `⏎` to open the highlighted PR. The list
   is fetched in Rust via `gh pr list`, so it spends zero agent tokens.
+- **Choose which harness runs your PR-review fixes.** The first time you press
+  `f` to fix a comment in a PR, AMF now asks which agent harness the dedicated
+  review session should run — so you can triage on a cheaper or faster harness
+  than the one your feature is being built with. It highlights the project's
+  preferred agent by default; pick one with `j/k` and `⏎` (or `esc` to back
+  out). Your choice is remembered for the rest of that PR, so every later fix
+  reuses the same warm session without asking again. Only the dedicated review
+  session prompts — fixing in your existing live session keeps using whatever
+  harness it's already running.
 - Added the full Gruvbox Material UI theme family to the theme picker and
   config: dark/light, hard/medium/soft contrast, and material/mix/original
   foreground palettes. Use names like `gruvbox-material-dark-medium` or
   `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
+
+### Changed
+
+- Embedded-view auto refresh is now configurable with `view_auto_refresh` and
+  defaults to off. Manual refresh and event-driven pane updates still work; turn
+  the setting on only if you still need periodic Claude/tmux visual repairs.
 
 ### Fixed
 

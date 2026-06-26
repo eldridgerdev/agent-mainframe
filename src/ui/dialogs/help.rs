@@ -142,6 +142,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("h", "Hide/show resolved comments"),
         ("f", "Inject scoped fix into agent session"),
         ("t", "Toggle fix target session"),
+        ("", "(first fix picks the review harness)"),
         ("R", "Reply 'Done in <sha>'"),
         ("n", "Reply 'not needed' (+ skip)"),
         ("x", "Resolve/reopen GitHub thread"),

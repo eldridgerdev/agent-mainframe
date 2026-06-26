@@ -68,6 +68,12 @@ Values: `"claude"`, `"opencode"`, `"codex"`. Omit to allow all.
 
 Example: `{ "allowed_agents": ["claude", "opencode"] }`
 
+### View auto-refresh — `view_auto_refresh`
+
+Opt into periodic embedded-view repairs for Claude/tmux rendering
+bugs. Defaults to `false`; manual refresh and normal event-driven
+updates still work when this is off.
+
 ## What would you like to do?
 
 Based on what the user is asking for, invoke the appropriate skill:

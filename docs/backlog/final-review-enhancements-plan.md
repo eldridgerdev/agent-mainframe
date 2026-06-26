@@ -149,8 +149,12 @@ any order.
       review to cycle the file list through all / undecided / rejected;
       navigation (n/p/j/k, g/G) skips hidden files and decisions advance
       to the next visible file.
-- [ ] See inline comments while browsing — gutter marker on commented lines
-      plus a preview when the cursor/scroll lands on one
+- [x] See inline comments while browsing — commented lines carry a `●` gutter
+      marker (unified view), and parking the line cursor on a commented line
+      peeks the comment body in a bordered "comment on this line" box above the
+      cursor hints (the review footer grows to fit, capped at 6 body rows; Enter
+      still opens the full editor). Reuses the existing `comment_cursor` →
+      `addressable_lines()` → `line_comments` lookup (`ui/dialogs/diff.rs`)
 - [ ] Multi-line / range line comments (anchor one comment to a line span)
 - [ ] Dispatch review fixes to a new agent / harness session instead of the
       existing pane

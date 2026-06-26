@@ -363,6 +363,35 @@ impl GhCli {
             .current_dir(workdir);
         run_write(cmd, "post conversation comment")
     }
+
+    /// Resolve or unresolve a review thread via GraphQL (REST can't do this),
+    /// returning the thread's resulting `isResolved`. `thread_id` is the GraphQL
+    /// node id captured in [`ReviewThread::id`]. Runs as the authenticated `gh`
+    /// user and needs the `repo` scope — a first-write 403 maps to the same
+    /// actionable `gh auth refresh -s repo` message as the reply path.
+    pub fn set_thread_resolved(workdir: &Path, thread_id: &str, resolved: bool) -> Result<bool> {
+        let mutation = if resolved {
+            "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+        } else {
+            "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"
+        };
+        let output = Command::new("gh")
+            .args(["api", "graphql", "-f", &format!("query={mutation}")])
+            .args(["-F", &format!("id={thread_id}")])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh api graphql` (resolve thread).")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_missing_write_scope(&stderr) {
+                bail!(
+                    "Resolving a thread needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
+                );
+            }
+            bail!("`gh api graphql` (resolve thread) failed: {}", stderr.trim());
+        }
+        parse_thread_resolved(&output.stdout, resolved)
+    }
 }
 
 /// Build the JSON request body for the GitHub create-review API. Omits an empty
@@ -477,6 +506,32 @@ fn parse_review_threads_page(stdout: &[u8]) -> Result<(Vec<ReviewThread>, Option
         None
     };
     Ok((threads, next))
+}
+
+/// Parse the `resolveReviewThread` / `unresolveReviewThread` mutation response
+/// into the thread's resulting `isResolved`. `requested` selects which mutation
+/// field to read; GraphQL errors (returned with a 200) are surfaced.
+fn parse_thread_resolved(stdout: &[u8], requested: bool) -> Result<bool> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).context("Failed to parse resolve-thread GraphQL JSON.")?;
+
+    let field = if requested {
+        "resolveReviewThread"
+    } else {
+        "unresolveReviewThread"
+    };
+    if let Some(b) = v["data"][field]["thread"]["isResolved"].as_bool() {
+        return Ok(b);
+    }
+    if let Some(errs) = v["errors"].as_array().filter(|e| !e.is_empty()) {
+        let msg = errs
+            .iter()
+            .filter_map(|e| e["message"].as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("GitHub rejected the resolve: {msg}");
+    }
+    bail!("resolve-thread response missing isResolved");
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -654,6 +709,22 @@ mod tests {
         let (threads, next) = parse_review_threads_page(json).unwrap();
         assert!(threads.is_empty());
         assert_eq!(next, None);
+    }
+
+    #[test]
+    fn parses_resolved_thread_mutation() {
+        let json = br#"{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}"#;
+        assert!(parse_thread_resolved(json, true).unwrap());
+
+        let json = br#"{"data":{"unresolveReviewThread":{"thread":{"isResolved":false}}}}"#;
+        assert!(!parse_thread_resolved(json, false).unwrap());
+    }
+
+    #[test]
+    fn resolve_thread_surfaces_graphql_errors() {
+        let json = br#"{"data":null,"errors":[{"message":"Could not resolve to a node."}]}"#;
+        let err = parse_thread_resolved(json, true).unwrap_err().to_string();
+        assert!(err.contains("Could not resolve to a node."));
     }
 
     #[test]

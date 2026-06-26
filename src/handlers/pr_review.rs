@@ -8,9 +8,9 @@ const DETAIL_SCROLL_STEP: usize = 5;
 
 /// Key handling for the full-screen PR comment-review pane.
 ///
-/// Read-only triage for now: navigate the comment list, scroll the detail,
-/// hide/show resolved comments, refresh from GitHub, and exit. Action keys
-/// (fix / reply / resolve) arrive with later epics.
+/// Navigate the comment list, scroll the detail, hide/show resolved comments,
+/// refresh from GitHub, and exit. Action keys: `f` fix, `R`/`n` reply, `x`
+/// resolve/reopen the thread, `m` mark done, `s` skip.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The fix confirm/edit dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_fix_editing() {
@@ -36,6 +36,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
         KeyCode::Char('m') => app.pr_review_mark_done(),
+        KeyCode::Char('x') => app.pr_review_toggle_resolve(),
         KeyCode::Char('s') => app.pr_review_skip(),
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('g') => app.open_pr_number_prompt(),

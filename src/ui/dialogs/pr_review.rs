@@ -150,7 +150,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
     };
     let footer = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   R reply-done   n not-needed   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),

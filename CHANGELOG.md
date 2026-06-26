@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Peek a line comment while browsing the diff.** In a final review, lines you've
+  commented on already show a `●` marker in the gutter — now parking the line
+  cursor on one also pops the comment's text into a "comment on this line" box
+  above the footer hints, so you can re-read what you wrote without reopening the
+  editor. Press `⏎` to edit it as before; long comments are previewed up to a few
+  lines.
 - **Final review can post to your GitHub PR.** Turn on
   `final_review_post_to_pr` and finishing a final review also posts the
   feedback to the branch's PR as a single GitHub review: your line comments

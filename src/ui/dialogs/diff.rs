@@ -605,7 +605,11 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
         theme.primary.to_color()
     };
     let effective_layout = effective_layout(state);
-    let (cursor_loc, commented) = review_cursor_info(state);
+    let ReviewLineMarkers {
+        cursor: cursor_loc,
+        commented,
+        selection,
+    } = review_cursor_info(state);
 
     // Keep the comment cursor visible by nudging the patch scroll. Unified only:
     // it's the layout with a per-line cursor and a stable row index.
@@ -625,6 +629,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
                 is_new_diff_file(file),
                 cursor_loc,
                 &commented,
+                &selection,
                 &mut cursor_row,
             );
             (lines.len(), cursor_row)
@@ -665,51 +670,79 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
             new_file_presentation: file.map(is_new_diff_file).unwrap_or(false),
             cursor: cursor_loc,
             commented,
+            selection,
         },
         theme,
     );
 }
 
-/// Resolve the cursored diff-line location and the set of commented locations
-/// for the file currently shown in a review viewer. Both empty outside review
-/// mode or when no cursor is active.
-fn review_cursor_info(
-    state: &DiffViewerState,
-) -> (Option<DiffLineLocation>, std::collections::HashSet<DiffLineLocation>) {
-    use std::collections::HashSet;
-    if !state.review {
-        return (None, HashSet::new());
-    }
-    let Some(file) = state.files.get(state.selected_file) else {
-        return (None, HashSet::new());
-    };
-    let cursor = state
-        .comment_cursor
-        .and_then(|idx| file.addressable_lines().get(idx).copied());
-    let commented = state
-        .line_comments
-        .get(&file.path)
-        .map(|comments| comments.iter().map(|c| c.location).collect())
-        .unwrap_or_default();
-    (cursor, commented)
+/// The diff-line markers a review viewer needs for the current file: the
+/// cursored location, every location covered by a stored comment (so a
+/// multi-line comment marks its whole span), and the locations in the
+/// in-progress selection (anchor..cursor). All empty outside review mode or
+/// when no cursor is active.
+struct ReviewLineMarkers {
+    cursor: Option<DiffLineLocation>,
+    commented: std::collections::HashSet<DiffLineLocation>,
+    selection: std::collections::HashSet<DiffLineLocation>,
 }
 
-/// The text of the review comment anchored to the line the comment cursor is
+fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
+    use std::collections::HashSet;
+    let empty = || ReviewLineMarkers {
+        cursor: None,
+        commented: HashSet::new(),
+        selection: HashSet::new(),
+    };
+    if !state.review {
+        return empty();
+    }
+    let Some(file) = state.files.get(state.selected_file) else {
+        return empty();
+    };
+    let locs = file.addressable_lines();
+    let cursor = state.comment_cursor.and_then(|idx| locs.get(idx).copied());
+    let mut commented = HashSet::new();
+    if let Some(comments) = state.line_comments.get(&file.path) {
+        for comment in comments {
+            if let Some(range) = comment.covered_indices(&locs) {
+                commented.extend(range.filter_map(|idx| locs.get(idx).copied()));
+            }
+        }
+    }
+    // The active selection span (only meaningful while an anchor is set).
+    let selection = match (state.comment_anchor, state.comment_cursor) {
+        (Some(anchor), Some(cur)) => (anchor.min(cur)..=anchor.max(cur))
+            .filter_map(|idx| locs.get(idx).copied())
+            .collect(),
+        _ => HashSet::new(),
+    };
+    ReviewLineMarkers {
+        cursor,
+        commented,
+        selection,
+    }
+}
+
+/// The review comment whose span covers the line the comment cursor is
 /// currently on, if any. `None` outside review mode, when no cursor is active,
 /// or when the cursored line carries no comment.
-fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
+fn cursor_comment(state: &DiffViewerState) -> Option<&crate::app::LineComment> {
     if !state.review {
         return None;
     }
     let cursor = state.comment_cursor?;
     let file = state.files.get(state.selected_file)?;
-    let loc = file.addressable_lines().get(cursor).copied()?;
-    state
-        .line_comments
-        .get(&file.path)?
-        .iter()
-        .find(|c| c.location == loc)
-        .map(|c| c.text.as_str())
+    let locs = file.addressable_lines();
+    state.line_comments.get(&file.path)?.iter().find(|c| {
+        c.covered_indices(&locs)
+            .is_some_and(|range| range.contains(&cursor))
+    })
+}
+
+/// The body text of [`cursor_comment`].
+fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
+    cursor_comment(state).map(|c| c.text.as_str())
 }
 
 /// Height (in rows, including the box border) the footer needs to peek the
@@ -737,6 +770,9 @@ pub(crate) struct PatchPanelOptions {
     pub cursor: Option<DiffLineLocation>,
     /// Diff-line locations that carry a review comment (unified view only).
     pub commented: std::collections::HashSet<DiffLineLocation>,
+    /// Diff-line locations in the in-progress multi-line selection (unified view
+    /// only); the gutter is tinted across the span while the reviewer extends it.
+    pub selection: std::collections::HashSet<DiffLineLocation>,
 }
 
 impl Default for PatchPanelOptions {
@@ -750,6 +786,7 @@ impl Default for PatchPanelOptions {
             new_file_presentation: false,
             cursor: None,
             commented: std::collections::HashSet::new(),
+            selection: std::collections::HashSet::new(),
         }
     }
 }
@@ -801,6 +838,7 @@ pub(crate) fn draw_patch_panel(
                 options.new_file_presentation,
                 options.cursor,
                 &options.commented,
+                &options.selection,
                 &mut cursor_row,
             );
             frame.render_widget(
@@ -904,9 +942,19 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                     .unwrap_or(0)
             })
             .unwrap_or(0);
+        // When a selection anchor is set, label the span being marked instead of
+        // the lone cursor line.
+        let position_label = match state.comment_anchor {
+            Some(anchor) => {
+                let lo = anchor.min(cursor) + 1;
+                let hi = anchor.max(cursor) + 1;
+                format!(" selecting {lo}-{hi} ")
+            }
+            None => format!(" line cursor @ {} ", cursor + 1),
+        };
         let first = Line::from(vec![
             Span::styled(
-                format!(" line cursor @ {} ", cursor + 1),
+                position_label,
                 Style::default()
                     .fg(theme.warning.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -921,6 +969,12 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw("/"),
             key("k"),
             Span::raw(" move  "),
+            key("v"),
+            Span::raw(if state.comment_anchor.is_some() {
+                " clear range  "
+            } else {
+                " select range  "
+            }),
             key("Enter"),
             Span::raw(" comment  "),
             key("n"),
@@ -938,13 +992,20 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         // When the cursor sits on a commented line, peek the comment body in a
         // bordered box above the hints so the reviewer can read what they wrote
         // without re-opening the editor.
-        if let Some(text) = cursor_comment_text(state) {
+        if let Some(comment) = cursor_comment(state) {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(2)])
                 .split(area);
+            let title = if comment.is_range() {
+                " comment on these lines (Enter to edit) "
+            } else {
+                " comment on this line (Enter to edit) "
+            };
             let preview = Paragraph::new(
-                text.lines()
+                comment
+                    .text
+                    .lines()
                     .map(|line| Line::from(line.to_string()))
                     .collect::<Vec<_>>(),
             )
@@ -953,7 +1014,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(theme.info.to_color()))
                     .title(Span::styled(
-                        " comment on this line (Enter to edit) ",
+                        title,
                         Style::default().fg(theme.info.to_color()),
                     )),
             )
@@ -1285,6 +1346,7 @@ fn patch_lines(
     new_file_presentation: bool,
     cursor: Option<DiffLineLocation>,
     commented: &std::collections::HashSet<DiffLineLocation>,
+    selection: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
@@ -1313,6 +1375,7 @@ fn patch_lines(
     let annotation = |loc: DiffLineLocation| GutterAnnotation {
         cursor: cursor == Some(loc),
         has_comment: commented.contains(&loc),
+        selected: selection.contains(&loc),
     };
 
     let mut lines = Vec::new();
@@ -1464,6 +1527,7 @@ fn side_by_side_lines(
             false,
             None,
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
     }
@@ -1481,6 +1545,7 @@ fn side_by_side_lines(
             include_prologue,
             false,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &mut None,
         );
@@ -1845,11 +1910,13 @@ fn raw_patch_wrapped_lines(file: &DiffFile, width: usize, theme: &Theme) -> Vec<
 
 /// Per-row marker state for the review line cursor. `cursor` is the line the
 /// reviewer is positioned on; `has_comment` is a line that already carries a
-/// comment. Default (both false) renders the ordinary `│ ` gutter.
+/// comment; `selected` is a line inside the in-progress multi-line selection.
+/// Default (all false) renders the ordinary `│ ` gutter.
 #[derive(Clone, Copy, Default)]
 struct GutterAnnotation {
     cursor: bool,
     has_comment: bool,
+    selected: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1866,9 +1933,10 @@ fn wrap_gutter_line(
     let wrapped = wrap_chunks(&chunks, text_width, style);
     let mut lines = Vec::with_capacity(wrapped.len());
     let row_bg = style.bg.unwrap_or(Color::Black);
-    // The cursor row gets a selection-tinted gutter and a high-contrast number
+    // The cursor row and every line in the active selection get a
+    // selection-tinted gutter; the cursor row also gets a high-contrast number
     // colour so it reads clearly against any diff-row background.
-    let gutter_bg = if annotation.cursor {
+    let gutter_bg = if annotation.cursor || annotation.selected {
         theme.selection.to_color()
     } else {
         row_bg
@@ -2499,6 +2567,7 @@ index 0000000..1111111
             true,
             None,
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
         let indented_code_line = &lines[2];
@@ -2569,6 +2638,7 @@ index 0000000..1111111
             false,
             true,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &mut None,
         );
@@ -2646,6 +2716,7 @@ index 0000000..1111111
             "a.rs".to_string(),
             vec![crate::app::LineComment {
                 location: loc,
+                start: None,
                 text: "needs a guard\nfor None".to_string(),
             }],
         );
@@ -2665,6 +2736,7 @@ index 0000000..1111111
             "a.rs".to_string(),
             vec![crate::app::LineComment {
                 location: loc,
+                start: None,
                 text: body,
             }],
         );

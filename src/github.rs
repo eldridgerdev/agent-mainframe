@@ -128,13 +128,19 @@ pub struct ReviewThread {
 
 /// One inline comment to post as part of a PR review (see
 /// [`GhCli::create_review`]). `line` is the file line number; `side` is
-/// `"RIGHT"` for the current file or `"LEFT"` for the base file, matching the
-/// GitHub create-review API.
+/// `"RIGHT"` for the current file or `"LEFT"` for the base file. `start_line` /
+/// `start_side`, when set, make this a multi-line comment spanning
+/// `start_line`..`line`, matching the GitHub create-review API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrReviewComment {
     pub path: String,
     pub line: u32,
     pub side: &'static str,
+    /// First line of a multi-line comment span. `None` for a single-line comment.
+    pub start_line: Option<u32>,
+    /// Side of `start_line` (`"RIGHT"` / `"LEFT"`). `None` for a single-line
+    /// comment.
+    pub start_side: Option<&'static str>,
     pub body: String,
 }
 
@@ -386,12 +392,20 @@ fn build_review_request_json(
         let arr: Vec<serde_json::Value> = comments
             .iter()
             .map(|c| {
-                json!({
-                    "path": c.path,
-                    "line": c.line,
-                    "side": c.side,
-                    "body": c.body,
-                })
+                let mut comment = serde_json::Map::new();
+                comment.insert("path".into(), json!(c.path));
+                comment.insert("line".into(), json!(c.line));
+                comment.insert("side".into(), json!(c.side));
+                // A multi-line comment carries the span's start; omitted for a
+                // single-line comment.
+                if let Some(start_line) = c.start_line {
+                    comment.insert("start_line".into(), json!(start_line));
+                }
+                if let Some(start_side) = c.start_side {
+                    comment.insert("start_side".into(), json!(start_side));
+                }
+                comment.insert("body".into(), json!(c.body));
+                serde_json::Value::Object(comment)
             })
             .collect();
         obj.insert("comments".into(), json!(arr));
@@ -687,12 +701,16 @@ mod tests {
                 path: "src/a.rs".into(),
                 line: 12,
                 side: "RIGHT",
+                start_line: None,
+                start_side: None,
                 body: "this looks off".into(),
             },
             PrReviewComment {
                 path: "src/a.rs".into(),
                 line: 3,
                 side: "LEFT",
+                start_line: None,
+                start_side: None,
                 body: "why remove this?".into(),
             },
         ];
@@ -705,7 +723,27 @@ mod tests {
         assert_eq!(arr[0]["path"], "src/a.rs");
         assert_eq!(arr[0]["line"], 12);
         assert_eq!(arr[0]["side"], "RIGHT");
+        // A single-line comment omits the span keys entirely.
+        assert!(arr[0].get("start_line").is_none());
+        assert!(arr[0].get("start_side").is_none());
         assert_eq!(arr[1]["side"], "LEFT");
+    }
+
+    #[test]
+    fn review_request_emits_start_line_for_multiline_comment() {
+        let comments = vec![PrReviewComment {
+            path: "src/a.rs".into(),
+            line: 20,
+            side: "RIGHT",
+            start_line: Some(15),
+            start_side: Some("RIGHT"),
+            body: "this whole block".into(),
+        }];
+        let v = build_review_request_json("", "", "COMMENT", &comments);
+        let arr = v["comments"].as_array().unwrap();
+        assert_eq!(arr[0]["line"], 20);
+        assert_eq!(arr[0]["start_line"], 15);
+        assert_eq!(arr[0]["start_side"], "RIGHT");
     }
 
     #[test]

@@ -262,11 +262,40 @@ pub enum ReviewDecision {
     Reject { feedback: String },
 }
 
-/// A reviewer comment anchored to a specific diff line during a final review.
+/// A reviewer comment anchored to a diff line (or a span of lines) during a
+/// final review. `location` is the end anchor (GitHub's `line`); `start`, when
+/// set, is the first line of a multi-line span (GitHub's `start_line`). A `None`
+/// start is a single-line comment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineComment {
     pub location: crate::diff::DiffLineLocation,
+    /// Start of a multi-line span. `None` for a single-line comment. Defaulted
+    /// so older single-line progress files deserialize unchanged.
+    #[serde(default)]
+    pub start: Option<crate::diff::DiffLineLocation>,
     pub text: String,
+}
+
+impl LineComment {
+    /// Whether this comment spans more than one line.
+    pub fn is_range(&self) -> bool {
+        self.start.is_some()
+    }
+
+    /// The inclusive range of indices into a file's `addressable_lines()` that
+    /// this comment covers, best-effort located by line number. `None` when the
+    /// end anchor can no longer be found in the diff (e.g. after a refresh that
+    /// dropped the line). For a single-line comment this is `idx..=idx`.
+    pub fn covered_indices(
+        &self,
+        locs: &[crate::diff::DiffLineLocation],
+    ) -> Option<std::ops::RangeInclusive<usize>> {
+        let end = locs.iter().position(|l| *l == self.location)?;
+        match self.start.and_then(|s| locs.iter().position(|l| *l == s)) {
+            Some(start) => Some(start.min(end)..=start.max(end)),
+            None => Some(end..=end),
+        }
+    }
 }
 
 /// Which files the review file-list shows. Lets a reviewer narrow a large
@@ -341,6 +370,11 @@ pub struct DiffViewerState {
     /// Active line-comment cursor: index into the current file's
     /// `addressable_lines()`. `None` when the line cursor is inactive.
     pub comment_cursor: Option<usize>,
+    /// Selection anchor for an in-progress multi-line comment: the index into
+    /// `addressable_lines()` where the reviewer started the range. The selected
+    /// span is `min(anchor, cursor)..=max(anchor, cursor)`. `None` selects only
+    /// the cursor line.
+    pub comment_anchor: Option<usize>,
     /// True while typing a comment for the cursored line (reuses
     /// `feedback_editor`).
     pub editing_line_comment: bool,
@@ -419,6 +453,7 @@ impl DiffViewerState {
             decisions: std::collections::HashMap::new(),
             line_comments: std::collections::HashMap::new(),
             comment_cursor: None,
+            comment_anchor: None,
             editing_line_comment: false,
             cursor_sync_to_view: false,
             finish_confirm: false,
@@ -452,6 +487,8 @@ impl DiffViewerState {
             self.comment_cursor = Some(0);
             self.cursor_sync_to_view = true;
         }
+        // A range selection can't carry across files.
+        self.comment_anchor = None;
     }
 
     /// Whether `file` passes the active file-list filter. Always true outside

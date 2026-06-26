@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Multi-line comments in a final review.** A line comment can now cover a range
+  of lines, not just one. With the line cursor active (`c`), press `v` to start a
+  selection, extend it with `j`/`k`, then `⏎` to attach a single comment to the
+  whole span. The selection is highlighted as you mark it, every line of a saved
+  range carries the `●` gutter marker, and the anchor is recorded as
+  `src/foo.rs:42-48` in `.claude/final-review-feedback.md`. When posting to a
+  GitHub PR, a ranged comment becomes a proper multi-line review comment. Parking
+  the cursor on any line of a range peeks the comment and re-opening it keeps the
+  range so you can just edit the text.
 - **Peek a line comment while browsing the diff.** In a final review, lines you've
   commented on already show a `●` marker in the gutter — now parking the line
   cursor on one also pops the comment's text into a "comment on this line" box

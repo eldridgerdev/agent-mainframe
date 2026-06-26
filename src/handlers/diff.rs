@@ -137,6 +137,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_cursor_move(isize::MAX / 2);
                     return Ok(());
                 }
+                KeyCode::Char('v') => {
+                    app.diff_review_toggle_range_anchor();
+                    return Ok(());
+                }
                 KeyCode::Enter | KeyCode::Char('C') => {
                     app.diff_review_start_line_comment();
                     return Ok(());
@@ -833,6 +837,116 @@ mod tests {
         assert!(feedback.contains("bug here"));
         assert!(feedback.contains("**Line comments:** 1"));
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    /// Give the review app's single file a hunk with two added lines (plus a
+    /// leading context line) so a multi-line selection has room to span.
+    fn set_two_added_hunk(app: &mut App) {
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].hunks = vec![DiffHunk {
+                header: "@@ -1,1 +1,3 @@".into(),
+                old_start: 1,
+                old_lines: 1,
+                new_start: 1,
+                new_lines: 3,
+                lines: vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " ctx".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+first".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+second".into(),
+                    },
+                ],
+            }];
+        }
+    }
+
+    #[test]
+    fn multiline_comment_spans_selected_range() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_two_added_hunk(&mut app);
+
+        // Activate the cursor (lands on the first added line, index 1), anchor a
+        // selection with `v`, extend down one line, then comment the span.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for ch in "whole block".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                // The selection anchor is cleared once the comment is stored.
+                assert!(state.comment_anchor.is_none());
+                let comments = state.line_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comments.len(), 1);
+                assert_eq!(comments[0].text, "whole block");
+                // Span covers new lines 2..3 (the two added lines).
+                assert_eq!(comments[0].location.new_line, Some(3));
+                assert_eq!(
+                    comments[0].start.and_then(|s| s.new_line),
+                    Some(2),
+                    "start anchors the first selected line"
+                );
+                assert!(comments[0].is_range());
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // The feedback file records the range anchor `a.rs:2-3`.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        let feedback =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(feedback.contains("### a.rs:2-3"));
+        assert!(feedback.contains("whole block"));
+    }
+
+    #[test]
+    fn editing_a_commented_line_preserves_its_span() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_two_added_hunk(&mut app);
+
+        // Create a 2-line comment over the added lines.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('v'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('j'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for ch in "v1".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // Move the cursor to the *end* of the span and re-open: editing must snap
+        // onto the existing span and replace (not duplicate) the comment.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for ch in " edited".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                let comments = state.line_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comments.len(), 1, "edit replaces rather than duplicates");
+                assert_eq!(comments[0].text, "v1 edited");
+                assert!(comments[0].is_range());
+                assert_eq!(comments[0].start.and_then(|s| s.new_line), Some(2));
+                assert_eq!(comments[0].location.new_line, Some(3));
+            }
+            _ => panic!("expected diff viewer"),
+        }
     }
 
     #[test]

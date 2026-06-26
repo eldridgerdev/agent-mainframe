@@ -329,6 +329,7 @@ impl App {
             }
             if state.comment_cursor.is_some() {
                 state.comment_cursor = None;
+                state.comment_anchor = None;
                 return;
             }
             let locs = state
@@ -376,8 +377,30 @@ impl App {
         }
     }
 
-    /// Open the comment editor for the cursored diff line, pre-filling any
-    /// comment already attached to it.
+    /// Toggle the multi-line selection anchor at the current cursor. With the
+    /// anchor set, moving the cursor extends a span that the next comment covers;
+    /// toggling again drops back to a single-line comment. No-op without an
+    /// active line cursor.
+    pub fn diff_review_toggle_range_anchor(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(cur) = state.comment_cursor else {
+                return;
+            };
+            state.comment_anchor = if state.comment_anchor.is_some() {
+                None
+            } else {
+                Some(cur)
+            };
+        }
+    }
+
+    /// Open the comment editor for the selected diff line(s), pre-filling any
+    /// comment already covering the cursor. When the cursor lands on an existing
+    /// (possibly multi-line) comment with no active selection, the anchor/cursor
+    /// snap onto that comment's span so a re-submit edits the whole range.
     pub fn diff_review_start_line_comment(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.review {
@@ -390,17 +413,30 @@ impl App {
                 return;
             };
             let locs = file.addressable_lines();
-            let Some(loc) = locs.get(cur).copied() else {
+            if locs.get(cur).is_none() {
                 return;
-            };
+            }
             let path = file.path.clone();
-            let existing = state
-                .line_comments
-                .get(&path)
-                .and_then(|comments| comments.iter().find(|c| c.location == loc))
-                .map(|c| c.text.clone())
-                .unwrap_or_default();
-            state.feedback_editor = crate::editor::TextEditor::new(existing);
+            // An existing comment covering the cursor is edited in place: prefill
+            // its text and, when no fresh selection is active, snap the
+            // anchor/cursor onto its span so the edit preserves the range.
+            let existing = state.line_comments.get(&path).and_then(|comments| {
+                comments.iter().find_map(|c| {
+                    c.covered_indices(&locs)
+                        .filter(|range| range.contains(&cur))
+                        .map(|range| (c.text.clone(), range))
+                })
+            });
+            let text = if let Some((text, range)) = existing {
+                if state.comment_anchor.is_none() {
+                    state.comment_anchor = Some(*range.start());
+                    state.comment_cursor = Some(*range.end());
+                }
+                text
+            } else {
+                String::new()
+            };
+            state.feedback_editor = crate::editor::TextEditor::new(text);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_line_comment = true;
@@ -409,43 +445,53 @@ impl App {
         }
     }
 
-    /// Store (or, when empty, delete) the typed comment for the cursored line.
-    /// Does not advance the cursor, so a reviewer can comment several adjacent
-    /// lines.
+    /// Store (or, when empty, delete) the typed comment for the selected line
+    /// span (anchor..cursor, or the single cursor line). Replaces any existing
+    /// comments overlapping the span and clears the selection anchor. Does not
+    /// advance the cursor, so a reviewer can keep annotating nearby lines.
     pub fn diff_review_submit_line_comment(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.editing_line_comment {
                 return;
             }
             let text = state.feedback_editor.text().trim().to_string();
-            let anchor = state.comment_cursor.and_then(|cur| {
-                state
+            let span = state.comment_cursor.and_then(|cur| {
+                state.files.get(state.selected_file).and_then(|file| {
+                    let locs = file.addressable_lines();
+                    let lo = state.comment_anchor.unwrap_or(cur).min(cur);
+                    let hi = state.comment_anchor.unwrap_or(cur).max(cur);
+                    let start = locs.get(lo).copied()?;
+                    let end = locs.get(hi).copied()?;
+                    Some((file.path.clone(), lo, hi, start, end))
+                })
+            });
+            if let Some((path, lo, hi, start, end)) = span {
+                let locs = state
                     .files
                     .get(state.selected_file)
-                    .and_then(|file| {
-                        file.addressable_lines()
-                            .get(cur)
-                            .copied()
-                            .map(|loc| (file.path.clone(), loc))
-                    })
-            });
-            if let Some((path, loc)) = anchor {
+                    .map(|f| f.addressable_lines())
+                    .unwrap_or_default();
                 let comments = state.line_comments.entry(path).or_default();
-                comments.retain(|c| c.location != loc);
+                // Drop any existing comment whose span overlaps the new one.
+                comments.retain(|c| {
+                    c.covered_indices(&locs)
+                        .map(|r| *r.end() < lo || *r.start() > hi)
+                        .unwrap_or(true)
+                });
                 if !text.is_empty() {
                     comments.push(LineComment {
-                        location: loc,
+                        location: end,
+                        start: (lo != hi).then_some(start),
                         text,
                     });
                     comments.sort_by_key(|c| {
-                        c.location
-                            .new_line
-                            .or(c.location.old_line)
-                            .unwrap_or(0)
+                        let loc = c.start.unwrap_or(c.location);
+                        loc.new_line.or(loc.old_line).unwrap_or(0)
                     });
                 }
             }
             state.editing_line_comment = false;
+            state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
         self.persist_review_progress();
@@ -926,11 +972,7 @@ impl App {
                 round.push_str("### Line Comments\n\n");
                 for (file, comments) in &line_comment_sections {
                     for comment in comments {
-                        let anchor = match (comment.location.new_line, comment.location.old_line) {
-                            (Some(new_line), _) => format!("{file}:{new_line}"),
-                            (None, Some(old_line)) => format!("{file}:{old_line} (base)"),
-                            (None, None) => file.clone(),
-                        };
+                        let anchor = comment_anchor_label(file, comment);
                         round.push_str(&format!("#### {anchor}\n\n"));
                         round.push_str(&comment.text);
                         round.push_str("\n\n");
@@ -1043,6 +1085,30 @@ impl App {
     }
 }
 
+/// The `file:line` (or `file:start-end`) heading for a line comment in the
+/// feedback file. A base-side (deletion-only) line is tagged `(base)`.
+fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
+    let line_of = |loc: &crate::diff::DiffLineLocation| loc.new_line.or(loc.old_line);
+    let base = comment.location.new_line.is_none() && comment.location.old_line.is_some();
+    let suffix = if base { " (base)" } else { "" };
+    match (comment.start.as_ref().and_then(line_of), line_of(&comment.location)) {
+        (Some(start), Some(end)) if start != end => format!("{file}:{start}-{end}{suffix}"),
+        (_, Some(end)) => format!("{file}:{end}{suffix}"),
+        (_, None) => file.to_string(),
+    }
+}
+
+/// Map a diff-line location to a GitHub `(line, side)` pair: the current-file
+/// line (`RIGHT`) when present, else the base-file line (`LEFT`). `None` for an
+/// unanchored location.
+fn pr_line_side(loc: &crate::diff::DiffLineLocation) -> Option<(usize, &'static str)> {
+    match (loc.new_line, loc.old_line) {
+        (Some(new_line), _) => Some((new_line, "RIGHT")),
+        (None, Some(old_line)) => Some((old_line, "LEFT")),
+        (None, None) => None,
+    }
+}
+
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
 /// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`); the
@@ -1056,15 +1122,23 @@ fn build_pr_review(
     let mut comments = Vec::new();
     for (path, file_comments) in line_comment_sections {
         for comment in file_comments {
-            let (line, side) = match (comment.location.new_line, comment.location.old_line) {
-                (Some(new_line), _) => (new_line, "RIGHT"),
-                (None, Some(old_line)) => (old_line, "LEFT"),
-                (None, None) => continue,
+            let Some((line, side)) = pr_line_side(&comment.location) else {
+                continue;
             };
+            // For a span, anchor the start with GitHub's start_line/start_side.
+            // Drop the range (post as a single-line comment at the end) if the
+            // start can't be mapped to a line/side.
+            let (start_line, start_side) = comment
+                .start
+                .and_then(|s| pr_line_side(&s))
+                .map(|(l, sd)| (Some(l), Some(sd)))
+                .unwrap_or((None, None));
             comments.push(crate::github::PrReviewComment {
                 path: path.clone(),
                 line: line as u32,
                 side,
+                start_line: start_line.map(|l| l as u32),
+                start_side,
                 body: comment.text.clone(),
             });
         }
@@ -1205,6 +1279,22 @@ mod tests {
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
         LineComment {
             location: DiffLineLocation { old_line, new_line },
+            start: None,
+            text: text.to_string(),
+        }
+    }
+
+    /// A multi-line comment spanning `start`..`end` on the current (RIGHT) side.
+    fn ranged_comment(start: usize, end: usize, text: &str) -> LineComment {
+        LineComment {
+            location: DiffLineLocation {
+                old_line: None,
+                new_line: Some(end),
+            },
+            start: Some(DiffLineLocation {
+                old_line: None,
+                new_line: Some(start),
+            }),
             text: text.to_string(),
         }
     }
@@ -1251,6 +1341,48 @@ mod tests {
         let (body, comments) = build_pr_review(&[], &line_comments, "");
         assert!(body.is_empty());
         assert_eq!(comments.len(), 1);
+    }
+
+    #[test]
+    fn pr_review_emits_start_line_for_a_ranged_comment() {
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![ranged_comment(10, 14, "this whole block")],
+        )];
+        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].line, 14);
+        assert_eq!(comments[0].side, "RIGHT");
+        assert_eq!(comments[0].start_line, Some(10));
+        assert_eq!(comments[0].start_side, Some("RIGHT"));
+    }
+
+    #[test]
+    fn single_line_comment_has_no_start_line() {
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![line_comment(Some(5), None, "nit")],
+        )];
+        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        assert_eq!(comments[0].start_line, None);
+        assert_eq!(comments[0].start_side, None);
+    }
+
+    #[test]
+    fn anchor_label_renders_single_and_range_and_base() {
+        use super::comment_anchor_label;
+        assert_eq!(
+            comment_anchor_label("src/a.rs", &line_comment(Some(42), None, "x")),
+            "src/a.rs:42"
+        );
+        assert_eq!(
+            comment_anchor_label("src/a.rs", &ranged_comment(10, 14, "x")),
+            "src/a.rs:10-14"
+        );
+        assert_eq!(
+            comment_anchor_label("src/a.rs", &line_comment(None, Some(7), "x")),
+            "src/a.rs:7 (base)"
+        );
     }
 
     #[test]

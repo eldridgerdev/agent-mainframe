@@ -155,7 +155,16 @@ any order.
       cursor hints (the review footer grows to fit, capped at 6 body rows; Enter
       still opens the full editor). Reuses the existing `comment_cursor` →
       `addressable_lines()` → `line_comments` lookup (`ui/dialogs/diff.rs`)
-- [ ] Multi-line / range line comments (anchor one comment to a line span)
+- [x] Multi-line / range line comments — with the line cursor active, press `v`
+      to drop a selection anchor, extend it with j/k, and `Enter` attaches one
+      comment to the whole span. The selection gutter is tinted while marking;
+      a stored comment marks every line of its span with `●` and the peek box
+      reads "comment on these lines". The model gained
+      `LineComment.start: Option<DiffLineLocation>` (defaulted, so old progress
+      files load), the feedback-file anchor renders `src/foo.rs:42-48`, and
+      `build_pr_review` emits GitHub `start_line`/`start_side` so a ranged
+      comment posts as a multi-line PR review comment. Re-opening a comment
+      snaps the anchor/cursor onto its span so an edit preserves the range.
 - [ ] Dispatch review fixes to a new agent / harness session instead of the
       existing pane
 

@@ -33,7 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("P", "Open syntax parser picker"),
         ("L", "Open prompt library"),
-        ("G", "Review PR comments"),
+        ("G", "Review PR comments (experimental)"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -116,6 +116,73 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
     ];
 
     for (key, desc) in &view_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  While reviewing PR comments:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let pr_review_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate comments"),
+        ("Ctrl+D/U", "Scroll detail down/up"),
+        ("h", "Hide/show resolved comments"),
+        ("f", "Inject scoped fix into agent session"),
+        ("t", "Toggle fix target session"),
+        ("R", "Reply 'Done in <sha>'"),
+        ("n", "Reply 'not needed' (+ skip)"),
+        ("x", "Resolve/reopen GitHub thread"),
+        ("m", "Mark comment done"),
+        ("s", "Skip comment (local)"),
+        ("i", "Install syntax highlighting for file"),
+        ("r", "Refresh comments from GitHub"),
+        ("g", "Pick a different PR to review"),
+        ("q / Esc", "Close review pane"),
+    ];
+
+    for (key, desc) in &pr_review_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  In the PR picker:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let pr_picker_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate PRs"),
+        ("Enter", "Open highlighted PR for review"),
+        ("a", "Include/hide closed & merged PRs"),
+        ("#", "Enter a PR number instead"),
+        ("q / Esc", "Close picker"),
+    ];
+
+    for (key, desc) in &pr_picker_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

@@ -26,6 +26,20 @@ impl App {
                     notice,
                 )
             }
+            AppMode::PrReview(state) => {
+                // Only inline comments carry a file path; conversation/summary
+                // comments have nothing to highlight, so this is a no-op for them.
+                let path = state
+                    .selected_comment()
+                    .and_then(|comment| comment.path.as_ref())
+                    .map(std::path::PathBuf::from);
+                let Some(path) = path else {
+                    self.mode = AppMode::PrReview(state);
+                    return;
+                };
+                let notice = syntax_notice_for_path(&path);
+                (Some(path), Some(Box::new(AppMode::PrReview(state))), notice)
+            }
             other => {
                 self.mode = other;
                 return;

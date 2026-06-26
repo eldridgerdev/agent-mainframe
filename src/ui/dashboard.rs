@@ -901,6 +901,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_pr_review(frame, state, &app.theme);
         return;
     }
+    if let AppMode::PrPicker(state) = &app.mode {
+        super::dialogs::draw_pr_picker(frame, state, &app.theme);
+        return;
+    }
 
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();

@@ -36,7 +36,8 @@ pub use dialog::{
 };
 pub use diff::{handle_diff_viewer_key, handle_review_harness_pick_key};
 pub use pr_review::{
-    handle_pr_number_prompt_key, handle_pr_review_key, handle_pr_review_loading_key,
+    handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
+    handle_pr_review_loading_key,
 };
 pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
@@ -100,6 +101,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::DiffViewerLoading(_) => handle_diff_viewer_key(app, key),
         AppMode::DiffViewer(_) => handle_diff_viewer_key(app, key),
         AppMode::PrNumberPrompt(_) => handle_pr_number_prompt_key(app, key),
+        AppMode::PrPicker(_) => handle_pr_picker_key(app, key),
         AppMode::PrReviewLoading(_) => handle_pr_review_loading_key(app, key),
         AppMode::PrReview(_) => handle_pr_review_key(app, key),
         AppMode::DiffReviewPrompt(_) => handle_diff_review_key(app, key),

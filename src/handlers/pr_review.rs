@@ -10,7 +10,8 @@ const DETAIL_SCROLL_STEP: usize = 5;
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
 /// refresh from GitHub, and exit. Action keys: `f` fix, `R`/`n` reply, `x`
-/// resolve/reopen the thread, `m` mark done, `s` skip.
+/// resolve/reopen the thread, `m` mark done, `s` skip, `i` install syntax
+/// highlighting for the selected comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The fix confirm/edit dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_fix_editing() {
@@ -39,7 +40,23 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('x') => app.pr_review_toggle_resolve(),
         KeyCode::Char('s') => app.pr_review_skip(),
         KeyCode::Char('r') => app.refresh_pr_review(),
-        KeyCode::Char('g') => app.open_pr_number_prompt(),
+        KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
+        KeyCode::Char('g') => app.open_pr_picker_from_pane(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling for the PR picker: navigate the list, `⏎` open the highlighted
+/// PR, `a` toggle closed/merged PRs, `#` switch to typing a number, `esc` close.
+pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.close_pr_review(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_picker_select_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_picker_select_prev(),
+        KeyCode::Enter => app.pr_picker_choose(),
+        KeyCode::Char('a') => app.pr_picker_toggle_closed(),
+        KeyCode::Char('#') | KeyCode::Char('g') => app.pr_picker_to_number_prompt(),
         _ => {}
     }
     Ok(())

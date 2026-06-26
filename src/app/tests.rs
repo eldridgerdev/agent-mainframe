@@ -6943,6 +6943,8 @@ fn enter_pr_review(app: &mut App, n: u64) {
         detail_content_lines: 0,
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
+        review_harness: None,
+        harness_pick: None,
         fix_confirm: None,
         reply: None,
     });
@@ -7003,6 +7005,111 @@ fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
             "expected syntax picker, got {:?}",
             std::mem::discriminant(other)
         ),
+    }
+}
+
+/// Enter the review pane against the `store_with_feature` feature so the fix
+/// flow can resolve a real feature/workdir (`/tmp/test-workdir`).
+fn enter_pr_review_for_feature(app: &mut App, n: u64) {
+    app.mode = AppMode::PrReview(PrReviewState {
+        workdir: std::path::PathBuf::from("/tmp/test-workdir"),
+        review: pr_review_with_comments(n),
+        selected: 0,
+        detail_scroll: 0,
+        detail_content_lines: 0,
+        hide_resolved: false,
+        fix_target: crate::app::pr_review::FixTarget::default(),
+        review_harness: None,
+        harness_pick: None,
+        fix_confirm: None,
+        reply: None,
+    });
+}
+
+#[test]
+fn pr_review_first_fix_opens_harness_picker_then_confirm() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 2);
+
+    // First `f`: no dedicated session and no harness chosen yet → the picker
+    // opens; the fix confirm has NOT opened yet.
+    app.pr_review_open_fix_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.harness_pick.is_some(), "harness picker should be open");
+            assert!(state.fix_confirm.is_none(), "fix confirm should wait");
+            assert!(state.review_harness.is_none());
+            // Default highlight is the project's preferred agent.
+            let pick = state.harness_pick.as_ref().unwrap();
+            assert_eq!(pick.agents[pick.selected], AgentKind::default());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+
+    // Choosing the harness remembers it and continues into the fix confirm.
+    app.pr_review_harness_pick_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.harness_pick.is_none());
+            assert_eq!(state.review_harness, Some(AgentKind::default()));
+            assert!(state.fix_confirm.is_some(), "fix confirm should now be open");
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn pr_review_second_fix_skips_harness_picker() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 2);
+
+    // Harness already chosen for this PR: `f` goes straight to the fix confirm.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.review_harness = Some(AgentKind::Codex);
+    }
+    app.pr_review_open_fix_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.harness_pick.is_none(), "no picker on subsequent fixes");
+            assert!(state.fix_confirm.is_some());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn pr_review_cancel_harness_picker_aborts_fix() {
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 1);
+
+    app.pr_review_open_fix_confirm();
+    assert!(app.pr_review_harness_picking());
+
+    // Cancel: picker closes, nothing injected, harness stays unset so the next
+    // `f` asks again.
+    app.pr_review_harness_pick_cancel();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.harness_pick.is_none());
+            assert!(state.fix_confirm.is_none());
+            assert!(state.review_harness.is_none());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -7075,6 +7182,8 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         detail_content_lines: 0,
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
+        review_harness: None,
+        harness_pick: None,
         fix_confirm: None,
         reply: None,
     });

@@ -897,7 +897,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_pr_review_loading(frame, state, &app.throbber_state, &app.theme);
         return;
     }
-    if let AppMode::PrReview(state) = &app.mode {
+    if let AppMode::PrReview(state) = &mut app.mode {
         super::dialogs::draw_pr_review(frame, state, &app.theme);
         return;
     }

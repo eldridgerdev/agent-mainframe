@@ -101,7 +101,7 @@ pub fn draw_pr_review_loading(
 
 /// Full-screen PR comment-review pane: comment list on the left, detail on the
 /// right.
-pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
+pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Theme) {
     let area = frame.area();
     let review = &state.review;
 
@@ -110,7 +110,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         .constraints([
             Constraint::Length(1), // header
             Constraint::Min(1),    // body
-            Constraint::Length(1), // footer
+            Constraint::Length(2), // footer (keys + marker legend)
         ])
         .split(area);
 
@@ -140,22 +140,36 @@ pub fn draw_pr_review(frame: &mut Frame, state: &PrReviewState, theme: &Theme) {
         .split(outer[1]);
 
     draw_comment_list(frame, body[0], state, theme);
-    draw_comment_detail(frame, body[1], state.selected_comment(), state.detail_scroll, theme);
+    let detail_lines = draw_comment_detail(
+        frame,
+        body[1],
+        state.selected_comment(),
+        state.detail_scroll,
+        theme,
+    );
+    // Record what the detail pane drew so the scroll handler can clamp against
+    // the real content height (the layout is no longer a 1:1 source-line map).
+    state.detail_content_lines = detail_lines;
 
-    // Footer.
+    // Footer: key hints, then a legend spelling out the list markers.
     let toggle_hint = if state.hide_resolved {
         "h show-resolved"
     } else {
         "h hide-resolved"
     };
-    let footer = Paragraph::new(Line::from(Span::styled(
+    let keys = Paragraph::new(Line::from(Span::styled(
         format!(
             " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
     )));
-    frame.render_widget(footer, outer[2]);
+    let footer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(outer[2]);
+    frame.render_widget(keys, footer[0]);
+    frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
     // Fix confirm/edit dialog overlays the pane when open.
     if let Some(confirm) = &state.fix_confirm {
@@ -388,24 +402,34 @@ fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     ])
 }
 
+/// Render the detail pane for the selected comment and return the number of
+/// content lines built (used by the caller to clamp detail scrolling). The
+/// detail is laid out as distinct sections — a chip-laden header, the diff hunk
+/// (colored by add/remove/context), the Markdown-rendered body, and any local
+/// triage note — separated by subtle dividers.
 fn draw_comment_detail(
     frame: &mut Frame,
     area: Rect,
     comment: Option<&PrComment>,
     scroll: usize,
     theme: &Theme,
-) {
-    let block = pane_block(theme).title(" Detail ");
+) -> usize {
+    // The detail pane is the unfocused side (the list takes key input), so give
+    // it a muted border to keep focus visually on the list.
+    let block = pane_block(theme)
+        .border_style(Style::default().fg(theme.text_muted.to_color()))
+        .title(" Detail ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let Some(c) = comment else {
-        return;
+        return 0;
     };
 
-    let mut lines: Vec<Line> = Vec::new();
+    let width = inner.width.max(1) as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Location + flags.
+    // Header: location, then resolution/outdated/triage as compact chips.
     let mut header_spans = vec![Span::styled(
         match (&c.path, c.line) {
             (Some(path), Some(line)) => format!("{path}:{line}"),
@@ -417,66 +441,260 @@ fn draw_comment_detail(
             .add_modifier(Modifier::BOLD),
     )];
     if c.outdated {
-        header_spans.push(Span::styled(
-            "  [outdated]",
-            Style::default().fg(theme.warning.to_color()),
-        ));
+        header_spans.push(chip("outdated", theme.warning.to_color()));
     }
     if c.is_resolved {
-        header_spans.push(Span::styled(
-            "  [resolved]",
-            Style::default().fg(theme.success.to_color()),
-        ));
+        header_spans.push(chip("✓ resolved", theme.success.to_color()));
     }
     if let Some(label) = c.triage.label() {
-        header_spans.push(Span::styled(
-            format!("  [{label}]"),
-            Style::default()
-                .fg(triage_color(c.triage, theme))
-                .add_modifier(Modifier::BOLD),
-        ));
+        header_spans.push(chip(label, triage_color(c.triage, theme)));
     }
     lines.push(Line::from(header_spans));
 
+    // Author / role / kind chips.
     lines.push(Line::from(vec![
-        Span::styled(
-            format!("@{}", c.author),
-            Style::default().fg(theme.secondary.to_color()),
+        chip(&format!("@{}", c.author), theme.secondary.to_color()),
+        chip(
+            if c.is_bot { "bot" } else { "human" },
+            theme.text_muted.to_color(),
         ),
-        Span::styled(
-            if c.is_bot { "  (bot)" } else { "" }.to_string(),
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
-        Span::styled(
-            format!("  ·  {}", kind_label(&c.kind)),
-            Style::default().fg(theme.text_muted.to_color()),
-        ),
+        chip(kind_label(&c.kind), theme.text_muted.to_color()),
     ]));
 
-    // Diff hunk, if present.
+    // Diff hunk, colored like a diff (add/remove/context/hunk-header).
     if let Some(hunk) = &c.diff_hunk {
-        lines.push(Line::from(""));
-        for hl in hunk.lines() {
+        lines.push(divider(width, theme));
+        lines.push(section_label("Diff hunk", theme));
+        lines.extend(diff_hunk_lines(hunk, c.path.as_deref(), theme));
+    }
+
+    // Body, rendered as Markdown (reuses the in-app renderer).
+    lines.push(divider(width, theme));
+    if c.body.trim().is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no body)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
+    } else {
+        lines.extend(crate::markdown::render_markdown(&c.body, theme, width, None).lines);
+    }
+
+    // Local triage note (skip reason / "not needed" explanation), if any.
+    if let Some(note) = c.local_note.as_ref().filter(|n| !n.trim().is_empty()) {
+        lines.push(divider(width, theme));
+        lines.push(section_label("Note", theme));
+        for nl in note.lines() {
             lines.push(Line::from(Span::styled(
-                hl.to_string(),
-                Style::default().fg(theme.text_muted.to_color()),
+                nl.to_string(),
+                Style::default().fg(theme.text.to_color()),
             )));
         }
     }
 
-    // Body.
-    lines.push(Line::from(""));
-    for bl in c.body.lines() {
-        lines.push(Line::from(Span::styled(
-            bl.to_string(),
-            Style::default().fg(theme.text.to_color()),
-        )));
-    }
-
+    let count = lines.len();
     let body = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
     frame.render_widget(body, inner);
+    count
+}
+
+/// A compact `[label]` chip in the given accent color, with a leading space so
+/// chips read as a spaced row.
+fn chip(label: &str, color: ratatui::style::Color) -> Span<'static> {
+    Span::styled(format!(" [{label}]"), Style::default().fg(color))
+}
+
+/// A full-width horizontal divider line in a muted color.
+fn divider(width: usize, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(theme.text_muted.to_color()),
+    ))
+}
+
+/// A small muted section label inside the detail pane.
+fn section_label(label: &str, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        label.to_string(),
+        Style::default()
+            .fg(theme.text_muted.to_color())
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Render a comment's `diff_hunk` as colored lines. The leading marker keeps
+/// its diff color (added `+` green, removed `-` red, `@@` headers, muted
+/// context), and the code after the marker is syntax-highlighted via the shared
+/// tree-sitter highlighter, keyed off the comment's file path for language
+/// detection.
+///
+/// The added/removed lines are highlighted against reconstructed "new" and
+/// "old" sides (markers stripped) so the parser sees real multi-line source for
+/// context, then each hunk line is matched back to its highlighted line. When
+/// no language is detected (e.g. a comment with no file path) or a parser isn't
+/// available, this degrades to the plain marker coloring.
+fn diff_hunk_lines(hunk: &str, path: Option<&str>, theme: &Theme) -> Vec<Line<'static>> {
+    // Reconstruct the two sides so the highlighter parses contiguous source.
+    let mut new_src = String::new();
+    let mut old_src = String::new();
+    for raw in hunk.lines() {
+        if raw.starts_with("@@") {
+            continue;
+        }
+        match raw.as_bytes().first() {
+            Some(b'+') => {
+                new_src.push_str(&raw[1..]);
+                new_src.push('\n');
+            }
+            Some(b'-') => {
+                old_src.push_str(&raw[1..]);
+                old_src.push('\n');
+            }
+            _ => {
+                let content = raw.strip_prefix(' ').unwrap_or(raw);
+                new_src.push_str(content);
+                new_src.push('\n');
+                old_src.push_str(content);
+                old_src.push('\n');
+            }
+        }
+    }
+
+    let p = path.map(std::path::Path::new);
+    let new_hl = crate::highlight::highlight_source(crate::highlight::HighlightRequest {
+        path: p,
+        language_hint: None,
+        source: &new_src,
+    });
+    let old_hl = crate::highlight::highlight_source(crate::highlight::HighlightRequest {
+        path: p,
+        language_hint: None,
+        source: &old_src,
+    });
+
+    let mut lines = Vec::new();
+    let mut new_idx = 0usize;
+    let mut old_idx = 0usize;
+    for raw in hunk.lines() {
+        if raw.starts_with("@@") {
+            lines.push(Line::from(Span::styled(
+                raw.to_string(),
+                Style::default().fg(theme.secondary.to_color()),
+            )));
+            continue;
+        }
+
+        let (marker, color, content, hl_line) = match raw.as_bytes().first() {
+            Some(b'+') => {
+                let hl = new_hl.lines.get(new_idx);
+                new_idx += 1;
+                ("+", theme.success.to_color(), &raw[1..], hl)
+            }
+            Some(b'-') => {
+                let hl = old_hl.lines.get(old_idx);
+                old_idx += 1;
+                ("-", theme.danger.to_color(), &raw[1..], hl)
+            }
+            _ => {
+                let hl = new_hl.lines.get(new_idx);
+                new_idx += 1;
+                old_idx += 1;
+                let marker = if raw.starts_with(' ') { " " } else { "" };
+                let content = raw.strip_prefix(' ').unwrap_or(raw);
+                (marker, theme.text_muted.to_color(), content, hl)
+            }
+        };
+
+        let mut spans = Vec::new();
+        if !marker.is_empty() {
+            spans.push(Span::styled(marker.to_string(), Style::default().fg(color)));
+        }
+        spans.extend(highlight_content_spans(
+            content,
+            hl_line,
+            Style::default().fg(color),
+            theme,
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// Map highlighted spans for one code line onto `content`, producing styled
+/// spans. `base` is the diff color for the line; real syntax tokens override
+/// the foreground while `Plain` tokens (and any uncovered remainder) keep the
+/// diff color, so the add/remove signal survives even when highlighting is
+/// sparse or unavailable.
+fn highlight_content_spans(
+    content: &str,
+    hl: Option<&crate::highlight::HighlightedLine>,
+    base: Style,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let Some(hl) = hl.filter(|h| !h.spans.is_empty()) else {
+        return vec![Span::styled(content.to_string(), base)];
+    };
+
+    let mut spans = Vec::new();
+    let mut remaining = content;
+    let mut rendered_any = false;
+    for sp in &hl.spans {
+        if remaining.is_empty() {
+            break;
+        }
+        if sp.text.is_empty() {
+            continue;
+        }
+        let n = shared_prefix_len(remaining, &sp.text);
+        if n == 0 {
+            continue;
+        }
+        let (head, tail) = remaining.split_at(n);
+        let style = if sp.class == crate::highlight::SyntaxClass::Plain {
+            base
+        } else {
+            base.patch(crate::highlight::style_for_class(sp.class, theme))
+        };
+        spans.push(Span::styled(head.to_string(), style));
+        remaining = tail;
+        rendered_any = true;
+    }
+
+    if !remaining.is_empty() {
+        spans.push(Span::styled(remaining.to_string(), base));
+    } else if !rendered_any {
+        spans.push(Span::styled(content.to_string(), base));
+    }
+    spans
+}
+
+/// Length (in bytes) of the shared leading run of characters between two
+/// strings, used to align rendered content with highlighter span text.
+fn shared_prefix_len(content: &str, other: &str) -> usize {
+    let mut end = 0;
+    for (a, b) in content.chars().zip(other.chars()) {
+        if a != b {
+            break;
+        }
+        end += a.len_utf8();
+    }
+    end
+}
+
+/// Footer legend spelling out the list/detail markers.
+fn marker_legend(theme: &Theme) -> Line<'static> {
+    let muted = Style::default().fg(theme.text_muted.to_color());
+    Line::from(vec![
+        Span::styled(" ✓ resolved", Style::default().fg(theme.success.to_color())),
+        Span::styled("   [outdated] line moved", Style::default().fg(theme.warning.to_color())),
+        Span::styled("   bot/human", muted),
+        Span::styled("   triage: ", muted),
+        Span::styled("[ ] untriaged ", muted),
+        Span::styled("[~] fixing ", Style::default().fg(theme.warning.to_color())),
+        Span::styled("[x] done ", Style::default().fg(theme.success.to_color())),
+        Span::styled("[-] skip", muted),
+    ])
 }
 
 /// Accent color for a triage state's checkbox/chip.
@@ -495,6 +713,42 @@ fn kind_label(kind: &CommentKind) -> &'static str {
         CommentKind::Inline => "inline comment",
         CommentKind::ReviewSummary { .. } => "review summary",
         CommentKind::Conversation => "conversation",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn diff_hunk_lines_preserve_text_and_markers() {
+        let theme = Theme::default();
+        let hunk = "@@ -1,3 +1,3 @@\n fn main() {\n-    let x = 1;\n+    let x = 2;\n }";
+        let lines = diff_hunk_lines(hunk, Some("src/main.rs"), &theme);
+
+        // One rendered line per hunk line, with markers and (indented) content
+        // preserved verbatim — regardless of whether highlighting is available.
+        assert_eq!(lines.len(), 5);
+        assert_eq!(line_text(&lines[0]), "@@ -1,3 +1,3 @@");
+        assert_eq!(line_text(&lines[1]), " fn main() {");
+        assert_eq!(line_text(&lines[2]), "-    let x = 1;");
+        assert_eq!(line_text(&lines[3]), "+    let x = 2;");
+        assert_eq!(line_text(&lines[4]), " }");
+    }
+
+    #[test]
+    fn diff_hunk_lines_without_language_still_preserve_text() {
+        let theme = Theme::default();
+        // No path → no language detection → plain marker coloring, text intact.
+        let hunk = "-old line\n+new line";
+        let lines = diff_hunk_lines(hunk, None, &theme);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "-old line");
+        assert_eq!(line_text(&lines[1]), "+new line");
     }
 }
 

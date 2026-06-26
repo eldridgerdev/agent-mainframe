@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Final review can post to your GitHub PR.** Turn on
+  `final_review_post_to_pr` and finishing a final review also posts the
+  feedback to the branch's PR as a single GitHub review: your line comments
+  land as inline comments on the diff, and whole-file rejections plus any
+  general feedback go in the review summary. It posts as a plain `COMMENT`
+  review (so it works on your own PR) and is best-effort — if there's no PR for
+  the branch or `gh` isn't set up, AMF just says so and carries on. The local
+  `.claude/final-review-feedback.md` is still written every time, so nothing is
+  lost whether or not the PR post succeeds. Off by default; needs an
+  authenticated `gh` CLI.
 - **Final review flags what changed since last time.** Finishing a final review
   now records a fingerprint of the diff, so the next time you review the same
   feature AMF marks the files that changed since your last pass with a `Δ` in

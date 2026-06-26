@@ -832,6 +832,7 @@ impl App {
         }
         let skipped = total.saturating_sub(approved).saturating_sub(rejected.len());
         let general_feedback = general_feedback.trim().to_string();
+        let post_to_pr = self.config.final_review_post_to_pr;
 
         // Line comments in file order (each file's comments are already sorted
         // by line). Empty-text comments never reach here (submit deletes them).
@@ -951,7 +952,7 @@ impl App {
                          {comment_note} — feedback saved to .claude/final-review-feedback.md",
                         rejected.len()
                     );
-                    match &agent_target {
+                    let agent_msg = match &agent_target {
                         Some((session, window)) => {
                             let prompt = "A reviewer left feedback on these changes in \
                                  .claude/final-review-feedback.md. Read that file and address \
@@ -975,7 +976,21 @@ impl App {
                             }
                         }
                         None => summary,
-                    }
+                    };
+                    // Optionally mirror the feedback onto the branch's GitHub PR
+                    // as a review (best-effort; the local file is the source of
+                    // truth either way).
+                    let pr_note = if post_to_pr {
+                        self.post_final_review_to_pr(
+                            &workdir,
+                            &rejected,
+                            &line_comment_sections,
+                            &general_feedback,
+                        )
+                    } else {
+                        String::new()
+                    };
+                    format!("{agent_msg}{pr_note}")
                 }
                 Err(e) => format!("Final review: failed to write feedback file: {e}"),
             });
@@ -984,6 +999,95 @@ impl App {
         self.mode = AppMode::Viewing(from_view);
         Ok(())
     }
+
+    /// Post a finished review's feedback onto the branch's GitHub PR as a single
+    /// review (line comments inline, rejections + general feedback in the
+    /// summary). Returns a short suffix for the finish message describing the
+    /// outcome. Best-effort: a missing PR, missing `gh`, or an API error is
+    /// reported (and logged) but never aborts the finish — the local feedback
+    /// file already captured everything.
+    fn post_final_review_to_pr(
+        &mut self,
+        workdir: &Path,
+        rejected: &[(String, String)],
+        line_comment_sections: &[(String, Vec<LineComment>)],
+        general_feedback: &str,
+    ) -> String {
+        use crate::github::{GhCli, PrResolution};
+
+        let (body, comments) = build_pr_review(rejected, line_comment_sections, general_feedback);
+        let pr = match GhCli::resolve_pr(workdir) {
+            Ok(PrResolution::Found(pr)) => pr,
+            Ok(PrResolution::NoPrForBranch) => {
+                return " — no PR for this branch, skipped PR post".to_string();
+            }
+            Err(err) => {
+                self.log_warn("review", format!("PR review post: {err}"));
+                return format!(" — couldn't post to PR: {err}");
+            }
+        };
+        match GhCli::create_review(workdir, &pr, &body, "COMMENT", &comments) {
+            Ok(()) => {
+                let what = if comments.is_empty() {
+                    "review summary".to_string()
+                } else {
+                    format!("{} comment(s)", comments.len())
+                };
+                format!(" — posted {what} to PR #{}", pr.number)
+            }
+            Err(err) => {
+                self.log_warn("review", format!("PR review post failed: {err}"));
+                format!(" — couldn't post to PR #{}: {err}", pr.number)
+            }
+        }
+    }
+}
+
+/// Assemble a GitHub PR review from a finished final review. Line comments
+/// become inline review comments — anchored to the current file line
+/// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`); the
+/// general feedback and whole-file rejections (which have no single line to
+/// anchor to) become the review's summary body. Returns `(body, comments)`.
+fn build_pr_review(
+    rejected: &[(String, String)],
+    line_comment_sections: &[(String, Vec<LineComment>)],
+    general_feedback: &str,
+) -> (String, Vec<crate::github::PrReviewComment>) {
+    let mut comments = Vec::new();
+    for (path, file_comments) in line_comment_sections {
+        for comment in file_comments {
+            let (line, side) = match (comment.location.new_line, comment.location.old_line) {
+                (Some(new_line), _) => (new_line, "RIGHT"),
+                (None, Some(old_line)) => (old_line, "LEFT"),
+                (None, None) => continue,
+            };
+            comments.push(crate::github::PrReviewComment {
+                path: path.clone(),
+                line: line as u32,
+                side,
+                body: comment.text.clone(),
+            });
+        }
+    }
+
+    let mut body = String::new();
+    let general = general_feedback.trim();
+    if !general.is_empty() {
+        body.push_str(general);
+        body.push_str("\n\n");
+    }
+    if !rejected.is_empty() {
+        body.push_str("## Files needing revision\n\n");
+        for (file, feedback) in rejected {
+            let feedback = feedback.trim();
+            if feedback.is_empty() {
+                body.push_str(&format!("- **{file}** — needs revision\n"));
+            } else {
+                body.push_str(&format!("- **{file}**\n\n{feedback}\n\n"));
+            }
+        }
+    }
+    (body.trim_end().to_string(), comments)
 }
 
 /// Document title that heads the feedback log. Each review round is prepended
@@ -1094,7 +1198,60 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{build_walkthrough_prompt, compose_feedback_log, parse_review_notes};
+    use super::{build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_review_notes};
+    use crate::app::LineComment;
+    use crate::diff::DiffLineLocation;
+
+    fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
+        LineComment {
+            location: DiffLineLocation { old_line, new_line },
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn pr_review_maps_lines_inline_and_folds_files_into_body() {
+        let rejected = vec![
+            ("src/a.rs".to_string(), "tighten this up".to_string()),
+            ("src/b.rs".to_string(), String::new()),
+        ];
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![
+                line_comment(Some(42), None, "off-by-one"),
+                line_comment(None, Some(7), "why delete this?"),
+            ],
+        )];
+        let (body, comments) = build_pr_review(&rejected, &line_comments, "overall LGTM-ish");
+
+        // Inline comments: an added/current line posts on RIGHT, a deletion-only
+        // line on LEFT.
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].path, "src/c.rs");
+        assert_eq!(comments[0].line, 42);
+        assert_eq!(comments[0].side, "RIGHT");
+        assert_eq!(comments[1].line, 7);
+        assert_eq!(comments[1].side, "LEFT");
+
+        // Body carries general feedback + whole-file rejections, including the
+        // bare "needs revision" line when no feedback text was given.
+        assert!(body.contains("overall LGTM-ish"));
+        assert!(body.contains("## Files needing revision"));
+        assert!(body.contains("**src/a.rs**"));
+        assert!(body.contains("tighten this up"));
+        assert!(body.contains("**src/b.rs** — needs revision"));
+    }
+
+    #[test]
+    fn pr_review_body_empty_when_only_line_comments() {
+        let line_comments = vec![(
+            "src/c.rs".to_string(),
+            vec![line_comment(Some(3), None, "nit")],
+        )];
+        let (body, comments) = build_pr_review(&[], &line_comments, "");
+        assert!(body.is_empty());
+        assert_eq!(comments.len(), 1);
+    }
 
     #[test]
     fn first_round_writes_title_then_round() {

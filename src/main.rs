@@ -1191,6 +1191,8 @@ fn run_loop<B: Backend>(
                 .record_duration("summary.poll_result", summary_poll_started_at.elapsed());
         }
 
+        force_redraw |= app.poll_compose_clipboard_paste();
+
         if app.has_active_sidebar() {
             force_redraw |= app.poll_sidebar_load_results();
         }

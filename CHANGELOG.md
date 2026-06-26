@@ -67,6 +67,9 @@ are tagged.
 - Claude panes now render immediately behind the composer when an agent session
   opens with composer input enabled. Previously the composer could appear over a
   blank pane until you closed it or sent input.
+- **Composer pastes now show progress.** Pressing `Ctrl+V` in the composer
+  immediately shows `[Pasting...]` while AMF reads the clipboard, so slow text
+  or image pastes no longer look like the app ignored the keypress.
 
 ### Migration
 

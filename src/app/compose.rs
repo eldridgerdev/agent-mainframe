@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::os::fd::AsRawFd;
+use std::sync::mpsc;
 
 use anyhow::Result;
 
@@ -206,6 +208,113 @@ pub(crate) fn split_compose_parts(
 }
 
 impl App {
+    pub fn start_compose_clipboard_paste(&mut self) {
+        if self.compose_clipboard_paste.is_some() {
+            self.push_toast_warning("Paste already in progress");
+            return;
+        }
+
+        let Some((id, target)) = (match &mut self.mode {
+            AppMode::Compose(state) => {
+                let id = self.next_compose_clipboard_paste_id;
+                self.next_compose_clipboard_paste_id =
+                    self.next_compose_clipboard_paste_id.saturating_add(1);
+                state.clipboard_paste_id = Some(id);
+                Some((
+                    id,
+                    compose_target_key(&state.view.session, &state.view.window),
+                ))
+            }
+            _ => None,
+        }) else {
+            return;
+        };
+
+        let wakeup = self.view_wakeup_tx();
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("compose-clipboard-paste".to_string())
+            .spawn(move || {
+                let result = crate::app::util::read_clipboard().map_err(|err| err.to_string());
+                let _ = tx.send(result);
+                let byte = 1u8;
+                unsafe {
+                    libc::write(
+                        wakeup.as_raw_fd(),
+                        &byte as *const u8 as *const _,
+                        1,
+                    )
+                };
+            })
+            .expect("failed to start compose clipboard paste worker");
+        self.compose_clipboard_paste = Some(ComposeClipboardPaste { id, target, rx });
+    }
+
+    pub fn poll_compose_clipboard_paste(&mut self) -> bool {
+        let Some(paste) = &self.compose_clipboard_paste else {
+            return false;
+        };
+
+        let result = match paste.rx.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("clipboard worker stopped before returning a result".to_string())
+            }
+        };
+
+        let Some(paste) = self.compose_clipboard_paste.take() else {
+            return false;
+        };
+
+        let should_apply = matches!(
+            &self.mode,
+            AppMode::Compose(state)
+                if state.clipboard_paste_id == Some(paste.id)
+                    && compose_target_key(&state.view.session, &state.view.window) == paste.target
+        );
+
+        if !should_apply {
+            return true;
+        }
+
+        if let AppMode::Compose(state) = &mut self.mode {
+            state.clipboard_paste_id = None;
+        }
+
+        match result {
+            Ok(crate::app::util::ClipboardContent::Text(text)) if !text.is_empty() => {
+                if let AppMode::Compose(state) = &mut self.mode {
+                    let outcome = state.editor.insert_str(&text);
+                    if outcome.text_changed {
+                        state.refresh_suggestions();
+                        state.request_cursor_scroll();
+                    }
+                }
+            }
+            Ok(crate::app::util::ClipboardContent::Image { data, mime }) => {
+                let placeholder = if let AppMode::Compose(state) = &mut self.mode {
+                    let placeholder = state.add_image(data, mime);
+                    state.editor.insert_str(&placeholder);
+                    state.refresh_suggestions();
+                    state.request_cursor_scroll();
+                    Some(placeholder)
+                } else {
+                    None
+                };
+                if let Some(placeholder) = placeholder {
+                    self.push_toast_success(format!("Attached {placeholder} from clipboard"));
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                self.push_toast_warning(format!("Clipboard error: {e}"));
+            }
+        }
+
+        true
+    }
+
     /// Whether typing in this agent view should open the compose box
     /// instead of forwarding keystrokes to tmux.
     pub fn compose_intercept_active(&self, view: &ViewState) -> bool {

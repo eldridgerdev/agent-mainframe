@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Peek a line comment while browsing the diff.** In a final review, lines you've
+  commented on already show a `●` marker in the gutter — now parking the line
+  cursor on one also pops the comment's text into a "comment on this line" box
+  above the footer hints, so you can re-read what you wrote without reopening the
+  editor. Press `⏎` to edit it as before; long comments are previewed up to a few
+  lines.
 - **Final review can post to your GitHub PR.** Turn on
   `final_review_post_to_pr` and finishing a final review also posts the
   feedback to the branch's PR as a single GitHub review: your line comments
@@ -64,18 +70,29 @@ are tagged.
   green, removed red) **and syntax-highlighted** for the comment's language
   using the same tree-sitter highlighter as the diff viewer. When a language's
   parser isn't installed it falls back gracefully to plain coloring.
+- Added the full Gruvbox Material UI theme family to the theme picker and
+  config: dark/light, hard/medium/soft contrast, and material/mix/original
+  foreground palettes. Use names like `gruvbox-material-dark-medium` or
+  `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
 
 ### Fixed
 
+- AMF now cleans up the bundled `amf-gruvbox` Opencode theme along with the
+  other AMF-managed Opencode themes when removing local Opencode integration
+  files.
 - Claude panes now render immediately behind the composer when an agent session
   opens with composer input enabled. Previously the composer could appear over a
   blank pane until you closed it or sent input.
+- **Composer pastes now show progress.** Pressing `Ctrl+V` in the composer
+  immediately shows `[Pasting...]` while AMF reads the clipboard, so slow text
+  or image pastes no longer look like the app ignored the keypress.
 
 ### Migration
 
 - No action required. AMF adds a `pr_comment_triage` table to its SQLite store
   on first launch; triage state is keyed by PR number, comment id, and head
-  commit, and stale rows are pruned automatically after a week.
+  commit, and stale rows are pruned automatically after a week. The new
+  Gruvbox Material themes are available immediately after upgrade.
 
 ## [v0.27.0] - 2026-06-25
 

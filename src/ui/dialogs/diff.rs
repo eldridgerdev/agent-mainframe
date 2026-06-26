@@ -60,6 +60,10 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
         && (state.feedback_editing || state.editing_general || state.editing_line_comment)
     {
         inner.height.saturating_sub(10).clamp(4, 12)
+    } else if state.review {
+        // Grow to host the line-comment peek box above the two-row hints when the
+        // cursor is parked on a line that already carries a comment.
+        2 + cursor_comment_preview_rows(state)
     } else {
         2
     };
@@ -690,6 +694,38 @@ fn review_cursor_info(
     (cursor, commented)
 }
 
+/// The text of the review comment anchored to the line the comment cursor is
+/// currently on, if any. `None` outside review mode, when no cursor is active,
+/// or when the cursored line carries no comment.
+fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
+    if !state.review {
+        return None;
+    }
+    let cursor = state.comment_cursor?;
+    let file = state.files.get(state.selected_file)?;
+    let loc = file.addressable_lines().get(cursor).copied()?;
+    state
+        .line_comments
+        .get(&file.path)?
+        .iter()
+        .find(|c| c.location == loc)
+        .map(|c| c.text.as_str())
+}
+
+/// Height (in rows, including the box border) the footer needs to peek the
+/// comment on the cursored line; `0` when there is nothing to preview. The body
+/// is capped so a long comment is glimpsed rather than fully scrolled — the
+/// editor (Enter) still shows it in full.
+fn cursor_comment_preview_rows(state: &DiffViewerState) -> u16 {
+    match cursor_comment_text(state) {
+        Some(text) => {
+            let content = text.lines().count().clamp(1, 6) as u16;
+            content + 2
+        }
+        None => 0,
+    }
+}
+
 pub(crate) struct PatchPanelOptions {
     pub layout: DiffViewerLayout,
     pub title: String,
@@ -898,6 +934,38 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             key("q"),
             Span::raw(" finish"),
         ]);
+
+        // When the cursor sits on a commented line, peek the comment body in a
+        // bordered box above the hints so the reviewer can read what they wrote
+        // without re-opening the editor.
+        if let Some(text) = cursor_comment_text(state) {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(3), Constraint::Length(2)])
+                .split(area);
+            let preview = Paragraph::new(
+                text.lines()
+                    .map(|line| Line::from(line.to_string()))
+                    .collect::<Vec<_>>(),
+            )
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(theme.info.to_color()))
+                    .title(Span::styled(
+                        " comment on this line (Enter to edit) ",
+                        Style::default().fg(theme.info.to_color()),
+                    )),
+            )
+            .wrap(Wrap { trim: false });
+            frame.render_widget(preview, chunks[0]);
+            frame.render_widget(
+                Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
+                chunks[1],
+            );
+            return;
+        }
+
         frame.render_widget(
             Paragraph::new(vec![first, second]).wrap(Wrap { trim: false }),
             area,
@@ -2515,5 +2583,92 @@ index 0000000..1111111
             has_syntax_colored_token,
             "expected TypeScript diff rows to keep syntax coloring in new-file diff rows"
         );
+    }
+
+    fn single_added_line_review_state() -> (DiffViewerState, DiffLineLocation) {
+        let mut state = DiffViewerState::new(
+            crate::app::ViewState::new(
+                "proj".into(),
+                "feat".into(),
+                "sess".into(),
+                "claude".into(),
+                "Claude".into(),
+                crate::project::SessionKind::Claude,
+                crate::project::VibeMode::Vibeless,
+                true,
+            ),
+            std::path::PathBuf::from("/tmp"),
+        );
+        state.review = true;
+        let file = DiffFile {
+            old_path: None,
+            path: "a.rs".to_string(),
+            status: DiffFileStatus::Added,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: Some("x\n".to_string()),
+            patch: String::new(),
+            hunks: vec![crate::diff::DiffHunk {
+                header: "@@ -0,0 +1,1 @@".to_string(),
+                old_start: 0,
+                old_lines: 0,
+                new_start: 1,
+                new_lines: 1,
+                lines: vec![crate::diff::DiffLine {
+                    kind: crate::diff::DiffLineKind::Added,
+                    text: "+x".to_string(),
+                }],
+            }],
+        };
+        let loc = file.addressable_lines()[0];
+        state.files = vec![file];
+        state.selected_file = 0;
+        (state, loc)
+    }
+
+    #[test]
+    fn cursor_comment_preview_surfaces_only_when_cursor_lands_on_a_comment() {
+        let (mut state, loc) = single_added_line_review_state();
+
+        // No cursor → nothing to peek.
+        assert!(cursor_comment_text(&state).is_none());
+        assert_eq!(cursor_comment_preview_rows(&state), 0);
+
+        // Cursor on an un-commented line → still nothing.
+        state.comment_cursor = Some(0);
+        assert!(cursor_comment_text(&state).is_none());
+        assert_eq!(cursor_comment_preview_rows(&state), 0);
+
+        // A comment on the cursored line surfaces, sized to its body + border.
+        state.line_comments.insert(
+            "a.rs".to_string(),
+            vec![crate::app::LineComment {
+                location: loc,
+                text: "needs a guard\nfor None".to_string(),
+            }],
+        );
+        assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
+        assert_eq!(cursor_comment_preview_rows(&state), 4);
+    }
+
+    #[test]
+    fn cursor_comment_preview_caps_long_bodies() {
+        let (mut state, loc) = single_added_line_review_state();
+        state.comment_cursor = Some(0);
+        let body = (0..20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state.line_comments.insert(
+            "a.rs".to_string(),
+            vec![crate::app::LineComment {
+                location: loc,
+                text: body,
+            }],
+        );
+        // 20 body lines clamp to 6 visible + 2 border rows.
+        assert_eq!(cursor_comment_preview_rows(&state), 8);
     }
 }

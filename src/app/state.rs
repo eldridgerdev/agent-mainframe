@@ -1042,6 +1042,11 @@ pub struct PrReviewState {
     pub selected: usize,
     /// Scroll offset (in lines) for the detail pane of the selected comment.
     pub detail_scroll: usize,
+    /// Number of lines the detail pane rendered on the last frame. The renderer
+    /// (`ui::dialogs::pr_review`) writes this each draw so the scroll clamp can
+    /// bound against what was actually shown, rather than a hand-synced estimate
+    /// that drifts as the detail layout (Markdown, dividers) changes.
+    pub detail_content_lines: usize,
     /// When true, comments already resolved on GitHub are hidden from the list.
     pub hide_resolved: bool,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).

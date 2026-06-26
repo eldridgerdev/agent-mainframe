@@ -6940,6 +6940,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         review: pr_review_with_comments(n),
         selected: 0,
         detail_scroll: 0,
+        detail_content_lines: 0,
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
         fix_confirm: None,
@@ -7030,6 +7031,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         review,
         selected: 0,
         detail_scroll: 0,
+        detail_content_lines: 0,
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
         fix_confirm: None,
@@ -7087,12 +7089,18 @@ fn pr_review_detail_scroll_clamps() {
         _ => panic!("not in PrReview mode"),
     }
 
-    // Scrolling far down clamps to the detail's line count, never past it.
+    // Render once so the detail pane records how many lines it actually drew;
+    // the scroll-down clamp bounds against that recorded count.
+    let backend = ratatui::backend::TestBackend::new(100, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+    // Scrolling far down clamps to the rendered line count, never past it.
     app.pr_review_scroll_detail_down(1000);
     match &app.mode {
         AppMode::PrReview(state) => {
-            let max = state.selected_comment().unwrap().detail_line_count() - 1;
-            assert_eq!(state.detail_scroll, max);
+            assert!(state.detail_content_lines > 0);
+            assert_eq!(state.detail_scroll, state.detail_content_lines - 1);
         }
         _ => panic!("not in PrReview mode"),
     }

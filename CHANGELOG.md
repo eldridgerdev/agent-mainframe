@@ -55,6 +55,15 @@ are tagged.
   and the detail header a `[fixing]`/`[done]`/`[skipped]` chip — distinct from
   GitHub's own `✓` thread-resolution marker. Mark-done and skip are manual with
   no auto-advance: the selection stays put so you can watch the agent work.
+- **The PR review pane is much easier to read.** The comment detail is no longer
+  a flat wall of text: it's split into clear sections (header, diff hunk, body,
+  and any local note) separated by subtle dividers, with author/role/kind/
+  resolution/triage shown as compact chips and a marker legend in the footer.
+  Comment bodies render as Markdown — headings, lists, code blocks, and inline
+  code instead of raw text — and the diff hunk is colored like a diff (added
+  green, removed red) **and syntax-highlighted** for the comment's language
+  using the same tree-sitter highlighter as the diff viewer. When a language's
+  parser isn't installed it falls back gracefully to plain coloring.
 
 ### Fixed
 

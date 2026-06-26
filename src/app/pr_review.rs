@@ -531,6 +531,7 @@ impl App {
                 review,
                 selected: 0,
                 detail_scroll: 0,
+                detail_content_lines: 0,
                 hide_resolved: false,
                 fix_target: FixTarget::default(),
                 fix_confirm: None,
@@ -795,6 +796,7 @@ impl App {
                             review,
                             selected: 0,
                             detail_scroll: 0,
+                            detail_content_lines: 0,
                             hide_resolved: false,
                             fix_target: FixTarget::default(),
                             fix_confirm: None,
@@ -1330,36 +1332,12 @@ impl App {
     }
 
     pub fn pr_review_scroll_detail_down(&mut self, amount: usize) {
-        let max_scroll = self.pr_review_detail_line_count().saturating_sub(1);
         if let AppMode::PrReview(state) = &mut self.mode {
+            // The renderer records how many lines it last drew; clamp against
+            // that so scrolling can't run past the rendered detail content.
+            let max_scroll = state.detail_content_lines.saturating_sub(1);
             state.detail_scroll = (state.detail_scroll + amount).min(max_scroll);
         }
-    }
-
-    /// Raw line count of the selected comment's detail content, used to clamp
-    /// detail scrolling. Mirrors the line structure built in
-    /// `ui::dialogs::pr_review::draw_comment_detail`.
-    fn pr_review_detail_line_count(&self) -> usize {
-        match &self.mode {
-            AppMode::PrReview(state) => {
-                state.selected_comment().map_or(0, PrComment::detail_line_count)
-            }
-            _ => 0,
-        }
-    }
-}
-
-impl PrComment {
-    /// Raw line count of this comment's detail rendering. Must stay in sync with
-    /// `ui::dialogs::pr_review::draw_comment_detail`: location header, author
-    /// line, an optional blank + diff hunk, then a blank + body.
-    pub fn detail_line_count(&self) -> usize {
-        let mut n = 2; // location header + author line
-        if let Some(hunk) = &self.diff_hunk {
-            n += 1 + hunk.lines().count();
-        }
-        n += 1 + self.body.lines().count();
-        n
     }
 }
 

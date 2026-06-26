@@ -108,6 +108,12 @@ are tagged.
   foreground palettes. Use names like `gruvbox-material-dark-medium` or
   `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
 
+### Changed
+
+- Embedded-view auto refresh is now configurable with `view_auto_refresh` and
+  defaults to off. Manual refresh and event-driven pane updates still work; turn
+  the setting on only if you still need periodic Claude/tmux visual repairs.
+
 ### Fixed
 
 - AMF now cleans up the bundled `amf-gruvbox` Opencode theme along with the

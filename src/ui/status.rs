@@ -592,14 +592,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" close"),
         ]),
         AppMode::PrNumberPrompt(_) => Line::from(vec![
-            Span::raw(" Enter PR number  "),
+            Span::raw(" Enter PR number (experimental)  "),
             Span::styled("Enter", key_style()),
             Span::raw(" load  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::PrReviewLoading(_) => Line::from(vec![
-            Span::raw(" Fetching PR comments...  "),
+            Span::raw(" Fetching PR comments (experimental)...  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),

@@ -19,7 +19,7 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Review PR by number ")
+        .title(" Review PR by number (experimental) ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -66,7 +66,7 @@ pub fn draw_pr_review_loading(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(format!(" PR #{} ", state.pr.number));
+    let block = pane_block(theme).title(format!(" PR #{} (experimental) ", state.pr.number));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -79,7 +79,7 @@ pub fn draw_pr_review_loading(
         Line::from(vec![
             spinner,
             Span::styled(
-                " Fetching PR comments...",
+                " Fetching PR comments (experimental)...",
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -117,7 +117,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     // Header.
     let header = Line::from(vec![
         Span::styled(
-            format!(" PR #{} ", review.pr.number),
+            format!(" PR #{} (experimental) ", review.pr.number),
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),

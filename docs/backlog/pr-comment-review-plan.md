@@ -528,6 +528,11 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       stashes `return_to`; no-op for a pathless comment). →
       `src/handlers/pr_review.rs`, `src/app/syntax.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
+- [x] **Mark PR comment review as experimental in the UI.** The dashboard help,
+      manual PR-number prompt, loading pane, review pane header, and status bar
+      now label the PR comment-review flow as experimental, matching the way
+      AMF labels other still-refining workflows. →
+      `src/ui/dialogs/help.rs`, `src/ui/dialogs/pr_review.rs`, `src/ui/status.rs`.
 - [ ] **PR picker — list PRs to choose from, or enter a number.** Today the
       entry point auto-detects the branch's PR and, on a miss, drops straight to
       the manual PR-number prompt (`AppMode::PrNumberPrompt`). Add a third path:

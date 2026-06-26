@@ -33,7 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("P", "Open syntax parser picker"),
         ("L", "Open prompt library"),
-        ("G", "Review PR comments"),
+        ("G", "Review PR comments (experimental)"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),

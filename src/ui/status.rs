@@ -598,6 +598,17 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::PrPicker(_) => Line::from(vec![
+            Span::raw(" Pick a PR (experimental)  "),
+            Span::styled("j/k", key_style()),
+            Span::raw(" move  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" open  "),
+            Span::styled("#", key_style()),
+            Span::raw(" number  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PrReviewLoading(_) => Line::from(vec![
             Span::raw(" Fetching PR comments (experimental)...  "),
             Span::styled("Esc", key_style()),

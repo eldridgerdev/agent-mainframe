@@ -47,6 +47,41 @@ pub enum PrResolution {
     NoPrForBranch,
 }
 
+/// One row in the PR picker — the lightweight metadata `gh pr list` returns, no
+/// head SHA yet (that's resolved on selection via [`GhCli::fetch_pr_by_number`]).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PrListEntry {
+    pub number: u32,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, deserialize_with = "deserialize_author_login")]
+    pub author: String,
+    #[serde(default, rename = "headRefName")]
+    pub head_ref: String,
+    #[serde(default, rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(default, rename = "isDraft")]
+    pub is_draft: bool,
+    /// `OPEN`, `CLOSED`, or `MERGED`.
+    #[serde(default)]
+    pub state: String,
+}
+
+/// `gh pr list` nests the author under `{ "login": ... }`; flatten it to the
+/// login string (empty when GitHub omits the user, e.g. a deleted account).
+fn deserialize_author_login<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct Author {
+        #[serde(default)]
+        login: String,
+    }
+    let author = Option::<Author>::deserialize(deserializer)?;
+    Ok(author.map(|a| a.login).unwrap_or_default())
+}
+
 /// A GitHub account as embedded in comment/review payloads. `kind` is GitHub's
 /// `type` field — `"User"`, `"Bot"`, `"Organization"`. We expose [`is_bot`] so
 /// callers don't depend on the exact string.
@@ -222,6 +257,34 @@ impl GhCli {
             bail!("Could not load PR #{number}: {}", stderr.trim());
         }
         parse_pr_json(&output.stdout)
+    }
+
+    /// List the repository's pull requests for the PR picker. `include_closed`
+    /// switches between open-only (`--state open`, the default) and everything
+    /// (`--state all`, i.e. open + closed + merged). Newest-updated first.
+    /// Zero agent tokens (one `gh pr list` call).
+    pub fn list_prs(workdir: &Path, include_closed: bool) -> Result<Vec<PrListEntry>> {
+        let state = if include_closed { "all" } else { "open" };
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--state",
+                state,
+                "--limit",
+                "100",
+                "--json",
+                "number,title,author,headRefName,updatedAt,isDraft,state",
+            ])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh pr list`.")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`gh pr list` failed: {}", stderr.trim());
+        }
+        parse_pr_list_json(&output.stdout)
     }
 
     /// Inline review comments for a PR (file/line-anchored), all pages.
@@ -604,6 +667,16 @@ fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
     })
 }
 
+/// Parse the `gh pr list --json …` array into [`PrListEntry`] rows, sorted
+/// newest-updated first (GitHub's order is not guaranteed across flags).
+fn parse_pr_list_json(stdout: &[u8]) -> Result<Vec<PrListEntry>> {
+    let mut entries: Vec<PrListEntry> =
+        serde_json::from_slice(stdout).context("Failed to parse `gh pr list` JSON output.")?;
+    // `updatedAt` is RFC 3339, so a lexical reverse sort is chronological.
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(entries)
+}
+
 /// Extract `(owner, repo)` from a GitHub PR URL like
 /// `https://github.com/owner/repo/pull/123`. Works for GHES hosts too since we
 /// key off the `/pull/` segment rather than the host.
@@ -633,6 +706,26 @@ mod tests {
         ));
         assert!(!is_missing_write_scope("HTTP 422: Validation Failed"));
         assert!(!is_missing_write_scope("could not resolve host github.com"));
+    }
+
+    #[test]
+    fn parses_pr_list_and_sorts_newest_first() {
+        let json = br#"[
+            {"number":10,"title":"Old one","author":{"login":"alice"},"headRefName":"feat-a","updatedAt":"2026-01-01T00:00:00Z","isDraft":false,"state":"OPEN"},
+            {"number":12,"title":"New one","author":{"login":"bob"},"headRefName":"feat-b","updatedAt":"2026-06-01T00:00:00Z","isDraft":true,"state":"OPEN"},
+            {"number":11,"title":"Merged one","author":null,"headRefName":"feat-c","updatedAt":"2026-03-01T00:00:00Z","isDraft":false,"state":"MERGED"}
+        ]"#;
+        let entries = parse_pr_list_json(json).unwrap();
+        // Sorted by updatedAt descending.
+        assert_eq!(
+            entries.iter().map(|e| e.number).collect::<Vec<_>>(),
+            vec![12, 11, 10]
+        );
+        // Author login is flattened; a null author degrades to empty.
+        assert_eq!(entries[0].author, "bob");
+        assert!(entries[0].is_draft);
+        assert_eq!(entries[1].author, "");
+        assert_eq!(entries[1].state, "MERGED");
     }
 
     #[test]

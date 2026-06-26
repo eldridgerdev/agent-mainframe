@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::{
     app::pr_review::{CommentKind, PrComment},
-    app::{PrNumberPromptState, PrReviewLoadState, PrReviewState},
+    app::{PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState},
     theme::Theme,
 };
 
@@ -56,6 +56,118 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
         .wrap(Wrap { trim: false });
         frame.render_widget(error, chunks[2]);
     }
+}
+
+/// Full-screen PR picker: a scrollable list of the repo's PRs to open for
+/// review. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
+/// to the manual number prompt.
+pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme) {
+    let area = frame.area();
+    let block = pane_block(theme).title(" Pick a PR to review (experimental) ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let scope = if state.include_closed {
+        "open + closed/merged"
+    } else {
+        "open"
+    };
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // header
+            Constraint::Min(1),    // list
+            Constraint::Length(1), // error
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    let header = Paragraph::new(Line::from(Span::styled(
+        format!(" {} PR(s) · {scope}", state.entries.len()),
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    frame.render_widget(header, layout[0]);
+
+    if state.entries.is_empty() {
+        let empty = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No PRs to show.",
+                Style::default().fg(theme.text.to_color()),
+            )),
+            Line::from(Span::styled(
+                "  Press a to include closed/merged, or # to enter a number.",
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+        ]);
+        frame.render_widget(empty, layout[1]);
+    } else {
+        let items: Vec<ListItem> = state
+            .entries
+            .iter()
+            .map(|entry| ListItem::new(pr_picker_row(entry, theme)))
+            .collect();
+        let list = List::new(items)
+            .highlight_style(
+                Style::default()
+                    .bg(theme.effective_selection_bg())
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("> ");
+        let mut list_state = ListState::default();
+        list_state.select(Some(state.selected.min(state.entries.len().saturating_sub(1))));
+        frame.render_stateful_widget(list, layout[1], &mut list_state);
+    }
+
+    if let Some(err) = &state.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {err}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            layout[2],
+        );
+    }
+
+    let toggle = if state.include_closed {
+        "a open-only"
+    } else {
+        "a include-closed"
+    };
+    let footer = Paragraph::new(Line::from(Span::styled(
+        format!(" j/k move   \u{23ce} open   {toggle}   # number   esc close"),
+        Style::default().fg(theme.text_muted.to_color()),
+    )));
+    frame.render_widget(footer, layout[3]);
+}
+
+/// One PR row: `#123  title  · @author · branch` plus a state chip for anything
+/// that isn't a plain open PR (draft / merged / closed).
+fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(
+            format!("#{} ", entry.number),
+            Style::default().fg(theme.primary.to_color()),
+        ),
+        Span::styled(
+            entry.title.clone(),
+            Style::default().fg(theme.text.to_color()),
+        ),
+        Span::styled(
+            format!("  · @{} · {}", entry.author, entry.head_ref),
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ];
+    if entry.is_draft {
+        spans.push(chip("draft", theme.text_muted.to_color()));
+    }
+    match entry.state.as_str() {
+        "MERGED" => spans.push(chip("merged", theme.info.to_color())),
+        "CLOSED" => spans.push(chip("closed", theme.danger.to_color())),
+        _ => {}
+    }
+    Line::from(spans)
 }
 
 /// Full-screen loading frame shown while a PR's comments are fetched.

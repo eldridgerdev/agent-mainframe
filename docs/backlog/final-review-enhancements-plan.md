@@ -165,8 +165,18 @@ any order.
       `build_pr_review` emits GitHub `start_line`/`start_side` so a ranged
       comment posts as a multi-line PR review comment. Re-opening a comment
       snaps the anchor/cursor onto its span so an edit preserves the range.
-- [ ] Dispatch review fixes to a new agent / harness session instead of the
-      existing pane
+- [x] Dispatch review fixes to a new agent / harness session instead of the
+      existing pane — press `t` in the final review to toggle the fix target
+      between the feature's existing agent pane (default, unchanged) and a fresh
+      dedicated "Final Review" session; the footer shows `t target: live` /
+      `dedicated`. On finish with the dedicated target, an existing "Final
+      Review" session is reused, or — when none exists — a harness picker
+      (`AppMode::ReviewHarnessPick`) lets the reviewer choose which harness
+      (Claude / Codex / opencode / …) runs the fixes before the session is spun
+      up. The feedback file is always written first, so cancelling the picker
+      just leaves it for later. Reuses the PR-review `FixTarget` toggle (now
+      parameterized by session label) and `create_dedicated_review_session`
+      (now accepting a label + optional harness override).
 
 ## Open questions
 
@@ -176,9 +186,12 @@ any order.
 - Should multi-line feedback and the agent prompt move to a single
   composed "review summary" the reviewer edits before it's sent, rather
   than assembling the file from per-file inputs?
-- Dispatching fixes to a new session: default to the same harness as the
+- ~~Dispatching fixes to a new session: default to the same harness as the
   feature, or prompt for one each time? And should the existing pane stay an
-  option (e.g. a toggle / picker at finish) rather than being replaced?
+  option (e.g. a toggle / picker at finish) rather than being replaced?~~
+  Resolved: the existing pane stays the default and is kept as a `t` toggle; the
+  dedicated target prompts for a harness each time a fresh session must be
+  created (an existing "Final Review" session is reused without prompting).
 - ~~For PR integration, how do whole-file vs line-level comments map onto
   GitHub review comments?~~ Resolved: line comments post inline (RIGHT/LEFT by
   side); whole-file rejections and general feedback go in the review summary

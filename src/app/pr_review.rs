@@ -63,10 +63,16 @@ impl FixTarget {
 }
 
 /// Index of the session a fix should target within a feature, given the
-/// strategy. For [`FixTarget::DedicatedReview`], `None` means no review session
-/// exists yet and one must be created; for [`FixTarget::ExistingLive`], `None`
-/// means there is no live agent session to reuse.
-pub(crate) fn fix_session_index(feature: &Feature, target: FixTarget) -> Option<usize> {
+/// strategy. For [`FixTarget::DedicatedReview`], `None` means no session with
+/// `dedicated_label` exists yet and one must be created; for
+/// [`FixTarget::ExistingLive`], `None` means there is no live agent session to
+/// reuse. `dedicated_label` lets callers reuse this for their own dedicated
+/// session (e.g. the final review's "Final Review" window vs PR review's).
+pub(crate) fn fix_session_index(
+    feature: &Feature,
+    target: FixTarget,
+    dedicated_label: &str,
+) -> Option<usize> {
     match target {
         FixTarget::ExistingLive => feature
             .sessions
@@ -75,7 +81,7 @@ pub(crate) fn fix_session_index(feature: &Feature, target: FixTarget) -> Option<
         FixTarget::DedicatedReview => feature
             .sessions
             .iter()
-            .position(|s| s.kind.is_agent_harness() && s.label == REVIEW_SESSION_LABEL),
+            .position(|s| s.kind.is_agent_harness() && s.label == dedicated_label),
     }
 }
 
@@ -1041,7 +1047,8 @@ impl App {
         match self.feature_indices_for_workdir(&state.workdir) {
             Some((pi, fi)) => {
                 let feature = &self.store.projects[pi].features[fi];
-                fix_session_index(feature, FixTarget::DedicatedReview).is_none()
+                fix_session_index(feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL)
+                    .is_none()
             }
             // No feature resolved yet — let the inject path surface the error.
             None => false,
@@ -1535,13 +1542,14 @@ impl App {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let feature = &self.store.projects[pi].features[fi];
-        if let Some(si) = fix_session_index(feature, target) {
+        if let Some(si) = fix_session_index(feature, target, REVIEW_SESSION_LABEL) {
             return Ok((pi, fi, si));
         }
 
         match target {
             FixTarget::DedicatedReview => {
-                let si = self.create_dedicated_review_session(pi, fi, harness)?;
+                let si =
+                    self.create_dedicated_review_session(pi, fi, REVIEW_SESSION_LABEL, harness)?;
                 Ok((pi, fi, si))
             }
             FixTarget::ExistingLive => {
@@ -1847,22 +1855,22 @@ mod tests {
 
         // Nothing running yet: both strategies report "must create / nothing to
         // reuse".
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), None);
 
         // A regular live agent session satisfies existing-live but not dedicated.
         feature.add_session_named(SessionKind::Claude, "Claude".into());
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), Some(0));
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
 
         // Once the dedicated review session exists it is reused by label, while
         // existing-live still resolves to the first agent session.
         feature.add_session_named(SessionKind::Claude, REVIEW_SESSION_LABEL.into());
         assert_eq!(
-            fix_session_index(&feature, FixTarget::DedicatedReview),
+            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
             Some(1)
         );
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), Some(0));
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), Some(0));
     }
 
     #[test]
@@ -1882,8 +1890,8 @@ mod tests {
         );
         // A terminal window is not an agent harness, so it is never a fix target.
         feature.add_session_named(SessionKind::Terminal, "Terminal".into());
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive), None);
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), None);
+        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
     }
 
     #[test]

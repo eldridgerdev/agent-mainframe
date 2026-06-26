@@ -711,6 +711,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::ReviewHarnessPick(_) => Line::from(vec![
+            Span::styled(" j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", key_style()),
+            Span::raw(" run fixes here  "),
+            Span::styled("q/Esc", key_style()),
+            Span::raw(" skip"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

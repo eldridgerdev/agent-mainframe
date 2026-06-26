@@ -430,6 +430,10 @@ pub struct DiffViewerState {
     /// Whether a prior review snapshot existed when this review opened. Lets the
     /// UI and the filter cycle distinguish a first review from a re-review.
     pub has_prior_review: bool,
+    /// Where a finished review's "address this feedback" prompt is dispatched:
+    /// the feature's existing agent pane (the default, unchanged behaviour) or a
+    /// fresh dedicated review session. Toggled with `t` in the review viewer.
+    pub fix_target: crate::app::pr_review::FixTarget,
 }
 
 impl DiffViewerState {
@@ -474,6 +478,7 @@ impl DiffViewerState {
             file_filter: FileFilter::All,
             changed_since_last: std::collections::HashSet::new(),
             has_prior_review: false,
+            fix_target: crate::app::pr_review::FixTarget::ExistingLive,
         }
     }
 
@@ -1271,6 +1276,26 @@ pub enum AppMode {
     CreatingBatchFeatures(CreateBatchFeaturesState),
     HarnessSetup(HarnessSetupState),
     ConfigWizard(ConfigWizardState),
+    /// Choosing which harness runs a fresh dedicated session for a finished
+    /// review's fixes (only shown when the dedicated fix target is selected and
+    /// no review session exists yet). The feedback file is already written; this
+    /// only governs where the "address the feedback" prompt is dispatched.
+    ReviewHarnessPick(ReviewHarnessPickState),
+}
+
+/// Pending dispatch of a finished review's feedback to a freshly-spun-up
+/// dedicated agent session, paused on the harness choice.
+pub struct ReviewHarnessPickState {
+    /// Project / feature indices the dedicated session is created under.
+    pub pi: usize,
+    pub fi: usize,
+    /// The finish summary shown after the prompt is dispatched.
+    pub summary: String,
+    /// The feature view to return to once dispatch completes or is cancelled.
+    pub from_view: ViewState,
+    /// Harnesses offered to the reviewer (the project's enabled harnesses).
+    pub harnesses: Vec<crate::project::AgentKind>,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone)]

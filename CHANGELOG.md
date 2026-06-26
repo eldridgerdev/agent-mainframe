@@ -55,6 +55,13 @@ are tagged.
   PR conversation. The first time you post, if your `gh` login lacks write
   access AMF tells you to run `gh auth refresh -s repo` rather than failing
   cryptically.
+- **Resolve PR review threads from the pane.** Press `x` on an inline review
+  comment to resolve its thread on GitHub (or reopen one that's already
+  resolved) without leaving AMF — the `✓` marker updates immediately. Resolving
+  is independent of replying, so you can close out a thread with or without a
+  comment. After you post a reply AMF also re-checks thread resolution, so the
+  list stays in sync if a comment got resolved meanwhile. Conversation comments
+  and review summaries have no thread to resolve and say so.
 - **PR review triage state sticks.** In the PR comment-review pane you can now
   mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
   automatically flags the comment as "fixing". These states persist across
@@ -63,18 +70,38 @@ are tagged.
   and the detail header a `[fixing]`/`[done]`/`[skipped]` chip — distinct from
   GitHub's own `✓` thread-resolution marker. Mark-done and skip are manual with
   no auto-advance: the selection stays put so you can watch the agent work.
+- **The PR review pane is much easier to read.** The comment detail is no longer
+  a flat wall of text: it's split into clear sections (header, diff hunk, body,
+  and any local note) separated by subtle dividers, with author/role/kind/
+  resolution/triage shown as compact chips and a marker legend in the footer.
+  Comment bodies render as Markdown — headings, lists, code blocks, and inline
+  code instead of raw text — and the diff hunk is colored like a diff (added
+  green, removed red) **and syntax-highlighted** for the comment's language
+  using the same tree-sitter highlighter as the diff viewer. When a language's
+  parser isn't installed it falls back gracefully to plain coloring.
+- Added the full Gruvbox Material UI theme family to the theme picker and
+  config: dark/light, hard/medium/soft contrast, and material/mix/original
+  foreground palettes. Use names like `gruvbox-material-dark-medium` or
+  `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
 
 ### Fixed
 
+- AMF now cleans up the bundled `amf-gruvbox` Opencode theme along with the
+  other AMF-managed Opencode themes when removing local Opencode integration
+  files.
 - Claude panes now render immediately behind the composer when an agent session
   opens with composer input enabled. Previously the composer could appear over a
   blank pane until you closed it or sent input.
+- **Composer pastes now show progress.** Pressing `Ctrl+V` in the composer
+  immediately shows `[Pasting...]` while AMF reads the clipboard, so slow text
+  or image pastes no longer look like the app ignored the keypress.
 
 ### Migration
 
 - No action required. AMF adds a `pr_comment_triage` table to its SQLite store
   on first launch; triage state is keyed by PR number, comment id, and head
-  commit, and stale rows are pruned automatically after a week.
+  commit, and stale rows are pruned automatically after a week. The new
+  Gruvbox Material themes are available immediately after upgrade.
 
 ## [v0.27.0] - 2026-06-25
 

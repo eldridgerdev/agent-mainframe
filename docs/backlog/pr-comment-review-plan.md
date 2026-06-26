@@ -458,27 +458,84 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       `src/ui/dialogs/pr_review.rs`. _(Also delivers the Epic D "Done in `<sha>`"
       template: `R` seeds a reply from the feature workdir's latest commit and,
       on post, marks the comment `Done`.)_
-- [ ] Optional explicit `resolveReviewThread`; refresh affected thread
-      after posting.
+- [x] Optional explicit `resolveReviewThread`; refresh affected thread
+      after posting. `x` toggles the selected comment's thread between resolved
+      and reopened via the GraphQL `resolveReviewThread` /
+      `unresolveReviewThread` mutation (`GhCli::set_thread_resolved`), kept
+      independent of replying (resolve without commenting). Only inline comments
+      that belong to a thread are resolvable — conversation comments / review
+      summaries (no `thread_id`) show a hint. On success the new state is applied
+      to every comment in that thread and the SQLite cache is refreshed so a
+      cache-hit re-open reflects it. Posting a reply now re-pulls thread
+      resolution (`refresh_thread_resolution`, one GraphQL call, zero agent
+      tokens) so the `✓` marker stays honest. A first-write 403 maps to the
+      actionable `gh auth refresh -s repo` message. Unit-tested (mutation parse +
+      GraphQL-error surfacing). → `src/github.rs`, `src/app/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** from the pane, reply to a comment to report a fix
   (`Done in <sha>`) or explain why one isn't needed, and optionally resolve the
   thread.
 
 ### Epic D — Throughput & polish
 
-- [ ] **Pane clarity & comment readability.** The Epic A pane is
-      functional but dense. Make it easier to read and act on at a
-      glance: visually separate the comment list from the detail (clearer
-      borders/focus, selected-row emphasis), give the detail pane real
-      structure (distinct header / diff-hunk / body / thread sections with
-      spacing and subtle dividers rather than a flat wall of lines),
-      render comment bodies as Markdown (reuse the in-app Markdown
-      renderer — headings, lists, code blocks, inline code) instead of
-      raw text, syntax-highlight the diff hunk, wrap long lines sensibly,
-      and show author/kind/resolution as compact labeled chips. Add a
-      legend/footer that spells out the markers (`✓` resolved,
-      `[outdated]`, bot vs. human). Goal: a reviewer can scan the list and
-      understand any single comment without leaving the pane or squinting.
+- [x] **Pane clarity & comment readability.** The detail pane is no longer a
+      flat wall of lines: it renders as distinct sections — a header with the
+      `file:line`, the diff hunk, the body, and any local triage note —
+      separated by subtle full-width dividers, with the unfocused detail side
+      given a muted border so focus reads as being on the list. The diff hunk
+      is colored like a diff (added `+` green / removed `-` red / `@@` headers /
+      muted context) **and the code after each marker is syntax-highlighted**
+      via the shared tree-sitter highlighter
+      (`crate::highlight::highlight_source`, keyed off the comment's file path
+      for language detection; the added/removed sides are reconstructed and
+      highlighted with multi-line context, then matched back per hunk line). It
+      degrades to plain marker coloring when no language is detected (e.g. a
+      conversation comment with no path) or a parser isn't installed, and the
+      add/remove signal survives either way. Comment bodies render through the
+      in-app Markdown renderer (`crate::markdown::render_markdown` — headings,
+      lists, code blocks, inline code, wrapped to the pane width) instead of raw
+      text, and the local note (skip reason / "not needed" explanation) is now
+      surfaced in its own section. Author / role (bot vs. human) / kind /
+      resolution / outdated / triage are shown as compact `[label]` chips, and a
+      two-line footer adds a marker legend (`✓` resolved, `[outdated]`,
+      bot/human, the triage checkboxes). The detail-scroll clamp now bounds
+      against the line count the renderer actually drew
+      (`PrReviewState::detail_content_lines`, written each frame) rather than a
+      hand-synced source-line estimate that drifted once the body became
+      Markdown. →
+      `src/ui/dialogs/pr_review.rs`, `src/app/state.rs`, `src/app/pr_review.rs`,
+      `src/highlight/mod.rs`.
+- [ ] **Syntax-installer `i` shortcut in the review pane (parity with the diff
+      viewer).** The detail pane now syntax-highlights the diff hunk via the
+      shared tree-sitter highlighter, but highlighting silently degrades to
+      plain marker coloring when the parser for the hunk's language isn't
+      installed. The diff viewer (and the diff-review prompt) already expose an
+      `i` key that opens the syntax-language picker for the *selected file's*
+      language so the user can install/uninstall the parser without leaving the
+      pane (`handlers/diff.rs` → `open_syntax_language_picker_for_selected_diff_file`
+      in `src/app/syntax.rs`, returning to the originating mode via the picker's
+      `return_to`). Bring the same affordance to the PR-review pane:
+      - Add `KeyCode::Char('i')` to `handle_pr_review_key`
+        (`src/handlers/pr_review.rs`) that opens the picker for the **selected
+        comment's** `path` (skip/no-op for conversation/summary comments with no
+        file path).
+      - Extend `open_syntax_language_picker_for_selected_diff_file` (or factor a
+        shared helper) with an `AppMode::PrReview` arm that pulls the selected
+        comment's path, computes the `syntax_notice_for_path` hint, and stashes
+        the current `PrReviewState` as the picker's `return_to` so closing the
+        picker drops the user back into the same pane and selection.
+      - The picker already polls background install/uninstall ops and calls
+        `crate::highlight::reload_runtime_state()` (which clears the highlight
+        cache) on completion; since the review detail re-highlights every draw,
+        the hunk should pick up the freshly installed parser automatically on
+        return — verify that and clear any per-pane cache if added later.
+      - Surface discoverability: add `i syntax` to the pane footer key hints and
+        the keybinding help entry, and consider a small inline hint in the diff
+        section when a language is detected but its parser isn't installed (e.g.
+        `Rust highlighting not installed — press i`), reusing
+        `HighlightLanguage::install_state` / `language_install_state_for_path`.
+      → `src/handlers/pr_review.rs`, `src/app/syntax.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/pr_review.rs`.
 - [ ] **PR picker — list PRs to choose from, or enter a number.** Today the
       entry point auto-detects the branch's PR and, on a miss, drops straight to
       the manual PR-number prompt (`AppMode::PrNumberPrompt`). Add a third path:

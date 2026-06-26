@@ -728,7 +728,12 @@ fn cleanup_opencode_plugins(workdir: &Path) {
         let _ = std::fs::remove_file(plugins_dir.join(file));
     }
 
-    for theme in ["amf.json", "amf-tokyonight.json", "amf-catppuccin.json"] {
+    for theme in [
+        "amf.json",
+        "amf-tokyonight.json",
+        "amf-catppuccin.json",
+        "amf-gruvbox.json",
+    ] {
         let _ = std::fs::remove_file(themes_dir.join(theme));
     }
 

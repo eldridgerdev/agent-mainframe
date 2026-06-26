@@ -559,6 +559,8 @@ pub struct App {
     pub compose_direct_targets: std::collections::HashSet<String>,
     /// Unsent compose drafts keyed by tmux "session:window" target.
     pub compose_drafts: HashMap<String, ComposeDraft>,
+    compose_clipboard_paste: Option<ComposeClipboardPaste>,
+    next_compose_clipboard_paste_id: u64,
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
     pub sidebar_plan_cache: HashMap<String, String>,
@@ -632,6 +634,12 @@ pub struct App {
 pub(crate) struct HarnessCheckResult {
     pub kind: AgentKind,
     pub result: Result<()>,
+}
+
+struct ComposeClipboardPaste {
+    id: u64,
+    target: String,
+    rx: Receiver<Result<util::ClipboardContent, String>>,
 }
 
 struct SidebarLoadResult {
@@ -864,6 +872,18 @@ impl App {
             view.selection.has_selection.hash(&mut hasher);
             view.sidebar_visible.hash(&mut hasher);
             view.todos_expanded.hash(&mut hasher);
+        }
+
+        if let AppMode::Compose(state) = &self.mode {
+            state.view.project_name.hash(&mut hasher);
+            state.view.feature_name.hash(&mut hasher);
+            state.view.session.hash(&mut hasher);
+            state.view.window.hash(&mut hasher);
+            state.view.session_label.hash(&mut hasher);
+            state.editor.text().hash(&mut hasher);
+            state.scroll_offset.hash(&mut hasher);
+            state.images.len().hash(&mut hasher);
+            state.clipboard_paste_id.hash(&mut hasher);
         }
 
         hasher.finish()
@@ -1855,6 +1875,8 @@ impl App {
             pending_inputs: Vec::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
+            compose_clipboard_paste: None,
+            next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,
@@ -2038,6 +2060,8 @@ impl App {
             pending_inputs: Vec::new(),
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
+            compose_clipboard_paste: None,
+            next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
             sidebar_plan_cache,

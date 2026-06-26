@@ -73,16 +73,24 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
         1 => " (1 image)".to_string(),
         n => format!(" ({n} images)"),
     };
+    let paste_suffix = if state.paste_in_progress() {
+        " [Pasting...]"
+    } else {
+        ""
+    };
     let title = match state.editor.vim_mode() {
         Some(VimMode::Insert) => format!(
-            " Compose → {}{images_suffix} [Vim Insert] ",
+            " Compose → {}{images_suffix}{paste_suffix} [Vim Insert] ",
             state.view.session_label
         ),
         Some(VimMode::Normal) => format!(
-            " Compose → {}{images_suffix} [Vim Normal] ",
+            " Compose → {}{images_suffix}{paste_suffix} [Vim Normal] ",
             state.view.session_label
         ),
-        None => format!(" Compose → {}{images_suffix} ", state.view.session_label),
+        None => format!(
+            " Compose → {}{images_suffix}{paste_suffix} ",
+            state.view.session_label
+        ),
     };
     let hints = Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),

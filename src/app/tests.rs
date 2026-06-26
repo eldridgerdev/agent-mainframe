@@ -363,6 +363,12 @@ fn app_config_default_tmux_control_mode_is_disabled() {
 }
 
 #[test]
+fn app_config_default_view_auto_refresh_is_disabled() {
+    let config = AppConfig::default();
+    assert!(!config.view_auto_refresh);
+}
+
+#[test]
 fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
@@ -421,6 +427,18 @@ fn app_config_tmux_control_mode_can_be_disabled() {
 fn app_config_tmux_control_mode_can_be_enabled() {
     let config: AppConfig = serde_json::from_str(r#"{"tmux_control_mode":true}"#).unwrap();
     assert!(config.tmux_control_mode);
+}
+
+#[test]
+fn app_config_missing_view_auto_refresh_uses_default() {
+    let config: AppConfig = serde_json::from_str(r#"{"nerd_font":false}"#).unwrap();
+    assert!(!config.view_auto_refresh);
+}
+
+#[test]
+fn app_config_view_auto_refresh_can_be_enabled() {
+    let config: AppConfig = serde_json::from_str(r#"{"view_auto_refresh":true}"#).unwrap();
+    assert!(config.view_auto_refresh);
 }
 
 #[test]

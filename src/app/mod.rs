@@ -387,6 +387,11 @@ pub struct AppConfig {
     /// so enabling this never forces RC onto an incompatible session.
     #[serde(default)]
     pub remote_control_default: bool,
+    /// Periodically repairs embedded tmux views while they are idle. This
+    /// can hide Claude Code rendering bugs, but costs extra refresh work and
+    /// is opt-in unless the workaround is needed locally.
+    #[serde(default)]
+    pub view_auto_refresh: bool,
     /// When finishing a final review, whether to auto-submit the
     /// "address the feedback" prompt to the feature's agent (paste +
     /// Enter). When false, AMF pastes the prompt but does not send Enter,
@@ -447,6 +452,7 @@ impl Default for AppConfig {
             transparent_background: false,
             token_pricing: TokenPricingConfig::default(),
             remote_control_default: false,
+            view_auto_refresh: false,
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
         }
@@ -1231,6 +1237,7 @@ impl App {
         stop: &AtomicBool,
         refresh: &AtomicU8,
         _include_content: &AtomicBool,
+        auto_refresh: bool,
         condvar: &(StdMutex<()>, StdCondvar),
         tx: &SnapshotSender,
     ) -> anyhow::Result<()> {
@@ -1403,7 +1410,9 @@ impl App {
                     pane_dirty = false;
                     last_snapshot = Instant::now();
                 }
-            } else if Instant::now().duration_since(last_snapshot) >= VIEW_CONTROL_HEAL_INTERVAL {
+            } else if auto_refresh
+                && Instant::now().duration_since(last_snapshot) >= VIEW_CONTROL_HEAL_INTERVAL
+            {
                 // Unconditional self-heal: the change-notifier can miss a
                 // redraw, so re-capture the full pane on a steady floor to
                 // keep a stale frame from persisting until the 3s drift
@@ -1655,6 +1664,7 @@ impl App {
         let worker_refresh = refresh.clone();
         let worker_include_content = include_content.clone();
         let worker_condvar = condvar.clone();
+        let worker_auto_refresh = self.config.view_auto_refresh;
 
         std::thread::spawn(move || {
             if TmuxManager::uses_control_pty_input() {
@@ -1666,6 +1676,7 @@ impl App {
                     &worker_stop,
                     &worker_refresh,
                     &worker_include_content,
+                    worker_auto_refresh,
                     &worker_condvar,
                     &tx,
                 );

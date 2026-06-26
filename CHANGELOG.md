@@ -61,9 +61,16 @@ are tagged.
   and the detail header a `[fixing]`/`[done]`/`[skipped]` chip — distinct from
   GitHub's own `✓` thread-resolution marker. Mark-done and skip are manual with
   no auto-advance: the selection stays put so you can watch the agent work.
+- Added the full Gruvbox Material UI theme family to the theme picker and
+  config: dark/light, hard/medium/soft contrast, and material/mix/original
+  foreground palettes. Use names like `gruvbox-material-dark-medium` or
+  `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
 
 ### Fixed
 
+- AMF now cleans up the bundled `amf-gruvbox` Opencode theme along with the
+  other AMF-managed Opencode themes when removing local Opencode integration
+  files.
 - Claude panes now render immediately behind the composer when an agent session
   opens with composer input enabled. Previously the composer could appear over a
   blank pane until you closed it or sent input.
@@ -72,7 +79,8 @@ are tagged.
 
 - No action required. AMF adds a `pr_comment_triage` table to its SQLite store
   on first launch; triage state is keyed by PR number, comment id, and head
-  commit, and stale rows are pruned automatically after a week.
+  commit, and stale rows are pruned automatically after a week. The new
+  Gruvbox Material themes are available immediately after upgrade.
 
 ## [v0.27.0] - 2026-06-25
 

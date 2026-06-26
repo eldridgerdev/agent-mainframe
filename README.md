@@ -471,7 +471,7 @@ automatically with defaults on first run.
 | `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
 | `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI. Only the in-app reviewer is supported; the value is retained for compatibility (the legacy `"nvim"`/`"legacy"`/`"custom"` values are accepted and map to the in-app reviewer). |
 | `final_review_submit_prompt` | bool | `true` | When finishing a final review with feedback, auto-submit the "address the feedback" prompt to the feature's agent (paste + Enter). Set to `false` to paste the prompt without sending Enter, so you can eyeball or edit it before submitting. |
-| `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, or one of the Catppuccin variants. |
+| `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, Gruvbox, Gruvbox Material, or Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
 | `extension` | object | `{}` | Global extension settings merged with repo-local `.amf/config.json`. |
@@ -671,6 +671,26 @@ Available UI themes:
 - `catppuccin-frappe`
 - `catppuccin-macchiato`
 - `catppuccin-mocha`
+- `gruvbox-dark`
+- `gruvbox-light`
+- `gruvbox-material-dark-hard`
+- `gruvbox-material-dark-medium`
+- `gruvbox-material-dark-soft`
+- `gruvbox-material-light-hard`
+- `gruvbox-material-light-medium`
+- `gruvbox-material-light-soft`
+- `gruvbox-material-mix-dark-hard`
+- `gruvbox-material-mix-dark-medium`
+- `gruvbox-material-mix-dark-soft`
+- `gruvbox-material-mix-light-hard`
+- `gruvbox-material-mix-light-medium`
+- `gruvbox-material-mix-light-soft`
+- `gruvbox-material-original-dark-hard`
+- `gruvbox-material-original-dark-medium`
+- `gruvbox-material-original-dark-soft`
+- `gruvbox-material-original-light-hard`
+- `gruvbox-material-original-light-medium`
+- `gruvbox-material-original-light-soft`
 
 ### Syntax Parsers
 
@@ -721,6 +741,7 @@ rendering stays readable and consistent.
 - **amf** - Nord-based theme with transparent background
 - **amf-tokyonight** - Tokyo Night with transparent background
 - **amf-catppuccin** - Catppuccin Mocha with transparent background
+- **amf-gruvbox** - Gruvbox with transparent background
 
 ### Using the Themes
 

@@ -18,10 +18,137 @@ pub enum ThemeName {
     CatppuccinMocha,
     GruvboxDark,
     GruvboxLight,
+    GruvboxMaterialDarkHard,
+    GruvboxMaterialDarkMedium,
+    GruvboxMaterialDarkSoft,
+    GruvboxMaterialLightHard,
+    GruvboxMaterialLightMedium,
+    GruvboxMaterialLightSoft,
+    GruvboxMaterialMixDarkHard,
+    GruvboxMaterialMixDarkMedium,
+    GruvboxMaterialMixDarkSoft,
+    GruvboxMaterialMixLightHard,
+    GruvboxMaterialMixLightMedium,
+    GruvboxMaterialMixLightSoft,
+    GruvboxMaterialOriginalDarkHard,
+    GruvboxMaterialOriginalDarkMedium,
+    GruvboxMaterialOriginalDarkSoft,
+    GruvboxMaterialOriginalLightHard,
+    GruvboxMaterialOriginalLightMedium,
+    GruvboxMaterialOriginalLightSoft,
 }
 
 impl ThemeName {
+    fn gruvbox_material_display_name(&self) -> Option<&'static str> {
+        match self {
+            ThemeName::GruvboxMaterialDarkHard => Some("Gruvbox Material Dark Hard"),
+            ThemeName::GruvboxMaterialDarkMedium => Some("Gruvbox Material Dark Medium"),
+            ThemeName::GruvboxMaterialDarkSoft => Some("Gruvbox Material Dark Soft"),
+            ThemeName::GruvboxMaterialLightHard => Some("Gruvbox Material Light Hard"),
+            ThemeName::GruvboxMaterialLightMedium => Some("Gruvbox Material Light Medium"),
+            ThemeName::GruvboxMaterialLightSoft => Some("Gruvbox Material Light Soft"),
+            ThemeName::GruvboxMaterialMixDarkHard => Some("Gruvbox Material Mix Dark Hard"),
+            ThemeName::GruvboxMaterialMixDarkMedium => Some("Gruvbox Material Mix Dark Medium"),
+            ThemeName::GruvboxMaterialMixDarkSoft => Some("Gruvbox Material Mix Dark Soft"),
+            ThemeName::GruvboxMaterialMixLightHard => Some("Gruvbox Material Mix Light Hard"),
+            ThemeName::GruvboxMaterialMixLightMedium => Some("Gruvbox Material Mix Light Medium"),
+            ThemeName::GruvboxMaterialMixLightSoft => Some("Gruvbox Material Mix Light Soft"),
+            ThemeName::GruvboxMaterialOriginalDarkHard => {
+                Some("Gruvbox Material Original Dark Hard")
+            }
+            ThemeName::GruvboxMaterialOriginalDarkMedium => {
+                Some("Gruvbox Material Original Dark Medium")
+            }
+            ThemeName::GruvboxMaterialOriginalDarkSoft => {
+                Some("Gruvbox Material Original Dark Soft")
+            }
+            ThemeName::GruvboxMaterialOriginalLightHard => {
+                Some("Gruvbox Material Original Light Hard")
+            }
+            ThemeName::GruvboxMaterialOriginalLightMedium => {
+                Some("Gruvbox Material Original Light Medium")
+            }
+            ThemeName::GruvboxMaterialOriginalLightSoft => {
+                Some("Gruvbox Material Original Light Soft")
+            }
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            ThemeName::Default => "default",
+            ThemeName::Amf => "amf",
+            ThemeName::Dracula => "dracula",
+            ThemeName::Nord => "nord",
+            ThemeName::CatppuccinLatte => "catppuccin-latte",
+            ThemeName::CatppuccinFrappe => "catppuccin-frappe",
+            ThemeName::CatppuccinMacchiato => "catppuccin-macchiato",
+            ThemeName::CatppuccinMocha => "catppuccin-mocha",
+            ThemeName::GruvboxDark => "gruvbox-dark",
+            ThemeName::GruvboxLight => "gruvbox-light",
+            ThemeName::GruvboxMaterialDarkHard => "gruvbox-material-dark-hard",
+            ThemeName::GruvboxMaterialDarkMedium => "gruvbox-material-dark-medium",
+            ThemeName::GruvboxMaterialDarkSoft => "gruvbox-material-dark-soft",
+            ThemeName::GruvboxMaterialLightHard => "gruvbox-material-light-hard",
+            ThemeName::GruvboxMaterialLightMedium => "gruvbox-material-light-medium",
+            ThemeName::GruvboxMaterialLightSoft => "gruvbox-material-light-soft",
+            ThemeName::GruvboxMaterialMixDarkHard => "gruvbox-material-mix-dark-hard",
+            ThemeName::GruvboxMaterialMixDarkMedium => "gruvbox-material-mix-dark-medium",
+            ThemeName::GruvboxMaterialMixDarkSoft => "gruvbox-material-mix-dark-soft",
+            ThemeName::GruvboxMaterialMixLightHard => "gruvbox-material-mix-light-hard",
+            ThemeName::GruvboxMaterialMixLightMedium => "gruvbox-material-mix-light-medium",
+            ThemeName::GruvboxMaterialMixLightSoft => "gruvbox-material-mix-light-soft",
+            ThemeName::GruvboxMaterialOriginalDarkHard => "gruvbox-material-original-dark-hard",
+            ThemeName::GruvboxMaterialOriginalDarkMedium => "gruvbox-material-original-dark-medium",
+            ThemeName::GruvboxMaterialOriginalDarkSoft => "gruvbox-material-original-dark-soft",
+            ThemeName::GruvboxMaterialOriginalLightHard => "gruvbox-material-original-light-hard",
+            ThemeName::GruvboxMaterialOriginalLightMedium => {
+                "gruvbox-material-original-light-medium"
+            }
+            ThemeName::GruvboxMaterialOriginalLightSoft => "gruvbox-material-original-light-soft",
+        }
+    }
+
+    fn gruvbox_material_spec(&self) -> Option<GruvboxMaterialSpec> {
+        use GruvboxMaterialContrast::{Hard, Medium, Soft};
+        use GruvboxMaterialForeground::{Material, Mix, Original};
+        use GruvboxMaterialMode::{Dark, Light};
+
+        let spec = match self {
+            ThemeName::GruvboxMaterialDarkHard => (Dark, Hard, Material),
+            ThemeName::GruvboxMaterialDarkMedium => (Dark, Medium, Material),
+            ThemeName::GruvboxMaterialDarkSoft => (Dark, Soft, Material),
+            ThemeName::GruvboxMaterialLightHard => (Light, Hard, Material),
+            ThemeName::GruvboxMaterialLightMedium => (Light, Medium, Material),
+            ThemeName::GruvboxMaterialLightSoft => (Light, Soft, Material),
+            ThemeName::GruvboxMaterialMixDarkHard => (Dark, Hard, Mix),
+            ThemeName::GruvboxMaterialMixDarkMedium => (Dark, Medium, Mix),
+            ThemeName::GruvboxMaterialMixDarkSoft => (Dark, Soft, Mix),
+            ThemeName::GruvboxMaterialMixLightHard => (Light, Hard, Mix),
+            ThemeName::GruvboxMaterialMixLightMedium => (Light, Medium, Mix),
+            ThemeName::GruvboxMaterialMixLightSoft => (Light, Soft, Mix),
+            ThemeName::GruvboxMaterialOriginalDarkHard => (Dark, Hard, Original),
+            ThemeName::GruvboxMaterialOriginalDarkMedium => (Dark, Medium, Original),
+            ThemeName::GruvboxMaterialOriginalDarkSoft => (Dark, Soft, Original),
+            ThemeName::GruvboxMaterialOriginalLightHard => (Light, Hard, Original),
+            ThemeName::GruvboxMaterialOriginalLightMedium => (Light, Medium, Original),
+            ThemeName::GruvboxMaterialOriginalLightSoft => (Light, Soft, Original),
+            _ => return None,
+        };
+
+        Some(GruvboxMaterialSpec {
+            mode: spec.0,
+            contrast: spec.1,
+            foreground: spec.2,
+        })
+    }
+
     pub fn display_name(&self) -> &str {
+        if let Some(name) = self.gruvbox_material_display_name() {
+            return name;
+        }
+
         match self {
             ThemeName::Default => "Default",
             ThemeName::Amf => "AMF",
@@ -33,24 +160,14 @@ impl ThemeName {
             ThemeName::CatppuccinMocha => "Catppuccin Mocha",
             ThemeName::GruvboxDark => "Gruvbox Dark",
             ThemeName::GruvboxLight => "Gruvbox Light",
+            _ => unreachable!("Gruvbox Material display names are handled above"),
         }
     }
 }
 
 impl std::fmt::Display for ThemeName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ThemeName::Default => write!(f, "default"),
-            ThemeName::Amf => write!(f, "amf"),
-            ThemeName::Dracula => write!(f, "dracula"),
-            ThemeName::Nord => write!(f, "nord"),
-            ThemeName::CatppuccinLatte => write!(f, "catppuccin-latte"),
-            ThemeName::CatppuccinFrappe => write!(f, "catppuccin-frappe"),
-            ThemeName::CatppuccinMacchiato => write!(f, "catppuccin-macchiato"),
-            ThemeName::CatppuccinMocha => write!(f, "catppuccin-mocha"),
-            ThemeName::GruvboxDark => write!(f, "gruvbox-dark"),
-            ThemeName::GruvboxLight => write!(f, "gruvbox-light"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -69,9 +186,121 @@ impl std::str::FromStr for ThemeName {
             "catppuccin-mocha" | "catppuccin_mocha" => Ok(ThemeName::CatppuccinMocha),
             "gruvbox-dark" | "gruvbox_dark" => Ok(ThemeName::GruvboxDark),
             "gruvbox-light" | "gruvbox_light" => Ok(ThemeName::GruvboxLight),
+            "gruvbox-material-dark-hard" | "gruvbox_material_dark_hard" => {
+                Ok(ThemeName::GruvboxMaterialDarkHard)
+            }
+            "gruvbox-material-dark-medium" | "gruvbox_material_dark_medium" => {
+                Ok(ThemeName::GruvboxMaterialDarkMedium)
+            }
+            "gruvbox-material-dark-soft" | "gruvbox_material_dark_soft" => {
+                Ok(ThemeName::GruvboxMaterialDarkSoft)
+            }
+            "gruvbox-material-light-hard" | "gruvbox_material_light_hard" => {
+                Ok(ThemeName::GruvboxMaterialLightHard)
+            }
+            "gruvbox-material-light-medium" | "gruvbox_material_light_medium" => {
+                Ok(ThemeName::GruvboxMaterialLightMedium)
+            }
+            "gruvbox-material-light-soft" | "gruvbox_material_light_soft" => {
+                Ok(ThemeName::GruvboxMaterialLightSoft)
+            }
+            "gruvbox-material-mix-dark-hard" | "gruvbox_material_mix_dark_hard" => {
+                Ok(ThemeName::GruvboxMaterialMixDarkHard)
+            }
+            "gruvbox-material-mix-dark-medium" | "gruvbox_material_mix_dark_medium" => {
+                Ok(ThemeName::GruvboxMaterialMixDarkMedium)
+            }
+            "gruvbox-material-mix-dark-soft" | "gruvbox_material_mix_dark_soft" => {
+                Ok(ThemeName::GruvboxMaterialMixDarkSoft)
+            }
+            "gruvbox-material-mix-light-hard" | "gruvbox_material_mix_light_hard" => {
+                Ok(ThemeName::GruvboxMaterialMixLightHard)
+            }
+            "gruvbox-material-mix-light-medium" | "gruvbox_material_mix_light_medium" => {
+                Ok(ThemeName::GruvboxMaterialMixLightMedium)
+            }
+            "gruvbox-material-mix-light-soft" | "gruvbox_material_mix_light_soft" => {
+                Ok(ThemeName::GruvboxMaterialMixLightSoft)
+            }
+            "gruvbox-material-original-dark-hard" | "gruvbox_material_original_dark_hard" => {
+                Ok(ThemeName::GruvboxMaterialOriginalDarkHard)
+            }
+            "gruvbox-material-original-dark-medium" | "gruvbox_material_original_dark_medium" => {
+                Ok(ThemeName::GruvboxMaterialOriginalDarkMedium)
+            }
+            "gruvbox-material-original-dark-soft" | "gruvbox_material_original_dark_soft" => {
+                Ok(ThemeName::GruvboxMaterialOriginalDarkSoft)
+            }
+            "gruvbox-material-original-light-hard" | "gruvbox_material_original_light_hard" => {
+                Ok(ThemeName::GruvboxMaterialOriginalLightHard)
+            }
+            "gruvbox-material-original-light-medium" | "gruvbox_material_original_light_medium" => {
+                Ok(ThemeName::GruvboxMaterialOriginalLightMedium)
+            }
+            "gruvbox-material-original-light-soft" | "gruvbox_material_original_light_soft" => {
+                Ok(ThemeName::GruvboxMaterialOriginalLightSoft)
+            }
             _ => Err(format!("Unknown theme: {}", s)),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GruvboxMaterialMode {
+    Dark,
+    Light,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GruvboxMaterialContrast {
+    Hard,
+    Medium,
+    Soft,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GruvboxMaterialForeground {
+    Material,
+    Mix,
+    Original,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GruvboxMaterialSpec {
+    mode: GruvboxMaterialMode,
+    contrast: GruvboxMaterialContrast,
+    foreground: GruvboxMaterialForeground,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Rgb(u8, u8, u8);
+
+impl Rgb {
+    fn color_def(self) -> ColorDef {
+        ColorDef::rgb(self.0, self.1, self.2)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GruvboxMaterialBackground {
+    bg0: Rgb,
+    bg1: Rgb,
+    bg3: Rgb,
+    bg5: Rgb,
+    bg_current_word: Rgb,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GruvboxMaterialForegroundPalette {
+    fg1: Rgb,
+    red: Rgb,
+    orange: Rgb,
+    yellow: Rgb,
+    green: Rgb,
+    aqua: Rgb,
+    blue: Rgb,
+    purple: Rgb,
+    grey2: Rgb,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +397,10 @@ impl Default for Theme {
 
 impl Theme {
     pub fn load(name: &ThemeName) -> Self {
+        if let Some(spec) = name.gruvbox_material_spec() {
+            return Self::gruvbox_material(name.as_str(), spec);
+        }
+
         match name {
             ThemeName::Default => Self::default_theme(),
             ThemeName::Amf => Self::amf(),
@@ -179,6 +412,7 @@ impl Theme {
             ThemeName::CatppuccinMocha => Self::catppuccin_mocha(),
             ThemeName::GruvboxDark => Self::gruvbox_dark(),
             ThemeName::GruvboxLight => Self::gruvbox_light(),
+            _ => unreachable!("Gruvbox Material themes are handled above"),
         }
     }
 
@@ -725,6 +959,53 @@ impl Theme {
         }
     }
 
+    fn gruvbox_material(name: &str, spec: GruvboxMaterialSpec) -> Self {
+        let bg = gruvbox_material_background(spec.mode, spec.contrast);
+        let fg = gruvbox_material_foreground(spec.mode, spec.foreground);
+
+        Self {
+            name: name.to_string(),
+            background: bg.bg0.color_def(),
+            text: fg.fg1.color_def(),
+            text_muted: fg.grey2.color_def(),
+            primary: fg.blue.color_def(),
+            secondary: fg.purple.color_def(),
+            success: fg.green.color_def(),
+            warning: fg.yellow.color_def(),
+            danger: fg.red.color_def(),
+            info: fg.aqua.color_def(),
+            border: bg.bg5.color_def(),
+            border_focus: fg.blue.color_def(),
+            selection: bg.bg_current_word.color_def(),
+            header_background: bg.bg1.color_def(),
+            shortcut_background: fg.yellow.color_def(),
+            shortcut_text: bg.bg0.color_def(),
+            scrollbar: bg.bg3.color_def(),
+            project_title: fg.blue.color_def(),
+            feature_title: fg.fg1.color_def(),
+            session_icon_claude: fg.purple.color_def(),
+            session_icon_opencode: fg.aqua.color_def(),
+            session_icon_codex: fg.green.color_def(),
+            session_icon_terminal: fg.green.color_def(),
+            session_icon_nvim: fg.blue.color_def(),
+            session_icon_vscode: fg.blue.color_def(),
+            session_icon_custom: fg.orange.color_def(),
+            status_active: fg.green.color_def(),
+            status_idle: fg.yellow.color_def(),
+            status_stopped: fg.red.color_def(),
+            status_waiting: fg.orange.color_def(),
+            status_detail: fg.blue.color_def(),
+            mode_vibeless: fg.green.color_def(),
+            mode_vibe: fg.yellow.color_def(),
+            mode_supervibe: fg.orange.color_def(),
+            mode_review: fg.purple.color_def(),
+            usage_low: fg.green.color_def(),
+            usage_medium: fg.yellow.color_def(),
+            usage_high: fg.red.color_def(),
+            transparent: false,
+        }
+    }
+
     pub fn list() -> Vec<ThemeName> {
         vec![
             ThemeName::Default,
@@ -737,7 +1018,175 @@ impl Theme {
             ThemeName::CatppuccinMocha,
             ThemeName::GruvboxDark,
             ThemeName::GruvboxLight,
+            ThemeName::GruvboxMaterialDarkHard,
+            ThemeName::GruvboxMaterialDarkMedium,
+            ThemeName::GruvboxMaterialDarkSoft,
+            ThemeName::GruvboxMaterialLightHard,
+            ThemeName::GruvboxMaterialLightMedium,
+            ThemeName::GruvboxMaterialLightSoft,
+            ThemeName::GruvboxMaterialMixDarkHard,
+            ThemeName::GruvboxMaterialMixDarkMedium,
+            ThemeName::GruvboxMaterialMixDarkSoft,
+            ThemeName::GruvboxMaterialMixLightHard,
+            ThemeName::GruvboxMaterialMixLightMedium,
+            ThemeName::GruvboxMaterialMixLightSoft,
+            ThemeName::GruvboxMaterialOriginalDarkHard,
+            ThemeName::GruvboxMaterialOriginalDarkMedium,
+            ThemeName::GruvboxMaterialOriginalDarkSoft,
+            ThemeName::GruvboxMaterialOriginalLightHard,
+            ThemeName::GruvboxMaterialOriginalLightMedium,
+            ThemeName::GruvboxMaterialOriginalLightSoft,
         ]
+    }
+}
+
+fn gruvbox_material_background(
+    mode: GruvboxMaterialMode,
+    contrast: GruvboxMaterialContrast,
+) -> GruvboxMaterialBackground {
+    use GruvboxMaterialContrast::{Hard, Medium, Soft};
+    use GruvboxMaterialMode::{Dark, Light};
+
+    let (bg0, bg1, bg3, bg5, bg_current_word) = match (mode, contrast) {
+        (Dark, Hard) => (
+            Rgb(0x1d, 0x20, 0x21),
+            Rgb(0x28, 0x28, 0x28),
+            Rgb(0x3c, 0x38, 0x36),
+            Rgb(0x50, 0x49, 0x45),
+            Rgb(0x32, 0x30, 0x2f),
+        ),
+        (Dark, Medium) => (
+            Rgb(0x28, 0x28, 0x28),
+            Rgb(0x32, 0x30, 0x2f),
+            Rgb(0x45, 0x40, 0x3d),
+            Rgb(0x5a, 0x52, 0x4c),
+            Rgb(0x3c, 0x38, 0x36),
+        ),
+        (Dark, Soft) => (
+            Rgb(0x32, 0x30, 0x2f),
+            Rgb(0x3c, 0x38, 0x36),
+            Rgb(0x50, 0x49, 0x45),
+            Rgb(0x66, 0x5c, 0x54),
+            Rgb(0x45, 0x40, 0x3d),
+        ),
+        (Light, Hard) => (
+            Rgb(0xf9, 0xf5, 0xd7),
+            Rgb(0xf5, 0xed, 0xca),
+            Rgb(0xf2, 0xe5, 0xbc),
+            Rgb(0xeb, 0xdb, 0xb2),
+            Rgb(0xf3, 0xea, 0xc7),
+        ),
+        (Light, Medium) => (
+            Rgb(0xfb, 0xf1, 0xc7),
+            Rgb(0xf4, 0xe8, 0xbe),
+            Rgb(0xee, 0xe0, 0xb7),
+            Rgb(0xdd, 0xcc, 0xab),
+            Rgb(0xf2, 0xe5, 0xbc),
+        ),
+        (Light, Soft) => (
+            Rgb(0xf2, 0xe5, 0xbc),
+            Rgb(0xed, 0xde, 0xb5),
+            Rgb(0xe6, 0xd5, 0xae),
+            Rgb(0xd5, 0xc4, 0xa1),
+            Rgb(0xeb, 0xdb, 0xb2),
+        ),
+    };
+
+    GruvboxMaterialBackground {
+        bg0,
+        bg1,
+        bg3,
+        bg5,
+        bg_current_word,
+    }
+}
+
+fn gruvbox_material_foreground(
+    mode: GruvboxMaterialMode,
+    foreground: GruvboxMaterialForeground,
+) -> GruvboxMaterialForegroundPalette {
+    use GruvboxMaterialForeground::{Material, Mix, Original};
+    use GruvboxMaterialMode::{Dark, Light};
+
+    let (fg1, red, orange, yellow, green, aqua, blue, purple, grey2) = match (mode, foreground) {
+        (Dark, Material) => (
+            Rgb(0xdd, 0xc7, 0xa1),
+            Rgb(0xea, 0x69, 0x62),
+            Rgb(0xe7, 0x8a, 0x4e),
+            Rgb(0xd8, 0xa6, 0x57),
+            Rgb(0xa9, 0xb6, 0x65),
+            Rgb(0x89, 0xb4, 0x82),
+            Rgb(0x7d, 0xae, 0xa3),
+            Rgb(0xd3, 0x86, 0x9b),
+            Rgb(0xa8, 0x99, 0x84),
+        ),
+        (Light, Material) => (
+            Rgb(0x4f, 0x38, 0x29),
+            Rgb(0xc1, 0x4a, 0x4a),
+            Rgb(0xc3, 0x5e, 0x0a),
+            Rgb(0xb4, 0x71, 0x09),
+            Rgb(0x6c, 0x78, 0x2e),
+            Rgb(0x4c, 0x7a, 0x5d),
+            Rgb(0x45, 0x70, 0x7a),
+            Rgb(0x94, 0x5e, 0x80),
+            Rgb(0x7c, 0x6f, 0x64),
+        ),
+        (Dark, Mix) => (
+            Rgb(0xe2, 0xcc, 0xa9),
+            Rgb(0xf2, 0x59, 0x4b),
+            Rgb(0xf2, 0x85, 0x34),
+            Rgb(0xe9, 0xb1, 0x43),
+            Rgb(0xb0, 0xb8, 0x46),
+            Rgb(0x8b, 0xba, 0x7f),
+            Rgb(0x80, 0xaa, 0x9e),
+            Rgb(0xd3, 0x86, 0x9b),
+            Rgb(0xa8, 0x99, 0x84),
+        ),
+        (Light, Mix) => (
+            Rgb(0x51, 0x40, 0x36),
+            Rgb(0xaf, 0x25, 0x28),
+            Rgb(0xb9, 0x4c, 0x07),
+            Rgb(0xb4, 0x73, 0x0e),
+            Rgb(0x72, 0x76, 0x1e),
+            Rgb(0x47, 0x7a, 0x5b),
+            Rgb(0x26, 0x6b, 0x79),
+            Rgb(0x92, 0x4f, 0x79),
+            Rgb(0x7c, 0x6f, 0x64),
+        ),
+        (Dark, Original) => (
+            Rgb(0xeb, 0xdb, 0xb2),
+            Rgb(0xfb, 0x49, 0x34),
+            Rgb(0xfe, 0x80, 0x19),
+            Rgb(0xfa, 0xbd, 0x2f),
+            Rgb(0xb8, 0xbb, 0x26),
+            Rgb(0x8e, 0xc0, 0x7c),
+            Rgb(0x83, 0xa5, 0x98),
+            Rgb(0xd3, 0x86, 0x9b),
+            Rgb(0xa8, 0x99, 0x84),
+        ),
+        (Light, Original) => (
+            Rgb(0x3c, 0x38, 0x36),
+            Rgb(0x9d, 0x00, 0x06),
+            Rgb(0xaf, 0x3a, 0x03),
+            Rgb(0xb5, 0x76, 0x14),
+            Rgb(0x79, 0x74, 0x0e),
+            Rgb(0x42, 0x7b, 0x58),
+            Rgb(0x07, 0x66, 0x78),
+            Rgb(0x8f, 0x3f, 0x71),
+            Rgb(0x7c, 0x6f, 0x64),
+        ),
+    };
+
+    GruvboxMaterialForegroundPalette {
+        fg1,
+        red,
+        orange,
+        yellow,
+        green,
+        aqua,
+        blue,
+        purple,
+        grey2,
     }
 }
 
@@ -804,6 +1253,9 @@ mod tests {
             "amf-catppuccin.json should exist"
         );
 
+        let gruvbox_theme = themes_dir.join("amf-gruvbox.json");
+        assert!(gruvbox_theme.exists(), "amf-gruvbox.json should exist");
+
         let content = std::fs::read_to_string(&amf_theme).unwrap();
         assert!(
             content.contains("\"background\": {"),
@@ -832,5 +1284,17 @@ mod tests {
             new_content.contains("\"background\": {"),
             "Second injection should refresh AMF-managed theme files"
         );
+    }
+
+    #[test]
+    fn test_theme_names_round_trip() {
+        for theme_name in Theme::list() {
+            let config_name = theme_name.to_string();
+            let parsed: ThemeName = config_name.parse().unwrap();
+
+            assert_eq!(parsed, theme_name);
+            assert_eq!(Theme::load(&parsed).name, config_name);
+            assert!(!parsed.display_name().is_empty());
+        }
     }
 }

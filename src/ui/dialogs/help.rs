@@ -128,6 +128,44 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ]));
     }
 
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  While reviewing PR comments:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let pr_review_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k", "Navigate comments"),
+        ("Ctrl+D/U", "Scroll detail down/up"),
+        ("h", "Hide/show resolved comments"),
+        ("f", "Inject scoped fix into agent session"),
+        ("t", "Toggle fix target session"),
+        ("R", "Reply 'Done in <sha>'"),
+        ("n", "Reply 'not needed' (+ skip)"),
+        ("x", "Resolve/reopen GitHub thread"),
+        ("m", "Mark comment done"),
+        ("s", "Skip comment (local)"),
+        ("i", "Install syntax highlighting for file"),
+        ("r", "Refresh comments from GitHub"),
+        ("g", "Review a different PR by number"),
+        ("q / Esc", "Close review pane"),
+    ];
+
+    for (key, desc) in &pr_review_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
     let total_lines = lines.len();
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);

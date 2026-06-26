@@ -10,7 +10,8 @@ const DETAIL_SCROLL_STEP: usize = 5;
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
 /// refresh from GitHub, and exit. Action keys: `f` fix, `R`/`n` reply, `x`
-/// resolve/reopen the thread, `m` mark done, `s` skip.
+/// resolve/reopen the thread, `m` mark done, `s` skip, `i` install syntax
+/// highlighting for the selected comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The fix confirm/edit dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_fix_editing() {
@@ -39,6 +40,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('x') => app.pr_review_toggle_resolve(),
         KeyCode::Char('s') => app.pr_review_skip(),
         KeyCode::Char('r') => app.refresh_pr_review(),
+        KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_number_prompt(),
         _ => {}
     }

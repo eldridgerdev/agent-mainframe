@@ -505,37 +505,29 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       Markdown. →
       `src/ui/dialogs/pr_review.rs`, `src/app/state.rs`, `src/app/pr_review.rs`,
       `src/highlight/mod.rs`.
-- [ ] **Syntax-installer `i` shortcut in the review pane (parity with the diff
-      viewer).** The detail pane now syntax-highlights the diff hunk via the
-      shared tree-sitter highlighter, but highlighting silently degrades to
-      plain marker coloring when the parser for the hunk's language isn't
-      installed. The diff viewer (and the diff-review prompt) already expose an
-      `i` key that opens the syntax-language picker for the *selected file's*
-      language so the user can install/uninstall the parser without leaving the
-      pane (`handlers/diff.rs` → `open_syntax_language_picker_for_selected_diff_file`
-      in `src/app/syntax.rs`, returning to the originating mode via the picker's
-      `return_to`). Bring the same affordance to the PR-review pane:
-      - Add `KeyCode::Char('i')` to `handle_pr_review_key`
-        (`src/handlers/pr_review.rs`) that opens the picker for the **selected
-        comment's** `path` (skip/no-op for conversation/summary comments with no
-        file path).
-      - Extend `open_syntax_language_picker_for_selected_diff_file` (or factor a
-        shared helper) with an `AppMode::PrReview` arm that pulls the selected
-        comment's path, computes the `syntax_notice_for_path` hint, and stashes
-        the current `PrReviewState` as the picker's `return_to` so closing the
-        picker drops the user back into the same pane and selection.
-      - The picker already polls background install/uninstall ops and calls
-        `crate::highlight::reload_runtime_state()` (which clears the highlight
-        cache) on completion; since the review detail re-highlights every draw,
-        the hunk should pick up the freshly installed parser automatically on
-        return — verify that and clear any per-pane cache if added later.
-      - Surface discoverability: add `i syntax` to the pane footer key hints and
-        the keybinding help entry, and consider a small inline hint in the diff
-        section when a language is detected but its parser isn't installed (e.g.
-        `Rust highlighting not installed — press i`), reusing
-        `HighlightLanguage::install_state` / `language_install_state_for_path`.
-      → `src/handlers/pr_review.rs`, `src/app/syntax.rs`, `src/app/state.rs`,
-      `src/ui/dialogs/pr_review.rs`.
+- [x] **Syntax-installer `i` shortcut in the review pane (parity with the diff
+      viewer).** `i` in the review pane opens the shared syntax-language picker for
+      the **selected comment's** file. `handle_pr_review_key`
+      (`src/handlers/pr_review.rs`) maps `KeyCode::Char('i')` to
+      `open_syntax_language_picker_for_selected_diff_file`, which gained an
+      `AppMode::PrReview` arm (`src/app/syntax.rs`): it pulls the selected
+      comment's `path`, computes the `syntax_notice_for_path` hint, and stashes the
+      `PrReviewState` as the picker's `return_to` so closing drops the user back
+      into the same pane and selection. Conversation/summary comments with no path
+      are a no-op (the mode is restored unchanged). Because the review detail
+      re-highlights every draw and the picker already clears the highlight cache
+      via `reload_runtime_state()` on completion, a freshly-installed parser is
+      picked up automatically on return — no per-pane cache to invalidate.
+      Discoverability: `i syntax` added to the pane footer key hints and a new
+      "While reviewing PR comments" section in the keybinding help
+      (`src/ui/dialogs/help.rs`); the diff-hunk section shows an inline
+      `<Lang> highlighting not installed — press i` hint (via a new
+      `syntax_install_hint` reusing `language_install_state_for_path` /
+      `HighlightInstallState::Available`) when the hunk's language is recognized
+      but its parser isn't installed. Unit-tested (picker opens on Rust file +
+      stashes `return_to`; no-op for a pathless comment). →
+      `src/handlers/pr_review.rs`, `src/app/syntax.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [ ] **PR picker — list PRs to choose from, or enter a number.** Today the
       entry point auto-detects the branch's PR and, on a miss, drops straight to
       the manual PR-number prompt (`AppMode::PrNumberPrompt`). Add a third path:

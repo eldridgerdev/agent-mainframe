@@ -202,6 +202,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_cycle_file_filter();
                 return Ok(());
             }
+            KeyCode::Char('t') => {
+                app.diff_review_toggle_fix_target();
+                return Ok(());
+            }
             KeyCode::Char('q') | KeyCode::Esc => {
                 app.confirm_or_finish_review()?;
                 return Ok(());
@@ -369,6 +373,20 @@ fn handle_feedback_editor_key(
     Ok(())
 }
 
+/// Key handling for the post-review harness picker: choose which harness runs a
+/// fresh dedicated session for the review's fixes (j/k move, Enter confirms,
+/// q/Esc cancels — the feedback file is already written either way).
+pub fn handle_review_harness_pick_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.review_harness_pick_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.review_harness_pick_move(-1),
+        KeyCode::Enter => app.review_harness_pick_select()?,
+        KeyCode::Esc | KeyCode::Char('q') => app.review_harness_pick_cancel(),
+        _ => {}
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,6 +480,74 @@ mod tests {
         assert!(feedback.contains("fix it"));
         assert!(feedback.contains("**Approved:** 1"));
         assert!(feedback.contains("**Needs work:** 1"));
+        assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn t_toggles_fix_target_between_live_and_dedicated() {
+        use crate::app::pr_review::FixTarget;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        let target = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.fix_target,
+            _ => panic!("not in review"),
+        };
+        // Default is the existing pane; t flips to dedicated and back.
+        assert_eq!(target(&app), FixTarget::ExistingLive);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        assert_eq!(target(&app), FixTarget::DedicatedReview);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        assert_eq!(target(&app), FixTarget::ExistingLive);
+    }
+
+    #[test]
+    fn dedicated_target_with_no_session_opens_harness_pick() {
+        use crate::app::pr_review::FixTarget;
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        // The dispatch resolves the feature by the view's project/feature names,
+        // so the store must hold a matching feature with no agent session yet.
+        let mut project = Project::new("proj".into(), dir.path().to_path_buf(), true, AgentKind::Claude);
+        project.features.push(Feature::new(
+            "feat".into(),
+            "branch".into(),
+            dir.path().to_path_buf(),
+            false,
+            VibeMode::Vibeless,
+            false,
+            false,
+            AgentKind::Claude,
+            false,
+            false,
+        ));
+        app.store.projects.push(project);
+        app.store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+
+        // Choose the dedicated target, reject the file, then finish.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('t'))).unwrap();
+        if let AppMode::DiffViewer(s) = &app.mode {
+            assert_eq!(s.fix_target, FixTarget::DedicatedReview);
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('r'))).unwrap();
+        for c in "fix it".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap(); // submit rejection
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap(); // finish
+
+        // The feedback file is written and, because the dedicated session must be
+        // spun up, the harness picker is shown rather than returning to the view.
+        assert!(dir.path().join(".claude/final-review-feedback.md").exists());
+        match &app.mode {
+            AppMode::ReviewHarnessPick(state) => {
+                assert_eq!(state.harnesses, vec![AgentKind::Claude, AgentKind::Codex]);
+            }
+            _ => panic!("expected harness pick mode after finishing"),
+        }
+
+        // Cancelling keeps the feedback and returns to the feature view.
+        handle_review_harness_pick_key(&mut app, KeyCode::Esc).unwrap();
         assert!(matches!(app.mode, AppMode::Viewing(_)));
     }
 

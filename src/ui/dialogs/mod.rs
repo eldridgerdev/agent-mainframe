@@ -13,6 +13,7 @@ mod markdown;
 mod pr_review;
 mod project;
 mod prompt_library;
+mod review_harness;
 mod search;
 mod session;
 mod theme;
@@ -39,6 +40,7 @@ pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,
 };
+pub use review_harness::draw_review_harness_pick;
 pub use search::draw_search_dialog;
 pub use session::{
     draw_new_session_name_dialog, draw_project_agent_config_dialog, draw_rename_feature_dialog,

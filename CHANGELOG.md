@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Run final-review fixes in a fresh session.** Press `t` in a final review to
+  choose where the "address this feedback" prompt goes when you finish: the
+  feature's existing agent pane (the default, as before) or a brand-new
+  dedicated review session — the footer shows `t target: live` / `dedicated`.
+  Pick the dedicated target and, when finishing needs to spin up that session,
+  AMF asks which harness should run it (Claude / Codex / opencode / …) so the
+  fixes run in a clean context instead of the long-running review conversation.
+  A dedicated "Final Review" session is reused on later rounds without asking
+  again. The feedback file is always written first, so skipping the harness
+  picker just leaves it for later.
 - **Multi-line comments in a final review.** A line comment can now cover a range
   of lines, not just one. With the line cursor active (`c`), press `v` to start a
   selection, extend it with `j`/`k`, then `⏎` to attach a single comment to the

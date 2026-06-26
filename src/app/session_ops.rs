@@ -577,11 +577,15 @@ impl App {
         &mut self,
         pi: usize,
         fi: usize,
+        label: &str,
+        harness: Option<AgentKind>,
     ) -> Result<usize> {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let repo = self.store.projects[pi].repo.clone();
-        let agent = self.store.projects[pi].preferred_agent.clone();
+        // The caller may pin a harness (e.g. the final review prompts for one);
+        // otherwise fall back to the project's preferred agent.
+        let agent = harness.unwrap_or_else(|| self.store.projects[pi].preferred_agent.clone());
         let kind = session_kind_for_agent(&agent);
 
         // Resolve before the mutable borrow of `feature` below.
@@ -613,10 +617,7 @@ impl App {
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
 
-        let session = feature.add_session_named(
-            kind.clone(),
-            crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
-        );
+        let session = feature.add_session_named(kind.clone(), label.to_string());
         let window = session.tmux_window.clone();
 
         self.tmux

@@ -597,6 +597,8 @@ pub struct ComposeState {
     pub suggestion_index: usize,
     /// Pasted images, in placeholder order.
     pub images: Vec<ComposeImage>,
+    /// Background clipboard read currently feeding this compose box.
+    pub clipboard_paste_id: Option<u64>,
 }
 
 impl ComposeState {
@@ -616,6 +618,7 @@ impl ComposeState {
             suggestions: Vec::new(),
             suggestion_index: 0,
             images: Vec::new(),
+            clipboard_paste_id: None,
         };
         state.refresh_suggestions();
         state
@@ -635,6 +638,10 @@ impl ComposeState {
 
     pub fn request_cursor_scroll(&mut self) {
         self.sync_scroll_to_cursor = true;
+    }
+
+    pub fn paste_in_progress(&self) -> bool {
+        self.clipboard_paste_id.is_some()
     }
 
     pub fn scroll_up(&mut self, lines: usize) {

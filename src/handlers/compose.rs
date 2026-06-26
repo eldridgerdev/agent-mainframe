@@ -25,35 +25,7 @@ pub fn handle_compose_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
-        match crate::app::util::read_clipboard() {
-            Ok(crate::app::util::ClipboardContent::Text(text)) if !text.is_empty() => {
-                if let AppMode::Compose(state) = &mut app.mode {
-                    let outcome = state.editor.insert_str(&text);
-                    if outcome.text_changed {
-                        state.refresh_suggestions();
-                        state.request_cursor_scroll();
-                    }
-                }
-            }
-            Ok(crate::app::util::ClipboardContent::Image { data, mime }) => {
-                let placeholder = if let AppMode::Compose(state) = &mut app.mode {
-                    let placeholder = state.add_image(data, mime);
-                    state.editor.insert_str(&placeholder);
-                    state.refresh_suggestions();
-                    state.request_cursor_scroll();
-                    Some(placeholder)
-                } else {
-                    None
-                };
-                if let Some(placeholder) = placeholder {
-                    app.push_toast_success(format!("Attached {placeholder} from clipboard"));
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                app.push_toast_warning(format!("Clipboard error: {e}"));
-            }
-        }
+        app.start_compose_clipboard_paste();
         return Ok(());
     }
 

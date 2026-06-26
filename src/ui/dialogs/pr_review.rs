@@ -283,6 +283,10 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
+    // Harness picker overlays the pane on the first fix of a dedicated review.
+    if let Some(pick) = &state.harness_pick {
+        draw_harness_pick(frame, pick, theme);
+    }
     // Fix confirm/edit dialog overlays the pane when open.
     if let Some(confirm) = &state.fix_confirm {
         draw_fix_confirm(frame, confirm, state.fix_target, theme);
@@ -422,6 +426,74 @@ fn draw_fix_confirm(
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[4],
+    );
+}
+
+/// Single-select harness picker for the dedicated review session, shown on the
+/// first fix of a PR. The chosen harness is remembered for the rest of the PR
+/// (the session is created once and reused).
+fn draw_harness_pick(
+    frame: &mut Frame,
+    pick: &crate::app::HarnessPickState,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(50, 40, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Harness for the review session ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // header
+            Constraint::Min(1),    // harness list
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Run this PR's fixes on:",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, agent) in pick.agents.iter().enumerate() {
+        let is_selected = i == pick.selected;
+        let marker = if is_selected { ">" } else { " " };
+        let name_style = if is_selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {marker} "),
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(agent.display_name().to_string(), name_style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] choose   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
     );
 }
 

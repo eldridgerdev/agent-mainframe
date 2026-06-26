@@ -569,19 +569,21 @@ impl App {
 
     /// Spin up the dedicated PR-review agent session: one agent window, labeled
     /// [`crate::app::pr_review::REVIEW_SESSION_LABEL`], that the PR-review pane
-    /// reuses for every fix in a PR. Uses the project's preferred agent and the
-    /// feature's mode/flags, just like a picker-launched agent session, but with
-    /// a fixed label so it can be found-and-reused. Returns the new session's
-    /// index in `feature.sessions`.
+    /// reuses for every fix in a PR. Runs `harness` (the harness the user picked
+    /// for the review session) or falls back to the project's preferred agent,
+    /// with the feature's mode/flags — just like a picker-launched agent session,
+    /// but with a fixed label so it can be found-and-reused. Returns the new
+    /// session's index in `feature.sessions`.
     pub(crate) fn create_dedicated_review_session(
         &mut self,
         pi: usize,
         fi: usize,
+        harness: Option<AgentKind>,
     ) -> Result<usize> {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let repo = self.store.projects[pi].repo.clone();
-        let agent = self.store.projects[pi].preferred_agent.clone();
+        let agent = harness.unwrap_or_else(|| self.store.projects[pi].preferred_agent.clone());
         let kind = session_kind_for_agent(&agent);
 
         // Resolve before the mutable borrow of `feature` below.

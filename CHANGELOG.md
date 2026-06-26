@@ -30,6 +30,16 @@ are tagged.
   those files and lands on the first one — press `F` to cycle the filter
   (all → undecided → rejected → changed) and see everything again. This closes
   the loop after an agent addresses feedback: you only re-check what it touched.
+- **Reply to PR comments from inside AMF.** In the PR comment-review pane you
+  can now answer a comment without leaving the tool, with two purpose-built
+  replies: press `R` to post a "Done in `<sha>`." reply auto-filled from your
+  latest commit (and mark the comment done), or `n` to write why a fix isn't
+  needed (and mark it skipped, keeping your note). Both open an editable draft
+  and only post when you press `⏎` — replies to inline review comments land in
+  the right thread, while conversation comments and review summaries post to the
+  PR conversation. The first time you post, if your `gh` login lacks write
+  access AMF tells you to run `gh auth refresh -s repo` rather than failing
+  cryptically.
 - **PR review triage state sticks.** In the PR comment-review pane you can now
   mark a comment done (`m`) or skip it (`s`), and injecting a fix (`f`)
   automatically flags the comment as "fixing". These states persist across

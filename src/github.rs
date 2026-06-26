@@ -313,9 +313,55 @@ impl GhCli {
             .context("Failed to run `gh api` to post the PR review.")?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            if is_missing_write_scope(&stderr) {
+                bail!(
+                    "Posting to GitHub needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
+                );
+            }
             bail!("`gh api` (create review) failed: {}", stderr.trim());
         }
         Ok(())
+    }
+
+    /// Post a reply into an existing inline review thread. `root_comment_id` is
+    /// the **top-level** comment that started the thread (GitHub's replies
+    /// endpoint rejects replying to a reply); callers reply to
+    /// `in_reply_to_id.unwrap_or(id)`. The reply posts as the authenticated
+    /// `gh` user.
+    pub fn reply_to_review_comment(
+        workdir: &Path,
+        owner: &str,
+        repo: &str,
+        number: u32,
+        root_comment_id: u64,
+        body: &str,
+    ) -> Result<()> {
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "--method", "POST"])
+            .arg(format!(
+                "repos/{owner}/{repo}/pulls/{number}/comments/{root_comment_id}/replies"
+            ))
+            .args(["-f", &format!("body={body}")])
+            .current_dir(workdir);
+        run_write(cmd, "post inline reply")
+    }
+
+    /// Post a top-level conversation comment on the PR's issue timeline. Used to
+    /// reply to comments that have no inline thread (conversation comments,
+    /// review summaries). Posts as the authenticated `gh` user.
+    pub fn post_issue_comment(
+        workdir: &Path,
+        owner: &str,
+        repo: &str,
+        number: u32,
+        body: &str,
+    ) -> Result<()> {
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "--method", "POST"])
+            .arg(format!("repos/{owner}/{repo}/issues/{number}/comments"))
+            .args(["-f", &format!("body={body}")])
+            .current_dir(workdir);
+        run_write(cmd, "post conversation comment")
     }
 }
 
@@ -351,6 +397,31 @@ fn build_review_request_json(
         obj.insert("comments".into(), json!(arr));
     }
     serde_json::Value::Object(obj)
+}
+
+/// Run a `gh` write command, mapping a missing-`repo`-scope failure (the common
+/// first-write 403) to an actionable message instead of a raw HTTP error.
+fn run_write(mut cmd: Command, what: &str) -> Result<()> {
+    let output = cmd
+        .output()
+        .with_context(|| format!("Failed to run `gh api` ({what})."))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if is_missing_write_scope(&stderr) {
+        bail!(
+            "Posting to GitHub needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
+        );
+    }
+    bail!("`gh api` ({what}) failed: {}", stderr.trim());
+}
+
+/// Whether a `gh` failure looks like a missing-write-scope / 403, so we can
+/// point the user at `gh auth refresh -s repo` rather than show a raw error.
+fn is_missing_write_scope(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("http 403") || (s.contains("403") && s.contains("scope")) || s.contains("must have")
 }
 
 /// Run `gh api --paginate --slurp <endpoint>` and flatten the result.
@@ -482,6 +553,18 @@ fn parse_owner_repo(url: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_missing_write_scope() {
+        assert!(is_missing_write_scope(
+            "gh: HTTP 403: Resource not accessible by integration"
+        ));
+        assert!(is_missing_write_scope(
+            "403 your token has not been granted the required scopes"
+        ));
+        assert!(!is_missing_write_scope("HTTP 422: Validation Failed"));
+        assert!(!is_missing_write_scope("could not resolve host github.com"));
+    }
 
     #[test]
     fn parses_owner_repo_from_url() {

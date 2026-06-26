@@ -16,6 +16,10 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if let Some(editing) = app.pr_review_fix_editing() {
         return handle_fix_confirm_key(app, key, editing);
     }
+    // The reply dialog, when open, captures all keys.
+    if let Some(editing) = app.pr_review_reply_view() {
+        return handle_reply_key(app, key, editing);
+    }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -28,11 +32,36 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
+        KeyCode::Char('R') => app.pr_review_open_reply_done(),
+        KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
         KeyCode::Char('m') => app.pr_review_mark_done(),
         KeyCode::Char('s') => app.pr_review_skip(),
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('g') => app.open_pr_number_prompt(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the reply dialog is open.
+///
+/// Confirm view: `⏎` posts, `e` edits, `esc`/`q` cancels. Edit mode: keystrokes
+/// flow to the editor; `esc` returns to the confirm view (the "not needed" reply
+/// opens straight in edit mode so the user can type the reason).
+fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
+    if editing {
+        match key.code {
+            KeyCode::Esc => app.pr_review_reply_stop_edit(),
+            _ => app.pr_review_reply_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter => app.pr_review_post_reply()?,
+        KeyCode::Char('e') => app.pr_review_reply_edit(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
         _ => {}
     }
     Ok(())

@@ -6943,6 +6943,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
         fix_confirm: None,
+        reply: None,
     });
 }
 
@@ -7032,6 +7033,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         hide_resolved: false,
         fix_target: crate::app::pr_review::FixTarget::default(),
         fix_confirm: None,
+        reply: None,
     });
 }
 
@@ -7160,6 +7162,73 @@ fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
     assert_eq!(app.pr_review_fix_editing(), Some(false));
     app.pr_review_cancel_fix();
     assert_eq!(app.pr_review_fix_editing(), None);
+}
+
+fn reply_editor_text(app: &App) -> String {
+    match &app.mode {
+        AppMode::PrReview(state) => state.reply.as_ref().unwrap().editor.text().to_string(),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_open_reply_not_needed_starts_in_edit_mode() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_reply_not_needed();
+    // The not-needed reply needs a typed reason, so it opens straight into edit
+    // mode with an empty buffer.
+    assert_eq!(app.pr_review_reply_view(), Some(true));
+    assert_eq!(reply_editor_text(&app), "");
+}
+
+#[test]
+fn pr_review_open_reply_done_seeds_template_in_confirm_view() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_reply_done();
+    // The done reply is post-ready (a template), so it opens in the confirm
+    // view. The workdir isn't a git repo in tests, so it falls back to "Done.".
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+    assert_eq!(reply_editor_text(&app), "Done.");
+}
+
+#[test]
+fn pr_review_reply_edit_forwards_keys_and_cancel_closes() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_reply_done();
+
+    // Keys are ignored until edit mode is entered.
+    let before = reply_editor_text(&app);
+    app.pr_review_reply_editor_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert_eq!(reply_editor_text(&app), before);
+
+    app.pr_review_reply_edit();
+    assert_eq!(app.pr_review_reply_view(), Some(true));
+    app.pr_review_reply_editor_key(KeyEvent::from(KeyCode::Char('!')));
+    assert_eq!(reply_editor_text(&app), format!("{before}!"));
+
+    app.pr_review_reply_stop_edit();
+    assert_eq!(app.pr_review_reply_view(), Some(false));
+    app.pr_review_cancel_reply();
+    assert_eq!(app.pr_review_reply_view(), None);
+}
+
+#[test]
+fn pr_review_post_empty_reply_is_rejected() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    // Not-needed opens empty; posting without a reason is rejected (no write).
+    app.pr_review_open_reply_not_needed();
+
+    app.pr_review_post_reply().unwrap();
+    assert_eq!(app.pr_review_reply_view(), Some(true));
+    assert!(app.message.is_some());
 }
 
 #[test]

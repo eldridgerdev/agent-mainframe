@@ -18,8 +18,10 @@
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::io::Write;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Static-method wrapper around the `gh` CLI. Add general GitHub operations
 /// here (PRs, issues, reviews, repo metadata) so they can be reused across
@@ -122,6 +124,18 @@ pub struct ReviewThread {
     pub id: String,
     pub is_resolved: bool,
     pub comment_ids: Vec<u64>,
+}
+
+/// One inline comment to post as part of a PR review (see
+/// [`GhCli::create_review`]). `line` is the file line number; `side` is
+/// `"RIGHT"` for the current file or `"LEFT"` for the base file, matching the
+/// GitHub create-review API.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewComment {
+    pub path: String,
+    pub line: u32,
+    pub side: &'static str,
+    pub body: String,
 }
 
 impl GhCli {
@@ -259,6 +273,84 @@ impl GhCli {
         }
         Ok(threads)
     }
+
+    /// Post a review on `pr` with a summary `body` and any inline `comments`,
+    /// pinned to the PR head commit. `event` is the GitHub review action —
+    /// `"COMMENT"`, `"REQUEST_CHANGES"`, or `"APPROVE"` (use `"COMMENT"` for a
+    /// self-review, since GitHub forbids approving / requesting changes on your
+    /// own PR).
+    ///
+    /// Best-effort by contract: GitHub rejects the *entire* review (HTTP 422) if
+    /// any one inline comment points at a line outside the PR diff, so callers
+    /// should treat an error as "couldn't post" and fall back to their own
+    /// record (e.g. the local feedback file) rather than assume partial success.
+    pub fn create_review(
+        workdir: &Path,
+        pr: &PrRef,
+        body: &str,
+        event: &str,
+        comments: &[PrReviewComment],
+    ) -> Result<()> {
+        let payload = build_review_request_json(&pr.head_sha, body, event, comments);
+        let endpoint = format!("repos/{}/{}/pulls/{}/reviews", pr.owner, pr.repo, pr.number);
+
+        let mut child = Command::new("gh")
+            .args(["api", "--method", "POST", &endpoint, "--input", "-"])
+            .current_dir(workdir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("Failed to run `gh api` to post the PR review.")?;
+        child
+            .stdin
+            .take()
+            .context("Failed to open stdin for `gh api`.")?
+            .write_all(payload.to_string().as_bytes())
+            .context("Failed to send the PR review payload to `gh api`.")?;
+        let output = child
+            .wait_with_output()
+            .context("Failed to run `gh api` to post the PR review.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`gh api` (create review) failed: {}", stderr.trim());
+        }
+        Ok(())
+    }
+}
+
+/// Build the JSON request body for the GitHub create-review API. Omits an empty
+/// `body` / `commit_id` and the `comments` array when there are none, so a
+/// summary-only review is a valid request.
+fn build_review_request_json(
+    commit_id: &str,
+    body: &str,
+    event: &str,
+    comments: &[PrReviewComment],
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    if !commit_id.is_empty() {
+        obj.insert("commit_id".into(), json!(commit_id));
+    }
+    if !body.is_empty() {
+        obj.insert("body".into(), json!(body));
+    }
+    obj.insert("event".into(), json!(event));
+    if !comments.is_empty() {
+        let arr: Vec<serde_json::Value> = comments
+            .iter()
+            .map(|c| {
+                json!({
+                    "path": c.path,
+                    "line": c.line,
+                    "side": c.side,
+                    "body": c.body,
+                })
+            })
+            .collect();
+        obj.insert("comments".into(), json!(arr));
+    }
+    serde_json::Value::Object(obj)
 }
 
 /// Run `gh api --paginate --slurp <endpoint>` and flatten the result.
@@ -503,5 +595,45 @@ mod tests {
             classify_pr_view_error("HTTP 500 something broke"),
             PrViewError::Other
         );
+    }
+
+    #[test]
+    fn review_request_includes_commit_body_event_and_comments() {
+        let comments = vec![
+            PrReviewComment {
+                path: "src/a.rs".into(),
+                line: 12,
+                side: "RIGHT",
+                body: "this looks off".into(),
+            },
+            PrReviewComment {
+                path: "src/a.rs".into(),
+                line: 3,
+                side: "LEFT",
+                body: "why remove this?".into(),
+            },
+        ];
+        let v = build_review_request_json("abc123", "Summary", "COMMENT", &comments);
+        assert_eq!(v["commit_id"], "abc123");
+        assert_eq!(v["body"], "Summary");
+        assert_eq!(v["event"], "COMMENT");
+        let arr = v["comments"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["path"], "src/a.rs");
+        assert_eq!(arr[0]["line"], 12);
+        assert_eq!(arr[0]["side"], "RIGHT");
+        assert_eq!(arr[1]["side"], "LEFT");
+    }
+
+    #[test]
+    fn summary_only_review_omits_empty_body_and_comments() {
+        // No commit id, empty body, no inline comments: only `event` is present,
+        // which GitHub accepts as a (bodyless) review action.
+        let v = build_review_request_json("", "", "COMMENT", &[]);
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("commit_id"));
+        assert!(!obj.contains_key("body"));
+        assert!(!obj.contains_key("comments"));
+        assert_eq!(v["event"], "COMMENT");
     }
 }

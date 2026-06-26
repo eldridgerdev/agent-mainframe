@@ -68,6 +68,30 @@ any order.
 - **Persist / resume review state.** Decisions and general feedback live
   only in `DiffViewerState`; `q`/`Esc` ends the review and discards them.
   Persist to `.claude/` so a long review can be paused and resumed.
+- **See inline comments while browsing the diff.** Line comments are stored
+  (`line_comments` in `DiffViewerState`) but only surface in the feedback file
+  and while the line cursor is editing one — there's no marker in the rendered
+  diff for a line that already has a comment, so a reviewer scrolling back
+  can't tell which lines they annotated. Add a gutter marker (e.g. a dot /
+  count) on commented lines and reveal the comment body when the cursor (or
+  scroll) lands on/over it — at minimum a peek on hover-over. The unified
+  renderer already maps each rendered row to `addressable_lines()`
+  (`ui/dialogs/diff.rs`), so the anchor plumbing exists.
+- **Multi-line / range line comments.** A `LineComment` anchors to a single
+  `DiffLineLocation` today. Let the reviewer mark a start line, extend the
+  selection to an end line, and attach one comment to the whole span — matching
+  GitHub's `start_line`/`line` multi-line review comments. Touches the comment
+  model (store a range), the cursor (anchor + extend), the feedback-file anchor
+  format (`### src/foo.rs:42-48`), and `build_pr_review` (emit
+  `start_line`/`start_side`).
+- **Dispatch review fixes to a new agent / harness session.**
+  `finish_final_review` pastes the "address the feedback" prompt into the
+  feature's existing agent pane. Offer instead to spin up (or target) a fresh
+  agent session — optionally a different harness (Claude / Codex / opencode) —
+  so the fixes run in a clean context rather than the long-running review
+  session. Reuses the session plumbing (`add_session`, the session picker) and
+  the PR-comment-review "fix target" concept (a dedicated session, see
+  `fix_session_index_prefers_dedicated_else_creates`).
 
 ### Nice-to-haves
 
@@ -100,7 +124,17 @@ any order.
       cleared on finish)
 - [x] Choose base ref (press `b` in the diff viewer / final review to
       diff against any branch, tag, or commit; blank reverts to auto)
-- [ ] PR inline-comment integration
+- [x] PR inline-comment integration — opt-in via the
+      `final_review_post_to_pr` config flag. On finishing a review (with the
+      flag on), AMF resolves the branch's PR and posts a single GitHub review:
+      line comments become inline comments (anchored `RIGHT` for a current-file
+      line, `LEFT` for a deletion-only line); whole-file rejections and the
+      general feedback — which have no single line to anchor to — become the
+      review's summary body. The event is `COMMENT` (safe on a self-PR). The
+      `GhCli` layer gained a feature-agnostic `create_review`; the final-review
+      mapping lives in `build_pr_review` (`src/app/review.rs`). Best-effort: a
+      missing PR or `gh` error is folded into the finish message and logged, and
+      the local `.claude/final-review-feedback.md` is always written regardless.
 - [x] Review history (timestamped / append) — each round is a
       dated `## Review — <ts>` section prepended under a single
       title in `.claude/final-review-feedback.md`; the agent is
@@ -115,6 +149,11 @@ any order.
       review to cycle the file list through all / undecided / rejected;
       navigation (n/p/j/k, g/G) skips hidden files and decisions advance
       to the next visible file.
+- [ ] See inline comments while browsing — gutter marker on commented lines
+      plus a preview when the cursor/scroll lands on one
+- [ ] Multi-line / range line comments (anchor one comment to a line span)
+- [ ] Dispatch review fixes to a new agent / harness session instead of the
+      existing pane
 
 ## Open questions
 
@@ -124,8 +163,13 @@ any order.
 - Should multi-line feedback and the agent prompt move to a single
   composed "review summary" the reviewer edits before it's sent, rather
   than assembling the file from per-file inputs?
-- For PR integration, how do whole-file vs line-level comments map onto
-  GitHub review comments?
+- Dispatching fixes to a new session: default to the same harness as the
+  feature, or prompt for one each time? And should the existing pane stay an
+  option (e.g. a toggle / picker at finish) rather than being replaced?
+- ~~For PR integration, how do whole-file vs line-level comments map onto
+  GitHub review comments?~~ Resolved: line comments post inline (RIGHT/LEFT by
+  side); whole-file rejections and general feedback go in the review summary
+  body, since they have no single line to anchor to.
 
 ## Reasoning / when to build
 

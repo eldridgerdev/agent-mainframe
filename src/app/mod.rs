@@ -393,6 +393,13 @@ pub struct AppConfig {
     /// so the reviewer can eyeball/edit it before submitting.
     #[serde(default = "default_true")]
     pub final_review_submit_prompt: bool,
+    /// When finishing a final review, also post the feedback to the branch's
+    /// GitHub PR (if one exists) as a review: line comments inline, whole-file
+    /// rejections and general feedback in the review summary. Best-effort and
+    /// off by default — the local `.claude/final-review-feedback.md` is always
+    /// written regardless. Requires an authenticated `gh` CLI.
+    #[serde(default)]
+    pub final_review_post_to_pr: bool,
 }
 
 fn default_true() -> bool {
@@ -441,6 +448,7 @@ impl Default for AppConfig {
             token_pricing: TokenPricingConfig::default(),
             remote_control_default: false,
             final_review_submit_prompt: true,
+            final_review_post_to_pr: false,
         }
     }
 }

@@ -145,7 +145,7 @@ pub fn draw_project_agent_config_dialog(
     );
 }
 
-pub(crate) fn draw_agent_config_dialog(
+fn draw_agent_config_dialog(
     frame: &mut Frame,
     title: &str,
     header_lines: Vec<Line>,

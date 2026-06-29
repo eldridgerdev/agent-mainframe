@@ -291,22 +291,6 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     if let Some(confirm) = &state.fix_confirm {
         draw_fix_confirm(frame, confirm, state.fix_target, theme);
     }
-    // Harness picker overlays the pane on the first fix (dedicated target).
-    if let Some(pick) = &state.harness_pick {
-        super::session::draw_agent_config_dialog(
-            frame,
-            " Review session harness ",
-            vec![Line::from(Span::styled(
-                " Run this PR's fixes on:",
-                Style::default().fg(theme.text_muted.to_color()),
-            ))],
-            " Harness",
-            &pick.current,
-            &pick.allowed_agents,
-            pick.selected,
-            theme,
-        );
-    }
     // Reply dialog overlays the pane when open.
     if let Some(reply) = &state.reply {
         let author = state

@@ -6965,8 +6965,6 @@ fn enter_pr_review(app: &mut App, n: u64) {
         harness_pick: None,
         fix_confirm: None,
         reply: None,
-        harness_pick: None,
-        review_harness: None,
     });
 }
 
@@ -7206,8 +7204,6 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         harness_pick: None,
         fix_confirm: None,
         reply: None,
-        harness_pick: None,
-        review_harness: None,
     });
 }
 
@@ -7409,133 +7405,6 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
-}
-
-/// Build a PR-review app whose review pane is backed by a real project+feature
-/// (workdir `/tmp/wd`), so the harness-pick decision can resolve the feature.
-fn pr_review_app_with_feature(preferred: AgentKind, available: Vec<AgentKind>) -> App {
-    let now = Utc::now();
-    let feature = Feature {
-        id: "feat-1".to_string(),
-        name: "my-feat".to_string(),
-        branch: "my-feat".to_string(),
-        workdir: PathBuf::from("/tmp/wd"),
-        is_worktree: false,
-        tmux_session: "amf-my-feat".to_string(),
-        sessions: vec![],
-        collapsed: false,
-        mode: VibeMode::default(),
-        review: false,
-        plan_mode: false,
-        agent: AgentKind::default(),
-        enable_chrome: false,
-        remote_control: false,
-        pending_worktree_script: false,
-        ready: false,
-        status: ProjectStatus::Active,
-        created_at: now,
-        last_accessed: now,
-        summary: None,
-        summary_updated_at: None,
-        nickname: None,
-    };
-    let project = Project {
-        id: "proj-1".to_string(),
-        name: "my-project".to_string(),
-        repo: PathBuf::from("/tmp/wd"),
-        collapsed: false,
-        features: vec![feature],
-        created_at: now,
-        preferred_agent: preferred,
-        is_git: false,
-    };
-    let store = ProjectStore {
-        version: 5,
-        projects: vec![project],
-        session_bookmarks: vec![],
-        available_harnesses: available,
-        prompt_templates: Vec::new(),
-        extra: HashMap::new(),
-    };
-    App::new_for_test(
-        store,
-        Box::new(MockTmuxOps::new()),
-        Box::new(MockWorktreeOps::new()),
-    )
-}
-
-#[test]
-fn pr_review_fix_opens_harness_pick_then_seeds_fix_confirm() {
-    let mut app = pr_review_app_with_feature(AgentKind::Codex, vec![AgentKind::Claude, AgentKind::Codex]);
-    enter_pr_review(&mut app, 2);
-
-    // First fix on the dedicated target: the harness picker opens (not the fix
-    // dialog), defaulting to the project's preferred agent.
-    app.pr_review_open_fix_confirm();
-    assert!(app.pr_review_harness_picking());
-    assert_eq!(app.pr_review_fix_editing(), None);
-    match &app.mode {
-        AppMode::PrReview(state) => {
-            let pick = state.harness_pick.as_ref().unwrap();
-            assert_eq!(pick.allowed_agents[pick.selected], AgentKind::Codex);
-        }
-        _ => unreachable!(),
-    }
-
-    // Choose another harness; the choice is remembered and the fix dialog opens.
-    app.pr_review_harness_pick_prev();
-    app.pr_review_confirm_harness_pick();
-    assert!(!app.pr_review_harness_picking());
-    assert_eq!(app.pr_review_fix_editing(), Some(false));
-    match &app.mode {
-        AppMode::PrReview(state) => assert_eq!(state.review_harness, Some(AgentKind::Claude)),
-        _ => unreachable!(),
-    }
-}
-
-#[test]
-fn pr_review_fix_skips_harness_pick_once_chosen() {
-    let mut app = pr_review_app_with_feature(AgentKind::Claude, vec![AgentKind::Claude, AgentKind::Codex]);
-    enter_pr_review(&mut app, 1);
-    if let AppMode::PrReview(state) = &mut app.mode {
-        state.review_harness = Some(AgentKind::Codex);
-    }
-
-    // A harness is already chosen for the PR, so `f` goes straight to the fix
-    // dialog without re-asking.
-    app.pr_review_open_fix_confirm();
-    assert!(!app.pr_review_harness_picking());
-    assert_eq!(app.pr_review_fix_editing(), Some(false));
-}
-
-#[test]
-fn pr_review_fix_skips_harness_pick_for_existing_live_target() {
-    let mut app = pr_review_app_with_feature(AgentKind::Claude, vec![AgentKind::Claude, AgentKind::Codex]);
-    enter_pr_review(&mut app, 1);
-    app.pr_review_toggle_fix_target(); // -> ExistingLive
-
-    // The existing-live target reuses whatever harness that session runs, so no
-    // picker is shown.
-    app.pr_review_open_fix_confirm();
-    assert!(!app.pr_review_harness_picking());
-    assert_eq!(app.pr_review_fix_editing(), Some(false));
-}
-
-#[test]
-fn pr_review_cancel_harness_pick_aborts_the_fix() {
-    let mut app = pr_review_app_with_feature(AgentKind::Claude, vec![AgentKind::Claude, AgentKind::Codex]);
-    enter_pr_review(&mut app, 1);
-
-    app.pr_review_open_fix_confirm();
-    assert!(app.pr_review_harness_picking());
-    app.pr_review_cancel_harness_pick();
-    // Cancelling closes the picker and opens nothing.
-    assert!(!app.pr_review_harness_picking());
-    assert_eq!(app.pr_review_fix_editing(), None);
-    match &app.mode {
-        AppMode::PrReview(state) => assert_eq!(state.review_harness, None),
-        _ => unreachable!(),
-    }
 }
 
 #[test]

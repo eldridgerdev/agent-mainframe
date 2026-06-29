@@ -1121,6 +1121,28 @@ pub struct PrReviewState {
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
+    /// When `Some`, the harness picker is open over the pane: the user is
+    /// choosing which agent harness the dedicated review session will run, before
+    /// the first fix spins it up.
+    pub harness_pick: Option<HarnessPickState>,
+    /// The harness chosen for this PR's dedicated review session, once picked.
+    /// Remembered for the rest of the PR (the session is created once and
+    /// reused), so the picker is only shown on the first fix. `None` until the
+    /// user picks (or while the `ExistingLive` target is in use).
+    pub review_harness: Option<AgentKind>,
+}
+
+/// Single-select agent-harness picker shown over the review pane before the
+/// dedicated review session is created (Epic D). Lets PR triage run on a
+/// different harness than the feature's working session.
+#[derive(Debug, Clone)]
+pub struct HarnessPickState {
+    /// Harnesses the user may choose from (project/repo allow-list).
+    pub allowed_agents: Vec<AgentKind>,
+    /// Index into `allowed_agents` of the highlighted harness.
+    pub selected: usize,
+    /// The project's preferred agent, marked `(default)` in the list.
+    pub current: AgentKind,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either

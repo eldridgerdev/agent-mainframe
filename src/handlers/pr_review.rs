@@ -13,6 +13,10 @@ const DETAIL_SCROLL_STEP: usize = 5;
 /// resolve/reopen the thread, `m` mark done, `s` skip, `i` install syntax
 /// highlighting for the selected comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // The harness picker, when open, captures all keys.
+    if app.pr_review_harness_picking() {
+        return handle_harness_pick_key(app, key);
+    }
     // The fix confirm/edit dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_fix_editing() {
         return handle_fix_confirm_key(app, key, editing);
@@ -80,6 +84,20 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
         KeyCode::Enter => app.pr_review_post_reply()?,
         KeyCode::Char('e') => app.pr_review_reply_edit(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the harness picker is open (before the first fix spins up
+/// the dedicated review session): `j/k` move, `⏎` choose and continue to the fix
+/// confirm dialog, `esc`/`q` cancel.
+fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_harness_pick_next(),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_harness_pick_prev(),
+        KeyCode::Enter => app.pr_review_confirm_harness_pick(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_harness_pick(),
         _ => {}
     }
     Ok(())

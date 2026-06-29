@@ -105,4 +105,6 @@ doc always says exactly what remains.
   the core constraint: the TUI fetches/triages with zero agent tokens,
   fix prompts carry only comment + diff hunk + `file:line`, threads are
   cached by head SHA. Split into read-only MVP → fix injection →
-  replies/resolution → throughput epics.
+  replies/resolution → throughput epics, with a planned Epic E adding an
+  AI code review of the diff and a committed `review-memory.md` of common
+  findings (bootstrapped from the last N PRs, grown one comment at a time).

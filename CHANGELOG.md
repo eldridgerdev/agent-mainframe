@@ -94,6 +94,14 @@ are tagged.
   Press `a` to include closed/merged PRs, `#` to type a number instead (the old
   prompt is still one keypress away), and `⏎` to open the highlighted PR. The list
   is fetched in Rust via `gh pr list`, so it spends zero agent tokens.
+- **Pick the harness for the dedicated PR-review session.** The first time you fix
+  a comment against the dedicated review session, AMF now asks which agent harness
+  that session should run before spinning it up — so PR triage can run on a
+  different (e.g. cheaper or faster) harness than your working session. The picker
+  is seeded from the project's allowed harnesses with your preferred agent
+  highlighted; the choice is remembered for the rest of the PR, so you only pick
+  once. Reusing the feature's existing live session (`t`) is unaffected — it keeps
+  whatever harness that session already runs and never shows the picker.
 - Added the full Gruvbox Material UI theme family to the theme picker and
   config: dark/light, hard/medium/soft contrast, and material/mix/original
   foreground palettes. Use names like `gruvbox-material-dark-medium` or

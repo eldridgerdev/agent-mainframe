@@ -14,6 +14,51 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## PR review: triage / reply state is lost on return
+
+- **Status:** Open
+- **Reported:** 2026-06-29
+- **Relates to:** PR comment review
+  ([pr-comment-review-plan.md](pr-comment-review-plan.md), Epic D bug item)
+
+Epic B claims triage is authoritative in the `pr_comment_triage` table and
+that `apply_persisted_triage` overlays it onto every reload — but in real
+use, none of it survives a round-trip through a fix session.
+
+### Repro
+
+1. Open a PR in the review pane (`G`).
+2. Mark a comment done (`m`), and/or post a reply.
+3. Start a fix on another comment (`f`), switching into the dedicated
+   `"PR Review"` session.
+4. Return to the review pane.
+
+### Expected
+
+The done mark / reply / skip state is still there — persisted in SQLite
+and re-overlaid on the reloaded review.
+
+### Actual
+
+The review comes back with none of it saved; the earlier triage and reply
+state are gone.
+
+### Leads / where to look
+
+- State is likely mutated in the in-memory `PrReviewState` but **not
+  flushed to SQLite before the pane is left** to switch into the fix
+  session. The `f`-marks-`Fixing` path is said to persist before leaving;
+  the `m` / `s` / reply paths may only update memory. → `src/app/pr_review.rs`,
+  `src/handlers/pr_review.rs`.
+- The return path may **re-fetch without re-overlaying** persisted triage
+  — confirm `apply_persisted_triage` runs on the cache-hit, background-fetch,
+  **and** return-from-session paths.
+- Verify both sides read/write the triage row under the **same**
+  `PR# + comment_id + head_sha` key (a head-SHA mismatch would silently
+  orphan the saved rows). → `src/db/pr_comment_triage.rs`.
+- Fix direction: persist every triage/reply mutation **immediately**
+  (not on pane exit).
+
 ## ~~`A` does not open harness setup from the dashboard~~ (Fixed)
 
 - **Status:** Fixed (2026-06-21)

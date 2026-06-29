@@ -257,6 +257,23 @@ uses — no new injection mechanism.
 Legend: `[ ]` untriaged, `[x]` done, `[-]` skipped, `✓done` = resolved
 on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 
+**Epic E keys** layer onto this same pane: `A` runs an AI review of the
+diff (its findings appear as draft `[ ]` items in this same list, triaged
+with the existing verbs), and `M` appends the selected comment's finding
+to `.amf/review-memory.md`. The lookback bootstrap (distill the memory
+from the last *N* PRs) is reached from the PR entry flow:
+
+```text
+┌─ Bootstrap review memory ────────────────────────────────────────────┐
+│ Distill common findings from recent PRs into .amf/review-memory.md.   │
+│ Look back over:                                                       │
+│   ( ) 20 PRs     (•) 50 PRs     ( ) 100 PRs     ( ) all               │
+│                                                                       │
+│ Comment fetch is free (gh); one agent pass distills → ~8k tokens.     │
+│ [⏎] run   [esc] cancel                                                │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
 **Reply-draft dialog (AI-draft → approve before post):**
 
 ```text
@@ -635,8 +652,145 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
       posting; on post the comment is marked `Done`. → `src/app/pr_review.rs`.
 - [ ] Keybinding help entry; status-bar summary (`4 open / 7`).
 - [ ] Token usage surfaced per session (tie into `token_tracking.rs`).
+- [ ] **Quick toggle between the review pane and the dedicated review
+      session (usability — from real use).** Today `f` switches the user
+      *into* the dedicated `"PR Review"` session to watch the agent, but
+      getting *back* to the pane means exiting to the dashboard and
+      re-entering with `G` — losing the scroll/selection and paying a
+      re-resolve. In practice the user bounces between "watch the agent
+      work" and "triage the next comment" constantly, and that round-trip
+      is the friction. Add a **single hotkey that toggles between the two**:
+      from the review pane, jump to the dedicated session; from that
+      session's view, jump straight back to the pane **at the same comment
+      and scroll offset** (stash `PrReviewState` as a `return_to`, the same
+      pattern the syntax picker already uses, so no re-fetch and no lost
+      state). Only bind the "back to review" side when a review session is
+      live and a pane state is stashed. Consider showing the pairing in
+      both footers (e.g. `↹ review ⇆ session`). → `src/app/view.rs`,
+      `src/app/switcher.rs`, `src/handlers/view.rs`,
+      `src/handlers/pr_review.rs`, `src/app/state.rs`, `src/app/pr_review.rs`.
+- [ ] **File-level comments reference the file, not the whole hunk
+      (token fix — from real use).** Comments left on a *file* rather than a
+      line (GitHub `subject_type: "file"`, and any comment whose `diff_hunk`
+      is effectively the entire file) currently dump that whole hunk into
+      both the detail pane and the assembled fix prompt — a large, low-value
+      token cost that violates principle #3 (minimal fix-prompt context).
+      Detect file-level / oversized hunks during normalization and, for
+      those, **inject only a `File: <path>` reference** (no hunk body) in
+      `PrComment::fix_prompt`, letting the agent open the file itself. Render
+      the detail pane the same way (show "comment on file `<path>`" instead
+      of a wall of diff). Capture `subject_type` from the inline-comments
+      API in `GhCli` so the classification is reliable rather than a length
+      heuristic alone. → `src/app/pr_review.rs`, `src/github.rs`,
+      `src/ui/dialogs/pr_review.rs`.
+- [ ] **AI attribution on AMF-posted comments (honesty — from real use).**
+      When AMF posts content the agent harness generated (Epic E AI-review
+      findings, and any future AI-drafted reply), append a **subtle, machine
+      attribution footer** so reviewers can tell it was written by the agent
+      harness *through AMF* — e.g. a one-line footer naming the harness
+      (`— drafted by <harness> via AMF`) and/or a hidden marker for tooling.
+      Scope it to **AI-authored** bodies: a user-typed reply (the Epic C
+      "not-needed" reason, hand-edited templates) is the user's own words and
+      shouldn't be misattributed — though an optional lighter "posted via
+      AMF" tag for those is worth deciding (see open question). Make the exact
+      footer text a single shared helper so replies and review posts stay
+      consistent. → `src/app/pr_review.rs`, `src/github.rs`.
+- [ ] **BUG: triage/reply state is lost on return (from real use).**
+      Epic B claims triage is authoritative in `pr_comment_triage` and
+      `apply_persisted_triage` overlays it onto every reload — but in
+      practice, marking a comment done / posting a reply, then starting a
+      new fix session and coming **back** to the review shows none of it
+      saved. Likely culprits to check: state is mutated in the in-memory
+      `PrReviewState` but **not flushed to SQLite before the pane is left**
+      to switch into the fix session (the `f`-marks-`Fixing` path persists,
+      but `m`/`s`/reply paths may only update memory); and/or the return
+      path **re-fetches and doesn't re-overlay** the persisted triage. It
+      also needs to survive the head-SHA key — confirm we're reading/writing
+      the triage row under the *same* `PR# + comment_id + head_sha` on both
+      sides. Repro, then make every triage/reply mutation **persist
+      immediately** (not on pane exit) and verify `apply_persisted_triage`
+      runs on the cache-hit *and* background-fetch *and* return-from-session
+      paths. Pairs with the quick-toggle item above (the round-trip is what
+      exposes the loss). → `src/app/pr_review.rs`,
+      `src/db/pr_comment_triage.rs`, `src/handlers/pr_review.rs`.
 - **Acceptance:** a 30-comment bot-heavy PR can be triaged quickly with
   measurably lower token spend than copy-paste round-trips.
+
+### Epic E — AI code review & a learned review-findings memory
+
+Everything up to here triages comments *other people* (and bots) already
+left. This epic adds two coupled capabilities: **AMF generates its own
+review of the diff**, and it **remembers what review keeps catching** so
+each review starts smarter than the last. These are the first parts of
+the feature that knowingly spend agent tokens on *generation* (not just
+fix injection), so they're explicit, opt-in actions with a token preview
+— and the memory doc is the lever that keeps that spend falling over
+time: the more the team's recurring findings are written down, the less
+the agent has to rediscover them from scratch on each review.
+
+The two pieces form a loop: the **review-findings memory** is fed *into*
+the AI reviewer as context (so it checks for the team's known issues
+first), and the reviewer's output (plus comments triaged in the pane)
+**feeds back into** the memory.
+
+- [ ] **Review-findings memory doc (committed markdown).** A
+      version-controlled file at a conventional repo path (default
+      `.amf/review-memory.md`, configurable) that accumulates the team's
+      recurring code-review findings, grouped by category (concurrency,
+      error handling, naming, tests, …). It lives in the repo so it's
+      shared, diffable, and hand-editable, and so the AI reviewer can read
+      it directly as context. AMF owns *appends* (dedup-aware, grouped) but
+      never silently rewrites user prose. Resolve/discover the path in Rust;
+      create it on first write with a header template. → new
+      `src/app/review_memory.rs`, `src/github.rs`/repo-path helpers.
+- [ ] **Lookback bootstrap — distill the memory from the last *N* PRs.**
+      First-run action (and re-runnable to top up) that seeds the memory
+      doc from history. The user picks a depth from a list (**20 / 50 /
+      100 / all**, whatever the repo can afford); AMF fetches the **review
+      comments + review summaries** from that many recent *merged/closed*
+      PRs via the existing `GhCli` layer (zero agent tokens for the fetch —
+      `gh pr list` + the same comment endpoints Epic A already uses), strips
+      bot boilerplate, then makes **one** agent pass (`run_headless`, big
+      batched prompt, not per-comment) to cluster them into recurring
+      findings and write/merge them into `review-memory.md`. This is the one
+      deliberately token-heavy step; show the PR count and a `~N tokens`
+      estimate and confirm before running. Progress + result land back in
+      AMF (background thread + channel, like the Epic A fetch). → new
+      `src/app/review_memory.rs`, `src/github.rs`, `ClaudeLauncher::run_headless`
+      (`src/claude.rs`), `src/handlers/pr_review.rs`, `src/app/state.rs`.
+- [ ] **"Add this comment to memory" key in the review pane.** While
+      triaging, a key (e.g. `M`) on the selected comment appends its
+      distilled finding to `review-memory.md` — the actionable sentence
+      (bot-stripped) plus a `file:line`/category hint, deduped against
+      what's already there. Optional quick confirm/edit so the user can
+      phrase it as a *general* rule rather than the one-off wording. This is
+      the incremental, zero-extra-fetch path that grows the doc during
+      normal review (complements the bulk lookback bootstrap). →
+      `src/handlers/pr_review.rs`, `src/app/review_memory.rs`,
+      `src/ui/dialogs/pr_review.rs`.
+- [ ] **Perform an AI code review of the PR (local draft → optionally post).**
+      A pane action (e.g. `A`) that asks the agent to review the PR **diff**
+      (`gh pr diff`, fetched in Rust) and surface findings. **Default:
+      local draft** — findings appear in the existing list+detail pane as
+      draft items the user triages with the same verbs already built
+      (`f` inject-fix / `r` post / `s` skip / `M` add-to-memory), nothing
+      posts automatically. **Optional, configurable:** once vetted, a
+      "post as GitHub review" action drafts a real review (inline comments +
+      summary) and posts it via `gh` after explicit approval (reuses the
+      Epic C write substrate + the first-write `repo`-scope 403 handling).
+      The **review-findings memory is injected as context** so the agent
+      checks the team's known issues first. This spends agent tokens by
+      design — show a token preview and treat it as an explicit action,
+      distinct from zero-token triage. → `src/app/pr_review.rs`,
+      `src/github.rs`, `ClaudeLauncher::run_headless` (`src/claude.rs`),
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/state.rs`.
+- **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
+  one pass; run an AI review of an open PR that flags issues informed by
+  that memory, triage its findings in-pane, optionally post them as a
+  GitHub review; and, while reviewing, add a noteworthy comment to the
+  memory with one key — each recurring finding written down once making
+  the next review cheaper and sharper.
 
 ## Nice to have
 
@@ -698,8 +852,13 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
     #8 (opt-in batch). _Still open:_ exactly how the user toggles the
     choice (per-PR setting vs. a key in the pane vs. config default), and
     how the dedicated session's lifecycle/cleanup is surfaced.
-- **Reply identity:** replies post as the user's `gh` auth. Fine, but
-  should AMF tag AI-drafted replies (e.g. a subtle footer) for honesty?
+- **Reply identity — DECIDED (attribute AI-authored content).** Replies
+  post as the user's `gh` auth. Real use confirmed we **do** want a subtle
+  footer attributing **AI-authored** content to the agent harness via AMF
+  (now the Epic D "AI attribution" item). _Still open:_ whether
+  *user-typed* content posted through AMF (the not-needed reason, a
+  hand-edited template) should also carry a lighter "posted via AMF" tag,
+  or stay unmarked as genuinely the user's words.
 - **Drafting model:** dedicated small/fast model for reply drafts vs.
   the feature's configured harness — config knob?
 - **Resolution without reply:** GitHub lets you resolve without
@@ -713,6 +872,21 @@ on GitHub. Bots shown inline (`@coderabbit`) with no special grouping.
 - **Conversation vs. review threads:** conversation comments have no
   `path`/resolution — group them in a separate "Conversation" section
   of the list?
+- **Review-memory path & scope (Epic E):** default `.amf/review-memory.md`
+  committed in the repo — but should the path be configurable per project,
+  and should there be an optional *global* layer (cross-project lessons)
+  merged in on top of the per-repo file?
+- **Memory growth without rot (Epic E):** appends dedup against existing
+  entries, but the doc will still drift/bloat. Periodic agent "compaction"
+  pass to merge near-duplicates and prune stale rules, or leave curation
+  fully manual?
+- **AI-review model & cost (Epic E):** the diff review and the lookback
+  distill are the token-heavy steps. Same harness as fixes, or a
+  dedicated review model? And how big a diff do we send before chunking /
+  refusing (context-window ceiling, like the batch-prompt cap)?
+- **Posting AI-review findings (Epic E):** when posting as a real GitHub
+  review, tag AMF-generated comments for honesty (subtle footer), same
+  open question as AI-drafted replies above?
 
 ## Reasoning / when to build
 

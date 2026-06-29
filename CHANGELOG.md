@@ -10,8 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.28.0] - 2026-06-29
+
 ### Added
 
+- **Run final-review fixes in a fresh session.** Press `t` in a final review to
+  choose where the "address this feedback" prompt goes when you finish: the
+  feature's existing agent pane (the default, as before) or a brand-new
+  dedicated review session — the footer shows `t target: live` / `dedicated`.
+  Pick the dedicated target and, when finishing needs to spin up that session,
+  AMF asks which harness should run it (Claude / Codex / opencode / …) so the
+  fixes run in a clean context instead of the long-running review conversation.
+  A dedicated "Final Review" session is reused on later rounds without asking
+  again. The feedback file is always written first, so skipping the harness
+  picker just leaves it for later.
 - **Multi-line comments in a final review.** A line comment can now cover a range
   of lines, not just one. With the line cursor active (`c`), press `v` to start a
   selection, extend it with `j`/`k`, then `⏎` to attach a single comment to the
@@ -94,18 +108,25 @@ are tagged.
   Press `a` to include closed/merged PRs, `#` to type a number instead (the old
   prompt is still one keypress away), and `⏎` to open the highlighted PR. The list
   is fetched in Rust via `gh pr list`, so it spends zero agent tokens.
-- **Pick the harness for the dedicated PR-review session.** The first time you fix
-  a comment against the dedicated review session, AMF now asks which agent harness
-  that session should run before spinning it up — so PR triage can run on a
-  different (e.g. cheaper or faster) harness than your working session. The picker
-  is seeded from the project's allowed harnesses with your preferred agent
-  highlighted; the choice is remembered for the rest of the PR, so you only pick
-  once. Reusing the feature's existing live session (`t`) is unaffected — it keeps
-  whatever harness that session already runs and never shows the picker.
+- **Choose which harness runs your PR-review fixes.** The first time you press
+  `f` to fix a comment in a PR, AMF now asks which agent harness the dedicated
+  review session should run — so you can triage on a cheaper or faster harness
+  than the one your feature is being built with. It highlights the project's
+  preferred agent by default; pick one with `j/k` and `⏎` (or `esc` to back
+  out). Your choice is remembered for the rest of that PR, so every later fix
+  reuses the same warm session without asking again. Only the dedicated review
+  session prompts — fixing in your existing live session keeps using whatever
+  harness it's already running.
 - Added the full Gruvbox Material UI theme family to the theme picker and
   config: dark/light, hard/medium/soft contrast, and material/mix/original
   foreground palettes. Use names like `gruvbox-material-dark-medium` or
   `gruvbox-material-original-light-soft` in `~/.config/amf/config.json`.
+
+### Changed
+
+- Embedded-view auto refresh is now configurable with `view_auto_refresh` and
+  defaults to off. Manual refresh and event-driven pane updates still work; turn
+  the setting on only if you still need periodic Claude/tmux visual repairs.
 
 ### Fixed
 

@@ -1349,6 +1349,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
 
+    if let AppMode::ReviewHarnessPick(state) = &app.mode {
+        super::dialogs::draw_review_harness_pick(frame, state, &app.theme);
+    }
+
     if let AppMode::DebugLog(state) = &app.mode {
         super::dialogs::draw_debug_log(
             frame,

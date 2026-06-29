@@ -569,20 +569,24 @@ impl App {
 
     /// Spin up the dedicated PR-review agent session: one agent window, labeled
     /// [`crate::app::pr_review::REVIEW_SESSION_LABEL`], that the PR-review pane
-    /// reuses for every fix in a PR. Runs the `agent` harness the user picked for
-    /// the PR (defaulting to the project's preferred agent) with the feature's
-    /// mode/flags, just like a picker-launched agent session, but with a fixed
-    /// label so it can be found-and-reused. Returns the new session's index in
-    /// `feature.sessions`.
+    /// reuses for every fix in a PR. Runs `harness` (the harness the user picked
+    /// for the review session) or falls back to the project's preferred agent,
+    /// with the feature's mode/flags — just like a picker-launched agent session,
+    /// but with a fixed label so it can be found-and-reused. Returns the new
+    /// session's index in `feature.sessions`.
     pub(crate) fn create_dedicated_review_session(
         &mut self,
         pi: usize,
         fi: usize,
-        agent: AgentKind,
+        label: &str,
+        harness: Option<AgentKind>,
     ) -> Result<usize> {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let repo = self.store.projects[pi].repo.clone();
+        // The caller may pin a harness (e.g. the final review prompts for one);
+        // otherwise fall back to the project's preferred agent.
+        let agent = harness.unwrap_or_else(|| self.store.projects[pi].preferred_agent.clone());
         let kind = session_kind_for_agent(&agent);
 
         // Resolve before the mutable borrow of `feature` below.
@@ -614,10 +618,7 @@ impl App {
         ensure_notification_hooks(&workdir, &repo, &mode, &agent, feature.is_worktree);
         ensure_review_claude_md(&workdir, feature.review);
 
-        let session = feature.add_session_named(
-            kind.clone(),
-            crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
-        );
+        let session = feature.add_session_named(kind.clone(), label.to_string());
         let window = session.tmux_window.clone();
 
         self.tmux

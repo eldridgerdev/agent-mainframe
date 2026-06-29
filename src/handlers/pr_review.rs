@@ -89,15 +89,16 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
     Ok(())
 }
 
-/// Key handling while the harness picker is open (before the first fix spins up
-/// the dedicated review session): `j/k` move, `⏎` choose and continue to the fix
-/// confirm dialog, `esc`/`q` cancel.
+/// Key handling while the dedicated-review harness picker is open.
+///
+/// `j/k` (or arrows) move the highlight, `⏎` picks the harness and continues to
+/// the fix confirm dialog, `esc`/`q` cancels (aborts this fix).
 fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
-        KeyCode::Down | KeyCode::Char('j') => app.pr_review_harness_pick_next(),
-        KeyCode::Up | KeyCode::Char('k') => app.pr_review_harness_pick_prev(),
-        KeyCode::Enter => app.pr_review_confirm_harness_pick(),
-        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_harness_pick(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_harness_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_harness_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_harness_pick_move(-1),
+        KeyCode::Enter => app.pr_review_harness_pick_confirm(),
         _ => {}
     }
     Ok(())

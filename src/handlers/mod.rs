@@ -34,7 +34,7 @@ pub use dialog::{
     handle_markdown_viewer_key, handle_rename_feature_key, handle_rename_session_key,
     handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
-pub use diff::handle_diff_viewer_key;
+pub use diff::{handle_diff_viewer_key, handle_review_harness_pick_key};
 pub use pr_review::{
     handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
     handle_pr_review_loading_key,
@@ -126,5 +126,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::MarkdownViewer(_) => handle_markdown_viewer_key(app, key),
         AppMode::HarnessSetup(_) => handle_harness_setup_key(app, key.code),
         AppMode::ConfigWizard(_) => handle_config_wizard_key(app, key),
+        AppMode::ReviewHarnessPick(_) => handle_review_harness_pick_key(app, key.code),
     }
 }

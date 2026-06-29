@@ -430,6 +430,10 @@ pub struct DiffViewerState {
     /// Whether a prior review snapshot existed when this review opened. Lets the
     /// UI and the filter cycle distinguish a first review from a re-review.
     pub has_prior_review: bool,
+    /// Where a finished review's "address this feedback" prompt is dispatched:
+    /// the feature's existing agent pane (the default, unchanged behaviour) or a
+    /// fresh dedicated review session. Toggled with `t` in the review viewer.
+    pub fix_target: crate::app::pr_review::FixTarget,
 }
 
 impl DiffViewerState {
@@ -474,6 +478,7 @@ impl DiffViewerState {
             file_filter: FileFilter::All,
             changed_since_last: std::collections::HashSet::new(),
             has_prior_review: false,
+            fix_target: crate::app::pr_review::FixTarget::ExistingLive,
         }
     }
 
@@ -1114,6 +1119,16 @@ pub struct PrReviewState {
     pub hide_resolved: bool,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// Harness chosen for the dedicated review session, picked once before the
+    /// first fix is injected and reused for the rest of the PR. `None` until the
+    /// user picks (or when the dedicated session already exists / isn't the
+    /// target). Lets PR triage run on a different harness than the feature's
+    /// working session.
+    pub review_harness: Option<AgentKind>,
+    /// When `Some`, the harness picker is open over the pane: the user is
+    /// choosing which agent harness the dedicated review session will run before
+    /// the first fix is injected.
+    pub harness_pick: Option<HarnessPickState>,
     /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
     /// the assembled (and editable) prompt awaiting the user's approval before
     /// it is injected into the agent session.
@@ -1143,6 +1158,18 @@ pub struct HarnessPickState {
     pub selected: usize,
     /// The project's preferred agent, marked `(default)` in the list.
     pub current: AgentKind,
+}
+
+/// Single-select harness picker shown before the dedicated PR-review session is
+/// spun up, so the user can run triage fixes on a different harness than the
+/// feature's working session. Highlights the project's preferred agent by
+/// default.
+#[derive(Debug, Clone)]
+pub struct HarnessPickState {
+    /// The harnesses to choose from (the repo's allowed agents).
+    pub agents: Vec<AgentKind>,
+    /// Index into `agents` of the highlighted choice.
+    pub selected: usize,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either
@@ -1271,6 +1298,26 @@ pub enum AppMode {
     CreatingBatchFeatures(CreateBatchFeaturesState),
     HarnessSetup(HarnessSetupState),
     ConfigWizard(ConfigWizardState),
+    /// Choosing which harness runs a fresh dedicated session for a finished
+    /// review's fixes (only shown when the dedicated fix target is selected and
+    /// no review session exists yet). The feedback file is already written; this
+    /// only governs where the "address the feedback" prompt is dispatched.
+    ReviewHarnessPick(ReviewHarnessPickState),
+}
+
+/// Pending dispatch of a finished review's feedback to a freshly-spun-up
+/// dedicated agent session, paused on the harness choice.
+pub struct ReviewHarnessPickState {
+    /// Project / feature indices the dedicated session is created under.
+    pub pi: usize,
+    pub fi: usize,
+    /// The finish summary shown after the prompt is dispatched.
+    pub summary: String,
+    /// The feature view to return to once dispatch completes or is cancelled.
+    pub from_view: ViewState,
+    /// Harnesses offered to the reviewer (the project's enabled harnesses).
+    pub harnesses: Vec<crate::project::AgentKind>,
+    pub selected: usize,
 }
 
 #[derive(Debug, Clone)]

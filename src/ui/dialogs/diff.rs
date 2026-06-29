@@ -1080,6 +1080,16 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Style::default().fg(theme.info.to_color()),
         ));
     }
+    second_line.push(key("t"));
+    let (target_label, target_color) = match state.fix_target {
+        crate::app::pr_review::FixTarget::DedicatedReview => {
+            (" target: dedicated  ", theme.info.to_color())
+        }
+        crate::app::pr_review::FixTarget::ExistingLive => {
+            (" target: live  ", theme.text_muted.to_color())
+        }
+    };
+    second_line.push(Span::styled(target_label, Style::default().fg(target_color)));
     second_line.push(key("q"));
     second_line.push(Span::raw(" finish review (writes feedback)"));
 

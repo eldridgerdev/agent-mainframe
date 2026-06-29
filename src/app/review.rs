@@ -4,6 +4,20 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::app::pr_review::FixTarget;
+
+/// Label (and de-facto identity) of the dedicated final-review agent session.
+/// Found-or-created by this label so re-running the review reuses the same
+/// window. Kept distinct from PR review's "PR Review" session so the two
+/// dedicated targets never collide on one feature.
+pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
+
+/// The prompt dispatched to the agent after a review finishes, asking it to act
+/// on the feedback file's most recent round.
+const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes in \
+     .claude/final-review-feedback.md. Read that file and address every item in the most recent \
+     review round (the first \"## Review\" section); earlier sections are prior rounds kept for \
+     history.";
 
 /// The resumable parts of an in-flight final review, persisted to
 /// `.claude/final-review-progress.json` so a long review can be paused
@@ -831,10 +845,34 @@ impl App {
         self.message = Some(msg);
     }
 
+    /// Toggle where a finished review's "address the feedback" prompt is
+    /// dispatched: the feature's existing agent pane (default) or a fresh
+    /// dedicated review session (the reviewer picks the harness at finish).
+    pub fn diff_review_toggle_fix_target(&mut self) {
+        let msg = if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            state.fix_target = match state.fix_target {
+                FixTarget::ExistingLive => FixTarget::DedicatedReview,
+                FixTarget::DedicatedReview => FixTarget::ExistingLive,
+            };
+            match state.fix_target {
+                FixTarget::DedicatedReview => {
+                    "Fixes will run in a fresh dedicated review session (you'll pick the harness)"
+                }
+                FixTarget::ExistingLive => "Fixes go to the feature's existing agent session",
+            }
+        } else {
+            return;
+        };
+        self.message = Some(msg.to_string());
+    }
+
     /// Finish the review: write `.claude/final-review-feedback.md` for any
     /// rejected files and return to the feature view with a summary message.
     pub fn finish_final_review(&mut self) -> Result<()> {
-        let (workdir, files, decisions, line_comments, general_feedback, from_view) =
+        let (workdir, files, decisions, line_comments, general_feedback, from_view, fix_target) =
             match std::mem::replace(&mut self.mode, AppMode::Normal) {
                 AppMode::DiffViewer(state) => (
                     state.workdir,
@@ -843,6 +881,7 @@ impl App {
                     state.line_comments,
                     state.general_feedback,
                     state.from_view,
+                    state.fix_target,
                 ),
                 AppMode::DiffViewerLoading(state) => {
                     // Diff not loaded yet; nothing to summarize.
@@ -893,28 +932,6 @@ impl App {
             }
         }
 
-        // The feature's agent session/window, so we can prompt it to act on the
-        // feedback. Resolved before touching self.tmux to avoid borrow overlap.
-        let agent_target: Option<(String, String)> = self
-            .store
-            .projects
-            .iter()
-            .find(|p| p.name == from_view.project_name)
-            .and_then(|p| p.features.iter().find(|f| f.name == from_view.feature_name))
-            .and_then(|f| {
-                f.sessions
-                    .iter()
-                    .find(|s| {
-                        matches!(
-                            s.kind,
-                            crate::project::SessionKind::Claude
-                                | crate::project::SessionKind::Opencode
-                                | crate::project::SessionKind::Codex
-                        )
-                    })
-                    .map(|s| (f.tmux_session.clone(), s.tmux_window.clone()))
-            });
-
         if rejected.is_empty() && general_feedback.is_empty() && line_comment_sections.is_empty() {
             self.message = Some(if total == 0 {
                 "Final review: no changes against the base branch".to_string()
@@ -928,7 +945,10 @@ impl App {
                     }
                 )
             });
-        } else {
+            self.mode = AppMode::Viewing(from_view);
+            return Ok(());
+        }
+        {
             let path = workdir.join(".claude").join("final-review-feedback.md");
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -982,64 +1002,205 @@ impl App {
 
             let out = compose_feedback_log(std::fs::read_to_string(&path).ok().as_deref(), &round);
 
-            self.message = Some(match std::fs::write(&path, out) {
-                Ok(()) => {
-                    let comment_note = if line_comment_count > 0 {
-                        format!(", {line_comment_count} line comment(s)")
-                    } else {
-                        String::new()
-                    };
-                    let summary = format!(
-                        "Final review: {approved} approved, {} need work, {skipped} skipped\
-                         {comment_note} — feedback saved to .claude/final-review-feedback.md",
-                        rejected.len()
-                    );
-                    let agent_msg = match &agent_target {
-                        Some((session, window)) => {
-                            let prompt = "A reviewer left feedback on these changes in \
-                                 .claude/final-review-feedback.md. Read that file and address \
-                                 every item in the most recent review round (the first \
-                                 \"## Review\" section); earlier sections are prior rounds kept \
-                                 for history.";
-                            let submit = self.config.final_review_submit_prompt;
-                            let pasted = self.tmux.paste_text(session, window, prompt).and_then(
-                                |()| {
-                                    if submit {
-                                        self.tmux.send_key_name(session, window, "Enter")
-                                    } else {
-                                        Ok(())
-                                    }
-                                },
-                            );
-                            match pasted {
-                                Ok(()) if submit => format!("{summary} — sent to agent"),
-                                Ok(()) => format!("{summary} — pasted to agent (not submitted)"),
-                                Err(e) => format!("{summary} (couldn't prompt agent: {e})"),
-                            }
-                        }
-                        None => summary,
-                    };
-                    // Optionally mirror the feedback onto the branch's GitHub PR
-                    // as a review (best-effort; the local file is the source of
-                    // truth either way).
-                    let pr_note = if post_to_pr {
-                        self.post_final_review_to_pr(
-                            &workdir,
-                            &rejected,
-                            &line_comment_sections,
-                            &general_feedback,
-                        )
-                    } else {
-                        String::new()
-                    };
-                    format!("{agent_msg}{pr_note}")
-                }
-                Err(e) => format!("Final review: failed to write feedback file: {e}"),
-            });
+            if let Err(e) = std::fs::write(&path, out) {
+                self.message = Some(format!("Final review: failed to write feedback file: {e}"));
+                self.mode = AppMode::Viewing(from_view);
+                return Ok(());
+            }
+
+            let comment_note = if line_comment_count > 0 {
+                format!(", {line_comment_count} line comment(s)")
+            } else {
+                String::new()
+            };
+            let summary = format!(
+                "Final review: {approved} approved, {} need work, {skipped} skipped\
+                 {comment_note} — feedback saved to .claude/final-review-feedback.md",
+                rejected.len()
+            );
+            // Optionally mirror the feedback onto the branch's GitHub PR as a
+            // review (best-effort; the local file is the source of truth either
+            // way).
+            let pr_note = if post_to_pr {
+                self.post_final_review_to_pr(
+                    &workdir,
+                    &rejected,
+                    &line_comment_sections,
+                    &general_feedback,
+                )
+            } else {
+                String::new()
+            };
+            // Dispatch the "address the feedback" prompt to the chosen target.
+            // This sets `self.message` and `self.mode` (it may open the harness
+            // picker when a fresh dedicated session is needed).
+            self.dispatch_review_feedback(from_view, format!("{summary}{pr_note}"), fix_target);
+        }
+        Ok(())
+    }
+
+    /// Dispatch a finished review's "address the feedback" prompt to the agent
+    /// session chosen by `fix_target`, then return to the feature view. For the
+    /// existing-pane target this pastes into the feature's first agent session
+    /// (the shipped behaviour). For the dedicated target it reuses an existing
+    /// "Final Review" session, or — when none exists — opens the harness picker
+    /// so the reviewer chooses which harness runs the fixes. Sets `self.message`
+    /// and `self.mode`.
+    fn dispatch_review_feedback(
+        &mut self,
+        from_view: ViewState,
+        summary: String,
+        fix_target: FixTarget,
+    ) {
+        let indices = self.store.projects.iter().enumerate().find_map(|(pi, p)| {
+            if p.name != from_view.project_name {
+                return None;
+            }
+            p.features
+                .iter()
+                .position(|f| f.name == from_view.feature_name)
+                .map(|fi| (pi, fi))
+        });
+        let Some((pi, fi)) = indices else {
+            self.message = Some(summary);
+            self.mode = AppMode::Viewing(from_view);
+            return;
+        };
+
+        let feature = &self.store.projects[pi].features[fi];
+        let tmux_session = feature.tmux_session.clone();
+        let target_window = crate::app::pr_review::fix_session_index(
+            feature,
+            fix_target,
+            FINAL_REVIEW_SESSION_LABEL,
+        )
+        .map(|si| feature.sessions[si].tmux_window.clone());
+
+        if let Some(window) = target_window {
+            let suffix = self.paste_review_prompt(&tmux_session, &window);
+            self.message = Some(format!("{summary}{suffix}"));
+            self.mode = AppMode::Viewing(from_view);
+            return;
         }
 
+        match fix_target {
+            // No agent session to paste into — report and stop (shipped
+            // behaviour for a feature whose agent isn't running).
+            FixTarget::ExistingLive => {
+                self.message = Some(summary);
+                self.mode = AppMode::Viewing(from_view);
+            }
+            // A dedicated session must be spun up; let the reviewer pick which
+            // harness runs the fixes before it is created.
+            FixTarget::DedicatedReview => {
+                let harnesses = if self.store.available_harnesses.is_empty() {
+                    vec![self.store.projects[pi].preferred_agent.clone()]
+                } else {
+                    self.store.available_harnesses.clone()
+                };
+                self.mode = AppMode::ReviewHarnessPick(ReviewHarnessPickState {
+                    pi,
+                    fi,
+                    summary,
+                    from_view,
+                    harnesses,
+                    selected: 0,
+                });
+            }
+        }
+    }
+
+    /// Paste the address-feedback prompt into a resolved agent window,
+    /// submitting (sending Enter) when configured. Returns a short status suffix
+    /// for the finish message.
+    fn paste_review_prompt(&mut self, session: &str, window: &str) -> String {
+        let submit = self.config.final_review_submit_prompt;
+        let pasted = self
+            .tmux
+            .paste_text(session, window, REVIEW_FEEDBACK_PROMPT)
+            .and_then(|()| {
+                if submit {
+                    self.tmux.send_key_name(session, window, "Enter")
+                } else {
+                    Ok(())
+                }
+            });
+        match pasted {
+            Ok(()) if submit => " — sent to agent".to_string(),
+            Ok(()) => " — pasted to agent (not submitted)".to_string(),
+            Err(e) => format!(" (couldn't prompt agent: {e})"),
+        }
+    }
+
+    /// Move the harness-pick selection by `delta` (negative = up), wrapping.
+    pub fn review_harness_pick_move(&mut self, delta: isize) {
+        if let AppMode::ReviewHarnessPick(state) = &mut self.mode {
+            let n = state.harnesses.len();
+            if n == 0 {
+                return;
+            }
+            let cur = state.selected as isize;
+            state.selected = (cur + delta).rem_euclid(n as isize) as usize;
+        }
+    }
+
+    /// Confirm the harness pick: create the dedicated review session under the
+    /// chosen harness, paste the feedback prompt, and return to the feature view.
+    pub fn review_harness_pick_select(&mut self) -> Result<()> {
+        let (pi, fi, harness, summary, from_view) = match &self.mode {
+            AppMode::ReviewHarnessPick(state) => {
+                let Some(harness) = state.harnesses.get(state.selected).cloned() else {
+                    return Ok(());
+                };
+                (
+                    state.pi,
+                    state.fi,
+                    harness,
+                    state.summary.clone(),
+                    state.from_view.clone(),
+                )
+            }
+            _ => return Ok(()),
+        };
+
+        let si = match self.create_dedicated_review_session(
+            pi,
+            fi,
+            FINAL_REVIEW_SESSION_LABEL,
+            Some(harness),
+        ) {
+            Ok(si) => si,
+            Err(e) => {
+                self.show_error(e);
+                self.message =
+                    Some(format!("{summary} (feedback saved; couldn't start review session)"));
+                self.mode = AppMode::Viewing(from_view);
+                return Ok(());
+            }
+        };
+
+        let (tmux_session, window) = {
+            let feature = &self.store.projects[pi].features[fi];
+            (
+                feature.tmux_session.clone(),
+                feature.sessions[si].tmux_window.clone(),
+            )
+        };
+        let suffix = self.paste_review_prompt(&tmux_session, &window);
+        self.message = Some(format!("{summary}{suffix} (dedicated review session)"));
         self.mode = AppMode::Viewing(from_view);
         Ok(())
+    }
+
+    /// Cancel the harness pick: the feedback file is already written, so just
+    /// return to the feature view without prompting any agent.
+    pub fn review_harness_pick_cancel(&mut self) {
+        if let AppMode::ReviewHarnessPick(state) = &self.mode {
+            let summary = state.summary.clone();
+            let from_view = state.from_view.clone();
+            self.message = Some(format!("{summary} (feedback saved; no agent prompted)"));
+            self.mode = AppMode::Viewing(from_view);
+        }
     }
 
     /// Post a finished review's feedback onto the branch's GitHub PR as a single

@@ -573,29 +573,29 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/ui/dialogs/mod.rs`, `src/ui/dashboard.rs`, `src/ui/status.rs`,
       `src/ui/dialogs/help.rs`.
 - [x] **Pick the agent harness before the dedicated review session starts.**
-      The first `f` on the `DedicatedReview` target now opens a single-select
-      harness picker over the review pane before the session is spun up, so PR
-      triage can run on a different harness than the feature's working session
-      (e.g. a cheaper/faster model for mechanical fixes). The picker reuses the
-      shared agent-config dialog UI (`draw_agent_config_dialog`, now
-      `pub(crate)` in `src/ui/dialogs/session.rs`) seeded from the project's
-      allowed harnesses (`allowed_agents_for_repo`) with `preferred_agent` as
-      the default highlight (`normalize_agent_for_repo`). The choice is
-      remembered on `PrReviewState::review_harness` for the rest of the PR (the
-      session is created once and reused), so the picker only appears on the
-      first fix — `pr_review_needs_harness_pick` skips it once a harness is
-      chosen or a `"PR Review"` session already exists. `⏎` records the harness
-      and falls through to the existing fix confirm/edit dialog; `esc`/`q`
-      aborts the fix without picking. `create_dedicated_review_session` takes
-      the chosen `AgentKind` (resolved in `resolve_fix_session`, defaulting to
-      `preferred_agent`) instead of always reading `preferred_agent`. Only
-      applies to the dedicated target; `ExistingLive` reuses whatever harness
-      that session already runs and never shows the picker. Unit-tested (picker
-      opens on first fix and defaults to preferred; choosing remembers it and
-      seeds the fix dialog; skipped once chosen, for the live target, and
-      cancel aborts). → `src/app/pr_review.rs`, `src/app/session_ops.rs`,
+      The first `f` of a PR, for the `DedicatedReview` target, now opens a
+      single-select harness picker (`HarnessPickState` overlay on
+      `PrReviewState`, peer to `fix_confirm`/`reply`) before the fix confirm
+      dialog — so PR triage can run on a different harness than the feature's
+      working session (e.g. a cheaper/faster model for mechanical fixes). The
+      picker lists the repo's allowed agents (`allowed_agents_for_project_path`)
+      and highlights the project's `preferred_agent` by default (`j/k` move, `⏎`
+      choose, `esc` cancel/abort the fix). The choice is remembered for the rest
+      of the PR in `PrReviewState::review_harness` and threaded through
+      `resolve_fix_session` → `create_dedicated_review_session(.., harness)`
+      (which falls back to `preferred_agent` when `None`); the session is created
+      once and reused, so subsequent fixes skip the picker. Re-opening a PR whose
+      dedicated session already exists also skips it (the running session's
+      harness is inherited — `pr_review_needs_harness_pick` checks
+      `fix_session_index`). Only the dedicated target prompts; `ExistingLive`
+      reuses whatever harness that session already runs. A bespoke single-select
+      modal (`draw_harness_pick`) is used rather than the multi-toggle
+      enable/disable `HarnessSetup` dialog, which doesn't fit single selection.
+      Keybinding-help note and unit tests (picker opens on first fix + default
+      highlight; skipped once a harness is chosen; cancel aborts without
+      injecting). → `src/app/pr_review.rs`, `src/app/session_ops.rs`,
       `src/app/state.rs`, `src/handlers/pr_review.rs`,
-      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/session.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`.
 - [ ] **Upgrade the fix confirm/edit dialog editor (vim + full editing).**
       The dialog added in Epic B seeds a plain `TextEditor::new(prompt)` and

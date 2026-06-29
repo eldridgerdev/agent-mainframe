@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.28.0] - 2026-06-29
+
 ### Added
 
 - **Run final-review fixes in a fresh session.** Press `t` in a final review to

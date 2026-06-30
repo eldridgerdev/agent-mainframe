@@ -703,24 +703,25 @@ from the last *N* PRs) is reached from the PR entry flow:
       AMF" tag for those is worth deciding (see open question). Make the exact
       footer text a single shared helper so replies and review posts stay
       consistent. → `src/app/pr_review.rs`, `src/github.rs`.
-- [ ] **BUG: triage/reply state is lost on return (from real use).**
-      Epic B claims triage is authoritative in `pr_comment_triage` and
-      `apply_persisted_triage` overlays it onto every reload — but in
-      practice, marking a comment done / posting a reply, then starting a
-      new fix session and coming **back** to the review shows none of it
-      saved. Likely culprits to check: state is mutated in the in-memory
-      `PrReviewState` but **not flushed to SQLite before the pane is left**
-      to switch into the fix session (the `f`-marks-`Fixing` path persists,
-      but `m`/`s`/reply paths may only update memory); and/or the return
-      path **re-fetches and doesn't re-overlay** the persisted triage. It
-      also needs to survive the head-SHA key — confirm we're reading/writing
-      the triage row under the *same* `PR# + comment_id + head_sha` on both
-      sides. Repro, then make every triage/reply mutation **persist
-      immediately** (not on pane exit) and verify `apply_persisted_triage`
-      runs on the cache-hit *and* background-fetch *and* return-from-session
-      paths. Pairs with the quick-toggle item above (the round-trip is what
-      exposes the loss). → `src/app/pr_review.rs`,
-      `src/db/pr_comment_triage.rs`, `src/handlers/pr_review.rs`.
+- [x] **BUG: triage/reply state is lost on return (from real use).**
+      Root cause was the **head-SHA in the triage key**, not a missing flush:
+      `pr_review_set_triage` (`m`/`s`), the reply post path, and the
+      `f`-marks-`Fixing` path *all* already persist immediately, and
+      `apply_persisted_triage` already runs on both the cache-hit and
+      background-fetch loads. But `pr_comment_triage` was keyed by
+      `PR# + comment_id + head_sha`, and the table doc even said it "starts fresh
+      after a push moves the PR's head" — so the moment the agent's fix pushed a
+      commit, returning via `G` re-resolved the PR to a **new** head SHA and the
+      overlay looked up rows under a SHA that no longer matched, silently
+      dropping every mark. A GitHub comment id is stable across commits, so
+      triage is now keyed by `PR# + comment_id` and **survives a push**;
+      `head_sha` is kept only as an informational record of the last SHA a mark
+      was set under (migration **010** rebuilds the table with the new primary
+      key, collapsing any per-SHA duplicates to the most-recently-updated row,
+      and `load` drops the SHA filter). Unit-tested: the SHA-change survival at
+      the DB layer, and the 009→010 migration collapse + new-PK enforcement. →
+      `src/db/migrations.rs`, `src/db/pr_comment_triage.rs`, `src/db/mod.rs`,
+      `src/app/pr_review.rs`.
 - **Acceptance:** a 30-comment bot-heavy PR can be triaged quickly with
   measurably lower token spend than copy-paste round-trips.
 

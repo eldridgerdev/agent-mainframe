@@ -597,14 +597,15 @@ impl App {
 
     /// Overlay the persisted local triage (`Fixing`/`Done`/skip notes) onto a
     /// freshly-loaded review. The `pr_comment_triage` table — keyed by
-    /// `PR# + head SHA + comment id` — is authoritative for local triage, so it
-    /// wins over whatever the cache blob happened to serialize. A read failure
-    /// (or no DB) is non-fatal: comments just stay [`TriageState::Untriaged`].
+    /// `PR# + comment id` (not the head SHA, so marks survive a push that moves
+    /// the PR's head) — is authoritative for local triage, so it wins over
+    /// whatever the cache blob happened to serialize. A read failure (or no DB)
+    /// is non-fatal: comments just stay [`TriageState::Untriaged`].
     fn apply_persisted_triage(&mut self, review: &mut PrReview) {
         let Some(db) = self.db.as_ref() else {
             return;
         };
-        let triage = match db.load_pr_comment_triage(review.pr.number, &review.pr.head_sha) {
+        let triage = match db.load_pr_comment_triage(review.pr.number) {
             Ok(map) => map,
             Err(e) => {
                 self.log_warn("pr_review", format!("triage load failed: {e}"));

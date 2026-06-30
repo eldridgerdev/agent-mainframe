@@ -303,6 +303,24 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
 }
 
+/// Build a fresh fix-confirm dialog seeded with `prompt`. The editor opens with
+/// the vim keymap when `vim` is set (the pane-level remembered preference) so
+/// reopening the dialog for another comment keeps the user's chosen keymap.
+fn new_fix_confirm(prompt: String, vim: bool) -> FixConfirmState {
+    FixConfirmState {
+        editor: if vim {
+            TextEditor::with_vim(prompt)
+        } else {
+            TextEditor::new(prompt)
+        },
+        editing: false,
+        scroll: 0,
+        // Seed the view scrolled to the cursor (end of the prompt for plain,
+        // start for vim) so a tall prompt opens somewhere sensible.
+        sync_to_cursor: true,
+    }
+}
+
 /// A fully normalized PR review: the resolved PR plus every triageable comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrReview {
@@ -546,6 +564,7 @@ impl App {
                 review_harness: None,
                 harness_pick: None,
                 fix_confirm: None,
+                fix_vim_enabled: false,
                 reply: None,
             });
             return;
@@ -917,6 +936,7 @@ impl App {
                             review_harness: None,
                             harness_pick: None,
                             fix_confirm: None,
+                            fix_vim_enabled: false,
                             reply: None,
                         });
                     }
@@ -1027,10 +1047,8 @@ impl App {
             return;
         };
         let prompt = comment.fix_prompt();
-        state.fix_confirm = Some(FixConfirmState {
-            editor: TextEditor::new(prompt),
-            editing: false,
-        });
+        let vim = state.fix_vim_enabled;
+        state.fix_confirm = Some(new_fix_confirm(prompt, vim));
     }
 
     /// Whether the first `f` should pick a harness before injecting: only for
@@ -1088,10 +1106,9 @@ impl App {
                 self.message = Some("No comment selected".into());
                 return;
             };
-            state.fix_confirm = Some(FixConfirmState {
-                editor: TextEditor::new(comment.fix_prompt()),
-                editing: false,
-            });
+            let prompt = comment.fix_prompt();
+            let vim = state.fix_vim_enabled;
+            state.fix_confirm = Some(new_fix_confirm(prompt, vim));
         }
     }
 
@@ -1182,16 +1199,64 @@ impl App {
     }
 
     /// Forward a key to the open fix-prompt editor (only meaningful in edit
-    /// mode). Returns `true` when a dialog editor consumed the key.
+    /// mode). Returns `true` when a dialog editor consumed the key. Requests a
+    /// cursor-follow scroll when the edit moved the cursor or changed the text.
     pub fn pr_review_fix_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(confirm) = &mut state.fix_confirm
             && confirm.editing
         {
-            confirm.editor.handle_key(key);
+            let outcome = confirm.editor.handle_key(key);
+            if outcome.text_changed || outcome.cursor_moved {
+                confirm.sync_to_cursor = true;
+            }
             return true;
         }
         false
+    }
+
+    /// Toggle the vim keymap on the open fix-prompt editor, remembering the
+    /// choice on the pane so reopening the dialog keeps it. No-op when closed.
+    pub fn pr_review_fix_toggle_vim(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(confirm) = &mut state.fix_confirm else {
+            return;
+        };
+        confirm.editor.toggle_vim();
+        confirm.sync_to_cursor = true;
+        let on = confirm.editor.vim_mode().is_some();
+        state.fix_vim_enabled = on;
+        self.message = Some(if on {
+            "Vim mode enabled".into()
+        } else {
+            "Vim mode disabled".into()
+        });
+    }
+
+    /// Scroll the fix-prompt editor by `delta` visual rows (positive = down).
+    /// Clears cursor-follow so the user can scroll away from the cursor; the
+    /// final clamp to content happens during rendering.
+    pub fn pr_review_fix_scroll(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.scroll = confirm.scroll.saturating_add_signed(delta);
+            confirm.sync_to_cursor = false;
+        }
+    }
+
+    /// The vim mode of the open fix-prompt editor, or `None` when the dialog is
+    /// closed or the editor is in plain (non-vim) mode. Drives `Esc` handling
+    /// (vim consumes `Esc` for Insert→Normal) and the dialog's mode label.
+    pub fn pr_review_fix_vim_mode(&self) -> Option<crate::editor::VimMode> {
+        match &self.mode {
+            AppMode::PrReview(state) => {
+                state.fix_confirm.as_ref().and_then(|c| c.editor.vim_mode())
+            }
+            _ => None,
+        }
     }
 
     /// Confirm the dialog: inject the (possibly edited) prompt into the chosen

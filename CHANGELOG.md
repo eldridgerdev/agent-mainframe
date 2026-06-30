@@ -10,7 +10,19 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **A real editor for the PR-comment fix prompt.** The confirm dialog that
+  shows the scoped fix before it's injected (press `f` while reviewing PR
+  comments, then `e` to edit) is now a full editor instead of a plain text
+  box. Toggle **vim keys** with `Ctrl+V` — the choice sticks for the rest of
+  the PR, so reopening the dialog for the next comment keeps your keymap, and
+  the title shows `· vim insert` / `· vim normal` so you know whether `Esc`
+  leaves the dialog or just drops to normal mode. Long prompts now **scroll**
+  (`Ctrl+J`/`Ctrl+K`, `PgUp`/`PgDn`, with a scrollbar) and follow the cursor as
+  you type, and you get undo/redo and word motions for free. **`Tab` injects**
+  the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
+  still injects from the confirm view.
 
 ## [v0.28.0] - 2026-06-29
 

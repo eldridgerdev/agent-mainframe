@@ -273,9 +273,14 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     } else {
         "h hide-resolved"
     };
+    // The batch hint shows the marked count so the user knows `F` has a set.
+    let batch_hint = match state.marked.len() {
+        0 => "space mark".to_string(),
+        n => format!("space mark · F fix-marked({n})"),
+    };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
@@ -574,7 +579,11 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
 
     let mut items: Vec<ListItem> = visible
         .iter()
-        .map(|&i| ListItem::new(comment_list_line(&state.review.comments[i], theme)))
+        .map(|&i| {
+            let comment = &state.review.comments[i];
+            let is_marked = state.marked.contains(&comment.id);
+            ListItem::new(comment_list_line(comment, is_marked, theme))
+        })
         .collect();
 
     let hidden = state.hidden_resolved_count();
@@ -600,10 +609,12 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// One row in the comment list: a local-triage checkbox, a resolution marker,
-/// location, author, snippet.
-fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
+/// One row in the comment list: a batch-mark dot, a local-triage checkbox, a
+/// resolution marker, location, author, snippet.
+fn comment_list_line<'a>(c: &'a PrComment, is_marked: bool, theme: &Theme) -> Line<'a> {
     let marker = if c.is_resolved { "✓" } else { " " };
+    // A leading `●` flags comments marked (space) for the `F` batch fix.
+    let mark = if is_marked { "●" } else { " " };
     let location = match (&c.path, c.line) {
         (Some(path), Some(line)) => format!("{path}:{line}"),
         (Some(path), None) => path.clone(),
@@ -617,6 +628,10 @@ fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     };
 
     Line::from(vec![
+        Span::styled(
+            format!("{mark} "),
+            Style::default().fg(theme.warning.to_color()),
+        ),
         Span::styled(
             format!("[{}] ", c.triage.marker()),
             Style::default().fg(triage_color(c.triage, theme)),
@@ -930,7 +945,8 @@ fn shared_prefix_len(content: &str, other: &str) -> usize {
 fn marker_legend(theme: &Theme) -> Line<'static> {
     let muted = Style::default().fg(theme.text_muted.to_color());
     Line::from(vec![
-        Span::styled(" ✓ resolved", Style::default().fg(theme.success.to_color())),
+        Span::styled(" ● marked", Style::default().fg(theme.warning.to_color())),
+        Span::styled("   ✓ resolved", Style::default().fg(theme.success.to_color())),
         Span::styled("   [outdated] line moved", Style::default().fg(theme.warning.to_color())),
         Span::styled("   bot/human", muted),
         Span::styled("   triage: ", muted),

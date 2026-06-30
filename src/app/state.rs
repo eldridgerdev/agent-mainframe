@@ -1141,6 +1141,11 @@ pub struct PrReviewState {
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
+    /// Comment ids marked (with `space`) for a batch fix. `F` queues every
+    /// marked comment's fix prompt into the dedicated review session in one
+    /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
+    /// shifting the visible rows. Cleared once the batch is queued.
+    pub marked: std::collections::HashSet<u64>,
 }
 
 /// Single-select harness picker shown before the dedicated PR-review session is

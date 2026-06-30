@@ -63,6 +63,13 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Feature TODOs](feature-todos-plan.md) — _Ready._ A per-project TODO
+  list added as a `SessionKind::Todos` session via the `S` picker (one
+  per project, native UI, SQLite-backed). Each TODO carries priority,
+  notes, done state, and a link to a spawned session; highlight one to
+  launch a fresh agent in the host feature with an editable, pre-filled
+  composer prompt. Includes reorder, a "left off here" carry-over note,
+  and quick-capture from any session view.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

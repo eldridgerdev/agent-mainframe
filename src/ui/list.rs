@@ -487,6 +487,17 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                                 Style::default().fg(theme.session_icon_custom.to_color()),
                             )
                         }
+                        SessionKind::Todos => {
+                            let icon = if app.config.nerd_font {
+                                "\u{f0ae} "
+                            } else {
+                                "= "
+                            };
+                            Span::styled(
+                                icon,
+                                Style::default().fg(theme.session_icon_custom.to_color()),
+                            )
+                        }
                     };
 
                     let name_style = if is_selected {

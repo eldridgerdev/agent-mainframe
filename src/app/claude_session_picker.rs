@@ -334,6 +334,8 @@ impl App {
                         )?;
                     }
                 }
+                // Native overlay, no tmux window to (re)launch.
+                SessionKind::Todos => {}
             }
         }
 

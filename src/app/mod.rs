@@ -32,6 +32,7 @@ mod steering;
 mod switcher;
 mod sync;
 mod syntax;
+mod todos;
 pub(crate) mod toast;
 pub mod util;
 mod view;
@@ -3068,6 +3069,7 @@ fn session_kind_signature(session_kind: Option<&SessionKind>) -> u8 {
         Some(SessionKind::Nvim) => 6,
         Some(SessionKind::Vscode) => 7,
         Some(SessionKind::Custom) => 8,
+        Some(SessionKind::Todos) => 9,
         None => 0,
     }
 }

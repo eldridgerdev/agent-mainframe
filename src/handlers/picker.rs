@@ -1056,7 +1056,10 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                         app.mode = AppMode::SessionPicker(state);
                         return Ok(());
                     }
-                    if builtin.kind == SessionKind::Vscode {
+                    // VSCode and TODOs are added directly, with no name prompt:
+                    // VSCode launches an external editor, and TODOs has a fixed
+                    // label with at most one per project.
+                    if matches!(builtin.kind, SessionKind::Vscode | SessionKind::Todos) {
                         match app.add_builtin_session(state.pi, state.fi, builtin.kind.clone()) {
                             Ok(()) => {
                                 app.push_toast_success(format!("Added '{}'", builtin.label));

@@ -12,6 +12,17 @@ are tagged.
 
 ### Added
 
+- **Per-project TODO lists.** Add a `TODOs` session from the session picker
+  (`s`) to keep a running to-do list for a project — somewhere to jot what's
+  left and where you left off instead of holding it in your head. It opens a
+  native full-screen list (no tmux pane) with a "left off here" note at the
+  top, and each project gets at most one list, shared across all its features.
+  Inside the list: `a` add, `e` edit a title, `o` edit longer notes on an item,
+  `space` toggle done (completed items get a strikethrough and sink to the
+  bottom, never auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete
+  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. The
+  list is saved per checkout, so it survives restarts. Spawning an agent
+  straight from a TODO and quick-capture from other sessions are still to come.
 - **Fix several PR comments in one pass.** While reviewing PR comments, press
   `space` to mark comments (a `●` flags them, and the footer shows how many),
   then `F` to queue a scoped fix for every marked comment into the review

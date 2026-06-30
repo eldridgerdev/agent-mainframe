@@ -6964,6 +6964,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
     });
 }
@@ -7040,6 +7041,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
     });
 }
@@ -7203,6 +7205,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
     });
 }
@@ -7338,6 +7341,57 @@ fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
     assert_eq!(app.pr_review_fix_editing(), Some(false));
     app.pr_review_cancel_fix();
     assert_eq!(app.pr_review_fix_editing(), None);
+}
+
+#[test]
+fn pr_review_fix_vim_toggle_persists_across_reopen() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    // Default keymap is plain.
+    app.pr_review_open_fix_confirm();
+    assert!(app.pr_review_fix_vim_mode().is_none());
+
+    // Toggling vim flips the editor and the remembered pane preference.
+    app.pr_review_fix_toggle_vim();
+    assert!(app.pr_review_fix_vim_mode().is_some());
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.fix_vim_enabled),
+        _ => unreachable!(),
+    }
+
+    // Closing and reopening the dialog (e.g. for another comment) keeps vim on.
+    app.pr_review_cancel_fix();
+    app.pr_review_open_fix_confirm();
+    assert!(
+        app.pr_review_fix_vim_mode().is_some(),
+        "reopened dialog should remember the vim choice"
+    );
+
+    // Toggling back off is likewise remembered.
+    app.pr_review_fix_toggle_vim();
+    app.pr_review_cancel_fix();
+    app.pr_review_open_fix_confirm();
+    assert!(app.pr_review_fix_vim_mode().is_none());
+}
+
+#[test]
+fn pr_review_fix_scroll_moves_offset_and_clears_cursor_follow() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+
+    app.pr_review_fix_scroll(3);
+    let confirm = pr_review_fix_confirm(&app);
+    assert_eq!(confirm.scroll, 3);
+    assert!(
+        !confirm.sync_to_cursor,
+        "an explicit scroll should stop following the cursor"
+    );
+
+    // Scrolling up saturates at zero rather than underflowing.
+    app.pr_review_fix_scroll(-10);
+    assert_eq!(pr_review_fix_confirm(&app).scroll, 0);
 }
 
 fn reply_editor_text(app: &App) -> String {

@@ -597,22 +597,30 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`.
-- [ ] **Upgrade the fix confirm/edit dialog editor (vim + full editing).**
-      The dialog added in Epic B seeds a plain `TextEditor::new(prompt)` and
-      forwards keys to it only in edit mode — enough to tweak the prompt, but
-      it lacks the niceties the other editor-backed dialogs already have.
-      Bring it up to parity: **vim keymap support** (`TextEditor::with_vim` /
-      the `toggle_vim` toggle, with a persisted `vim_enabled` choice like
-      `PlaceholderFillState`), a visible mode/cursor indicator, scroll +
-      cursor-follow for prompts taller than the dialog (reuse
-      `editor_view::sync_editor_scroll` / `editor_cursor_visual_row` instead of
-      the current non-scrolling `Paragraph`), and the standard editing affordances
-      (undo/redo, word motions — already in `TextEditor`, just not surfaced
-      here). Decide a submit gesture that coexists with multi-line editing
-      (e.g. `Ctrl-Enter` to inject vs. `Enter` for a newline) since today
-      `Enter` only injects from the confirm view, not edit mode. → `src/app/state.rs`
-      (`FixConfirmState`), `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
-      `src/ui/dialogs/pr_review.rs`.
+- [x] **Upgrade the fix confirm/edit dialog editor (vim + full editing).**
+      The dialog added in Epic B seeded a plain `TextEditor::new(prompt)` and
+      forwarded keys to it only in edit mode; it now has the niceties the other
+      editor-backed dialogs already have. **Vim keymap support** via `Ctrl+V`
+      (`TextEditor::toggle_vim`), with the choice **persisted on the pane**
+      (`PrReviewState::fix_vim_enabled`, the same approach as
+      `PlaceholderFillState::vim_enabled`) so it survives the editor being rebuilt
+      when the dialog is reopened for another comment — a new `new_fix_confirm`
+      helper seeds `with_vim`/`new` from that flag. The active keymap shows in the
+      dialog **title** (`· vim insert`/`· vim normal`) and the footer hints adapt
+      (under vim, `Ctrl+Q` returns to the confirm view since `Esc` is consumed for
+      Insert→Normal; in plain mode `Esc` does it). **Scroll + cursor-follow** for
+      prompts taller than the dialog reuse `editor_view::sync_editor_scroll` (a
+      `scroll`/`sync_to_cursor` pair on `FixConfirmState`, `Ctrl+J/K` and
+      `PgUp/PgDn` to scroll, a scrollbar once it overflows) instead of the old
+      non-scrolling `Paragraph`; edits/cursor moves re-follow the cursor. The
+      standard `TextEditor` affordances (undo/redo, word motions) come for free.
+      Submit gesture that coexists with multi-line editing: **`Tab` injects** from
+      edit mode (where `Enter` is a newline), while `Enter` still injects from the
+      confirm view. Keybinding-help note and unit tests (vim toggle persists
+      across reopen; scroll moves the offset and stops following the cursor). →
+      `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
+      `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [ ] **Fix several comments in one pass against the same dedicated session.**
       Per-comment reuse already works (`fix_session_index` finds the dedicated
       `"PR Review"` session by label, so every `f` reuses the same warm

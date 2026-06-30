@@ -3,12 +3,16 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 
 use crate::{
     app::pr_review::{CommentKind, PrComment},
     app::{PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState},
+    editor::VimMode,
     theme::Theme,
 };
 
@@ -288,8 +292,9 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
         draw_harness_pick(frame, pick, theme);
     }
     // Fix confirm/edit dialog overlays the pane when open.
-    if let Some(confirm) = &state.fix_confirm {
-        draw_fix_confirm(frame, confirm, state.fix_target, theme);
+    let fix_target = state.fix_target;
+    if let Some(confirm) = &mut state.fix_confirm {
+        draw_fix_confirm(frame, confirm, fix_target, theme);
     }
     // Reply dialog overlays the pane when open.
     if let Some(reply) = &state.reply {
@@ -357,15 +362,22 @@ fn draw_reply_dialog(
 /// edit it before it reaches the agent.
 fn draw_fix_confirm(
     frame: &mut Frame,
-    confirm: &crate::app::FixConfirmState,
+    confirm: &mut crate::app::FixConfirmState,
     target: crate::app::pr_review::FixTarget,
     theme: &Theme,
 ) {
     let area = super::super::dashboard::centered_rect(70, 70, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    // Surface the active keymap in the title so the user knows whether `Esc`
+    // exits the dialog or just leaves vim insert mode.
+    let mode_label = match confirm.editor.vim_mode() {
+        Some(VimMode::Insert) => " · vim insert",
+        Some(VimMode::Normal) => " · vim normal",
+        None => "",
+    };
     let block = Block::default()
-        .title(" Inject fix into agent session ")
+        .title(format!(" Inject fix into agent session{mode_label} "))
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -400,11 +412,44 @@ fn draw_fix_confirm(
         chunks[0],
     );
 
+    // Prompt body: a wrapped, scrollable editor view that follows the cursor
+    // when editing and shows a scrollbar once the prompt overflows the dialog.
+    let editor_area = chunks[2];
     let prompt_lines = super::editor_view::editor_lines(&confirm.editor, theme, "(empty prompt)");
-    frame.render_widget(
-        Paragraph::new(prompt_lines).wrap(Wrap { trim: false }),
-        chunks[2],
+    let visible_lines = editor_area.height as usize;
+    let mut wrap_width = editor_area.width as usize;
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&prompt_lines, wrap_width);
+    // Leave room for the scrollbar column when the content overflows.
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines =
+            super::editor_view::count_wrapped_editor_lines(&prompt_lines, wrap_width);
+    }
+    super::editor_view::sync_editor_scroll(
+        &confirm.editor,
+        &mut confirm.scroll,
+        &mut confirm.sync_to_cursor,
+        visible_lines,
+        wrap_width,
+        total_visual_lines,
     );
+    frame.render_widget(
+        Paragraph::new(prompt_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((confirm.scroll.min(u16::MAX as usize) as u16, 0)),
+        editor_area,
+    );
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(confirm.scroll)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, editor_area, &mut scrollbar_state);
+    }
 
     let tokens = crate::app::pr_review::estimate_tokens(confirm.editor.text());
     frame.render_widget(
@@ -416,7 +461,13 @@ fn draw_fix_confirm(
     );
 
     let hints = if confirm.editing {
-        "[esc] done editing"
+        // Under vim, Esc is consumed by the editor (Insert→Normal), so the way
+        // back to the confirm view is Ctrl+Q; in plain mode Esc does it.
+        if confirm.editor.vim_mode().is_some() {
+            "[tab] inject   [^v] vim   [^q] done editing"
+        } else {
+            "[tab] inject   [^v] vim   [esc] done editing"
+        }
     } else {
         "[⏎] inject   [e] edit   [esc] cancel"
     };

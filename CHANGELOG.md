@@ -10,6 +10,18 @@ are tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- **PR-comment triage marks no longer vanish after the agent pushes a fix.**
+  When reviewing PR comments, marking a comment done/skipped, injecting a fix,
+  or posting a reply records local triage state — but that state was keyed by
+  the PR's head commit, so as soon as a fix was pushed and you reopened the
+  review (`G`), the new head SHA meant none of your marks showed up. Triage is
+  now keyed by the comment itself and survives a push, so done/skipped/fixing
+  marks and skip notes persist across commits and re-opens. Existing triage is
+  migrated automatically (any per-commit duplicates collapse to your latest
+  mark).
+
 ### Changed
 
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that

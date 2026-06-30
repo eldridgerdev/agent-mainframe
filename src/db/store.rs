@@ -72,6 +72,7 @@ fn kind_to_str(k: &SessionKind) -> &'static str {
         SessionKind::Nvim => "nvim",
         SessionKind::Vscode => "vscode",
         SessionKind::Custom => "custom",
+        SessionKind::Todos => "todos",
     }
 }
 
@@ -84,6 +85,7 @@ fn kind_from_str(s: &str) -> SessionKind {
         "nvim" => SessionKind::Nvim,
         "vscode" => SessionKind::Vscode,
         "custom" => SessionKind::Custom,
+        "todos" => SessionKind::Todos,
         _ => SessionKind::Claude,
     }
 }

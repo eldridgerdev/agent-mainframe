@@ -7681,3 +7681,424 @@ fn re_review_no_changes_keeps_all_filter() {
         _ => panic!("expected diff viewer"),
     }
 }
+
+#[test]
+fn session_picker_offers_todos_when_project_has_none() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert!(
+                state
+                    .builtin_sessions
+                    .iter()
+                    .any(|session| session.kind == SessionKind::Todos),
+                "TODOs should be offered when the project has none"
+            );
+        }
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn session_picker_hides_todos_when_project_already_has_one() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert!(
+                !state
+                    .builtin_sessions
+                    .iter()
+                    .any(|session| session.kind == SessionKind::Todos),
+                "TODOs should be hidden once the project already has one"
+            );
+        }
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn add_builtin_session_blocks_second_todos_per_project() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    assert!(app.store.projects[0].has_todos_session());
+    let todos_count = |app: &App| {
+        app.store.projects[0]
+            .features
+            .iter()
+            .flat_map(|f| &f.sessions)
+            .filter(|s| s.kind == SessionKind::Todos)
+            .count()
+    };
+    assert_eq!(todos_count(&app), 1);
+
+    // A second attempt is rejected; still exactly one TODOs session.
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    assert_eq!(todos_count(&app), 1, "a second TODOs session must be blocked");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("This project already has a TODOs session")
+    );
+}
+
+#[test]
+fn todos_session_does_not_create_a_tmux_window() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    let session = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .find(|s| s.kind == SessionKind::Todos)
+        .expect("TODOs session should exist");
+    assert!(!session.kind.is_tmux_backed());
+    assert_eq!(session.label, "TODOs");
+}
+
+fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
+    crate::db::todos::Todo {
+        id: format!("todo-{title}"),
+        list_id: "list-1".to_string(),
+        title: title.to_string(),
+        body: None,
+        priority: crate::db::todos::TodoPriority::Med,
+        done,
+        sort_order: 0,
+        spawned_session_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+#[test]
+fn entering_todos_session_opens_native_overlay() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    // Select the TODOs session and open it.
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|s| s.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.project_name, "my-project");
+            assert_eq!(state.feature_name, "my-feat");
+            assert_eq!(state.pi, 0);
+            assert_eq!(state.fi, 0);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn closing_todos_overlay_returns_to_session_selection() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|s| s.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+
+    app.close_todos_view();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(app.selection, Selection::Session(0, 0, s) if s == si));
+}
+
+#[test]
+fn todos_navigation_wraps_around() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(TodoViewState {
+        todos: vec![
+            sample_todo("a", false),
+            sample_todo("b", false),
+            sample_todo("c", true),
+        ],
+        ..empty_todo_view()
+    });
+
+    let selected = |app: &App| match &app.mode {
+        AppMode::Todos(state) => state.selected,
+        _ => panic!("expected Todos overlay"),
+    };
+
+    app.todos_select_next();
+    assert_eq!(selected(&app), 1);
+    app.todos_select_next();
+    app.todos_select_next();
+    assert_eq!(selected(&app), 0, "next wraps from last back to first");
+    app.todos_select_prev();
+    assert_eq!(selected(&app), 2, "prev wraps from first to last");
+}
+
+#[test]
+fn todos_navigation_no_op_when_empty() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(empty_todo_view());
+
+    app.todos_select_next();
+    app.todos_select_prev();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(state.selected, 0),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+fn empty_todo_view() -> TodoViewState {
+    TodoViewState {
+        project_id: "proj-1".to_string(),
+        pi: 0,
+        fi: 0,
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        list: None,
+        todos: vec![],
+        selected: 0,
+        scroll_offset: 0,
+        editor: None,
+        pending_delete: false,
+    }
+}
+
+fn todos_app() -> App {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(empty_todo_view());
+    app
+}
+
+fn ke(code: KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+}
+
+fn type_str(app: &mut App, s: &str) {
+    for c in s.chars() {
+        crate::handlers::handle_todos_key(app, ke(KeyCode::Char(c))).unwrap();
+    }
+}
+
+fn todo_titles(app: &App) -> Vec<String> {
+    match &app.mode {
+        AppMode::Todos(state) => state.todos.iter().map(|t| t.title.clone()).collect(),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_add_via_handler_appends_and_selects() {
+    let mut app = todos_app();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    type_str(&mut app, "buy milk");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["buy milk"]);
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.selected, 0);
+            assert!(state.editor.is_none(), "editor closes after commit");
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_empty_title_is_not_added() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "   ");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(todo_titles(&app).is_empty());
+}
+
+#[test]
+fn todos_edit_title_replaces_text() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "old");
+    app.todos_commit_edit().unwrap();
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    // Clear the seeded "old" then type "new".
+    for _ in 0..3 {
+        crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Backspace)).unwrap();
+    }
+    type_str(&mut app, "new");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["new"]);
+}
+
+#[test]
+fn todos_toggle_done_sinks_item_below_open() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "a");
+    app.todos_commit_edit().unwrap();
+    app.todos_begin_add();
+    type_str(&mut app, "b");
+    app.todos_commit_edit().unwrap();
+
+    // Select "a" (index 0) and mark it done.
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.selected = 0;
+    }
+    app.todos_toggle_done().unwrap();
+
+    // Open "b" now sorts before done "a"; cursor follows "a".
+    assert_eq!(todo_titles(&app), vec!["b", "a"]);
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[1].done);
+            assert_eq!(state.selected, 1);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_cycle_priority_rotates() {
+    use crate::db::todos::TodoPriority;
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "a");
+    app.todos_commit_edit().unwrap();
+
+    let prio = |app: &App| match &app.mode {
+        AppMode::Todos(state) => state.todos[0].priority,
+        _ => panic!("expected Todos overlay"),
+    };
+    assert_eq!(prio(&app), TodoPriority::Med);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::Low);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::High);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::Med);
+}
+
+#[test]
+fn todos_reorder_moves_item() {
+    let mut app = todos_app();
+    for t in ["a", "b", "c"] {
+        app.todos_begin_add();
+        type_str(&mut app, t);
+        app.todos_commit_edit().unwrap();
+    }
+    // Select "a" (top) and move it down.
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.selected = 0;
+    }
+    app.todos_reorder(1).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["b", "a", "c"]);
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(state.selected, 1, "cursor follows moved item"),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_delete_requires_confirmation() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "doomed");
+    app.todos_commit_edit().unwrap();
+
+    // 'd' arms the confirm; 'n' cancels and keeps the item.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.pending_delete));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert_eq!(todo_titles(&app), vec!["doomed"]);
+
+    // 'd' then 'y' deletes it.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+    assert!(todo_titles(&app).is_empty());
+}
+
+#[test]
+fn todos_edit_carry_over_banner() {
+    let mut app = todos_app();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
+    type_str(&mut app, "finishing the parser");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.list.as_ref().and_then(|l| l.carry_over.as_deref()),
+                Some("finishing the parser")
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_edit_cancel_discards_changes() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "scratch");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(todo_titles(&app).is_empty());
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.editor.is_none()));
+}

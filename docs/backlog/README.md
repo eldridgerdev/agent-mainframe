@@ -63,13 +63,15 @@ doc always says exactly what remains.
 
 ## Index
 
-- [Feature TODOs](feature-todos-plan.md) — _Ready._ A per-project TODO
-  list added as a `SessionKind::Todos` session via the `S` picker (one
+- [Feature TODOs](feature-todos-plan.md) — _Partial._ A per-project TODO
+  list added as a `SessionKind::Todos` session via the `s` picker (one
   per project, native UI, SQLite-backed). Each TODO carries priority,
-  notes, done state, and a link to a spawned session; highlight one to
-  launch a fresh agent in the host feature with an editable, pre-filled
-  composer prompt. Includes reorder, a "left off here" carry-over note,
-  and quick-capture from any session view.
+  notes, and done state. Epics 1–4 shipped: persistence, the session
+  kind + tree integration, the native list view, and full editing
+  (add/edit/notes/done/priority/reorder/delete + a "left off here"
+  note). Remaining: spawning an agent from a TODO with a pre-filled
+  composer prompt (Epic 5) and quick-capture from any session view plus
+  keybinding/help wiring (Epic 6).
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.

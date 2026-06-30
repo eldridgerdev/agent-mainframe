@@ -84,12 +84,21 @@ pub enum SessionKind {
     Nvim,
     Vscode,
     Custom,
+    /// A per-project TODO list. Native AMF UI, not tmux-backed; at most one
+    /// per project. See `docs/backlog/feature-todos-plan.md`.
+    Todos,
 }
 
 impl SessionKind {
     /// Whether this window hosts one of AMF's built-in agent harnesses.
     pub fn is_agent_harness(&self) -> bool {
         matches!(self, Self::Claude | Self::Opencode | Self::Codex | Self::Pi)
+    }
+
+    /// Whether opening this session attaches to a tmux pane. `Todos` is a
+    /// native overlay with no tmux window, so this is `false` for it.
+    pub fn is_tmux_backed(&self) -> bool {
+        !matches!(self, Self::Todos)
     }
 }
 
@@ -538,6 +547,7 @@ impl Feature {
             SessionKind::Custom => {
                 format!("Custom {}", count + 1)
             }
+            SessionKind::Todos => "TODOs".to_string(),
         }
     }
 
@@ -553,6 +563,7 @@ impl Feature {
             SessionKind::Nvim => "nvim",
             SessionKind::Vscode => "vscode",
             SessionKind::Custom => "custom",
+            SessionKind::Todos => "todos",
         };
         let count = self.sessions.iter().filter(|s| s.kind == *kind).count();
         if count == 0 {
@@ -648,6 +659,23 @@ pub struct Project {
 }
 
 impl Project {
+    /// The project's TODOs session (and its host feature), if one exists.
+    /// At most one TODOs session is allowed per project, across all features.
+    pub fn todos_session(&self) -> Option<(&Feature, &FeatureSession)> {
+        self.features.iter().find_map(|feature| {
+            feature
+                .sessions
+                .iter()
+                .find(|s| s.kind == SessionKind::Todos)
+                .map(|s| (feature, s))
+        })
+    }
+
+    /// Whether the project already has a TODOs session.
+    pub fn has_todos_session(&self) -> bool {
+        self.todos_session().is_some()
+    }
+
     pub fn new(name: String, repo: PathBuf, is_git: bool, preferred_agent: AgentKind) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),

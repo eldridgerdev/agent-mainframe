@@ -53,6 +53,21 @@ impl App {
             _ => return Ok(()),
         };
 
+        // TODOs sessions open a native overlay rather than a tmux pane (there
+        // is no tmux window to attach to).
+        let is_todos = target_si
+            .and_then(|si| {
+                self.store
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.features.get(fi))
+                    .and_then(|f| f.sessions.get(si))
+            })
+            .is_some_and(|s| s.kind == SessionKind::Todos);
+        if is_todos {
+            return self.open_todos_view(pi, fi);
+        }
+
         if self.block_if_feature_pending_worktree_script(pi, fi) {
             return Ok(());
         }
@@ -998,16 +1013,23 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        if feature.sessions.len() <= 1 {
+        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        let tmux_indices: Vec<usize> = feature
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .map(|(i, _)| i)
+            .collect();
+        if tmux_indices.len() <= 1 {
             return;
         }
 
-        let current_si = feature
-            .sessions
+        let current_pos = tmux_indices
             .iter()
-            .position(|s| s.tmux_window == current_window)
+            .position(|&i| feature.sessions[i].tmux_window == current_window)
             .unwrap_or(0);
-        let next_si = (current_si + 1) % feature.sessions.len();
+        let next_si = tmux_indices[(current_pos + 1) % tmux_indices.len()];
         let next = &feature.sessions[next_si];
 
         if let AppMode::Viewing(ref mut view) = self.mode {
@@ -1045,19 +1067,26 @@ impl App {
         };
 
         let feature = &self.store.projects[pi].features[fi];
-        if feature.sessions.len() <= 1 {
+        // Only cycle tmux-backed sessions; native ones (TODOs) have no pane.
+        let tmux_indices: Vec<usize> = feature
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.kind.is_tmux_backed())
+            .map(|(i, _)| i)
+            .collect();
+        if tmux_indices.len() <= 1 {
             return;
         }
 
-        let current_si = feature
-            .sessions
+        let current_pos = tmux_indices
             .iter()
-            .position(|s| s.tmux_window == current_window)
+            .position(|&i| feature.sessions[i].tmux_window == current_window)
             .unwrap_or(0);
-        let prev_si = if current_si == 0 {
-            feature.sessions.len() - 1
+        let prev_si = if current_pos == 0 {
+            tmux_indices[tmux_indices.len() - 1]
         } else {
-            current_si - 1
+            tmux_indices[current_pos - 1]
         };
         let prev = &feature.sessions[prev_si];
 

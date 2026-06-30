@@ -700,6 +700,7 @@ impl App {
         let windows: Vec<String> = feature
             .sessions
             .iter()
+            .filter(|session| session.kind.is_tmux_backed())
             .map(|session| session.tmux_window.clone())
             .collect();
         App::resize_session_windows_for_viewport(
@@ -825,6 +826,8 @@ impl App {
                         "Enter",
                     )?;
                 }
+                // Native overlay, no tmux window to launch.
+                SessionKind::Todos => {}
             }
         }
 

@@ -1210,8 +1210,55 @@ impl PrReviewState {
     }
 }
 
+/// What an active TODOs inline edit targets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoEditTarget {
+    /// Adding a brand-new item (its title).
+    New,
+    /// Editing the selected item's title.
+    Title,
+    /// Editing the selected item's notes/detail body (multi-line).
+    Notes,
+    /// Editing the list's "left off here" carry-over banner.
+    CarryOver,
+}
+
+/// An in-progress inline edit within the TODOs overlay.
+pub struct TodoEditor {
+    pub target: TodoEditTarget,
+    pub editor: TextEditor,
+}
+
+/// State for the native TODOs overlay (`AppMode::Todos`). Holds the loaded
+/// per-project list and its items plus the cursor and any in-progress edit.
+pub struct TodoViewState {
+    /// Project that owns the list (and whose `S` picker created the session).
+    pub project_id: String,
+    /// Project / host-feature indices the TODOs session lives under, used to
+    /// resolve the session for selection on close and to host the list.
+    pub pi: usize,
+    pub fi: usize,
+    /// Display labels for the header.
+    pub project_name: String,
+    pub feature_name: String,
+    /// The loaded list (carry-over note, id). `None` when no DB is available
+    /// (e.g. tests) — the overlay then shows an empty list.
+    pub list: Option<crate::db::todos::TodoList>,
+    /// Items in display order (open first, then by sort_order).
+    pub todos: Vec<crate::db::todos::Todo>,
+    /// Cursor into `todos`.
+    pub selected: usize,
+    /// Vertical scroll offset into the list area.
+    pub scroll_offset: usize,
+    /// Active inline edit, if any (add/edit title/notes/carry-over).
+    pub editor: Option<TodoEditor>,
+    /// Set when a delete is awaiting y/n confirmation.
+    pub pending_delete: bool,
+}
+
 pub enum AppMode {
     Normal,
+    Todos(TodoViewState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     DeletingProject(String),

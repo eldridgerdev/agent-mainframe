@@ -907,6 +907,13 @@ pub fn draw_session_switcher(
                         Style::default().fg(theme.session_icon_custom.to_color()),
                     )
                 }
+                SessionKind::Todos => {
+                    let icon = if nerd_font { "  \u{f0ae} " } else { "  = " };
+                    Span::styled(
+                        icon,
+                        Style::default().fg(theme.session_icon_custom.to_color()),
+                    )
+                }
             };
 
             let name_style = if is_selected {
@@ -1519,6 +1526,13 @@ pub fn draw_session_picker(
                     "  V ",
                     Style::default().fg(theme.session_icon_vscode.to_color()),
                 ),
+                crate::project::SessionKind::Todos => {
+                    let icon = if nerd_font { "  \u{f0ae} " } else { "  = " };
+                    Span::styled(
+                        icon,
+                        Style::default().fg(theme.session_icon_custom.to_color()),
+                    )
+                }
                 _ => Span::styled("    ", Style::default().fg(theme.text_muted.to_color())),
             };
 

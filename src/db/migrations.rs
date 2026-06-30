@@ -49,6 +49,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist local PR comment triage state (fixing/done/…)",
             MIGRATION_009,
         ),
+        (
+            "Add todo_lists + todos tables for per-project TODO lists",
+            MIGRATION_010,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -161,6 +165,39 @@ CREATE TABLE IF NOT EXISTS pr_comment_triage (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
     ON pr_comment_triage(updated_at);
+";
+
+// NOTE: `todo_lists.project_id` / `feature_id` are deliberately plain TEXT
+// columns with NO foreign-key reference to projects/features. `store::save`
+// does a full `DELETE FROM projects` replace on every save, which would
+// cascade-wipe these rows if they were FK-bound. Cleanup on project/feature
+// deletion is therefore handled explicitly (see `db/todos.rs`). The
+// `todos.list_id -> todo_lists.id` cascade is safe because `todo_lists` is
+// never touched by the store full-replace.
+const MIGRATION_010: &str = "
+CREATE TABLE IF NOT EXISTS todo_lists (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL UNIQUE,
+    feature_id  TEXT NOT NULL,
+    carry_over  TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS todos (
+    id                 TEXT PRIMARY KEY,
+    list_id            TEXT NOT NULL REFERENCES todo_lists(id) ON DELETE CASCADE,
+    title              TEXT NOT NULL,
+    body               TEXT,
+    priority           TEXT NOT NULL DEFAULT 'med',
+    done               INTEGER NOT NULL DEFAULT 0,
+    sort_order         INTEGER NOT NULL DEFAULT 0,
+    spawned_session_id TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_list ON todos(list_id);
 ";
 
 const MIGRATION_001: &str = "

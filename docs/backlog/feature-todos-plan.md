@@ -1,6 +1,8 @@
 # Feature TODOs
 
-- **Status:** Ready
+- **Status:** Partial — Epics 1–4 shipped (persistence, session kind,
+  native view, editing). Epic 5 (spawn agent from a TODO) and Epic 6
+  (quick-capture, keybinding/help wiring, docs) remain.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -147,46 +149,69 @@ project/feature is deleted (extend the existing delete paths).
 
 ### Epic 1 — Persistence layer
 
-- [ ] Add `MIGRATION_010` creating `todo_lists` + `todos` tables.
-- [ ] Add `src/db/todos.rs` with row structs and CRUD/query fns.
-- [ ] Expose `AmfDb` methods (load/upsert list, list/upsert/delete/
+- [x] Add `MIGRATION_010` creating `todo_lists` + `todos` tables.
+- [x] Add `src/db/todos.rs` with row structs and CRUD/query fns.
+- [x] Expose `AmfDb` methods (load/upsert list, list/upsert/delete/
       reorder todos).
-- [ ] Cascade-delete todos & list when a project is deleted.
+- [x] Cascade-delete todos & list when a project is deleted
+      (explicit cleanup in `app/project_ops.rs::delete_project`, since
+      there is no FK cascade from `projects`).
 - [ ] On host-feature deletion (project survives), prompt **Re-home**
       (reassign `feature_id` to a chosen surviving feature) or
       **Delete** the list; Delete-only when no features remain.
-- [ ] Unit tests for migration + round-trip CRUD + one-list-per-project
+      _(Deferred: needs the feature-delete UI prompt; `set_host_feature` /
+      `delete_list` persistence is in place.)_
+- [x] Unit tests for migration + round-trip CRUD + one-list-per-project
       constraint.
 
 ### Epic 2 — Session kind & tree integration
 
-- [ ] Add `SessionKind::Todos`; `is_agent_harness()` → false; handle in
-      all `match` sites (ui labels/icons, sync, status).
-- [ ] Offer "TODOs" in the `S` picker only when the project has none;
-      create the `todo_lists` row on selection.
-- [ ] Skip tmux window creation for `Todos` sessions in
-      `session_ops.rs`.
-- [ ] Render the TODOS session row in the feature session list.
-- [ ] Block creating a second TODOS session per project (test).
+- [x] Add `SessionKind::Todos`; `is_agent_harness()` → false (plus
+      `is_tmux_backed()` → false); handle in all `match` sites (ui
+      labels/icons, sync signature, status, store serialization).
+- [x] Offer "TODOs" in the `s` picker only when the project has none
+      (`Project::has_todos_session()`); create the `todo_lists` row on
+      selection via `load_or_create_todo_list`.
+- [x] Skip tmux window creation for `Todos` sessions in
+      `session_ops.rs` (`add_todos_session_for_picker`, branched before
+      `ensure_feature_running_for_new_session`).
+- [x] Render the TODOS session row in the feature session list (tree +
+      both pickers + switcher; non-tmux sessions filtered from
+      window-cycling and the switcher).
+- [x] Block creating a second TODOS session per project (test:
+      `add_builtin_session_blocks_second_todos_per_project`, plus picker
+      offer/hide tests).
+- Note: opening a TODOs session currently shows a "coming soon" message
+  (`enter_view` guard); the native overlay arrives in Epic 3.
 
 ### Epic 3 — Native TODO view (read + navigate)
 
-- [ ] `AppMode::Todos(TodoViewState)` + open/close from the session.
-- [ ] `src/app/todos.rs` load + state; `src/handlers/todos.rs` dispatch.
-- [ ] `src/ui/dialogs/todos.rs` rendering: carry-over banner + list with
-      checkbox, priority marker, notes indicator, selection highlight.
-- [ ] `j/k` navigation and exit (`Esc`/`Ctrl+Q`).
+- [x] `AppMode::Todos(TodoViewState)` + open/close from the session
+      (`enter_view` routes TODOs sessions to `open_todos_view`;
+      `close_todos_view` reselects the session).
+- [x] `src/app/todos.rs` load + state; `src/handlers/todos.rs` dispatch.
+- [x] `src/ui/dialogs/todos.rs` rendering: full-screen header (open/done
+      counts), carry-over banner, list with cursor, priority marker,
+      checkbox, strikethrough on done, notes indicator, scrollbar.
+- [x] `j/k` navigation and exit (`Esc`/`q`/`Ctrl+Q`).
 
 ### Epic 4 — TODO editing
 
-- [ ] Add (`a`/`n`) with inline editor; persist.
-- [ ] Edit title (`e`) and notes body (`o`).
-- [ ] Toggle done (`space`/`x`); completed items stay visible
-      (strikethrough/grouped), no bulk clear.
-- [ ] Cycle priority (`p`); sort respects priority + manual order.
-- [ ] Reorder (`J/K`) updating `sort_order`; persist.
-- [ ] Delete (`d`) with confirm.
-- [ ] Edit carry-over "left off here" banner (`b`).
+- [x] Add (`a`/`n`) with inline editor (reuses `TextEditor`); persist.
+- [x] Edit title (`e`) and notes body (`o`); `Alt+Enter` newline,
+      `Enter` commit, `Esc` cancel (mirrors compose).
+- [x] Toggle done (`space`/`x`); completed items stay visible
+      (strikethrough) and sink below open items, no bulk clear.
+- [x] Cycle priority (`p`, High→Med→Low). Note: ordering is `done` then
+      manual `sort_order`; priority is a visual marker, not a sort key
+      (matches the DB query + the "grouped by done then sort_order" UI
+      spec). Revisit if priority-sorting is wanted.
+- [x] Reorder (`J/K`) updating `sort_order`; persist via `reorder_todos`.
+- [x] Delete (`d`) with y/n confirm overlay; linked session untouched.
+- [x] Edit carry-over "left off here" banner (`b`).
+- Edits mutate the in-memory state (works without a DB, e.g. tests) and
+  persist when a DB is present; the in-memory list is the overlay's
+  source of truth.
 
 ### Epic 5 — Spawn agent from a TODO
 
@@ -204,6 +229,19 @@ project/feature is deleted (extend the existing delete paths).
 - [ ] View-mode keystroke to append a TODO to the project list.
 - [ ] When no TODOS session exists yet, auto-create the list + session
       under the current feature, then append.
+- [ ] Generalize the "left off here" carry-over banner into a generic
+      list-level **notes** section. The `todo_lists.carry_over` column
+      already holds free-form text; this is mostly a relabel + framing
+      change so the box reads as general scratch space for the list
+      (context, links, reminders) rather than only "where I left off".
+      - Rename the banner title (e.g. "Notes") and the `b` edit hint;
+        keep `b` as the edit key. Multi-line is already supported.
+      - Optionally rename the `carry_over` field/column to `notes` (or
+        keep the column name and only change the UI labels to avoid a
+        migration). Decide before implementing.
+      - Update `TodoEditTarget::CarryOver` / `todos_set_carry_over` and
+        the `set_todo_carry_over` DB method names to match the chosen
+        wording.
 - [ ] Wire keys into `keybindings.json` / config wizard and help
       overlay (`ui/dialogs/help.rs`).
 - [ ] Update `CLAUDE.md` architecture notes and `CHANGELOG.md`.

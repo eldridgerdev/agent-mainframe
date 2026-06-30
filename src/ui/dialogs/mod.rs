@@ -17,6 +17,7 @@ mod review_harness;
 mod search;
 mod session;
 mod theme;
+mod todos;
 
 pub use batch_creation::draw_create_batch_features_dialog;
 pub use browse::draw_browse_path_dialog;
@@ -49,3 +50,4 @@ pub use session::{
     draw_rename_session_dialog, draw_session_config_dialog,
 };
 pub use theme::draw_theme_picker;
+pub use todos::draw_todos_view;

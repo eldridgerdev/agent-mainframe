@@ -30,6 +30,11 @@ const SNIPPET_LEN: usize = 80;
 /// every fix in a PR (plan token principle #4 — pay per-session overhead once).
 pub(crate) const REVIEW_SESSION_LABEL: &str = "PR Review";
 
+/// Pause between consecutive prompts when queuing a batch of fixes into one
+/// session, so the harness registers each `Enter` as its own submission before
+/// the next prompt is pasted (otherwise rapid pastes can merge into one turn).
+const BATCH_FIX_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Which agent session a "fix" prompt is injected into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FixTarget {
@@ -303,6 +308,24 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
 }
 
+/// Build a fresh fix-confirm dialog seeded with `prompt`. The editor opens with
+/// the vim keymap when `vim` is set (the pane-level remembered preference) so
+/// reopening the dialog for another comment keeps the user's chosen keymap.
+fn new_fix_confirm(prompt: String, vim: bool) -> FixConfirmState {
+    FixConfirmState {
+        editor: if vim {
+            TextEditor::with_vim(prompt)
+        } else {
+            TextEditor::new(prompt)
+        },
+        editing: false,
+        scroll: 0,
+        // Seed the view scrolled to the cursor (end of the prompt for plain,
+        // start for vim) so a tall prompt opens somewhere sensible.
+        sync_to_cursor: true,
+    }
+}
+
 /// A fully normalized PR review: the resolved PR plus every triageable comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrReview {
@@ -546,7 +569,9 @@ impl App {
                 review_harness: None,
                 harness_pick: None,
                 fix_confirm: None,
+                fix_vim_enabled: false,
                 reply: None,
+                marked: std::collections::HashSet::new(),
             });
             return;
         }
@@ -578,14 +603,15 @@ impl App {
 
     /// Overlay the persisted local triage (`Fixing`/`Done`/skip notes) onto a
     /// freshly-loaded review. The `pr_comment_triage` table — keyed by
-    /// `PR# + head SHA + comment id` — is authoritative for local triage, so it
-    /// wins over whatever the cache blob happened to serialize. A read failure
-    /// (or no DB) is non-fatal: comments just stay [`TriageState::Untriaged`].
+    /// `PR# + comment id` (not the head SHA, so marks survive a push that moves
+    /// the PR's head) — is authoritative for local triage, so it wins over
+    /// whatever the cache blob happened to serialize. A read failure (or no DB)
+    /// is non-fatal: comments just stay [`TriageState::Untriaged`].
     fn apply_persisted_triage(&mut self, review: &mut PrReview) {
         let Some(db) = self.db.as_ref() else {
             return;
         };
-        let triage = match db.load_pr_comment_triage(review.pr.number, &review.pr.head_sha) {
+        let triage = match db.load_pr_comment_triage(review.pr.number) {
             Ok(map) => map,
             Err(e) => {
                 self.log_warn("pr_review", format!("triage load failed: {e}"));
@@ -681,6 +707,119 @@ impl App {
             AppMode::PrReview(s) => s.selected_comment().map(|c| c.triage),
             _ => None,
         }
+    }
+
+    /// Toggle whether the selected comment is marked for a batch fix (`space`).
+    /// Marks are kept by comment id, so they survive the hide-resolved filter
+    /// shifting the visible rows. No-op with no selection.
+    pub fn pr_review_toggle_mark(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(id) = state.selected_comment().map(|c| c.id) else {
+            return;
+        };
+        let now_marked = if state.marked.remove(&id) {
+            false
+        } else {
+            state.marked.insert(id);
+            true
+        };
+        let count = state.marked.len();
+        self.message = Some(if now_marked {
+            format!("Marked for batch fix ({count} marked)")
+        } else if count == 0 {
+            "Unmarked — nothing marked".to_string()
+        } else {
+            format!("Unmarked ({count} still marked)")
+        });
+    }
+
+    /// Queue a fix prompt for every marked comment into the **one** review
+    /// session, in list order, without leaving the pane — the throughput loop:
+    /// the harness works through them (pasted + submitted, so they queue while
+    /// it's busy) while the user keeps triaging. Each is a separate prompt
+    /// (distinct from the combined-prompt batch), sharing the session's warm
+    /// file context. Marked comments that are already GitHub-resolved are skipped
+    /// (token principle #6). Requires the review session to already exist — the
+    /// first fix (`f`) establishes and warms it; this never cold-starts a session
+    /// to auto-submit into. Each queued comment is marked `Fixing` and persisted;
+    /// the marked set is cleared on success.
+    pub fn pr_review_queue_marked_fixes(&mut self) -> Result<()> {
+        // Assemble the queue: marked, not-yet-resolved comments in list order.
+        let (pr_number, head_sha, workdir, target, queue) = match &self.mode {
+            AppMode::PrReview(state) => {
+                if state.marked.is_empty() {
+                    self.message = Some("No comments marked — press space to mark".into());
+                    return Ok(());
+                }
+                let queue: Vec<(u64, String)> = state
+                    .review
+                    .comments
+                    .iter()
+                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
+                    .map(|c| (c.id, c.fix_prompt()))
+                    .collect();
+                (
+                    state.review.pr.number,
+                    state.review.pr.head_sha.clone(),
+                    state.workdir.clone(),
+                    state.fix_target,
+                    queue,
+                )
+            }
+            _ => return Ok(()),
+        };
+        if queue.is_empty() {
+            self.message = Some("Marked comments are all resolved — nothing to queue".into());
+            return Ok(());
+        }
+
+        // Resolve the warm session — must already exist (no cold-start submit).
+        let Some((pi, fi)) = self.feature_indices_for_workdir(&workdir) else {
+            self.message = Some("Could not find the feature for this PR".into());
+            return Ok(());
+        };
+        let feature = &self.store.projects[pi].features[fi];
+        let Some(si) = fix_session_index(feature, target, REVIEW_SESSION_LABEL) else {
+            self.message = Some(
+                "No review session yet — press f on a comment to start one, then F to queue the rest"
+                    .into(),
+            );
+            return Ok(());
+        };
+        let session = feature.tmux_session.clone();
+        let window = feature.sessions[si].tmux_window.clone();
+
+        // Send each prompt (clear stray input, paste, submit). The pause lets the
+        // harness register each submission before the next paste.
+        let count = queue.len();
+        for (i, (_id, prompt)) in queue.iter().enumerate() {
+            if i > 0 {
+                std::thread::sleep(BATCH_FIX_SUBMIT_DELAY);
+            }
+            self.tmux.send_key_name(&session, &window, "C-u")?;
+            self.tmux.paste_text(&session, &window, prompt)?;
+            self.tmux.send_key_name(&session, &window, "Enter")?;
+        }
+
+        // Mark each queued comment `Fixing` and persist; then clear the marks.
+        for (id, _) in &queue {
+            if let AppMode::PrReview(state) = &mut self.mode
+                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == *id)
+            {
+                c.triage = TriageState::Fixing;
+            }
+            self.persist_triage(pr_number, &head_sha, *id, TriageState::Fixing, None);
+        }
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.marked.clear();
+        }
+        self.push_toast_success(format!(
+            "Queued {count} fix{} into the review session",
+            if count == 1 { "" } else { "es" }
+        ));
+        Ok(())
     }
 
     /// Open the PR picker: a selectable list of the repo's PRs. `seed_number`
@@ -917,7 +1056,9 @@ impl App {
                             review_harness: None,
                             harness_pick: None,
                             fix_confirm: None,
+                            fix_vim_enabled: false,
                             reply: None,
+                            marked: std::collections::HashSet::new(),
                         });
                     }
                     Err(e) => {
@@ -1027,10 +1168,8 @@ impl App {
             return;
         };
         let prompt = comment.fix_prompt();
-        state.fix_confirm = Some(FixConfirmState {
-            editor: TextEditor::new(prompt),
-            editing: false,
-        });
+        let vim = state.fix_vim_enabled;
+        state.fix_confirm = Some(new_fix_confirm(prompt, vim));
     }
 
     /// Whether the first `f` should pick a harness before injecting: only for
@@ -1088,10 +1227,9 @@ impl App {
                 self.message = Some("No comment selected".into());
                 return;
             };
-            state.fix_confirm = Some(FixConfirmState {
-                editor: TextEditor::new(comment.fix_prompt()),
-                editing: false,
-            });
+            let prompt = comment.fix_prompt();
+            let vim = state.fix_vim_enabled;
+            state.fix_confirm = Some(new_fix_confirm(prompt, vim));
         }
     }
 
@@ -1182,16 +1320,64 @@ impl App {
     }
 
     /// Forward a key to the open fix-prompt editor (only meaningful in edit
-    /// mode). Returns `true` when a dialog editor consumed the key.
+    /// mode). Returns `true` when a dialog editor consumed the key. Requests a
+    /// cursor-follow scroll when the edit moved the cursor or changed the text.
     pub fn pr_review_fix_editor_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
         if let AppMode::PrReview(state) = &mut self.mode
             && let Some(confirm) = &mut state.fix_confirm
             && confirm.editing
         {
-            confirm.editor.handle_key(key);
+            let outcome = confirm.editor.handle_key(key);
+            if outcome.text_changed || outcome.cursor_moved {
+                confirm.sync_to_cursor = true;
+            }
             return true;
         }
         false
+    }
+
+    /// Toggle the vim keymap on the open fix-prompt editor, remembering the
+    /// choice on the pane so reopening the dialog keeps it. No-op when closed.
+    pub fn pr_review_fix_toggle_vim(&mut self) {
+        let AppMode::PrReview(state) = &mut self.mode else {
+            return;
+        };
+        let Some(confirm) = &mut state.fix_confirm else {
+            return;
+        };
+        confirm.editor.toggle_vim();
+        confirm.sync_to_cursor = true;
+        let on = confirm.editor.vim_mode().is_some();
+        state.fix_vim_enabled = on;
+        self.message = Some(if on {
+            "Vim mode enabled".into()
+        } else {
+            "Vim mode disabled".into()
+        });
+    }
+
+    /// Scroll the fix-prompt editor by `delta` visual rows (positive = down).
+    /// Clears cursor-follow so the user can scroll away from the cursor; the
+    /// final clamp to content happens during rendering.
+    pub fn pr_review_fix_scroll(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(confirm) = &mut state.fix_confirm
+        {
+            confirm.scroll = confirm.scroll.saturating_add_signed(delta);
+            confirm.sync_to_cursor = false;
+        }
+    }
+
+    /// The vim mode of the open fix-prompt editor, or `None` when the dialog is
+    /// closed or the editor is in plain (non-vim) mode. Drives `Esc` handling
+    /// (vim consumes `Esc` for Insert→Normal) and the dialog's mode label.
+    pub fn pr_review_fix_vim_mode(&self) -> Option<crate::editor::VimMode> {
+        match &self.mode {
+            AppMode::PrReview(state) => {
+                state.fix_confirm.as_ref().and_then(|c| c.editor.vim_mode())
+            }
+            _ => None,
+        }
     }
 
     /// Confirm the dialog: inject the (possibly edited) prompt into the chosen

@@ -1,10 +1,14 @@
 //! SQLite persistence for local PR-comment triage, keyed by
-//! `PR# + comment id + head SHA`.
+//! `PR# + comment id`.
 //!
 //! GitHub thread resolution is the source of truth for done/not-done; this is
 //! the *local* layer on top of it — "a fix was injected" ([`TriageState::Fixing`]),
-//! "I marked this done" ([`TriageState::Done`]), skip reasons, etc. It is keyed
-//! by head SHA so re-triage starts fresh after a push moves the PR's head.
+//! "I marked this done" ([`TriageState::Done`]), skip reasons, etc. The GitHub
+//! comment id is stable across commits, so triage is keyed by `PR# + comment id`
+//! and **survives a push** that moves the PR's head; `head_sha` is recorded only
+//! as the last SHA a mark was set under, not part of the identity. (It was
+//! originally keyed by head SHA too, which silently dropped every mark on the
+//! next re-resolve — see migration 010.)
 //! See `docs/backlog/pr-comment-review-plan.md`.
 
 use std::collections::HashMap;
@@ -17,18 +21,15 @@ use crate::app::pr_review::TriageState;
 /// Per-comment triage row: the state plus an optional local note.
 pub type TriageRow = (TriageState, Option<String>);
 
-/// Load every triage row for `(pr_number, head_sha)` as `comment_id -> row`.
-/// Rows with an unknown state token degrade to [`TriageState::Untriaged`].
-pub fn load(
-    conn: &Connection,
-    pr_number: u32,
-    head_sha: &str,
-) -> Result<HashMap<u64, TriageRow>> {
+/// Load every triage row for `pr_number` as `comment_id -> row`, regardless of
+/// the head SHA the mark was set under (so triage survives a push). Rows with an
+/// unknown state token degrade to [`TriageState::Untriaged`].
+pub fn load(conn: &Connection, pr_number: u32) -> Result<HashMap<u64, TriageRow>> {
     let mut stmt = conn.prepare(
         "SELECT comment_id, state, note FROM pr_comment_triage
-         WHERE pr_number = ?1 AND head_sha = ?2",
+         WHERE pr_number = ?1",
     )?;
-    let rows = stmt.query_map(params![pr_number as i64, head_sha], |row| {
+    let rows = stmt.query_map(params![pr_number as i64], |row| {
         let comment_id: i64 = row.get(0)?;
         let state: String = row.get(1)?;
         let note: Option<String> = row.get(2)?;
@@ -44,7 +45,9 @@ pub fn load(
 }
 
 /// Upsert one comment's triage state (and optional note) under its
-/// `PR# + comment id + head SHA` key.
+/// `PR# + comment id` key. `head_sha` is recorded as the SHA the mark was set
+/// under but is not part of the identity, so re-marking after a push overwrites
+/// the same row rather than creating a per-SHA duplicate.
 pub fn upsert(
     conn: &Connection,
     pr_number: u32,
@@ -68,7 +71,7 @@ pub fn upsert(
     Ok(())
 }
 
-/// Drop triage rows older than a week so stale head-SHA entries don't accumulate.
+/// Drop triage rows older than a week so abandoned PRs don't accumulate.
 pub fn evict_stale(conn: &Connection) -> Result<()> {
     conn.execute(
         "DELETE FROM pr_comment_triage
@@ -98,7 +101,7 @@ mod tests {
         db.save_pr_comment_triage(321, "sha", 12, TriageState::Skipped, Some("not needed"))
             .unwrap();
 
-        let map = db.load_pr_comment_triage(321, "sha").unwrap();
+        let map = db.load_pr_comment_triage(321).unwrap();
         assert_eq!(map.len(), 2);
         assert_eq!(map[&11].0, TriageState::Fixing);
         assert_eq!(map[&11].1, None);
@@ -114,17 +117,28 @@ mod tests {
         db.save_pr_comment_triage(7, "sha", 1, TriageState::Done, None)
             .unwrap();
 
-        let map = db.load_pr_comment_triage(7, "sha").unwrap();
+        let map = db.load_pr_comment_triage(7).unwrap();
         assert_eq!(map.len(), 1);
         assert_eq!(map[&1].0, TriageState::Done);
     }
 
     #[test]
-    fn keyed_by_head_sha() {
+    fn survives_head_sha_change() {
         let (_tmp, db) = open_temp_db();
+        // Mark a comment done under one head SHA.
         db.save_pr_comment_triage(7, "old", 1, TriageState::Done, None)
             .unwrap();
-        // A new head SHA starts fresh — no triage carries over.
-        assert!(db.load_pr_comment_triage(7, "new").unwrap().is_empty());
+        // After a push moves the head, the mark still loads (keyed by comment id,
+        // not SHA) — this is the bug fix.
+        let map = db.load_pr_comment_triage(7).unwrap();
+        assert_eq!(map[&1].0, TriageState::Done);
+
+        // Re-marking under the new SHA overwrites the same row (no duplicate).
+        db.save_pr_comment_triage(7, "new", 1, TriageState::Skipped, Some("nope"))
+            .unwrap();
+        let map = db.load_pr_comment_triage(7).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&1].0, TriageState::Skipped);
+        assert_eq!(map[&1].1.as_deref(), Some("nope"));
     }
 }

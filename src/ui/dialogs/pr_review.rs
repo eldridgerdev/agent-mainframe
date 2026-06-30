@@ -3,12 +3,16 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 
 use crate::{
     app::pr_review::{CommentKind, PrComment},
     app::{PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState},
+    editor::VimMode,
     theme::Theme,
 };
 
@@ -269,9 +273,14 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     } else {
         "h hide-resolved"
     };
+    // The batch hint shows the marked count so the user knows `F` has a set.
+    let batch_hint = match state.marked.len() {
+        0 => "space mark".to_string(),
+        n => format!("space mark · F fix-marked({n})"),
+    };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),
@@ -288,8 +297,9 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
         draw_harness_pick(frame, pick, theme);
     }
     // Fix confirm/edit dialog overlays the pane when open.
-    if let Some(confirm) = &state.fix_confirm {
-        draw_fix_confirm(frame, confirm, state.fix_target, theme);
+    let fix_target = state.fix_target;
+    if let Some(confirm) = &mut state.fix_confirm {
+        draw_fix_confirm(frame, confirm, fix_target, theme);
     }
     // Reply dialog overlays the pane when open.
     if let Some(reply) = &state.reply {
@@ -357,15 +367,22 @@ fn draw_reply_dialog(
 /// edit it before it reaches the agent.
 fn draw_fix_confirm(
     frame: &mut Frame,
-    confirm: &crate::app::FixConfirmState,
+    confirm: &mut crate::app::FixConfirmState,
     target: crate::app::pr_review::FixTarget,
     theme: &Theme,
 ) {
     let area = super::super::dashboard::centered_rect(70, 70, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
+    // Surface the active keymap in the title so the user knows whether `Esc`
+    // exits the dialog or just leaves vim insert mode.
+    let mode_label = match confirm.editor.vim_mode() {
+        Some(VimMode::Insert) => " · vim insert",
+        Some(VimMode::Normal) => " · vim normal",
+        None => "",
+    };
     let block = Block::default()
-        .title(" Inject fix into agent session ")
+        .title(format!(" Inject fix into agent session{mode_label} "))
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -400,11 +417,44 @@ fn draw_fix_confirm(
         chunks[0],
     );
 
+    // Prompt body: a wrapped, scrollable editor view that follows the cursor
+    // when editing and shows a scrollbar once the prompt overflows the dialog.
+    let editor_area = chunks[2];
     let prompt_lines = super::editor_view::editor_lines(&confirm.editor, theme, "(empty prompt)");
-    frame.render_widget(
-        Paragraph::new(prompt_lines).wrap(Wrap { trim: false }),
-        chunks[2],
+    let visible_lines = editor_area.height as usize;
+    let mut wrap_width = editor_area.width as usize;
+    let mut total_visual_lines =
+        super::editor_view::count_wrapped_editor_lines(&prompt_lines, wrap_width);
+    // Leave room for the scrollbar column when the content overflows.
+    if total_visual_lines > visible_lines && wrap_width > 1 {
+        wrap_width -= 1;
+        total_visual_lines =
+            super::editor_view::count_wrapped_editor_lines(&prompt_lines, wrap_width);
+    }
+    super::editor_view::sync_editor_scroll(
+        &confirm.editor,
+        &mut confirm.scroll,
+        &mut confirm.sync_to_cursor,
+        visible_lines,
+        wrap_width,
+        total_visual_lines,
     );
+    frame.render_widget(
+        Paragraph::new(prompt_lines)
+            .wrap(Wrap { trim: false })
+            .scroll((confirm.scroll.min(u16::MAX as usize) as u16, 0)),
+        editor_area,
+    );
+    if total_visual_lines > visible_lines {
+        let scrollbar = Scrollbar::default()
+            .orientation(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("↑"))
+            .end_symbol(Some("↓"));
+        let mut scrollbar_state = ScrollbarState::new(total_visual_lines)
+            .position(confirm.scroll)
+            .viewport_content_length(visible_lines);
+        frame.render_stateful_widget(scrollbar, editor_area, &mut scrollbar_state);
+    }
 
     let tokens = crate::app::pr_review::estimate_tokens(confirm.editor.text());
     frame.render_widget(
@@ -416,7 +466,13 @@ fn draw_fix_confirm(
     );
 
     let hints = if confirm.editing {
-        "[esc] done editing"
+        // Under vim, Esc is consumed by the editor (Insert→Normal), so the way
+        // back to the confirm view is Ctrl+Q; in plain mode Esc does it.
+        if confirm.editor.vim_mode().is_some() {
+            "[tab] inject   [^v] vim   [^q] done editing"
+        } else {
+            "[tab] inject   [^v] vim   [esc] done editing"
+        }
     } else {
         "[⏎] inject   [e] edit   [esc] cancel"
     };
@@ -523,7 +579,11 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
 
     let mut items: Vec<ListItem> = visible
         .iter()
-        .map(|&i| ListItem::new(comment_list_line(&state.review.comments[i], theme)))
+        .map(|&i| {
+            let comment = &state.review.comments[i];
+            let is_marked = state.marked.contains(&comment.id);
+            ListItem::new(comment_list_line(comment, is_marked, theme))
+        })
         .collect();
 
     let hidden = state.hidden_resolved_count();
@@ -549,10 +609,12 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// One row in the comment list: a local-triage checkbox, a resolution marker,
-/// location, author, snippet.
-fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
+/// One row in the comment list: a batch-mark dot, a local-triage checkbox, a
+/// resolution marker, location, author, snippet.
+fn comment_list_line<'a>(c: &'a PrComment, is_marked: bool, theme: &Theme) -> Line<'a> {
     let marker = if c.is_resolved { "✓" } else { " " };
+    // A leading `●` flags comments marked (space) for the `F` batch fix.
+    let mark = if is_marked { "●" } else { " " };
     let location = match (&c.path, c.line) {
         (Some(path), Some(line)) => format!("{path}:{line}"),
         (Some(path), None) => path.clone(),
@@ -566,6 +628,10 @@ fn comment_list_line<'a>(c: &'a PrComment, theme: &Theme) -> Line<'a> {
     };
 
     Line::from(vec![
+        Span::styled(
+            format!("{mark} "),
+            Style::default().fg(theme.warning.to_color()),
+        ),
         Span::styled(
             format!("[{}] ", c.triage.marker()),
             Style::default().fg(triage_color(c.triage, theme)),
@@ -879,7 +945,8 @@ fn shared_prefix_len(content: &str, other: &str) -> usize {
 fn marker_legend(theme: &Theme) -> Line<'static> {
     let muted = Style::default().fg(theme.text_muted.to_color());
     Line::from(vec![
-        Span::styled(" ✓ resolved", Style::default().fg(theme.success.to_color())),
+        Span::styled(" ● marked", Style::default().fg(theme.warning.to_color())),
+        Span::styled("   ✓ resolved", Style::default().fg(theme.success.to_color())),
         Span::styled("   [outdated] line moved", Style::default().fg(theme.warning.to_color())),
         Span::styled("   bot/human", muted),
         Span::styled("   triage: ", muted),

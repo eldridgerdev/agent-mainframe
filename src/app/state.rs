@@ -1133,9 +1133,19 @@ pub struct PrReviewState {
     /// the assembled (and editable) prompt awaiting the user's approval before
     /// it is injected into the agent session.
     pub fix_confirm: Option<FixConfirmState>,
+    /// Whether the fix confirm/edit dialog opens with the vim keymap. Persisted
+    /// on the pane (not the editor, which is rebuilt on each `f`) so the choice
+    /// survives reopening the dialog for another comment — the same approach as
+    /// [`PlaceholderFillState::vim_enabled`].
+    pub fix_vim_enabled: bool,
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
+    /// Comment ids marked (with `space`) for a batch fix. `F` queues every
+    /// marked comment's fix prompt into the dedicated review session in one
+    /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
+    /// shifting the visible rows. Cleared once the batch is queued.
+    pub marked: std::collections::HashSet<u64>,
 }
 
 /// Single-select harness picker shown before the dedicated PR-review session is
@@ -1178,6 +1188,13 @@ pub struct FixConfirmState {
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// default confirm view (`⏎` inject / `e` edit / `esc` cancel).
     pub editing: bool,
+    /// Scroll offset, in wrapped visual rows, for prompts taller than the
+    /// dialog. Clamped to the rendered content each frame.
+    pub scroll: usize,
+    /// Request that the next render scroll the cursor back into view. Set on
+    /// edits / cursor moves and cleared once applied; an explicit scroll key
+    /// clears it so the user can scroll away from the cursor.
+    pub sync_to_cursor: bool,
 }
 
 impl PrReviewState {

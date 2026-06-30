@@ -6,12 +6,16 @@ use crate::app::App;
 /// Lines scrolled per detail-pane scroll keypress.
 const DETAIL_SCROLL_STEP: usize = 5;
 
+/// Visual rows scrolled per page-key press in the fix-prompt editor.
+const FIX_PAGE_STEP: isize = 10;
+
 /// Key handling for the full-screen PR comment-review pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `R`/`n` reply, `x`
-/// resolve/reopen the thread, `m` mark done, `s` skip, `i` install syntax
-/// highlighting for the selected comment's file.
+/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue
+/// all marked fixes into the review session, `R`/`n` reply, `x` resolve/reopen
+/// the thread, `m` mark done, `s` skip, `i` install syntax highlighting for the
+/// selected comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
@@ -37,6 +41,8 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
+        KeyCode::Char(' ') => app.pr_review_toggle_mark(),
+        KeyCode::Char('F') => app.pr_review_queue_marked_fixes()?,
         KeyCode::Char('R') => app.pr_review_open_reply_done(),
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
@@ -107,16 +113,55 @@ fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// Key handling while the fix confirm/edit dialog is open.
 ///
 /// Confirm view (`editing == false`): `⏎` injects, `e` edits, `esc`/`q` cancel.
-/// Edit mode (`editing == true`): keystrokes flow to the prompt editor; `esc`
-/// returns to the confirm view so the prompt can be reviewed before sending.
+/// Edit mode (`editing == true`): keystrokes flow to the prompt editor, which
+/// now supports vim (toggle with `Ctrl+V`), scrolling (`Ctrl+J/K`,
+/// `PgUp/PgDn`), and a `Tab` submit gesture that coexists with multi-line
+/// editing. `Esc` leaves edit mode in plain keymap; under vim it goes to the
+/// editor (Insert→Normal), so `Ctrl+Q` is the keymap-independent way back to
+/// the confirm view.
 fn handle_fix_confirm_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
     if editing {
-        match key.code {
-            KeyCode::Esc => app.pr_review_fix_stop_edit(),
-            _ => {
-                app.pr_review_fix_editor_key(key);
-            }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // Tab submits (injects) even from multi-line edit mode, where Enter is
+        // a newline.
+        if key.code == KeyCode::Tab {
+            return app.pr_review_inject_fix();
         }
+        if ctrl && key.code == KeyCode::Char('v') {
+            app.pr_review_fix_toggle_vim();
+            return Ok(());
+        }
+        if ctrl && key.code == KeyCode::Char('q') {
+            app.pr_review_fix_stop_edit();
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Char('j') if ctrl => {
+                app.pr_review_fix_scroll(1);
+                return Ok(());
+            }
+            KeyCode::Char('k') if ctrl => {
+                app.pr_review_fix_scroll(-1);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                app.pr_review_fix_scroll(FIX_PAGE_STEP);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                app.pr_review_fix_scroll(-FIX_PAGE_STEP);
+                return Ok(());
+            }
+            // Esc leaves edit mode only in plain keymap; vim consumes it for
+            // Insert→Normal.
+            KeyCode::Esc if app.pr_review_fix_vim_mode().is_none() => {
+                app.pr_review_fix_stop_edit();
+                return Ok(());
+            }
+            _ => {}
+        }
+        app.pr_review_fix_editor_key(key);
         return Ok(());
     }
 

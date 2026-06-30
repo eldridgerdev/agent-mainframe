@@ -23,6 +23,40 @@ are tagged.
   (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. The
   list is saved per checkout, so it survives restarts. Spawning an agent
   straight from a TODO and quick-capture from other sessions are still to come.
+- **Fix several PR comments in one pass.** While reviewing PR comments, press
+  `space` to mark comments (a `●` flags them, and the footer shows how many),
+  then `F` to queue a scoped fix for every marked comment into the review
+  session at once — without leaving the pane. The harness works through them
+  one after another while you keep triaging, sharing the session's warm file
+  context, and each marked comment is flagged `fixing`. Already-resolved marks
+  are skipped. Start the review session first with a single `f` (the batch
+  queues into that warm session rather than spinning up a cold one).
+
+### Fixed
+
+- **PR-comment triage marks no longer vanish after the agent pushes a fix.**
+  When reviewing PR comments, marking a comment done/skipped, injecting a fix,
+  or posting a reply records local triage state — but that state was keyed by
+  the PR's head commit, so as soon as a fix was pushed and you reopened the
+  review (`G`), the new head SHA meant none of your marks showed up. Triage is
+  now keyed by the comment itself and survives a push, so done/skipped/fixing
+  marks and skip notes persist across commits and re-opens. Existing triage is
+  migrated automatically (any per-commit duplicates collapse to your latest
+  mark).
+
+### Changed
+
+- **A real editor for the PR-comment fix prompt.** The confirm dialog that
+  shows the scoped fix before it's injected (press `f` while reviewing PR
+  comments, then `e` to edit) is now a full editor instead of a plain text
+  box. Toggle **vim keys** with `Ctrl+V` — the choice sticks for the rest of
+  the PR, so reopening the dialog for the next comment keeps your keymap, and
+  the title shows `· vim insert` / `· vim normal` so you know whether `Esc`
+  leaves the dialog or just drops to normal mode. Long prompts now **scroll**
+  (`Ctrl+J`/`Ctrl+K`, `PgUp`/`PgDn`, with a scrollbar) and follow the cursor as
+  you type, and you get undo/redo and word motions for free. **`Tab` injects**
+  the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
+  still injects from the confirm view.
 
 ## [v0.28.0] - 2026-06-29
 

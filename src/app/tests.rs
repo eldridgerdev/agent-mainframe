@@ -6964,7 +6964,9 @@ fn enter_pr_review(app: &mut App, n: u64) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7040,7 +7042,9 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7103,6 +7107,112 @@ fn pr_review_second_fix_skips_harness_picker() {
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+#[test]
+fn pr_review_toggle_mark_adds_and_removes() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 3);
+
+    // Mark the first comment, move down, mark the second.
+    app.pr_review_toggle_mark();
+    app.pr_review_select_next();
+    app.pr_review_toggle_mark();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.marked.len(), 2);
+            assert!(state.marked.contains(&1));
+            assert!(state.marked.contains(&2));
+        }
+        _ => unreachable!(),
+    }
+
+    // Toggling the same comment again unmarks it.
+    app.pr_review_toggle_mark();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.marked.len(), 1);
+            assert!(!state.marked.contains(&2));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_queue_marked_with_nothing_marked_hints() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+
+    app.pr_review_queue_marked_fixes().unwrap();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("press space"),
+        "expected a hint to mark comments, got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn pr_review_queue_marked_without_session_hints() {
+    // `store_with_feature` has no sessions, so the dedicated review session
+    // doesn't exist yet — the batch must refuse rather than cold-start one.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+    }
+
+    app.pr_review_queue_marked_fixes().unwrap();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("No review session yet"),
+        "expected a hint to start the review session, got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn pr_review_queue_marked_sends_and_marks_fixing() {
+    // A feature with an existing dedicated "PR Review" session to queue into.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    // Two marked comments → two submissions, each: clear input, paste, Enter.
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "C-u")
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_paste_text().times(2).returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "Enter")
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 3);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+        state.marked.insert(2);
+    }
+
+    app.pr_review_queue_marked_fixes().unwrap();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            // Marks cleared; queued comments now Fixing; unmarked one untouched.
+            assert!(state.marked.is_empty(), "marks should clear after queuing");
+            assert_eq!(state.review.comments[0].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(state.review.comments[1].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(
+                state.review.comments[2].triage,
+                crate::app::pr_review::TriageState::Untriaged
+            );
+        }
+        _ => unreachable!(),
+    }
+    // Stays in the review pane (no switch into the session).
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
 }
 
 #[test]
@@ -7203,7 +7313,9 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
+        fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7338,6 +7450,57 @@ fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
     assert_eq!(app.pr_review_fix_editing(), Some(false));
     app.pr_review_cancel_fix();
     assert_eq!(app.pr_review_fix_editing(), None);
+}
+
+#[test]
+fn pr_review_fix_vim_toggle_persists_across_reopen() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    // Default keymap is plain.
+    app.pr_review_open_fix_confirm();
+    assert!(app.pr_review_fix_vim_mode().is_none());
+
+    // Toggling vim flips the editor and the remembered pane preference.
+    app.pr_review_fix_toggle_vim();
+    assert!(app.pr_review_fix_vim_mode().is_some());
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.fix_vim_enabled),
+        _ => unreachable!(),
+    }
+
+    // Closing and reopening the dialog (e.g. for another comment) keeps vim on.
+    app.pr_review_cancel_fix();
+    app.pr_review_open_fix_confirm();
+    assert!(
+        app.pr_review_fix_vim_mode().is_some(),
+        "reopened dialog should remember the vim choice"
+    );
+
+    // Toggling back off is likewise remembered.
+    app.pr_review_fix_toggle_vim();
+    app.pr_review_cancel_fix();
+    app.pr_review_open_fix_confirm();
+    assert!(app.pr_review_fix_vim_mode().is_none());
+}
+
+#[test]
+fn pr_review_fix_scroll_moves_offset_and_clears_cursor_follow() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_fix_confirm();
+
+    app.pr_review_fix_scroll(3);
+    let confirm = pr_review_fix_confirm(&app);
+    assert_eq!(confirm.scroll, 3);
+    assert!(
+        !confirm.sync_to_cursor,
+        "an explicit scroll should stop following the cursor"
+    );
+
+    // Scrolling up saturates at zero rather than underflowing.
+    app.pr_review_fix_scroll(-10);
+    assert_eq!(pr_review_fix_confirm(&app).scroll, 0);
 }
 
 fn reply_editor_text(app: &App) -> String {

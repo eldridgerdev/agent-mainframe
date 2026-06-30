@@ -103,10 +103,12 @@ doc always says exactly what remains.
   Grow config wizard keybinding support beyond dashboard actions to
   leader commands and other scoped command surfaces.
 - [Final review enhancements](final-review-enhancements-plan.md) —
-  _Backlog._ Follow-ups for the shipped native final review: line-level
-  comments, multi-line/markdown feedback and notes, on-demand
-  walkthroughs, finish gating, resumable state, base-ref selection, and
-  PR integration.
+  _Shipped._ Follow-ups for the native final review have all landed:
+  line-level and multi-line comments, multi-line/markdown feedback and
+  notes, on-demand walkthroughs, finish gating, resumable state,
+  base-ref selection, file-list filters, review history, re-review
+  loop, PR integration, and dispatch-to-a-fresh-harness. One design
+  open question (a single composed review summary) remains.
 - [PR comment review](pr-comment-review-plan.md) — _Backlog._ Triage a
   GitHub PR's comments (inline, review summaries, conversation, bots)
   inside AMF and, per comment, inject a token-minimal fix into the live
@@ -114,4 +116,6 @@ doc always says exactly what remains.
   the core constraint: the TUI fetches/triages with zero agent tokens,
   fix prompts carry only comment + diff hunk + `file:line`, threads are
   cached by head SHA. Split into read-only MVP → fix injection →
-  replies/resolution → throughput epics.
+  replies/resolution → throughput epics, with a planned Epic E adding an
+  AI code review of the diff and a committed `review-memory.md` of common
+  findings (bootstrapped from the last N PRs, grown one comment at a time).

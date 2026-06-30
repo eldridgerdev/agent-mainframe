@@ -1,6 +1,8 @@
 # Final Review Enhancements
 
-- **Status:** Backlog
+- **Status:** Shipped — every item under **Progress** is implemented
+  and merged. The only thing left is the design **open question**
+  below (composed review summary); reopen if that's pursued.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,

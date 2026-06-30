@@ -101,10 +101,12 @@ doc always says exactly what remains.
   Grow config wizard keybinding support beyond dashboard actions to
   leader commands and other scoped command surfaces.
 - [Final review enhancements](final-review-enhancements-plan.md) —
-  _Backlog._ Follow-ups for the shipped native final review: line-level
-  comments, multi-line/markdown feedback and notes, on-demand
-  walkthroughs, finish gating, resumable state, base-ref selection, and
-  PR integration.
+  _Shipped._ Follow-ups for the native final review have all landed:
+  line-level and multi-line comments, multi-line/markdown feedback and
+  notes, on-demand walkthroughs, finish gating, resumable state,
+  base-ref selection, file-list filters, review history, re-review
+  loop, PR integration, and dispatch-to-a-fresh-harness. One design
+  open question (a single composed review summary) remains.
 - [PR comment review](pr-comment-review-plan.md) — _Backlog._ Triage a
   GitHub PR's comments (inline, review summaries, conversation, bots)
   inside AMF and, per comment, inject a token-minimal fix into the live

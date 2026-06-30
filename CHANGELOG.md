@@ -10,6 +10,17 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **Fix several PR comments in one pass.** While reviewing PR comments, press
+  `space` to mark comments (a `●` flags them, and the footer shows how many),
+  then `F` to queue a scoped fix for every marked comment into the review
+  session at once — without leaving the pane. The harness works through them
+  one after another while you keep triaging, sharing the session's warm file
+  context, and each marked comment is flagged `fixing`. Already-resolved marks
+  are skipped. Start the review session first with a single `f` (the batch
+  queues into that warm session rather than spinning up a cold one).
+
 ### Fixed
 
 - **PR-comment triage marks no longer vanish after the agent pushes a fix.**

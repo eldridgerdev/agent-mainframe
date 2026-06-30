@@ -621,21 +621,27 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [ ] **Fix several comments in one pass against the same dedicated session.**
-      Per-comment reuse already works (`fix_session_index` finds the dedicated
-      `"PR Review"` session by label, so every `f` reuses the same warm
-      harness). What's missing is the *throughput loop*: today each `f`
-      switches the user into the session to watch, so fixing N comments means N
-      round-trips out of and back into the pane. Let the user **select
-      multiple comments** (multi-select / a `[space]`-marked set) and inject
-      their fix prompts into the same dedicated session **in sequence without
-      leaving the pane** between each — the agent works through them while the
-      user keeps triaging, and the per-session overhead and warm file context
-      are shared across all of them (token principle #4). Each comment stays a
-      **separate** fix prompt here (sequential), which is what distinguishes
-      this from the batch item below (one combined numbered prompt). Mark each
-      as `Fixing` as it's queued. → `src/app/pr_review.rs`,
-      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+- [x] **Fix several comments in one pass against the same dedicated session.**
+      The throughput loop. `space` toggles a **batch mark** on the selected
+      comment (`PrReviewState::marked`, a `HashSet<u64>` keyed by comment id so
+      marks survive the hide-resolved filter), shown as a leading `●` in the list
+      and a marked-count in the footer (`F fix-marked(N)`). `F` then **queues
+      every marked comment's fix prompt into the one review session, in list
+      order, without leaving the pane** — each is pasted-and-submitted
+      (`C-u` → `paste_text` → `Enter`, with a short delay between so the harness
+      registers each as its own turn), so the prompts queue while the agent works
+      and the user keeps triaging. Each stays a **separate** prompt (distinct from
+      the combined-prompt batch below), sharing the session's warm file context
+      (token principle #4); already GitHub-resolved marks are skipped (principle
+      #6). Each queued comment is marked `Fixing` and persisted, and the marked
+      set is cleared. To avoid auto-submitting into a not-yet-ready agent, `F`
+      **requires the review session to already exist** — the first `f` establishes
+      and warms it; the batch refuses (with a hint) rather than cold-starting one.
+      Keybinding-help + legend entries; unit-tested (toggle add/remove; empty and
+      no-session hints; a two-comment queue sends `C-u`/paste/`Enter` ×2, marks
+      both `Fixing`, clears the set, and stays in the pane). →
+      `src/app/state.rs`, `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [ ] **Combined-prompt batch: "fix all of these, then I'll come back."**
       The walk-away workflow. Let the user mark a set of comments to fix
       (reuse the same multi-select from the sequential item above), then build

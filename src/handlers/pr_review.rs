@@ -12,9 +12,10 @@ const FIX_PAGE_STEP: isize = 10;
 /// Key handling for the full-screen PR comment-review pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
-/// refresh from GitHub, and exit. Action keys: `f` fix, `R`/`n` reply, `x`
-/// resolve/reopen the thread, `m` mark done, `s` skip, `i` install syntax
-/// highlighting for the selected comment's file.
+/// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue
+/// all marked fixes into the review session, `R`/`n` reply, `x` resolve/reopen
+/// the thread, `m` mark done, `s` skip, `i` install syntax highlighting for the
+/// selected comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
@@ -40,6 +41,8 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
+        KeyCode::Char(' ') => app.pr_review_toggle_mark(),
+        KeyCode::Char('F') => app.pr_review_queue_marked_fixes()?,
         KeyCode::Char('R') => app.pr_review_open_reply_done(),
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),

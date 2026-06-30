@@ -33,6 +33,15 @@ are tagged.
   migrated automatically (any per-commit duplicates collapse to your latest
   mark).
 
+- **Agent usage now binds to the right session more reliably.** New Claude,
+  Codex, and opencode panes now pass enough session identity through their
+  local hooks/plugins for AMF to attach token usage to the matching dashboard
+  session instead of guessing from the newest transcript in the worktree.
+- **Inferred usage is safer for older sessions.** When AMF has to fall back to
+  workdir/timestamp matching, it no longer assigns the same inferred provider
+  session to multiple same-harness panes in one feature; unmatched sessions stay
+  unbound until a better match or exact provider event appears.
+
 ### Changed
 
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
@@ -46,6 +55,11 @@ are tagged.
   you type, and you get undo/redo and word motions for free. **`Tab` injects**
   the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
   still injects from the confirm view.
+
+### Migration
+
+- No migration is required. Existing inferred usage sources can be replaced
+  automatically when the next exact provider event arrives.
 
 ## [v0.28.0] - 2026-06-29
 

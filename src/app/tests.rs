@@ -1393,14 +1393,17 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
-        .withf(|session, window, resume_id, extra_args| {
-            session == "amf-new-feature"
-                && window == "claude"
-                && resume_id.is_none()
-                && extra_args.is_empty()
-        })
+        .withf(
+            |session, window, feature_session_id, resume_id, extra_args| {
+                session == "amf-new-feature"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.is_none()
+                    && extra_args.is_empty()
+            },
+        )
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .withf(|session, window| session == "amf-new-feature" && window == "claude")
         .times(1)
@@ -1882,26 +1885,27 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         AgentKind::Claude => {
             tmux.expect_launch_claude()
                 .times(1)
-                .returning(|_, _, _, _| Ok(()));
+                .returning(|_, _, _, _, _| Ok(()));
         }
         AgentKind::Opencode => {
             tmux.expect_launch_opencode()
                 .times(1)
-                .returning(|_, _| Ok(()));
+                .returning(|_, _, _| Ok(()));
         }
         AgentKind::Codex => {
             tmux.expect_launch_codex()
                 .times(1)
-                .withf(|session, window, resume, extra_args| {
+                .withf(|session, window, feature_session_id, resume, extra_args| {
                     session == "amf-my-project-coached"
                         && window == "codex"
+                        && !feature_session_id.is_empty()
                         && resume.is_none()
                         && extra_args.iter().any(|arg| arg == "--add-dir")
                 })
-                .returning(|_, _, _, _| Ok(()));
+                .returning(|_, _, _, _, _| Ok(()));
         }
         AgentKind::Pi => {
-            tmux.expect_launch_pi().times(1).returning(|_, _| Ok(()));
+            tmux.expect_launch_pi().times(1).returning(|_, _, _| Ok(()));
         }
     }
     tmux.expect_select_window()
@@ -1953,7 +1957,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         mode,
         review: false,
         plan_mode: false,
-        agent,
+        agent: agent.clone(),
         create_terminal: true,
         session_name: "Claude 1".to_string(),
         enable_chrome: false,
@@ -2067,14 +2071,17 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         });
     tmux.expect_launch_claude()
         .times(1)
-        .withf(move |session, window, resume_id, extra_args| {
-            resized_for_launch.load(Ordering::SeqCst)
-                && session == "amf-restore-me"
-                && window == "claude"
-                && resume_id.as_deref() == Some("claude-session-123")
-                && extra_args.is_empty()
-        })
-        .returning(|_, _, _, _| Ok(()));
+        .withf(
+            move |session, window, feature_session_id, resume_id, extra_args| {
+                resized_for_launch.load(Ordering::SeqCst)
+                    && session == "amf-restore-me"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.as_deref() == Some("claude-session-123")
+                    && extra_args.is_empty()
+            },
+        )
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .withf(|session, window| session == "amf-restore-me" && window == "claude")
@@ -2119,7 +2126,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -2155,6 +2162,10 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         "expected vibeless worktree creation to inject custom diff review hook, got: {settings}"
     );
     assert!(
+        settings.contains("notify.sh"),
+        "expected Claude notification hook to be installed, got: {settings}"
+    );
+    assert!(
         settings.contains("\"matcher\": \"Edit|Write\""),
         "expected vibeless PreToolUse matcher to be limited to Edit|Write, got: {settings}"
     );
@@ -2180,7 +2191,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_opencode()
         .times(1)
-        .returning(|_, _| Ok(()));
+        .returning(|_, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -2230,6 +2241,12 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
             && installed.contains("buildReviewFiles"),
         "expected installed change-tracker.js to be the structured diff-review version, got: {installed}"
     );
+    assert!(
+        installed.contains("amf_feature_session_id")
+            && installed.contains("provider_session_id")
+            && installed.contains("AMF_FEATURE_SESSION_ID"),
+        "expected installed change-tracker.js to include session identity metadata, got: {installed}"
+    );
 }
 
 #[test]
@@ -2275,6 +2292,8 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
             && sidebar_plugin.contains("SIDEBAR_MAX_FILES")
             && sidebar_plugin.contains("normalizePrompt(payload?.message?.summary?.content)")
             && sidebar_plugin.contains("function eventPayload(event)")
+            && sidebar_plugin.contains("amf_feature_session_id")
+            && sidebar_plugin.contains("provider_session_id")
             && sidebar_plugin.contains("event: async ({ event })")
             && sidebar_plugin.contains("switch (event?.type)")
             && sidebar_plugin.contains("case \"todo.updated\"")
@@ -3065,14 +3084,17 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
-        .withf(|session, window, resume_id, extra_args| {
-            session == "amf-automation-project-feature-1"
-                && window == "claude"
-                && resume_id.is_none()
-                && extra_args.is_empty()
-        })
+        .withf(
+            |session, window, feature_session_id, resume_id, extra_args| {
+                session == "amf-automation-project-feature-1"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.is_none()
+                    && extra_args.is_empty()
+            },
+        )
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .withf(|session, window| {
             session == "amf-automation-project-feature-1" && window == "claude"
@@ -3300,7 +3322,7 @@ fn adding_session_starts_stopped_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -3858,6 +3880,14 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
             .exists(),
         "repo-root codex feature should get local notify hook script"
     );
+    let codex_notify =
+        std::fs::read_to_string(workdir.path().join(".codex").join("amf-codex-notify.sh")).unwrap();
+    assert!(
+        codex_notify.contains("provider_session_id")
+            && codex_notify.contains("amf_feature_session_id")
+            && codex_notify.contains("AMF_FEATURE_SESSION_ID"),
+        "Codex notify hook should preserve AMF and provider session ids, got: {codex_notify}"
+    );
     assert!(
         !workdir.path().join(".codex").join("config.toml").exists(),
         "repo-root codex feature should not write unsupported project-local config"
@@ -4024,7 +4054,7 @@ fn store_with_worktree_agent(
         mode: VibeMode::default(),
         review: false,
         plan_mode: false,
-        agent,
+        agent: agent.clone(),
         enable_chrome: false,
         remote_control: false,
         pending_worktree_script: false,
@@ -4329,6 +4359,72 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
     }
 }
 
+fn store_with_single_agent_session(
+    workdir: &std::path::Path,
+    agent: AgentKind,
+    kind: SessionKind,
+    session_id: &str,
+    window: &str,
+) -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: session_id.to_string(),
+        kind,
+        label: window.to_string(),
+        tmux_window: window.to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: agent.clone(),
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        preferred_agent: agent,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    }
+}
+
 #[test]
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
@@ -4603,6 +4699,123 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Inferred),
     );
+}
+
+#[test]
+fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
+    let home = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let session_dir = home
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("03")
+        .join("13");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("rollout.jsonl"),
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-1\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":100,\"cached_input_tokens\":40,\"output_tokens\":7,\"reasoning_output_tokens\":3,\"total_tokens\":110}}}}}}}}\n"
+            ),
+            workdir.path().display()
+        ),
+    )
+    .unwrap();
+
+    let created_at = Utc::now();
+    let first = FeatureSession {
+        id: "codex-sess-1".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex 1".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let second = FeatureSession {
+        id: "codex-sess-2".to_string(),
+        label: "Codex 2".to_string(),
+        tmux_window: "codex-2".to_string(),
+        created_at: created_at + chrono::Duration::milliseconds(100),
+        ..first.clone()
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![first, second],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    let sessions = &app.store.projects[0].features[0].sessions;
+    assert_eq!(
+        sessions[0].token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-1".to_string(),
+        }),
+    );
+    assert_eq!(
+        sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Inferred),
+    );
+    assert_eq!(sessions[1].token_usage_source, None);
+    assert_eq!(sessions[1].token_usage_source_match, None);
 }
 
 #[test]
@@ -4920,6 +5133,155 @@ fn ipc_input_request_updates_codex_live_work_state() {
         app.toasts[0]
             .message
             .contains("New input request from my-feat")
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_codex_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "codex-provider-123",
+        "amf_feature_session_id": "codex-sess",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Codex finished and is waiting for input"
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_claude_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_single_agent_session(
+        workdir.path(),
+        AgentKind::Claude,
+        SessionKind::Claude,
+        "claude-sess",
+        "claude",
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "claude-provider-123",
+        "amf_feature_session_id": "claude-sess",
+        "cwd": workdir.path().display().to_string()
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "claude-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_opencode_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_single_agent_session(
+        workdir.path(),
+        AgentKind::Opencode,
+        SessionKind::Opencode,
+        "opencode-sess",
+        "opencode",
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "session_id": "opencode-provider-123",
+        "provider_session_id": "opencode-provider-123",
+        "amf_feature_session_id": "opencode-sess",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Agent finished and is waiting for input"
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Opencode,
+            id: "opencode-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_exact_usage_source_replaces_inferred_source() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_codex_session(workdir.path(), false);
+    let session = &mut store.projects[0].features[0].sessions[0];
+    session.set_token_usage_source_inferred(TokenUsageSource {
+        provider: TokenUsageProvider::Codex,
+        id: "old-inferred-codex".to_string(),
+    });
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-stop",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "exact-codex-session",
+        "amf_feature_session_id": "codex-sess",
+        "cwd": workdir.path().display().to_string()
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "exact-codex-session".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
     );
 }
 
@@ -6463,8 +6825,10 @@ fn create_feature_automation_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
-        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
-        .returning(|_, _, _, _| Ok(()));
+        .withf(|_, _, feature_session_id, _, extra_args| {
+            !feature_session_id.is_empty() && extra_args.iter().any(|arg| arg == "--add-dir")
+        })
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -6657,8 +7021,10 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(2)
-        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
-        .returning(|_, _, _, _| Ok(()));
+        .withf(|_, _, feature_session_id, _, extra_args| {
+            !feature_session_id.is_empty() && extra_args.iter().any(|arg| arg == "--add-dir")
+        })
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(2)
         .returning(|_, _| Ok(()));

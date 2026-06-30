@@ -32,6 +32,22 @@ function ensureNotifyDir() {
   }
 }
 
+function amfSessionMetadata(sessionId) {
+  const metadata = {
+    provider_session_id: sessionId,
+  }
+  if (process.env.AMF_FEATURE_SESSION_ID) {
+    metadata.amf_feature_session_id = process.env.AMF_FEATURE_SESSION_ID
+  }
+  if (process.env.AMF_TMUX_SESSION || process.env.AMF_SESSION) {
+    metadata.amf_tmux_session = process.env.AMF_TMUX_SESSION || process.env.AMF_SESSION
+  }
+  if (process.env.AMF_TMUX_WINDOW) {
+    metadata.amf_tmux_window = process.env.AMF_TMUX_WINDOW
+  }
+  return metadata
+}
+
 function writeNotification(sessionId, cwd, message, type = "input-request") {
   debug("writeNotification", { sessionId, cwd, type })
   const payload = {
@@ -39,6 +55,7 @@ function writeNotification(sessionId, cwd, message, type = "input-request") {
     cwd: cwd,
     message: message || "Input requested",
     type: type,
+    ...amfSessionMetadata(sessionId),
   }
 
   try {
@@ -73,6 +90,7 @@ function clearNotification(sessionId) {
   const clearPayload = {
     type: "clear",
     session_id: sessionId,
+    ...amfSessionMetadata(sessionId),
   }
 
   try {

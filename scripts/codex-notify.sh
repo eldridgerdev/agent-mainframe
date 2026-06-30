@@ -15,12 +15,14 @@ if [ -z "$INPUT" ] && ! [ -t 0 ]; then
 fi
 
 SESSION_ID="${AMF_SESSION:-}"
+PROVIDER_SESSION_ID=""
 CWD=""
 PROMPT=""
 
 if command -v jq >/dev/null 2>&1; then
     if [ -n "$INPUT" ]; then
         SESSION_ID_FROM_INPUT="$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+        PROVIDER_SESSION_ID="$SESSION_ID_FROM_INPUT"
         CWD="$(echo "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)"
         PROMPT="$(echo "$INPUT" | jq -r '
             def msg_text:
@@ -72,16 +74,58 @@ if [ -f "$ORIGINAL_NOTIFY_FILE" ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
-STOP_MSG="{\"type\":\"thinking-stop\",\"source\":\"codex-notify\",\"session_id\":\"$SESSION_ID\",\"cwd\":\"$CWD\"}"
+STOP_MSG="$(jq -nc \
+    --arg sid "$SESSION_ID" \
+    --arg cwd "$CWD" \
+    --arg provider_session_id "$PROVIDER_SESSION_ID" \
+    --arg amf_feature_session_id "${AMF_FEATURE_SESSION_ID:-}" \
+    --arg amf_tmux_session "${AMF_TMUX_SESSION:-${AMF_SESSION:-}}" \
+    --arg amf_tmux_window "${AMF_TMUX_WINDOW:-}" \
+    '{
+        type:"thinking-stop",
+        source:"codex-notify",
+        session_id:$sid,
+        cwd:$cwd
+    }
+    | if $provider_session_id != "" then .provider_session_id = $provider_session_id else . end
+    | if $amf_feature_session_id != "" then .amf_feature_session_id = $amf_feature_session_id else . end
+    | if $amf_tmux_session != "" then .amf_tmux_session = $amf_tmux_session else . end
+    | if $amf_tmux_window != "" then .amf_tmux_window = $amf_tmux_window else . end')"
 PROMPT_MSG=""
 if [ -n "$PROMPT" ]; then
     PROMPT_MSG="$(jq -nc \
         --arg sid "$SESSION_ID" \
         --arg cwd "$CWD" \
         --arg prompt "$PROMPT" \
-        '{type:"prompt-submit",source:"codex-notify",session_id:$sid,cwd:$cwd,prompt:$prompt}')"
+        --arg provider_session_id "$PROVIDER_SESSION_ID" \
+        --arg amf_feature_session_id "${AMF_FEATURE_SESSION_ID:-}" \
+        --arg amf_tmux_session "${AMF_TMUX_SESSION:-${AMF_SESSION:-}}" \
+        --arg amf_tmux_window "${AMF_TMUX_WINDOW:-}" \
+        '{type:"prompt-submit",source:"codex-notify",session_id:$sid,cwd:$cwd,prompt:$prompt}
+        | if $provider_session_id != "" then .provider_session_id = $provider_session_id else . end
+        | if $amf_feature_session_id != "" then .amf_feature_session_id = $amf_feature_session_id else . end
+        | if $amf_tmux_session != "" then .amf_tmux_session = $amf_tmux_session else . end
+        | if $amf_tmux_window != "" then .amf_tmux_window = $amf_tmux_window else . end')"
 fi
-INPUT_MSG="{\"type\":\"input-request\",\"source\":\"codex-notify\",\"notification_type\":\"input-request\",\"session_id\":\"$SESSION_ID\",\"cwd\":\"$CWD\",\"message\":\"Codex finished and is waiting for input\"}"
+INPUT_MSG="$(jq -nc \
+    --arg sid "$SESSION_ID" \
+    --arg cwd "$CWD" \
+    --arg provider_session_id "$PROVIDER_SESSION_ID" \
+    --arg amf_feature_session_id "${AMF_FEATURE_SESSION_ID:-}" \
+    --arg amf_tmux_session "${AMF_TMUX_SESSION:-${AMF_SESSION:-}}" \
+    --arg amf_tmux_window "${AMF_TMUX_WINDOW:-}" \
+    '{
+        type:"input-request",
+        source:"codex-notify",
+        notification_type:"input-request",
+        session_id:$sid,
+        cwd:$cwd,
+        message:"Codex finished and is waiting for input"
+    }
+    | if $provider_session_id != "" then .provider_session_id = $provider_session_id else . end
+    | if $amf_feature_session_id != "" then .amf_feature_session_id = $amf_feature_session_id else . end
+    | if $amf_tmux_session != "" then .amf_tmux_session = $amf_tmux_session else . end
+    | if $amf_tmux_window != "" then .amf_tmux_window = $amf_tmux_window else . end')"
 
 AMF_CMD="${AMF_BIN:-amf}"
 

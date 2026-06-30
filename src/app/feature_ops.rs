@@ -182,9 +182,8 @@ impl App {
         // Remote Control requires claude.ai OAuth and a recent Claude Code.
         // Resolve the reason it's blocked (z.ai / third-party provider /
         // version) so the wizard can show the toggle disabled with context.
-        let rc_reason = crate::claude::ClaudeLauncher::remote_control_block_reason(
-            self.config.zai.is_some(),
-        );
+        let rc_reason =
+            crate::claude::ClaudeLauncher::remote_control_block_reason(self.config.zai.is_some());
         state.remote_control_available = rc_reason.is_none();
         state.remote_control_block_reason = rc_reason;
         // Apply the global default, but never enable when unavailable.
@@ -729,13 +728,17 @@ impl App {
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
+                        &session.id,
                         session.claude_session_id.clone(),
                         extra_args.clone(),
                     )?;
                 }
                 SessionKind::Opencode => {
-                    self.tmux
-                        .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
+                    self.tmux.launch_opencode(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &session.id,
+                    )?;
                 }
                 SessionKind::Codex => {
                     let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
@@ -762,13 +765,17 @@ impl App {
                     self.tmux.launch_codex(
                         &feature.tmux_session,
                         &session.tmux_window,
+                        &session.id,
                         None,
                         codex_args,
                     )?;
                 }
                 SessionKind::Pi => {
-                    self.tmux
-                        .launch_pi(&feature.tmux_session, &session.tmux_window)?;
+                    self.tmux.launch_pi(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &session.id,
+                    )?;
                 }
                 SessionKind::Nvim => {
                     self.tmux

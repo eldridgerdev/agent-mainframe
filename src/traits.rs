@@ -23,24 +23,27 @@ pub trait TmuxOps: Send + Sync {
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()>;
-    fn launch_opencode(&self, session: &str, window: &str) -> Result<()>;
+    fn launch_opencode(&self, session: &str, window: &str, feature_session_id: &str) -> Result<()>;
     fn launch_opencode_with_session(
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
     ) -> Result<()>;
     fn launch_codex(
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()>;
-    fn launch_pi(&self, session: &str, window: &str) -> Result<()>;
+    fn launch_pi(&self, session: &str, window: &str, feature_session_id: &str) -> Result<()>;
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
     fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()>;

@@ -540,6 +540,15 @@ impl TmuxManager {
         Self::shell_env_with(extra)
     }
 
+    fn agent_launch_env(session: &str, window: &str, feature_session_id: &str) -> String {
+        Self::shell_launch_env_with(&[
+            ("AMF_SESSION", session),
+            ("AMF_TMUX_SESSION", session),
+            ("AMF_TMUX_WINDOW", window),
+            ("AMF_FEATURE_SESSION_ID", feature_session_id),
+        ])
+    }
+
     fn pane_default_terminal() -> Option<String> {
         if let Some(value) = std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL") {
             let value = value.to_string_lossy().trim().to_string();
@@ -1453,6 +1462,7 @@ impl TmuxManager {
     pub fn launch_claude(
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_session_id: Option<&str>,
         extra_args: &[&str],
     ) -> Result<()> {
@@ -1467,7 +1477,7 @@ impl TmuxManager {
         let claude_bin = crate::claude::ClaudeLauncher::resolve_binary();
         let mut cmd_str = format!(
             "{} {}",
-            Self::shell_launch_env_with(&[("AMF_SESSION", session)]),
+            Self::agent_launch_env(session, window, feature_session_id),
             Self::shell_quote(&claude_bin)
         );
         if let Some(sid) = resume_session_id {
@@ -1486,20 +1496,28 @@ impl TmuxManager {
     }
 
     /// Launch opencode in a specific window of a session
-    pub fn launch_opencode(session: &str, window: &str) -> Result<()> {
-        Self::launch_opencode_with_session(session, window, None)
+    pub fn launch_opencode(session: &str, window: &str, feature_session_id: &str) -> Result<()> {
+        Self::launch_opencode_with_session(session, window, feature_session_id, None)
     }
 
     /// Launch opencode in a specific window, optionally resuming a session
     pub fn launch_opencode_with_session(
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_session_id: Option<&str>,
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
-            Some(id) => format!("{} opencode -s {}", Self::shell_launch_env_with(&[]), id),
-            None => format!("{} opencode", Self::shell_launch_env_with(&[])),
+            Some(id) => format!(
+                "{} opencode -s {}",
+                Self::agent_launch_env(session, window, feature_session_id),
+                id
+            ),
+            None => format!(
+                "{} opencode",
+                Self::agent_launch_env(session, window, feature_session_id)
+            ),
         };
 
         Self::run(
@@ -1513,13 +1531,14 @@ impl TmuxManager {
     pub fn launch_codex(
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_session_id: Option<&str>,
         extra_args: &[&str],
     ) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let mut cmd = format!(
             "{} codex",
-            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
+            Self::agent_launch_env(session, window, feature_session_id)
         );
         for arg in extra_args {
             cmd.push(' ');
@@ -1537,11 +1556,11 @@ impl TmuxManager {
     }
 
     /// Launch pi in a specific window of a session
-    pub fn launch_pi(session: &str, window: &str) -> Result<()> {
+    pub fn launch_pi(session: &str, window: &str, feature_session_id: &str) -> Result<()> {
         let target = format!("{}:{}", session, window);
         let cmd = format!(
             "{} pi",
-            Self::shell_launch_env_with(&[("AMF_SESSION", session)])
+            Self::agent_launch_env(session, window, feature_session_id)
         );
 
         Self::run(
@@ -1908,7 +1927,6 @@ impl TmuxManager {
             }
         }
     }
-
 }
 
 // ── TmuxOps trait implementation ─────────────────────────────────────────────
@@ -1943,39 +1961,59 @@ impl TmuxOps for TmuxManager {
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()> {
         let refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-        TmuxManager::launch_claude(session, window, resume_id.as_deref(), &refs)
+        TmuxManager::launch_claude(
+            session,
+            window,
+            feature_session_id,
+            resume_id.as_deref(),
+            &refs,
+        )
     }
 
-    fn launch_opencode(&self, session: &str, window: &str) -> Result<()> {
-        TmuxManager::launch_opencode(session, window)
+    fn launch_opencode(&self, session: &str, window: &str, feature_session_id: &str) -> Result<()> {
+        TmuxManager::launch_opencode(session, window, feature_session_id)
     }
 
     fn launch_opencode_with_session(
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
     ) -> Result<()> {
-        TmuxManager::launch_opencode_with_session(session, window, resume_id.as_deref())
+        TmuxManager::launch_opencode_with_session(
+            session,
+            window,
+            feature_session_id,
+            resume_id.as_deref(),
+        )
     }
 
     fn launch_codex(
         &self,
         session: &str,
         window: &str,
+        feature_session_id: &str,
         resume_id: Option<String>,
         extra_args: Vec<String>,
     ) -> Result<()> {
         let refs: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-        TmuxManager::launch_codex(session, window, resume_id.as_deref(), &refs)
+        TmuxManager::launch_codex(
+            session,
+            window,
+            feature_session_id,
+            resume_id.as_deref(),
+            &refs,
+        )
     }
 
-    fn launch_pi(&self, session: &str, window: &str) -> Result<()> {
-        TmuxManager::launch_pi(session, window)
+    fn launch_pi(&self, session: &str, window: &str, feature_session_id: &str) -> Result<()> {
+        TmuxManager::launch_pi(session, window, feature_session_id)
     }
 
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()> {
@@ -2287,6 +2325,18 @@ mod tests {
         assert!(prefix.contains("AMF_TMUX_BIN="));
         assert!(prefix.contains("AMF_SESSION='amf-test'"));
         assert!(!prefix.contains("PATH="));
+    }
+
+    #[test]
+    fn agent_launch_env_exports_explicit_session_context() {
+        let prefix = TmuxManager::agent_launch_env("amf-test", "codex", "session-123");
+
+        assert!(prefix.starts_with("env "));
+        assert!(prefix.contains("AMF_SESSION='amf-test'"));
+        assert!(prefix.contains("AMF_TMUX_SESSION='amf-test'"));
+        assert!(prefix.contains("AMF_TMUX_WINDOW='codex'"));
+        assert!(prefix.contains("AMF_FEATURE_SESSION_ID='session-123'"));
+        assert!(prefix.contains("PATH="));
     }
 
     #[test]

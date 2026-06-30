@@ -86,6 +86,13 @@ doc always says exactly what remains.
   indexed Codex transcript access and sequenced startup I/O are
   implemented, with provider consolidation and deeper instrumentation
   still planned.
+- [Per-session agent usage](per-session-usage-plan.md) — _Partial._ Split
+  usage scopes so feature rows show aggregate feature usage while
+  dashboard harness rows and sidebars show usage for the selected agent
+  session. Exact provider-session binding and safer inference fallback
+  have shipped for Claude, Codex, and opencode; feature-row aggregation
+  remains. Pi remains unsupported until it exposes usable per-session
+  usage metadata.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.

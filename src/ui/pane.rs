@@ -1131,6 +1131,7 @@ mod tests {
             crate::project::SessionKind::Vscode => ("vscode", "VSCode"),
             crate::project::SessionKind::Pi => ("pi", "Pi"),
             crate::project::SessionKind::Custom => ("custom", "Custom"),
+            crate::project::SessionKind::Todos => ("todos", "TODOs"),
         };
         ViewState::new(
             "proj".into(),

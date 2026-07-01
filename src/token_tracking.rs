@@ -166,10 +166,26 @@ impl SessionTokenTracker {
         workdir: &Path,
         created_at: DateTime<Utc>,
     ) -> Option<TokenUsageSource> {
+        self.discover_source_excluding(session_kind, workdir, created_at, &HashSet::new())
+    }
+
+    pub fn discover_source_excluding(
+        &mut self,
+        session_kind: &SessionKind,
+        workdir: &Path,
+        created_at: DateTime<Utc>,
+        excluded_ids: &HashSet<String>,
+    ) -> Option<TokenUsageSource> {
         match provider_for_session_kind(session_kind)? {
-            TokenUsageProvider::Claude => self.discover_claude_source(workdir, created_at),
-            TokenUsageProvider::Opencode => self.discover_opencode_source(workdir, created_at),
-            TokenUsageProvider::Codex => self.discover_codex_source(workdir, created_at),
+            TokenUsageProvider::Claude => {
+                self.discover_claude_source(workdir, created_at, excluded_ids)
+            }
+            TokenUsageProvider::Opencode => {
+                self.discover_opencode_source(workdir, created_at, excluded_ids)
+            }
+            TokenUsageProvider::Codex => {
+                self.discover_codex_source(workdir, created_at, excluded_ids)
+            }
         }
     }
 
@@ -239,13 +255,15 @@ impl SessionTokenTracker {
         &self,
         workdir: &Path,
         created_at: DateTime<Utc>,
+        excluded_ids: &HashSet<String>,
     ) -> Option<TokenUsageSource> {
         let projects_dir = self.claude_projects_dir(workdir)?;
         if !is_real_dir(&projects_dir) {
             return None;
         }
         let threshold = created_at.timestamp_millis() - 120_000;
-        let mut newest_match: Option<(String, i64)> = None;
+        let created_at_millis = created_at.timestamp_millis();
+        let mut closest_match: Option<(String, u64)> = None;
         let mut newest_any: Option<(String, i64)> = None;
 
         for entry in std::fs::read_dir(projects_dir).ok()? {
@@ -256,19 +274,29 @@ impl SessionTokenTracker {
             }
 
             let id = path.file_stem()?.to_str()?.to_string();
+            if excluded_ids.contains(&id) {
+                continue;
+            }
             let modified = file_modified_millis(&path)?;
             if newest_any.as_ref().is_none_or(|(_, ts)| modified > *ts) {
                 newest_any = Some((id.clone(), modified));
             }
-            if modified >= threshold && newest_match.as_ref().is_none_or(|(_, ts)| modified > *ts) {
-                newest_match = Some((id, modified));
+            let distance = modified.abs_diff(created_at_millis);
+            if modified >= threshold
+                && closest_match
+                    .as_ref()
+                    .is_none_or(|(_, current)| distance < *current)
+            {
+                closest_match = Some((id, distance));
             }
         }
 
-        newest_match.or(newest_any).map(|(id, _)| TokenUsageSource {
-            provider: TokenUsageProvider::Claude,
-            id,
-        })
+        closest_match
+            .or(newest_any.map(|(id, _)| (id, 0)))
+            .map(|(id, _)| TokenUsageSource {
+                provider: TokenUsageProvider::Claude,
+                id,
+            })
     }
 
     fn read_claude_usage(
@@ -405,9 +433,11 @@ impl SessionTokenTracker {
         &mut self,
         workdir: &Path,
         created_at: DateTime<Utc>,
+        excluded_ids: &HashSet<String>,
     ) -> Option<TokenUsageSource> {
         let threshold = created_at.timestamp();
-        let mut newest_match: Option<(String, i64)> = None;
+        let created_at_seconds = created_at.timestamp();
+        let mut closest_match: Option<(String, u64)> = None;
         let mut newest_any: Option<(String, i64)> = None;
 
         let sessions = self
@@ -429,25 +459,31 @@ impl SessionTokenTracker {
             });
 
         for (id, updated) in sessions {
+            if excluded_ids.contains(&id) {
+                continue;
+            }
             if newest_any
                 .as_ref()
                 .is_none_or(|(_, current)| updated > *current)
             {
                 newest_any = Some((id.clone(), updated));
             }
+            let distance = updated.abs_diff(created_at_seconds);
             if updated >= threshold
-                && newest_match
+                && closest_match
                     .as_ref()
-                    .is_none_or(|(_, current)| updated > *current)
+                    .is_none_or(|(_, current)| distance < *current)
             {
-                newest_match = Some((id, updated));
+                closest_match = Some((id, distance));
             }
         }
 
-        newest_match.or(newest_any).map(|(id, _)| TokenUsageSource {
-            provider: TokenUsageProvider::Codex,
-            id,
-        })
+        closest_match
+            .or(newest_any.map(|(id, _)| (id, 0)))
+            .map(|(id, _)| TokenUsageSource {
+                provider: TokenUsageProvider::Codex,
+                id,
+            })
     }
 
     fn read_codex_usage(
@@ -541,13 +577,18 @@ impl SessionTokenTracker {
         &mut self,
         workdir: &Path,
         created_at: DateTime<Utc>,
+        excluded_ids: &HashSet<String>,
     ) -> Option<TokenUsageSource> {
         let threshold = created_at.timestamp_millis() - 120_000;
-        let mut newest_match: Option<(String, i64)> = None;
+        let created_at_millis = created_at.timestamp_millis();
+        let mut closest_match: Option<(String, u64)> = None;
         let mut newest_any: Option<(String, i64)> = None;
 
         for meta in self.opencode_sessions() {
             if meta.directory != workdir {
+                continue;
+            }
+            if excluded_ids.contains(&meta.id) {
                 continue;
             }
 
@@ -557,19 +598,22 @@ impl SessionTokenTracker {
             {
                 newest_any = Some((meta.id.clone(), meta.updated));
             }
+            let distance = meta.updated.abs_diff(created_at_millis);
             if meta.updated >= threshold
-                && newest_match
+                && closest_match
                     .as_ref()
-                    .is_none_or(|(_, updated)| meta.updated > *updated)
+                    .is_none_or(|(_, updated)| distance < *updated)
             {
-                newest_match = Some((meta.id.clone(), meta.updated));
+                closest_match = Some((meta.id.clone(), distance));
             }
         }
 
-        newest_match.or(newest_any).map(|(id, _)| TokenUsageSource {
-            provider: TokenUsageProvider::Opencode,
-            id,
-        })
+        closest_match
+            .or(newest_any.map(|(id, _)| (id, 0)))
+            .map(|(id, _)| TokenUsageSource {
+                provider: TokenUsageProvider::Opencode,
+                id,
+            })
     }
 
     fn read_opencode_usage(&self, session_id: &str) -> Option<SessionTokenUsage> {

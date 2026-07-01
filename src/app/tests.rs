@@ -1393,14 +1393,17 @@ fn complete_running_hook_clears_pending_state_and_starts_feature() {
         .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
-        .withf(|session, window, resume_id, extra_args| {
-            session == "amf-new-feature"
-                && window == "claude"
-                && resume_id.is_none()
-                && extra_args.is_empty()
-        })
+        .withf(
+            |session, window, feature_session_id, resume_id, extra_args| {
+                session == "amf-new-feature"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.is_none()
+                    && extra_args.is_empty()
+            },
+        )
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .withf(|session, window| session == "amf-new-feature" && window == "claude")
         .times(1)
@@ -1882,26 +1885,27 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         AgentKind::Claude => {
             tmux.expect_launch_claude()
                 .times(1)
-                .returning(|_, _, _, _| Ok(()));
+                .returning(|_, _, _, _, _| Ok(()));
         }
         AgentKind::Opencode => {
             tmux.expect_launch_opencode()
                 .times(1)
-                .returning(|_, _| Ok(()));
+                .returning(|_, _, _| Ok(()));
         }
         AgentKind::Codex => {
             tmux.expect_launch_codex()
                 .times(1)
-                .withf(|session, window, resume, extra_args| {
+                .withf(|session, window, feature_session_id, resume, extra_args| {
                     session == "amf-my-project-coached"
                         && window == "codex"
+                        && !feature_session_id.is_empty()
                         && resume.is_none()
                         && extra_args.iter().any(|arg| arg == "--add-dir")
                 })
-                .returning(|_, _, _, _| Ok(()));
+                .returning(|_, _, _, _, _| Ok(()));
         }
         AgentKind::Pi => {
-            tmux.expect_launch_pi().times(1).returning(|_, _| Ok(()));
+            tmux.expect_launch_pi().times(1).returning(|_, _, _| Ok(()));
         }
     }
     tmux.expect_select_window()
@@ -1953,7 +1957,7 @@ fn startup_prompt_overlay_test(agent: AgentKind, expected_window: &'static str) 
         mode,
         review: false,
         plan_mode: false,
-        agent,
+        agent: agent.clone(),
         create_terminal: true,
         session_name: "Claude 1".to_string(),
         enable_chrome: false,
@@ -2067,14 +2071,17 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
         });
     tmux.expect_launch_claude()
         .times(1)
-        .withf(move |session, window, resume_id, extra_args| {
-            resized_for_launch.load(Ordering::SeqCst)
-                && session == "amf-restore-me"
-                && window == "claude"
-                && resume_id.as_deref() == Some("claude-session-123")
-                && extra_args.is_empty()
-        })
-        .returning(|_, _, _, _| Ok(()));
+        .withf(
+            move |session, window, feature_session_id, resume_id, extra_args| {
+                resized_for_launch.load(Ordering::SeqCst)
+                    && session == "amf-restore-me"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.as_deref() == Some("claude-session-123")
+                    && extra_args.is_empty()
+            },
+        )
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .withf(|session, window| session == "amf-restore-me" && window == "claude")
@@ -2119,7 +2126,7 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -2155,6 +2162,10 @@ fn finish_feature_launch_vibeless_injects_custom_diff_review_hook_on_worktree_cr
         "expected vibeless worktree creation to inject custom diff review hook, got: {settings}"
     );
     assert!(
+        settings.contains("notify.sh"),
+        "expected Claude notification hook to be installed, got: {settings}"
+    );
+    assert!(
         settings.contains("\"matcher\": \"Edit|Write\""),
         "expected vibeless PreToolUse matcher to be limited to Edit|Write, got: {settings}"
     );
@@ -2180,7 +2191,7 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_opencode()
         .times(1)
-        .returning(|_, _| Ok(()));
+        .returning(|_, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -2230,6 +2241,12 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
             && installed.contains("buildReviewFiles"),
         "expected installed change-tracker.js to be the structured diff-review version, got: {installed}"
     );
+    assert!(
+        installed.contains("amf_feature_session_id")
+            && installed.contains("provider_session_id")
+            && installed.contains("AMF_FEATURE_SESSION_ID"),
+        "expected installed change-tracker.js to include session identity metadata, got: {installed}"
+    );
 }
 
 #[test]
@@ -2275,6 +2292,8 @@ fn refresh_opencode_plugins_overwrites_stale_change_tracker_plugin() {
             && sidebar_plugin.contains("SIDEBAR_MAX_FILES")
             && sidebar_plugin.contains("normalizePrompt(payload?.message?.summary?.content)")
             && sidebar_plugin.contains("function eventPayload(event)")
+            && sidebar_plugin.contains("amf_feature_session_id")
+            && sidebar_plugin.contains("provider_session_id")
             && sidebar_plugin.contains("event: async ({ event })")
             && sidebar_plugin.contains("switch (event?.type)")
             && sidebar_plugin.contains("case \"todo.updated\"")
@@ -3065,14 +3084,17 @@ fn create_feature_session_name_enter_creates_and_starts_feature() {
         .times(0)
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
-        .withf(|session, window, resume_id, extra_args| {
-            session == "amf-automation-project-feature-1"
-                && window == "claude"
-                && resume_id.is_none()
-                && extra_args.is_empty()
-        })
+        .withf(
+            |session, window, feature_session_id, resume_id, extra_args| {
+                session == "amf-automation-project-feature-1"
+                    && window == "claude"
+                    && !feature_session_id.is_empty()
+                    && resume_id.is_none()
+                    && extra_args.is_empty()
+            },
+        )
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .withf(|session, window| {
             session == "amf-automation-project-feature-1" && window == "claude"
@@ -3300,7 +3322,7 @@ fn adding_session_starts_stopped_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_claude()
         .times(1)
-        .returning(|_, _, _, _| Ok(()));
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -3858,6 +3880,14 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
             .exists(),
         "repo-root codex feature should get local notify hook script"
     );
+    let codex_notify =
+        std::fs::read_to_string(workdir.path().join(".codex").join("amf-codex-notify.sh")).unwrap();
+    assert!(
+        codex_notify.contains("provider_session_id")
+            && codex_notify.contains("amf_feature_session_id")
+            && codex_notify.contains("AMF_FEATURE_SESSION_ID"),
+        "Codex notify hook should preserve AMF and provider session ids, got: {codex_notify}"
+    );
     assert!(
         !workdir.path().join(".codex").join("config.toml").exists(),
         "repo-root codex feature should not write unsupported project-local config"
@@ -4024,7 +4054,7 @@ fn store_with_worktree_agent(
         mode: VibeMode::default(),
         review: false,
         plan_mode: false,
-        agent,
+        agent: agent.clone(),
         enable_chrome: false,
         remote_control: false,
         pending_worktree_script: false,
@@ -4329,6 +4359,72 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
     }
 }
 
+fn store_with_single_agent_session(
+    workdir: &std::path::Path,
+    agent: AgentKind,
+    kind: SessionKind,
+    session_id: &str,
+    window: &str,
+) -> ProjectStore {
+    let now = Utc::now();
+    let session = FeatureSession {
+        id: session_id.to_string(),
+        kind,
+        label: window.to_string(),
+        tmux_window: window.to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at: now,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: agent.clone(),
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        preferred_agent: agent,
+        is_git: false,
+    };
+    ProjectStore {
+        version: 2,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    }
+}
+
 #[test]
 fn sync_session_status_reads_first_line() {
     let workdir = TempDir::new().unwrap();
@@ -4603,6 +4699,123 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Inferred),
     );
+}
+
+#[test]
+fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
+    let home = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let session_dir = home
+        .path()
+        .join(".codex")
+        .join("sessions")
+        .join("2026")
+        .join("03")
+        .join("13");
+    std::fs::create_dir_all(&session_dir).unwrap();
+    std::fs::write(
+        session_dir.join("rollout.jsonl"),
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"codex-1\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":100,\"cached_input_tokens\":40,\"output_tokens\":7,\"reasoning_output_tokens\":3,\"total_tokens\":110}}}}}}}}\n"
+            ),
+            workdir.path().display()
+        ),
+    )
+    .unwrap();
+
+    let created_at = Utc::now();
+    let first = FeatureSession {
+        id: "codex-sess-1".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex 1".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: None,
+        token_usage_source_match: None,
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+    };
+    let second = FeatureSession {
+        id: "codex-sess-2".to_string(),
+        label: "Codex 2".to_string(),
+        tmux_window: "codex-2".to_string(),
+        created_at: created_at + chrono::Duration::milliseconds(100),
+        ..first.clone()
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![first, second],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    let sessions = &app.store.projects[0].features[0].sessions;
+    assert_eq!(
+        sessions[0].token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-1".to_string(),
+        }),
+    );
+    assert_eq!(
+        sessions[0].token_usage_source_match,
+        Some(TokenUsageSourceMatch::Inferred),
+    );
+    assert_eq!(sessions[1].token_usage_source, None);
+    assert_eq!(sessions[1].token_usage_source_match, None);
 }
 
 #[test]
@@ -4920,6 +5133,155 @@ fn ipc_input_request_updates_codex_live_work_state() {
         app.toasts[0]
             .message
             .contains("New input request from my-feat")
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_codex_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_codex_session(workdir.path(), false);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "codex-provider-123",
+        "amf_feature_session_id": "codex-sess",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Codex finished and is waiting for input"
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "codex-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_claude_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_single_agent_session(
+        workdir.path(),
+        AgentKind::Claude,
+        SessionKind::Claude,
+        "claude-sess",
+        "claude",
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "claude-provider-123",
+        "amf_feature_session_id": "claude-sess",
+        "cwd": workdir.path().display().to_string()
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "claude-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_event_binds_exact_opencode_usage_source_by_feature_session_id() {
+    let workdir = TempDir::new().unwrap();
+    let store = store_with_single_agent_session(
+        workdir.path(),
+        AgentKind::Opencode,
+        SessionKind::Opencode,
+        "opencode-sess",
+        "opencode",
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "input-request",
+        "session_id": "opencode-provider-123",
+        "provider_session_id": "opencode-provider-123",
+        "amf_feature_session_id": "opencode-sess",
+        "cwd": workdir.path().display().to_string(),
+        "message": "Agent finished and is waiting for input"
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Opencode,
+            id: "opencode-provider-123".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
+    );
+}
+
+#[test]
+fn ipc_exact_usage_source_replaces_inferred_source() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_codex_session(workdir.path(), false);
+    let session = &mut store.projects[0].features[0].sessions[0];
+    session.set_token_usage_source_inferred(TokenUsageSource {
+        provider: TokenUsageProvider::Codex,
+        id: "old-inferred-codex".to_string(),
+    });
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-stop",
+        "source": "codex-notify",
+        "session_id": "amf-my-feat",
+        "provider_session_id": "exact-codex-session",
+        "amf_feature_session_id": "codex-sess",
+        "cwd": workdir.path().display().to_string()
+    }));
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(
+        session.token_usage_source,
+        Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "exact-codex-session".to_string(),
+        })
+    );
+    assert_eq!(
+        session.token_usage_source_match,
+        Some(TokenUsageSourceMatch::Exact)
     );
 }
 
@@ -6463,8 +6825,10 @@ fn create_feature_automation_creates_and_starts_feature() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(1)
-        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
-        .returning(|_, _, _, _| Ok(()));
+        .withf(|_, _, feature_session_id, _, extra_args| {
+            !feature_session_id.is_empty() && extra_args.iter().any(|arg| arg == "--add-dir")
+        })
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(1)
         .returning(|_, _| Ok(()));
@@ -6657,8 +7021,10 @@ fn batch_feature_automation_creates_project_and_starts_features() {
         .returning(|_, _, _| Ok(()));
     tmux.expect_launch_codex()
         .times(2)
-        .withf(|_, _, _, extra_args| extra_args.iter().any(|arg| arg == "--add-dir"))
-        .returning(|_, _, _, _| Ok(()));
+        .withf(|_, _, feature_session_id, _, extra_args| {
+            !feature_session_id.is_empty() && extra_args.iter().any(|arg| arg == "--add-dir")
+        })
+        .returning(|_, _, _, _, _| Ok(()));
     tmux.expect_select_window()
         .times(2)
         .returning(|_, _| Ok(()));
@@ -6966,6 +7332,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7043,6 +7410,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7105,6 +7473,112 @@ fn pr_review_second_fix_skips_harness_picker() {
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
+}
+
+#[test]
+fn pr_review_toggle_mark_adds_and_removes() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 3);
+
+    // Mark the first comment, move down, mark the second.
+    app.pr_review_toggle_mark();
+    app.pr_review_select_next();
+    app.pr_review_toggle_mark();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.marked.len(), 2);
+            assert!(state.marked.contains(&1));
+            assert!(state.marked.contains(&2));
+        }
+        _ => unreachable!(),
+    }
+
+    // Toggling the same comment again unmarks it.
+    app.pr_review_toggle_mark();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.marked.len(), 1);
+            assert!(!state.marked.contains(&2));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_queue_marked_with_nothing_marked_hints() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+
+    app.pr_review_queue_marked_fixes().unwrap();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("press space"),
+        "expected a hint to mark comments, got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn pr_review_queue_marked_without_session_hints() {
+    // `store_with_feature` has no sessions, so the dedicated review session
+    // doesn't exist yet — the batch must refuse rather than cold-start one.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+    }
+
+    app.pr_review_queue_marked_fixes().unwrap();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("No review session yet"),
+        "expected a hint to start the review session, got {:?}",
+        app.message
+    );
+}
+
+#[test]
+fn pr_review_queue_marked_sends_and_marks_fixing() {
+    // A feature with an existing dedicated "PR Review" session to queue into.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    // Two marked comments → two submissions, each: clear input, paste, Enter.
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "C-u")
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_paste_text().times(2).returning(|_, _, _| Ok(()));
+    tmux.expect_send_key_name()
+        .withf(|_, _, key| key == "Enter")
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 3);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+        state.marked.insert(2);
+    }
+
+    app.pr_review_queue_marked_fixes().unwrap();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            // Marks cleared; queued comments now Fixing; unmarked one untouched.
+            assert!(state.marked.is_empty(), "marks should clear after queuing");
+            assert_eq!(state.review.comments[0].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(state.review.comments[1].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(
+                state.review.comments[2].triage,
+                crate::app::pr_review::TriageState::Untriaged
+            );
+        }
+        _ => unreachable!(),
+    }
+    // Stays in the review pane (no switch into the session).
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
 }
 
 #[test]
@@ -7207,6 +7681,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        marked: std::collections::HashSet::new(),
     });
 }
 
@@ -7734,4 +8209,425 @@ fn re_review_no_changes_keeps_all_filter() {
         }
         _ => panic!("expected diff viewer"),
     }
+}
+
+#[test]
+fn session_picker_offers_todos_when_project_has_none() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert!(
+                state
+                    .builtin_sessions
+                    .iter()
+                    .any(|session| session.kind == SessionKind::Todos),
+                "TODOs should be offered when the project has none"
+            );
+        }
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn session_picker_hides_todos_when_project_already_has_one() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    app.selection = Selection::Feature(0, 0);
+    app.open_session_picker().unwrap();
+
+    match &app.mode {
+        AppMode::SessionPicker(state) => {
+            assert!(
+                !state
+                    .builtin_sessions
+                    .iter()
+                    .any(|session| session.kind == SessionKind::Todos),
+                "TODOs should be hidden once the project already has one"
+            );
+        }
+        _ => panic!("expected SessionPicker mode"),
+    }
+}
+
+#[test]
+fn add_builtin_session_blocks_second_todos_per_project() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    assert!(app.store.projects[0].has_todos_session());
+    let todos_count = |app: &App| {
+        app.store.projects[0]
+            .features
+            .iter()
+            .flat_map(|f| &f.sessions)
+            .filter(|s| s.kind == SessionKind::Todos)
+            .count()
+    };
+    assert_eq!(todos_count(&app), 1);
+
+    // A second attempt is rejected; still exactly one TODOs session.
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    assert_eq!(todos_count(&app), 1, "a second TODOs session must be blocked");
+    assert_eq!(
+        app.message.as_deref(),
+        Some("This project already has a TODOs session")
+    );
+}
+
+#[test]
+fn todos_session_does_not_create_a_tmux_window() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    let session = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .find(|s| s.kind == SessionKind::Todos)
+        .expect("TODOs session should exist");
+    assert!(!session.kind.is_tmux_backed());
+    assert_eq!(session.label, "TODOs");
+}
+
+fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
+    crate::db::todos::Todo {
+        id: format!("todo-{title}"),
+        list_id: "list-1".to_string(),
+        title: title.to_string(),
+        body: None,
+        priority: crate::db::todos::TodoPriority::Med,
+        done,
+        sort_order: 0,
+        spawned_session_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+#[test]
+fn entering_todos_session_opens_native_overlay() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+
+    // Select the TODOs session and open it.
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|s| s.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.project_name, "my-project");
+            assert_eq!(state.feature_name, "my-feat");
+            assert_eq!(state.pi, 0);
+            assert_eq!(state.fi, 0);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn closing_todos_overlay_returns_to_session_selection() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.selection = Selection::Feature(0, 0);
+    app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
+    let si = app.store.projects[0].features[0]
+        .sessions
+        .iter()
+        .position(|s| s.kind == SessionKind::Todos)
+        .unwrap();
+    app.selection = Selection::Session(0, 0, si);
+    app.enter_view().unwrap();
+
+    app.close_todos_view();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(matches!(app.selection, Selection::Session(0, 0, s) if s == si));
+}
+
+#[test]
+fn todos_navigation_wraps_around() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(TodoViewState {
+        todos: vec![
+            sample_todo("a", false),
+            sample_todo("b", false),
+            sample_todo("c", true),
+        ],
+        ..empty_todo_view()
+    });
+
+    let selected = |app: &App| match &app.mode {
+        AppMode::Todos(state) => state.selected,
+        _ => panic!("expected Todos overlay"),
+    };
+
+    app.todos_select_next();
+    assert_eq!(selected(&app), 1);
+    app.todos_select_next();
+    app.todos_select_next();
+    assert_eq!(selected(&app), 0, "next wraps from last back to first");
+    app.todos_select_prev();
+    assert_eq!(selected(&app), 2, "prev wraps from first to last");
+}
+
+#[test]
+fn todos_navigation_no_op_when_empty() {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(empty_todo_view());
+
+    app.todos_select_next();
+    app.todos_select_prev();
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(state.selected, 0),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+fn empty_todo_view() -> TodoViewState {
+    TodoViewState {
+        project_id: "proj-1".to_string(),
+        pi: 0,
+        fi: 0,
+        project_name: "my-project".to_string(),
+        feature_name: "my-feat".to_string(),
+        list: None,
+        todos: vec![],
+        selected: 0,
+        scroll_offset: 0,
+        editor: None,
+        pending_delete: false,
+    }
+}
+
+fn todos_app() -> App {
+    let mut app = App::new_for_test(
+        store_with_feature(ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Todos(empty_todo_view());
+    app
+}
+
+fn ke(code: KeyCode) -> crossterm::event::KeyEvent {
+    crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+}
+
+fn type_str(app: &mut App, s: &str) {
+    for c in s.chars() {
+        crate::handlers::handle_todos_key(app, ke(KeyCode::Char(c))).unwrap();
+    }
+}
+
+fn todo_titles(app: &App) -> Vec<String> {
+    match &app.mode {
+        AppMode::Todos(state) => state.todos.iter().map(|t| t.title.clone()).collect(),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_add_via_handler_appends_and_selects() {
+    let mut app = todos_app();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('a'))).unwrap();
+    type_str(&mut app, "buy milk");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["buy milk"]);
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(state.selected, 0);
+            assert!(state.editor.is_none(), "editor closes after commit");
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_empty_title_is_not_added() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "   ");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+    assert!(todo_titles(&app).is_empty());
+}
+
+#[test]
+fn todos_edit_title_replaces_text() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "old");
+    app.todos_commit_edit().unwrap();
+
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('e'))).unwrap();
+    // Clear the seeded "old" then type "new".
+    for _ in 0..3 {
+        crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Backspace)).unwrap();
+    }
+    type_str(&mut app, "new");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["new"]);
+}
+
+#[test]
+fn todos_toggle_done_sinks_item_below_open() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "a");
+    app.todos_commit_edit().unwrap();
+    app.todos_begin_add();
+    type_str(&mut app, "b");
+    app.todos_commit_edit().unwrap();
+
+    // Select "a" (index 0) and mark it done.
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.selected = 0;
+    }
+    app.todos_toggle_done().unwrap();
+
+    // Open "b" now sorts before done "a"; cursor follows "a".
+    assert_eq!(todo_titles(&app), vec!["b", "a"]);
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[1].done);
+            assert_eq!(state.selected, 1);
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_cycle_priority_rotates() {
+    use crate::db::todos::TodoPriority;
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "a");
+    app.todos_commit_edit().unwrap();
+
+    let prio = |app: &App| match &app.mode {
+        AppMode::Todos(state) => state.todos[0].priority,
+        _ => panic!("expected Todos overlay"),
+    };
+    assert_eq!(prio(&app), TodoPriority::Med);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::Low);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::High);
+    app.todos_cycle_priority().unwrap();
+    assert_eq!(prio(&app), TodoPriority::Med);
+}
+
+#[test]
+fn todos_reorder_moves_item() {
+    let mut app = todos_app();
+    for t in ["a", "b", "c"] {
+        app.todos_begin_add();
+        type_str(&mut app, t);
+        app.todos_commit_edit().unwrap();
+    }
+    // Select "a" (top) and move it down.
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.selected = 0;
+    }
+    app.todos_reorder(1).unwrap();
+
+    assert_eq!(todo_titles(&app), vec!["b", "a", "c"]);
+    match &app.mode {
+        AppMode::Todos(state) => assert_eq!(state.selected, 1, "cursor follows moved item"),
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_delete_requires_confirmation() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "doomed");
+    app.todos_commit_edit().unwrap();
+
+    // 'd' arms the confirm; 'n' cancels and keeps the item.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.pending_delete));
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert_eq!(todo_titles(&app), vec!["doomed"]);
+
+    // 'd' then 'y' deletes it.
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('d'))).unwrap();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('y'))).unwrap();
+    assert!(todo_titles(&app).is_empty());
+}
+
+#[test]
+fn todos_edit_carry_over_banner() {
+    let mut app = todos_app();
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
+    type_str(&mut app, "finishing the parser");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Enter)).unwrap();
+
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert_eq!(
+                state.list.as_ref().and_then(|l| l.carry_over.as_deref()),
+                Some("finishing the parser")
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}
+
+#[test]
+fn todos_edit_cancel_discards_changes() {
+    let mut app = todos_app();
+    app.todos_begin_add();
+    type_str(&mut app, "scratch");
+    crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(todo_titles(&app).is_empty());
+    assert!(matches!(&app.mode, AppMode::Todos(s) if s.editor.is_none()));
 }

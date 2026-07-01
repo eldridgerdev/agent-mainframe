@@ -22,6 +22,46 @@ are tagged.
   are ignored — they never reach the feedback file or a posted PR review — but
   they do survive pausing and resuming a review. It runs only when you ask and
   only on the current file (with the diff capped), so it stays cheap on tokens.
+- **Per-project TODO lists.** Add a `TODOs` session from the session picker
+  (`s`) to keep a running to-do list for a project — somewhere to jot what's
+  left and where you left off instead of holding it in your head. It opens a
+  native full-screen list (no tmux pane) with a "left off here" note at the
+  top, and each project gets at most one list, shared across all its features.
+  Inside the list: `a` add, `e` edit a title, `o` edit longer notes on an item,
+  `space` toggle done (completed items get a strikethrough and sink to the
+  bottom, never auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete
+  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. The
+  list is saved per checkout, so it survives restarts. Spawning an agent
+  straight from a TODO and quick-capture from other sessions are still to come.
+- **Fix several PR comments in one pass.** While reviewing PR comments, press
+  `space` to mark comments (a `●` flags them, and the footer shows how many),
+  then `F` to queue a scoped fix for every marked comment into the review
+  session at once — without leaving the pane. The harness works through them
+  one after another while you keep triaging, sharing the session's warm file
+  context, and each marked comment is flagged `fixing`. Already-resolved marks
+  are skipped. Start the review session first with a single `f` (the batch
+  queues into that warm session rather than spinning up a cold one).
+
+### Fixed
+
+- **PR-comment triage marks no longer vanish after the agent pushes a fix.**
+  When reviewing PR comments, marking a comment done/skipped, injecting a fix,
+  or posting a reply records local triage state — but that state was keyed by
+  the PR's head commit, so as soon as a fix was pushed and you reopened the
+  review (`G`), the new head SHA meant none of your marks showed up. Triage is
+  now keyed by the comment itself and survives a push, so done/skipped/fixing
+  marks and skip notes persist across commits and re-opens. Existing triage is
+  migrated automatically (any per-commit duplicates collapse to your latest
+  mark).
+
+- **Agent usage now binds to the right session more reliably.** New Claude,
+  Codex, and opencode panes now pass enough session identity through their
+  local hooks/plugins for AMF to attach token usage to the matching dashboard
+  session instead of guessing from the newest transcript in the worktree.
+- **Inferred usage is safer for older sessions.** When AMF has to fall back to
+  workdir/timestamp matching, it no longer assigns the same inferred provider
+  session to multiple same-harness panes in one feature; unmatched sessions stay
+  unbound until a better match or exact provider event appears.
 
 ### Changed
 
@@ -36,6 +76,11 @@ are tagged.
   you type, and you get undo/redo and word motions for free. **`Tab` injects**
   the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
   still injects from the confirm view.
+
+### Migration
+
+- No migration is required. Existing inferred usage sources can be replaced
+  automatically when the next exact provider event arrives.
 
 ## [v0.28.0] - 2026-06-29
 

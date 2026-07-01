@@ -621,21 +621,27 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [ ] **Fix several comments in one pass against the same dedicated session.**
-      Per-comment reuse already works (`fix_session_index` finds the dedicated
-      `"PR Review"` session by label, so every `f` reuses the same warm
-      harness). What's missing is the *throughput loop*: today each `f`
-      switches the user into the session to watch, so fixing N comments means N
-      round-trips out of and back into the pane. Let the user **select
-      multiple comments** (multi-select / a `[space]`-marked set) and inject
-      their fix prompts into the same dedicated session **in sequence without
-      leaving the pane** between each — the agent works through them while the
-      user keeps triaging, and the per-session overhead and warm file context
-      are shared across all of them (token principle #4). Each comment stays a
-      **separate** fix prompt here (sequential), which is what distinguishes
-      this from the batch item below (one combined numbered prompt). Mark each
-      as `Fixing` as it's queued. → `src/app/pr_review.rs`,
-      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`.
+- [x] **Fix several comments in one pass against the same dedicated session.**
+      The throughput loop. `space` toggles a **batch mark** on the selected
+      comment (`PrReviewState::marked`, a `HashSet<u64>` keyed by comment id so
+      marks survive the hide-resolved filter), shown as a leading `●` in the list
+      and a marked-count in the footer (`F fix-marked(N)`). `F` then **queues
+      every marked comment's fix prompt into the one review session, in list
+      order, without leaving the pane** — each is pasted-and-submitted
+      (`C-u` → `paste_text` → `Enter`, with a short delay between so the harness
+      registers each as its own turn), so the prompts queue while the agent works
+      and the user keeps triaging. Each stays a **separate** prompt (distinct from
+      the combined-prompt batch below), sharing the session's warm file context
+      (token principle #4); already GitHub-resolved marks are skipped (principle
+      #6). Each queued comment is marked `Fixing` and persisted, and the marked
+      set is cleared. To avoid auto-submitting into a not-yet-ready agent, `F`
+      **requires the review session to already exist** — the first `f` establishes
+      and warms it; the batch refuses (with a hint) rather than cold-starting one.
+      Keybinding-help + legend entries; unit-tested (toggle add/remove; empty and
+      no-session hints; a two-comment queue sends `C-u`/paste/`Enter` ×2, marks
+      both `Fixing`, clears the set, and stays in the pane). →
+      `src/app/state.rs`, `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [ ] **Combined-prompt batch: "fix all of these, then I'll come back."**
       The walk-away workflow. Let the user mark a set of comments to fix
       (reuse the same multi-select from the sequential item above), then build
@@ -703,24 +709,25 @@ from the last *N* PRs) is reached from the PR entry flow:
       AMF" tag for those is worth deciding (see open question). Make the exact
       footer text a single shared helper so replies and review posts stay
       consistent. → `src/app/pr_review.rs`, `src/github.rs`.
-- [ ] **BUG: triage/reply state is lost on return (from real use).**
-      Epic B claims triage is authoritative in `pr_comment_triage` and
-      `apply_persisted_triage` overlays it onto every reload — but in
-      practice, marking a comment done / posting a reply, then starting a
-      new fix session and coming **back** to the review shows none of it
-      saved. Likely culprits to check: state is mutated in the in-memory
-      `PrReviewState` but **not flushed to SQLite before the pane is left**
-      to switch into the fix session (the `f`-marks-`Fixing` path persists,
-      but `m`/`s`/reply paths may only update memory); and/or the return
-      path **re-fetches and doesn't re-overlay** the persisted triage. It
-      also needs to survive the head-SHA key — confirm we're reading/writing
-      the triage row under the *same* `PR# + comment_id + head_sha` on both
-      sides. Repro, then make every triage/reply mutation **persist
-      immediately** (not on pane exit) and verify `apply_persisted_triage`
-      runs on the cache-hit *and* background-fetch *and* return-from-session
-      paths. Pairs with the quick-toggle item above (the round-trip is what
-      exposes the loss). → `src/app/pr_review.rs`,
-      `src/db/pr_comment_triage.rs`, `src/handlers/pr_review.rs`.
+- [x] **BUG: triage/reply state is lost on return (from real use).**
+      Root cause was the **head-SHA in the triage key**, not a missing flush:
+      `pr_review_set_triage` (`m`/`s`), the reply post path, and the
+      `f`-marks-`Fixing` path *all* already persist immediately, and
+      `apply_persisted_triage` already runs on both the cache-hit and
+      background-fetch loads. But `pr_comment_triage` was keyed by
+      `PR# + comment_id + head_sha`, and the table doc even said it "starts fresh
+      after a push moves the PR's head" — so the moment the agent's fix pushed a
+      commit, returning via `G` re-resolved the PR to a **new** head SHA and the
+      overlay looked up rows under a SHA that no longer matched, silently
+      dropping every mark. A GitHub comment id is stable across commits, so
+      triage is now keyed by `PR# + comment_id` and **survives a push**;
+      `head_sha` is kept only as an informational record of the last SHA a mark
+      was set under (migration **010** rebuilds the table with the new primary
+      key, collapsing any per-SHA duplicates to the most-recently-updated row,
+      and `load` drops the SHA filter). Unit-tested: the SHA-change survival at
+      the DB layer, and the 009→010 migration collapse + new-PK enforcement. →
+      `src/db/migrations.rs`, `src/db/pr_comment_triage.rs`, `src/db/mod.rs`,
+      `src/app/pr_review.rs`.
 - **Acceptance:** a 30-comment bot-heavy PR can be triaged quickly with
   measurably lower token spend than copy-paste round-trips.
 

@@ -5,6 +5,7 @@ mod pr_review_cache;
 mod session_status;
 pub mod store;
 mod token_cache;
+pub mod todos;
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -102,13 +103,13 @@ impl AmfDb {
         pr_review_cache::evict_stale(&self.conn)
     }
 
-    /// Local triage rows for `(pr_number, head_sha)` as `comment_id -> (state, note)`.
+    /// Local triage rows for `pr_number` as `comment_id -> (state, note)`,
+    /// across every head SHA (triage survives a push).
     pub fn load_pr_comment_triage(
         &self,
         pr_number: u32,
-        head_sha: &str,
     ) -> Result<std::collections::HashMap<u64, pr_comment_triage::TriageRow>> {
-        pr_comment_triage::load(&self.conn, pr_number, head_sha)
+        pr_comment_triage::load(&self.conn, pr_number)
     }
 
     pub fn save_pr_comment_triage(
@@ -171,6 +172,78 @@ impl AmfDb {
 
     pub fn delete_feature_statuses(&self, feature_id: &str) -> Result<()> {
         session_status::delete_feature(&self.conn, feature_id)
+    }
+}
+
+/// Per-project TODO list persistence. Wired into the UI in later epics (see
+/// `docs/backlog/feature-todos-plan.md`), so unused until then.
+#[allow(dead_code)]
+impl AmfDb {
+    /// The project's TODO list, or `None` if it has no list yet.
+    pub fn todo_list(&self, project_id: &str) -> Result<Option<todos::TodoList>> {
+        todos::load_list(&self.conn, project_id)
+    }
+
+    /// Return the project's TODO list, creating one hosted by `feature_id` if
+    /// none exists.
+    pub fn load_or_create_todo_list(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+    ) -> Result<todos::TodoList> {
+        todos::load_or_create_list(&self.conn, project_id, feature_id)
+    }
+
+    /// Create the project's TODO list under `feature_id`; errors if one exists.
+    pub fn create_todo_list(
+        &self,
+        project_id: &str,
+        feature_id: &str,
+    ) -> Result<todos::TodoList> {
+        todos::create_list(&self.conn, project_id, feature_id)
+    }
+
+    pub fn set_todo_carry_over(&self, list_id: &str, carry_over: Option<&str>) -> Result<()> {
+        todos::set_carry_over(&self.conn, list_id, carry_over)
+    }
+
+    pub fn set_todo_list_host_feature(&self, list_id: &str, feature_id: &str) -> Result<()> {
+        todos::set_host_feature(&self.conn, list_id, feature_id)
+    }
+
+    pub fn delete_todo_list(&self, list_id: &str) -> Result<()> {
+        todos::delete_list(&self.conn, list_id)
+    }
+
+    /// Delete the project's TODO list (and items) when the project is deleted.
+    pub fn delete_todo_list_for_project(&self, project_id: &str) -> Result<()> {
+        todos::delete_list_for_project(&self.conn, project_id)
+    }
+
+    pub fn todos(&self, list_id: &str) -> Result<Vec<todos::Todo>> {
+        todos::list_todos(&self.conn, list_id)
+    }
+
+    pub fn add_todo(
+        &self,
+        list_id: &str,
+        title: &str,
+        body: Option<&str>,
+        priority: todos::TodoPriority,
+    ) -> Result<todos::Todo> {
+        todos::add_todo(&self.conn, list_id, title, body, priority)
+    }
+
+    pub fn update_todo(&self, todo: &todos::Todo) -> Result<()> {
+        todos::update_todo(&self.conn, todo)
+    }
+
+    pub fn delete_todo(&self, todo_id: &str) -> Result<()> {
+        todos::delete_todo(&self.conn, todo_id)
+    }
+
+    pub fn reorder_todos(&self, ordered_ids: &[String]) -> Result<()> {
+        todos::reorder_todos(&self.conn, ordered_ids)
     }
 }
 

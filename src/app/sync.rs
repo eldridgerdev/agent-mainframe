@@ -69,6 +69,7 @@ fn read_custom_session_status(
 // ---------------------------------------------------------------------------
 
 struct SessionStatusJob {
+    feature_id: String,
     session_id: String,
     kind: SessionKind,
     workdir: PathBuf,
@@ -109,6 +110,7 @@ fn collect_jobs(
         .flat_map(|project| {
             project.features.iter().flat_map(|feature| {
                 feature.sessions.iter().map(|session| SessionStatusJob {
+                    feature_id: feature.id.clone(),
                     session_id: session.id.clone(),
                     kind: session.kind.clone(),
                     workdir: feature.workdir.clone(),
@@ -134,6 +136,7 @@ fn run_jobs(
 ) -> SessionStatusBgResult {
     let mut updates = Vec::with_capacity(jobs.len());
     let mut sources_discovered = false;
+    let mut reserved_sources: HashSet<(String, TokenUsageProvider, String)> = HashSet::new();
 
     for job in jobs {
         if job.kind == SessionKind::Custom {
@@ -183,11 +186,45 @@ fn run_jobs(
             sources_discovered = true;
         }
 
+        if let Some(existing) = source.as_ref() {
+            let key = (
+                job.feature_id.clone(),
+                existing.provider.clone(),
+                existing.id.clone(),
+            );
+            if job.existing_source_match == Some(TokenUsageSourceMatch::Inferred)
+                && reserved_sources.contains(&key)
+            {
+                source = None;
+                action = SourceAction::Clear;
+                sources_discovered = true;
+            } else {
+                reserved_sources.insert(key);
+            }
+        }
+
         // Infer from the filesystem if we still have no source.
         if source.is_none() {
+            let excluded_ids = reserved_sources
+                .iter()
+                .filter(|(feature_id, provider, _)| {
+                    feature_id == &job.feature_id && provider == &expected_provider
+                })
+                .map(|(_, _, id)| id.clone())
+                .collect::<HashSet<_>>();
             if let Some(new_source) =
-                tracker.discover_source(&job.kind, &job.workdir, job.created_at)
+                tracker.discover_source_excluding(
+                    &job.kind,
+                    &job.workdir,
+                    job.created_at,
+                    &excluded_ids,
+                )
             {
+                reserved_sources.insert((
+                    job.feature_id.clone(),
+                    new_source.provider.clone(),
+                    new_source.id.clone(),
+                ));
                 source = Some(new_source.clone());
                 action = SourceAction::SetInferred(new_source);
                 sources_discovered = true;
@@ -384,6 +421,7 @@ impl App {
 
         for project in &mut self.store.projects {
             for feature in &mut project.features {
+                let mut reserved_sources: HashSet<(TokenUsageProvider, String)> = HashSet::new();
                 for session in &mut feature.sessions {
                     if session.kind == crate::project::SessionKind::Custom {
                         session.status_text = read_custom_session_status(
@@ -422,12 +460,31 @@ impl App {
                         discovered_sources = true;
                     }
 
+                    if let Some(source) = session.token_usage_source.as_ref() {
+                        let key = (source.provider.clone(), source.id.clone());
+                        if session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
+                            && reserved_sources.contains(&key)
+                        {
+                            session.clear_token_usage_source();
+                            discovered_sources = true;
+                        } else {
+                            reserved_sources.insert(key);
+                        }
+                    }
+
                     if session.token_usage_source.is_none() {
-                        if let Some(source) = tracker.discover_source(
+                        let excluded_ids = reserved_sources
+                            .iter()
+                            .filter(|(provider, _)| provider == &expected_provider)
+                            .map(|(_, id)| id.clone())
+                            .collect::<HashSet<_>>();
+                        if let Some(source) = tracker.discover_source_excluding(
                             &session.kind,
                             &feature.workdir,
                             session.created_at,
+                            &excluded_ids,
                         ) {
+                            reserved_sources.insert((source.provider.clone(), source.id.clone()));
                             session.set_token_usage_source_inferred(source);
                             discovered_sources = true;
                         }
@@ -870,4 +927,3 @@ impl App {
             .map(|s| s.tmux_window.clone())
     }
 }
-

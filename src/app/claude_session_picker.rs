@@ -270,39 +270,46 @@ impl App {
                         id: claude_session_id.to_string(),
                     });
                     let use_rc = feature.remote_control && rc_allowed;
-                    let extra_args: Vec<String> =
-                        feature.mode.cli_flags(LaunchOpts {
-                            enable_chrome: feature.enable_chrome,
-                            remote_control: use_rc,
-                            session_name: if use_rc {
-                                Some(feature.name.clone())
-                            } else {
-                                None
-                            },
-                        });
+                    let extra_args: Vec<String> = feature.mode.cli_flags(LaunchOpts {
+                        enable_chrome: feature.enable_chrome,
+                        remote_control: use_rc,
+                        session_name: if use_rc {
+                            Some(feature.name.clone())
+                        } else {
+                            None
+                        },
+                    });
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
+                        &session.id,
                         Some(claude_session_id.to_string()),
                         extra_args,
                     )?;
                 }
                 SessionKind::Opencode => {
-                    self.tmux
-                        .launch_opencode(&feature.tmux_session, &session.tmux_window)?;
+                    self.tmux.launch_opencode(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &session.id,
+                    )?;
                 }
                 SessionKind::Codex => {
                     let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
                     self.tmux.launch_codex(
                         &feature.tmux_session,
                         &session.tmux_window,
+                        &session.id,
                         None,
                         codex_args,
                     )?;
                 }
                 SessionKind::Pi => {
-                    self.tmux
-                        .launch_pi(&feature.tmux_session, &session.tmux_window)?;
+                    self.tmux.launch_pi(
+                        &feature.tmux_session,
+                        &session.tmux_window,
+                        &session.id,
+                    )?;
                 }
                 SessionKind::Nvim => {
                     self.tmux
@@ -327,6 +334,8 @@ impl App {
                         )?;
                     }
                 }
+                // Native overlay, no tmux window to (re)launch.
+                SessionKind::Todos => {}
             }
         }
 

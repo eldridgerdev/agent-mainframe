@@ -906,6 +906,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    if let AppMode::Todos(state) = &app.mode {
+        super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
+        return;
+    }
+
     if let AppMode::Viewing(view) = &app.mode {
         let area = frame.area();
         draw_view_pane(frame, app, view, app.leader_active, true);

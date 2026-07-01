@@ -49,6 +49,14 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Persist local PR comment triage state (fixing/done/…)",
             MIGRATION_009,
         ),
+        (
+            "Re-key PR comment triage by PR# + comment id (survive head-SHA changes)",
+            MIGRATION_010,
+        ),
+        (
+            "Add todo_lists + todos tables for per-project TODO lists",
+            MIGRATION_011,
+        ),
     ];
 
     for (i, (desc, sql)) in migrations.iter().enumerate() {
@@ -163,6 +171,68 @@ CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
     ON pr_comment_triage(updated_at);
 ";
 
+// Triage is local, per-comment state (done / skipped / fixing). The original
+// schema keyed it by `PR# + comment id + head SHA`, which meant a push that
+// moved the PR head silently dropped every mark on the next re-resolve. A
+// comment's GitHub id is stable across commits, so re-key triage on
+// `PR# + comment id` and keep `head_sha` only as an informational record of the
+// last SHA a mark was set under. Collapse any per-SHA duplicates from the old
+// schema, keeping the most recently updated row per comment (SQLite's
+// bare-column-with-MAX() rule pulls the rest of that row's fields).
+const MIGRATION_010: &str = "
+CREATE TABLE pr_comment_triage_rekeyed (
+    pr_number  INTEGER NOT NULL,
+    comment_id INTEGER NOT NULL,
+    head_sha   TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    note       TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (pr_number, comment_id)
+);
+INSERT INTO pr_comment_triage_rekeyed
+    (pr_number, comment_id, head_sha, state, note, updated_at)
+SELECT pr_number, comment_id, head_sha, state, note, MAX(updated_at)
+FROM pr_comment_triage
+GROUP BY pr_number, comment_id;
+DROP TABLE pr_comment_triage;
+ALTER TABLE pr_comment_triage_rekeyed RENAME TO pr_comment_triage;
+CREATE INDEX IF NOT EXISTS idx_pr_comment_triage_updated
+    ON pr_comment_triage(updated_at);
+";
+
+// NOTE: `todo_lists.project_id` / `feature_id` are deliberately plain TEXT
+// columns with NO foreign-key reference to projects/features. `store::save`
+// does a full `DELETE FROM projects` replace on every save, which would
+// cascade-wipe these rows if they were FK-bound. Cleanup on project/feature
+// deletion is therefore handled explicitly (see `db/todos.rs`). The
+// `todos.list_id -> todo_lists.id` cascade is safe because `todo_lists` is
+// never touched by the store full-replace.
+const MIGRATION_011: &str = "
+CREATE TABLE IF NOT EXISTS todo_lists (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL UNIQUE,
+    feature_id  TEXT NOT NULL,
+    carry_over  TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS todos (
+    id                 TEXT PRIMARY KEY,
+    list_id            TEXT NOT NULL REFERENCES todo_lists(id) ON DELETE CASCADE,
+    title              TEXT NOT NULL,
+    body               TEXT,
+    priority           TEXT NOT NULL DEFAULT 'med',
+    done               INTEGER NOT NULL DEFAULT 0,
+    sort_order         INTEGER NOT NULL DEFAULT 0,
+    spawned_session_id TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_todos_list ON todos(list_id);
+";
+
 const MIGRATION_001: &str = "
 CREATE TABLE IF NOT EXISTS store_meta (
     key   TEXT PRIMARY KEY,
@@ -236,3 +306,71 @@ CREATE TABLE IF NOT EXISTS session_bookmarks (
     PRIMARY KEY (project_id, feature_id, session_id)
 );
 ";
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{Connection, params};
+
+    /// Migration 010 re-keys triage on `PR# + comment id`: rows that the old
+    /// (head-SHA-keyed) schema recorded once per SHA collapse to a single row
+    /// per comment, keeping the most recently updated state.
+    #[test]
+    fn migration_010_collapses_per_sha_triage_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Stand up the v009 schema and seed it before 010 runs.
+        conn.execute_batch(super::MIGRATION_009).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL, description TEXT NOT NULL);
+             INSERT INTO schema_version VALUES (9, datetime('now'), 'seed');",
+        )
+        .unwrap();
+
+        let insert = "INSERT INTO pr_comment_triage
+            (pr_number, comment_id, head_sha, state, note, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+        // Same comment marked under two head SHAs: the newer mark should win.
+        conn.execute(
+            insert,
+            params![7, 1, "old", "fixing", Option::<&str>::None, "2026-01-01 00:00:00"],
+        )
+        .unwrap();
+        conn.execute(
+            insert,
+            params![7, 1, "new", "done", Option::<&str>::None, "2026-02-01 00:00:00"],
+        )
+        .unwrap();
+        // A distinct comment is preserved as its own row.
+        conn.execute(
+            insert,
+            params![7, 2, "old", "skipped", Some("nope"), "2026-01-15 00:00:00"],
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        // Comment 1 collapsed to the newer "done"; comment 2 survived.
+        let mut stmt = conn
+            .prepare("SELECT comment_id, state, head_sha FROM pr_comment_triage ORDER BY comment_id")
+            .unwrap();
+        let rows: Vec<(i64, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "done".to_string(), "new".to_string()),
+                (2, "skipped".to_string(), "old".to_string()),
+            ]
+        );
+
+        // The re-keyed table rejects a second row for an existing comment.
+        let dup = conn.execute(
+            insert,
+            params![7, 1, "newer", "fixing", Option::<&str>::None, "2026-03-01 00:00:00"],
+        );
+        assert!(dup.is_err(), "PK should now be (pr_number, comment_id)");
+    }
+}

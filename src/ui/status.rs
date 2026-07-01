@@ -336,6 +336,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(" close"),
             ]),
         },
+        AppMode::Todos(_) => Line::from(vec![
+            Span::styled("j/k", key_style()),
+            Span::raw(" navigate  "),
+            Span::styled("Esc/q", key_style()),
+            Span::raw(" close"),
+        ]),
         AppMode::Help(_) => Line::from(vec![
             Span::styled("Esc/q/?", key_style()),
             Span::raw(" close help"),
@@ -786,6 +792,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     SessionKind::Nvim => "nvim",
                     SessionKind::Vscode => "vscode",
                     SessionKind::Custom => "custom",
+                    SessionKind::Todos => "todos",
                 };
                 Line::from(vec![
                     Span::styled(

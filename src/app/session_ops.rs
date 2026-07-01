@@ -155,6 +155,15 @@ impl App {
             },
         ]);
 
+        // At most one TODOs session per project; only offer it when none exists.
+        if !project.has_todos_session() {
+            builtin_sessions.push(BuiltinSessionOption {
+                kind: SessionKind::Todos,
+                label: "TODOs".to_string(),
+                disabled: None,
+            });
+        }
+
         let custom_sessions = self.active_extension.custom_sessions.clone();
 
         let total_sessions = builtin_sessions.len() + custom_sessions.len();
@@ -252,6 +261,15 @@ impl App {
             },
         ]);
 
+        // At most one TODOs session per project; only offer it when none exists.
+        if !project.has_todos_session() {
+            builtin_sessions.push(BuiltinSessionOption {
+                kind: SessionKind::Todos,
+                label: "TODOs".to_string(),
+                disabled: None,
+            });
+        }
+
         let custom_sessions = self.active_extension.custom_sessions.clone();
         let selected = builtin_sessions
             .iter()
@@ -331,8 +349,7 @@ impl App {
                 env_prefix
             };
             self.tmux.send_literal(&tmux_session, &window, &shell_cmd)?;
-            self.tmux
-                .send_key_name(&tmux_session, &window, "Enter")?;
+            self.tmux.send_key_name(&tmux_session, &window, "Enter")?;
         }
 
         self.save()?;
@@ -360,20 +377,79 @@ impl App {
         kind: SessionKind,
         label: Option<String>,
     ) -> Result<()> {
+        // TODOs is a native overlay with no tmux window, so it must not force
+        // the host feature's tmux session to start.
+        if kind == SessionKind::Todos {
+            return self.add_todos_session_for_picker(pi, fi, label);
+        }
+
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         match kind {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, label),
             SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, label),
-            SessionKind::Claude
-            | SessionKind::Opencode
-            | SessionKind::Codex
-            | SessionKind::Pi => {
+            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi => {
                 self.add_agent_session_for_picker(pi, fi, kind, label)
             }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
             _ => anyhow::bail!("unsupported session type"),
         }
+    }
+
+    /// Add a native TODOs session under the given feature and create the
+    /// project's `todo_lists` row. Enforces one TODOs session per project.
+    /// No tmux window is created.
+    fn add_todos_session_for_picker(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: Option<String>,
+    ) -> Result<()> {
+        let project = match self.store.projects.get(pi) {
+            Some(p) => p,
+            None => anyhow::bail!("project not found"),
+        };
+        if project.has_todos_session() {
+            self.message = Some("This project already has a TODOs session".into());
+            return Ok(());
+        }
+        let project_id = project.id.clone();
+
+        let feature = match self
+            .store
+            .projects
+            .get_mut(pi)
+            .and_then(|p| p.features.get_mut(fi))
+        {
+            Some(f) => f,
+            None => anyhow::bail!("feature not found"),
+        };
+
+        let feature_id = feature.id.clone();
+        let label = label.unwrap_or_else(|| "TODOs".to_string());
+        let session = feature.add_session_named(SessionKind::Todos, label);
+        let label = session.label.clone();
+        feature.collapsed = false;
+        let si = feature.sessions.len() - 1;
+
+        // Create the per-project todo list hosted by this feature. (The
+        // `feature` borrow above has ended, so `self.db` is free to access.)
+        let list_err = match &self.db {
+            Some(db) => db.load_or_create_todo_list(&project_id, &feature_id).err(),
+            None => None,
+        };
+        if let Some(e) = list_err {
+            self.log_warn(
+                "todos",
+                format!("failed to create todo list for project {project_id}: {e}"),
+            );
+        }
+
+        self.selection = Selection::Session(pi, fi, si);
+        self.save()?;
+        self.message = Some(format!("Added '{}'", label));
+
+        Ok(())
     }
 
     fn add_terminal_session_for_picker(
@@ -401,8 +477,7 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
@@ -448,8 +523,7 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         self.tmux.send_keys(&tmux_session, &window, "nvim")?;
 
         feature.collapsed = false;
@@ -535,26 +609,27 @@ impl App {
             Some(label) => feature.add_session_named(kind.clone(), label),
             None => feature.add_session(kind.clone()),
         };
+        let session_id = session.id.clone();
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         match agent {
             AgentKind::Claude => {
                 self.tmux
-                    .launch_claude(&tmux_session, &window, None, extra_args)?;
+                    .launch_claude(&tmux_session, &window, &session_id, None, extra_args)?;
             }
             AgentKind::Opencode => {
-                self.tmux.launch_opencode(&tmux_session, &window)?;
+                self.tmux
+                    .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
                 let codex_args = crate::codex_config::launch_override_args(&workdir);
                 self.tmux
-                    .launch_codex(&tmux_session, &window, None, codex_args)?;
+                    .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
             AgentKind::Pi => {
-                self.tmux.launch_pi(&tmux_session, &window)?;
+                self.tmux.launch_pi(&tmux_session, &window, &session_id)?;
             }
         }
 
@@ -619,25 +694,26 @@ impl App {
         ensure_review_claude_md(&workdir, feature.review);
 
         let session = feature.add_session_named(kind.clone(), label.to_string());
+        let session_id = session.id.clone();
         let window = session.tmux_window.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         match agent {
             AgentKind::Claude => {
                 self.tmux
-                    .launch_claude(&tmux_session, &window, None, extra_args)?;
+                    .launch_claude(&tmux_session, &window, &session_id, None, extra_args)?;
             }
             AgentKind::Opencode => {
-                self.tmux.launch_opencode(&tmux_session, &window)?;
+                self.tmux
+                    .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
                 let codex_args = crate::codex_config::launch_override_args(&workdir);
                 self.tmux
-                    .launch_codex(&tmux_session, &window, None, codex_args)?;
+                    .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
             AgentKind::Pi => {
-                self.tmux.launch_pi(&tmux_session, &window)?;
+                self.tmux.launch_pi(&tmux_session, &window, &session_id)?;
             }
         }
 

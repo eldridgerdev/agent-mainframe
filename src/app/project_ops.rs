@@ -278,7 +278,9 @@ impl App {
             _ => return Ok(()),
         };
 
+        let mut project_id: Option<String> = None;
         if let Some(project) = self.store.find_project(&project_name) {
+            project_id = Some(project.id.clone());
             let features: Vec<(String, PathBuf, bool)> = project
                 .features
                 .iter()
@@ -292,6 +294,20 @@ impl App {
                     let _ = WorktreeManager::remove(&repo, &workdir);
                 }
             }
+        }
+
+        // The TODO list is keyed by project id with no FK to `projects` (it
+        // would be wiped by the store's full-replace save otherwise), so its
+        // rows must be cleaned up explicitly when a project is deleted.
+        let cleanup_err = match (&self.db, &project_id) {
+            (Some(db), Some(pid)) => db.delete_todo_list_for_project(pid).err(),
+            _ => None,
+        };
+        if let (Some(e), Some(pid)) = (cleanup_err, &project_id) {
+            self.log_warn(
+                "todos",
+                format!("failed to delete todo list for project {pid}: {e}"),
+            );
         }
 
         self.store.remove_project(&project_name);

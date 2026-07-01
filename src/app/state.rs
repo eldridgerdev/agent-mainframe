@@ -280,6 +280,12 @@ pub struct LineComment {
     /// progress files (all human comments) deserialize unchanged.
     #[serde(default)]
     pub draft: bool,
+    /// A suggested replacement for the commented line/span (GitHub-style
+    /// "suggestion"). `None` for a plain comment. Rendered as a fenced
+    /// ```suggestion block in the feedback file and PR review, and fed to the
+    /// agent as a verbatim patch. Defaulted so older progress files load.
+    #[serde(default)]
+    pub suggestion: Option<String>,
 }
 
 impl LineComment {
@@ -384,6 +390,10 @@ pub struct DiffViewerState {
     /// True while typing a comment for the cursored line (reuses
     /// `feedback_editor`).
     pub editing_line_comment: bool,
+    /// True while typing a *suggested replacement* for the cursored line/span
+    /// (also reuses `feedback_editor`; mutually exclusive with
+    /// `editing_line_comment`). The editor content is the replacement code.
+    pub editing_suggestion: bool,
     /// When true the next draw scrolls the patch to keep the comment cursor
     /// visible, mirroring `feedback_sync_to_cursor`.
     pub cursor_sync_to_view: bool,
@@ -471,6 +481,7 @@ impl DiffViewerState {
             comment_cursor: None,
             comment_anchor: None,
             editing_line_comment: false,
+            editing_suggestion: false,
             cursor_sync_to_view: false,
             finish_confirm: false,
             feedback_editing: false,

@@ -486,13 +486,25 @@ impl App {
                     .map(|f| f.addressable_lines())
                     .unwrap_or_default();
                 let comments = state.line_comments.entry(path).or_default();
+                // Carry over a suggested change already attached to the span so
+                // editing the prose doesn't drop it.
+                let suggestion = comments
+                    .iter()
+                    .find(|c| {
+                        c.covered_indices(&locs)
+                            .map(|r| !(*r.end() < lo || *r.start() > hi))
+                            .unwrap_or(false)
+                    })
+                    .and_then(|c| c.suggestion.clone());
                 // Drop any existing comment whose span overlaps the new one.
                 comments.retain(|c| {
                     c.covered_indices(&locs)
                         .map(|r| *r.end() < lo || *r.start() > hi)
                         .unwrap_or(true)
                 });
-                if !text.is_empty() {
+                // Keep the comment when it has prose or a carried-over suggestion;
+                // an empty prose with no suggestion means "delete".
+                if !text.is_empty() || suggestion.is_some() {
                     comments.push(LineComment {
                         location: end,
                         start: (lo != hi).then_some(start),
@@ -500,6 +512,7 @@ impl App {
                         // A comment the human just wrote (or edited) is never a
                         // draft, even if it replaced an AI draft on this span.
                         draft: false,
+                        suggestion,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -508,6 +521,131 @@ impl App {
                 }
             }
             state.editing_line_comment = false;
+            state.comment_anchor = None;
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+        self.persist_review_progress();
+    }
+
+    /// Open the suggested-change editor for the cursored line(s). Pre-fills the
+    /// editor with any suggestion already attached to the span, else the current
+    /// text of the covered lines (so the reviewer edits a real replacement). Like
+    /// the comment editor, snaps the anchor/cursor onto an existing comment's
+    /// span when the cursor lands on it with no active selection, so the
+    /// suggestion attaches to the whole comment.
+    pub fn diff_review_start_suggestion(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(cur) = state.comment_cursor else {
+                return;
+            };
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let locs = file.addressable_lines();
+            if locs.get(cur).is_none() {
+                return;
+            }
+            let texts = file.addressable_line_texts();
+            let path = file.path.clone();
+            // An existing comment covering the cursor: reuse its span (when no
+            // fresh selection is active) and its suggestion (when it has one).
+            let existing = state.line_comments.get(&path).and_then(|comments| {
+                comments.iter().find_map(|c| {
+                    c.covered_indices(&locs)
+                        .filter(|range| range.contains(&cur))
+                        .map(|range| (c.suggestion.clone(), range))
+                })
+            });
+            let prefill = match existing {
+                Some((suggestion, range)) => {
+                    if state.comment_anchor.is_none() {
+                        state.comment_anchor = Some(*range.start());
+                        state.comment_cursor = Some(*range.end());
+                    }
+                    // Existing suggestion: edit it. Otherwise seed from the span's
+                    // current code.
+                    suggestion.unwrap_or_else(|| span_current_text(&texts, &range))
+                }
+                None => {
+                    let lo = state.comment_anchor.unwrap_or(cur).min(cur);
+                    let hi = state.comment_anchor.unwrap_or(cur).max(cur);
+                    span_current_text(&texts, &(lo..=hi))
+                }
+            };
+            state.feedback_editor = crate::editor::TextEditor::new(prefill);
+            state.feedback_scroll = 0;
+            state.feedback_sync_to_cursor = true;
+            state.editing_suggestion = true;
+            state.editing_line_comment = false;
+            state.feedback_editing = false;
+            state.editing_general = false;
+        }
+    }
+
+    /// Store the typed suggested change on the comment covering the selected line
+    /// span (creating a comment with empty prose when none exists). An empty
+    /// suggestion clears it — deleting the comment when it also has no prose.
+    pub fn diff_review_submit_suggestion(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_suggestion {
+                return;
+            }
+            // Trailing-newline trimmed but interior whitespace preserved: a
+            // suggestion is verbatim code.
+            let text = state.feedback_editor.text().trim_end().to_string();
+            let suggestion = (!text.is_empty()).then_some(text);
+            let span = state.comment_cursor.and_then(|cur| {
+                state.files.get(state.selected_file).and_then(|file| {
+                    let locs = file.addressable_lines();
+                    let lo = state.comment_anchor.unwrap_or(cur).min(cur);
+                    let hi = state.comment_anchor.unwrap_or(cur).max(cur);
+                    let start = locs.get(lo).copied()?;
+                    let end = locs.get(hi).copied()?;
+                    Some((file.path.clone(), lo, hi, start, end))
+                })
+            });
+            if let Some((path, lo, hi, start, end)) = span {
+                let locs = state
+                    .files
+                    .get(state.selected_file)
+                    .map(|f| f.addressable_lines())
+                    .unwrap_or_default();
+                let comments = state.line_comments.entry(path).or_default();
+                // Preserve the prose of an existing comment on the span; a fresh
+                // suggestion-only comment carries empty prose.
+                let prose = comments
+                    .iter()
+                    .find(|c| {
+                        c.covered_indices(&locs)
+                            .map(|r| !(*r.end() < lo || *r.start() > hi))
+                            .unwrap_or(false)
+                    })
+                    .map(|c| c.text.clone())
+                    .unwrap_or_default();
+                comments.retain(|c| {
+                    c.covered_indices(&locs)
+                        .map(|r| *r.end() < lo || *r.start() > hi)
+                        .unwrap_or(true)
+                });
+                // Keep the comment only if it still carries prose or a suggestion.
+                if !prose.is_empty() || suggestion.is_some() {
+                    comments.push(LineComment {
+                        location: end,
+                        start: (lo != hi).then_some(start),
+                        text: prose,
+                        draft: false,
+                        suggestion,
+                    });
+                    comments.sort_by_key(|c| {
+                        let loc = c.start.unwrap_or(c.location);
+                        loc.new_line.or(loc.old_line).unwrap_or(0)
+                    });
+                }
+            }
+            state.editing_suggestion = false;
             state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
@@ -896,6 +1034,7 @@ impl App {
             state.feedback_editing = false;
             state.editing_general = false;
             state.editing_line_comment = false;
+            state.editing_suggestion = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
     }
@@ -1229,8 +1368,16 @@ impl App {
                     for comment in comments {
                         let anchor = comment_anchor_label(file, comment);
                         round.push_str(&format!("#### {anchor}\n\n"));
-                        round.push_str(&comment.text);
-                        round.push_str("\n\n");
+                        if !comment.text.is_empty() {
+                            round.push_str(&comment.text);
+                            round.push_str("\n\n");
+                        }
+                        // A suggested change is a verbatim replacement: emit it as
+                        // a fenced ```suggestion block so the agent applies it as
+                        // a patch rather than interpreting prose.
+                        if let Some(suggestion) = &comment.suggestion {
+                            round.push_str(&format!("```suggestion\n{suggestion}\n```\n\n"));
+                        }
                     }
                 }
             }
@@ -1481,6 +1628,17 @@ impl App {
     }
 }
 
+/// Join the current text of the addressable lines in `range` (indices into
+/// `addressable_line_texts()`) with newlines. Out-of-range indices are skipped.
+/// Used to seed a suggested-change editor with the span's current code.
+fn span_current_text(texts: &[String], range: &std::ops::RangeInclusive<usize>) -> String {
+    range
+        .clone()
+        .filter_map(|i| texts.get(i).cloned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The `file:line` (or `file:start-end`) heading for a line comment in the
 /// feedback file. A base-side (deletion-only) line is tagged `(base)`.
 fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
@@ -1529,13 +1687,22 @@ fn build_pr_review(
                 .and_then(|s| pr_line_side(&s))
                 .map(|(l, sd)| (Some(l), Some(sd)))
                 .unwrap_or((None, None));
+            // A suggested change posts as a GitHub fenced ```suggestion block so
+            // it's one-click-appliable on the PR. Append it to any prose.
+            let mut body = comment.text.clone();
+            if let Some(suggestion) = &comment.suggestion {
+                if !body.is_empty() {
+                    body.push_str("\n\n");
+                }
+                body.push_str(&format!("```suggestion\n{suggestion}\n```"));
+            }
             comments.push(crate::github::PrReviewComment {
                 path: path.clone(),
                 line: line as u32,
                 side,
                 start_line: start_line.map(|l| l as u32),
                 start_side,
-                body: comment.text.clone(),
+                body,
             });
         }
     }
@@ -1696,6 +1863,7 @@ fn parse_co_review_output(
             start: None,
             text: text.to_string(),
             draft: true,
+            suggestion: None,
         });
     }
     out
@@ -1772,6 +1940,7 @@ mod tests {
             start: None,
             text: text.to_string(),
             draft: false,
+            suggestion: None,
         }
     }
 
@@ -1788,6 +1957,7 @@ mod tests {
             }),
             text: text.to_string(),
             draft: false,
+            suggestion: None,
         }
     }
 
@@ -1895,6 +2065,28 @@ mod tests {
         let (_, comments) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments[0].start_line, None);
         assert_eq!(comments[0].start_side, None);
+    }
+
+    #[test]
+    fn pr_review_appends_suggestion_block_to_comment_body() {
+        let mut comment = line_comment(Some(5), None, "use a guard");
+        comment.suggestion = Some("let x = y?;".to_string());
+        let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
+        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        assert_eq!(comments.len(), 1);
+        assert_eq!(
+            comments[0].body,
+            "use a guard\n\n```suggestion\nlet x = y?;\n```"
+        );
+    }
+
+    #[test]
+    fn pr_review_suggestion_only_comment_is_just_the_block() {
+        let mut comment = line_comment(Some(5), None, "");
+        comment.suggestion = Some("let x = y?;".to_string());
+        let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
+        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        assert_eq!(comments[0].body, "```suggestion\nlet x = y?;\n```");
     }
 
     #[test]

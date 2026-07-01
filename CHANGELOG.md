@@ -22,6 +22,15 @@ are tagged.
   are ignored — they never reach the feedback file or a posted PR review — but
   they do survive pausing and resuming a review. It runs only when you ask and
   only on the current file (with the diff capped), so it stays cheap on tokens.
+- **Suggested changes in a final review.** With the line cursor active (`c`),
+  press `S` to propose a concrete replacement for the line (or `v` range) you're
+  on — the editor opens pre-filled with the current code so you tweak it rather
+  than retype it. A suggestion can stand alone or ride along with a comment on
+  the same line(s). It's written into the feedback file as a fenced
+  ` ```suggestion ` block — a verbatim patch the agent can apply directly
+  instead of interpreting prose — and, when you have PR posting on, it's
+  appended to the inline PR comment as a GitHub suggestion so it's
+  one-click-appliable on the pull request.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a

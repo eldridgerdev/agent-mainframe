@@ -8265,3 +8265,63 @@ fn todos_edit_cancel_discards_changes() {
     assert!(todo_titles(&app).is_empty());
     assert!(matches!(&app.mode, AppMode::Todos(s) if s.editor.is_none()));
 }
+
+#[test]
+fn todo_spawn_prompt_includes_title_and_body() {
+    let mut todo = sample_todo("Wire up the parser", false);
+    let title_only = App::todo_spawn_prompt(&todo);
+    assert_eq!(
+        title_only,
+        "Please address this TODO item for this feature:\n\nWire up the parser"
+    );
+
+    todo.body = Some("  handle nested groups\nand escapes  ".to_string());
+    let with_body = App::todo_spawn_prompt(&todo);
+    assert_eq!(
+        with_body,
+        "Please address this TODO item for this feature:\n\nWire up the parser\n\nhandle nested groups\nand escapes"
+    );
+
+    // A whitespace-only body is treated as absent.
+    todo.body = Some("   ".to_string());
+    assert_eq!(App::todo_spawn_prompt(&todo), title_only);
+}
+
+#[test]
+fn todo_session_label_truncates_long_titles() {
+    assert_eq!(App::todo_session_label("short"), "TODO: short");
+    let long = "a really long todo title that keeps going and going";
+    let label = App::todo_session_label(long);
+    assert!(label.starts_with("TODO: "));
+    assert!(label.ends_with('…'), "long titles are elided: {label}");
+    assert!(label.chars().count() <= "TODO: ".len() + 24 + 1);
+}
+
+#[test]
+fn resolve_todo_host_feature_prefers_list_feature_id() {
+    let app = todos_app();
+    // Known feature id resolves to its index (0), regardless of the fallback.
+    assert_eq!(app.resolve_todo_host_feature(0, Some("feat-1"), 3), 0);
+    // Unknown / missing id falls back.
+    assert_eq!(app.resolve_todo_host_feature(0, Some("nope"), 7), 7);
+    assert_eq!(app.resolve_todo_host_feature(0, None, 5), 5);
+}
+
+#[test]
+fn todos_record_spawned_session_updates_in_memory() {
+    let mut app = todos_app();
+    if let AppMode::Todos(state) = &mut app.mode {
+        state.todos = vec![sample_todo("a", false), sample_todo("b", false)];
+    }
+    app.todos_record_spawned_session("todo-b", "sess-42").unwrap();
+    match &app.mode {
+        AppMode::Todos(state) => {
+            assert!(state.todos[0].spawned_session_id.is_none());
+            assert_eq!(
+                state.todos[1].spawned_session_id.as_deref(),
+                Some("sess-42")
+            );
+        }
+        _ => panic!("expected Todos overlay"),
+    }
+}

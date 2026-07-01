@@ -45,6 +45,7 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
+        KeyCode::Char('g') | KeyCode::Enter => app.todos_spawn_agent()?,
         _ => {}
     }
     Ok(())

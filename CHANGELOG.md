@@ -20,9 +20,15 @@ are tagged.
   Inside the list: `a` add, `e` edit a title, `o` edit longer notes on an item,
   `space` toggle done (completed items get a strikethrough and sink to the
   bottom, never auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete
-  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. The
-  list is saved per checkout, so it survives restarts. Spawning an agent
-  straight from a TODO and quick-capture from other sessions are still to come.
+  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. Press
+  `g` (or `Enter`) on an item to **launch an agent for it**: AMF opens a fresh
+  agent session in the list's feature — using that feature's harness and
+  mode — and pre-fills the composer with a prompt built from the item's title
+  and notes, left editable so you review it before sending. Launched items show
+  a marker, and pressing `g` again jumps back to the same session (adding onto
+  it rather than spawning a second). The list is saved per checkout, so it
+  survives restarts. Quick-capture of a TODO from other sessions is still to
+  come.
 - **Fix several PR comments in one pass.** While reviewing PR comments, press
   `space` to mark comments (a `●` flags them, and the footer shows how many),
   then `F` to queue a scoped fix for every marked comment into the review

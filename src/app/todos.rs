@@ -420,6 +420,149 @@ impl App {
         Ok(())
     }
 
+    // ----- spawn agent ---------------------------------------------------
+
+    /// Launch (or reuse) an agent session for the selected TODO, then seed the
+    /// composer with a generated prompt — editable, not submitted.
+    ///
+    /// The session is created in the list's host feature (resolved from
+    /// `list.feature_id`, falling back to the feature the TODOs session lives
+    /// under) using that feature's configured agent and mode/flags. If the TODO
+    /// already links a session that is still live, that session is reused (jumped
+    /// to and added onto) instead of spawning a second. The launched session's
+    /// id is recorded on the TODO so the list can show it as "launched".
+    pub fn todos_spawn_agent(&mut self) -> Result<()> {
+        let (todo, host_feature_id, fallback_fi, pi) = match &self.mode {
+            AppMode::Todos(state) => {
+                let Some(todo) = state.todos.get(state.selected).cloned() else {
+                    self.push_toast_warning("No TODO selected");
+                    return Ok(());
+                };
+                let host_feature_id = state.list.as_ref().map(|l| l.feature_id.clone());
+                (todo, host_feature_id, state.fi, state.pi)
+            }
+            _ => return Ok(()),
+        };
+
+        let fi = self.resolve_todo_host_feature(pi, host_feature_id.as_deref(), fallback_fi);
+        let prompt = Self::todo_spawn_prompt(&todo);
+
+        // Reuse a still-live linked session if the TODO already has one.
+        let existing_si = todo.spawned_session_id.as_ref().and_then(|sid| {
+            self.store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .and_then(|f| f.sessions.iter().position(|s| &s.id == sid))
+        });
+
+        let si = match existing_si {
+            Some(si) => si,
+            None => {
+                let agent = self
+                    .store
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.features.get(fi))
+                    .map(|f| f.agent.clone())
+                    .unwrap_or_default();
+                let label = Self::todo_session_label(&todo.title);
+                let si = match self.create_agent_session_labeled(pi, fi, &label, Some(agent)) {
+                    Ok(si) => si,
+                    Err(e) => {
+                        self.push_toast_error(format!("Failed to launch agent: {e}"));
+                        return Ok(());
+                    }
+                };
+                let session_id = self.store.projects[pi].features[fi].sessions[si].id.clone();
+                // Record the link before we leave the overlay (still in Todos mode).
+                self.todos_record_spawned_session(&todo.id, &session_id)?;
+                si
+            }
+        };
+
+        // Switch into the session view and seed the composer (editable). The
+        // seed is not submitted, so the user reviews it before sending.
+        self.selection = Selection::Session(pi, fi, si);
+        self.enter_view_without_auto_compose()?;
+        self.open_compose_seeded(prompt)?;
+        Ok(())
+    }
+
+    /// Resolve the feature index that hosts the list within project `pi`: the
+    /// feature whose id matches `host_feature_id`, else `fallback_fi` (the
+    /// feature the TODOs session itself lives under).
+    pub(crate) fn resolve_todo_host_feature(
+        &self,
+        pi: usize,
+        host_feature_id: Option<&str>,
+        fallback_fi: usize,
+    ) -> usize {
+        host_feature_id
+            .and_then(|fid| {
+                self.store
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.features.iter().position(|f| f.id == fid))
+            })
+            .unwrap_or(fallback_fi)
+    }
+
+    /// Build the composer seed for a spawned TODO: a fixed lead-in, the title,
+    /// then the notes body when present.
+    pub(crate) fn todo_spawn_prompt(todo: &Todo) -> String {
+        let mut prompt = format!(
+            "Please address this TODO item for this feature:\n\n{}",
+            todo.title.trim()
+        );
+        if let Some(body) = todo
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        {
+            prompt.push_str("\n\n");
+            prompt.push_str(body);
+        }
+        prompt
+    }
+
+    /// A short session label derived from a TODO title (truncated).
+    pub(crate) fn todo_session_label(title: &str) -> String {
+        const MAX: usize = 24;
+        let title = title.trim();
+        if title.chars().count() > MAX {
+            let truncated: String = title.chars().take(MAX).collect();
+            format!("TODO: {}…", truncated.trim_end())
+        } else {
+            format!("TODO: {title}")
+        }
+    }
+
+    /// Record the spawned session id on the TODO, in memory and (with a DB) on
+    /// disk.
+    pub(crate) fn todos_record_spawned_session(
+        &mut self,
+        todo_id: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        let updated = match &mut self.mode {
+            AppMode::Todos(state) => state
+                .todos
+                .iter_mut()
+                .find(|t| t.id == todo_id)
+                .map(|t| {
+                    t.spawned_session_id = Some(session_id.to_string());
+                    t.clone()
+                }),
+            _ => None,
+        };
+        if let (Some(db), Some(todo)) = (&self.db, &updated) {
+            db.update_todo(todo)?;
+        }
+        Ok(())
+    }
+
     // ----- delete --------------------------------------------------------
 
     /// Ask to delete the selected TODO (awaits y/n confirmation).

@@ -497,6 +497,9 @@ impl App {
                         location: end,
                         start: (lo != hi).then_some(start),
                         text,
+                        // A comment the human just wrote (or edited) is never a
+                        // draft, even if it replaced an AI draft on this span.
+                        draft: false,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -605,6 +608,234 @@ impl App {
             state.generated_notes.insert(path, note);
         }
         Ok(())
+    }
+
+    /// Run an AI co-reviewer pass over the **current file** (reviewer-triggered,
+    /// per-file, bounded — see the final-review plan's "opt-in / bounded"
+    /// requirement). Spawns a headless Claude that reports findings as
+    /// `<line>|<comment>`; `poll_co_review` parses them into *draft* line
+    /// comments the reviewer then accepts / edits / dismisses.
+    pub fn generate_co_review(&mut self) {
+        let (workdir, path, prompt) = {
+            let AppMode::DiffViewer(state) = &self.mode else {
+                return;
+            };
+            if !state.review || state.co_review_child.is_some() {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            if file.is_binary {
+                self.message = Some("AI co-review: binary file skipped".to_string());
+                return;
+            }
+            if file.hunks.is_empty() {
+                self.message = Some("AI co-review: nothing to review in this file".to_string());
+                return;
+            }
+            (
+                state.workdir.clone(),
+                file.path.clone(),
+                build_co_review_prompt(file),
+            )
+        };
+
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+            Ok(child) => {
+                self.message = Some(format!("AI co-review running on {path}…"));
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.co_review_child = Some(child);
+                    state.co_review_file = Some(path);
+                }
+            }
+            Err(err) => {
+                self.message = Some(format!("AI co-review unavailable: {err}"));
+            }
+        }
+    }
+
+    /// Poll an in-flight co-review pass; on completion parse its findings into
+    /// draft line comments for the file it ran on. Mirrors
+    /// `poll_review_walkthrough`.
+    pub fn poll_co_review(&mut self) -> Result<()> {
+        let finished = match &mut self.mode {
+            AppMode::DiffViewer(state) => match state.co_review_child.as_mut() {
+                Some(child) => child.try_wait()?,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let Some(status) = finished else {
+            return Ok(());
+        };
+
+        let (child, path) = match &mut self.mode {
+            AppMode::DiffViewer(state) => {
+                (state.co_review_child.take(), state.co_review_file.take())
+            }
+            _ => (None, None),
+        };
+        let (Some(child), Some(path)) = (child, path) else {
+            return Ok(());
+        };
+
+        let output = child.wait_with_output()?;
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            self.message = Some(format!("AI co-review failed: {stderr}"));
+            return Ok(());
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+
+        let added = if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(file) = state.files.iter().find(|f| f.path == path) else {
+                return Ok(());
+            };
+            let locs = file.addressable_lines();
+            let drafts = parse_co_review_output(&text, &locs);
+            let existing = state.line_comments.entry(path.clone()).or_default();
+            let mut added = 0usize;
+            for draft in drafts {
+                // Don't stack a draft on a line that already carries a comment
+                // (human or a prior draft).
+                let overlaps = existing.iter().any(|c| {
+                    match (
+                        c.covered_indices(&locs),
+                        draft.covered_indices(&locs),
+                    ) {
+                        (Some(a), Some(b)) => *a.start() <= *b.end() && *b.start() <= *a.end(),
+                        _ => false,
+                    }
+                });
+                if overlaps {
+                    continue;
+                }
+                existing.push(draft);
+                added += 1;
+            }
+            existing.sort_by_key(|c| {
+                let loc = c.start.unwrap_or(c.location);
+                loc.new_line.or(loc.old_line).unwrap_or(0)
+            });
+            added
+        } else {
+            return Ok(());
+        };
+
+        self.message = Some(if added == 0 {
+            format!("AI co-review: no new findings for {path}")
+        } else {
+            format!("AI co-review added {added} draft comment(s) — a accept · d dismiss")
+        });
+        self.persist_review_progress();
+        Ok(())
+    }
+
+    /// Accept the AI draft comment under the line cursor, promoting it to a
+    /// permanent human comment. Returns `true` if a draft was accepted (so the
+    /// key handler can stop), `false` if the cursored line carries no draft.
+    pub fn diff_review_accept_draft_under_cursor(&mut self) -> bool {
+        let acted = if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(cur) = state.comment_cursor else {
+                return false;
+            };
+            let Some(file) = state.files.get(state.selected_file) else {
+                return false;
+            };
+            let locs = file.addressable_lines();
+            match state.line_comments.get_mut(&file.path).and_then(|comments| {
+                comments.iter_mut().find(|c| {
+                    c.draft
+                        && c.covered_indices(&locs)
+                            .is_some_and(|range| range.contains(&cur))
+                })
+            }) {
+                Some(comment) => {
+                    comment.draft = false;
+                    true
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+        if acted {
+            self.message = Some("Draft comment accepted".to_string());
+            self.persist_review_progress();
+        }
+        acted
+    }
+
+    /// Dismiss (delete) the AI draft comment under the line cursor. Returns
+    /// `true` if a draft was removed.
+    pub fn diff_review_dismiss_draft_under_cursor(&mut self) -> bool {
+        let acted = if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(cur) = state.comment_cursor else {
+                return false;
+            };
+            let Some(file) = state.files.get(state.selected_file) else {
+                return false;
+            };
+            let locs = file.addressable_lines();
+            match state.line_comments.get_mut(&file.path) {
+                Some(comments) => {
+                    let before = comments.len();
+                    comments.retain(|c| {
+                        !(c.draft
+                            && c.covered_indices(&locs)
+                                .is_some_and(|range| range.contains(&cur)))
+                    });
+                    comments.len() != before
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
+        if acted {
+            self.message = Some("Draft comment dismissed".to_string());
+            self.persist_review_progress();
+        }
+        acted
+    }
+
+    /// Move the line cursor to the next draft comment in the current file
+    /// (wrapping), so a reviewer can Tab through the AI's findings.
+    pub fn diff_review_jump_next_draft(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let locs = file.addressable_lines();
+            // Indices of every draft's anchor line, in display order.
+            let mut draft_indices: Vec<usize> = state
+                .line_comments
+                .get(&file.path)
+                .into_iter()
+                .flatten()
+                .filter(|c| c.draft)
+                .filter_map(|c| c.covered_indices(&locs).map(|r| *r.start()))
+                .collect();
+            draft_indices.sort_unstable();
+            draft_indices.dedup();
+            if draft_indices.is_empty() {
+                self.message = Some("No draft comments on this file".to_string());
+                return;
+            }
+            let cur = state.comment_cursor.unwrap_or(0);
+            let next = draft_indices
+                .iter()
+                .find(|&&idx| idx > cur)
+                .copied()
+                .unwrap_or(draft_indices[0]);
+            state.comment_cursor = Some(next);
+            state.comment_anchor = None;
+            state.cursor_sync_to_view = true;
+        }
     }
 
     /// Begin entering rejection feedback for the current file, pre-filling any
@@ -924,11 +1155,15 @@ impl App {
         let mut line_comment_sections: Vec<(String, Vec<LineComment>)> = Vec::new();
         let mut line_comment_count = 0usize;
         for file in &files {
-            if let Some(comments) = line_comments.get(&file.path)
-                && !comments.is_empty()
-            {
-                line_comment_count += comments.len();
-                line_comment_sections.push((file.path.clone(), comments.clone()));
+            if let Some(comments) = line_comments.get(&file.path) {
+                // Unaccepted AI drafts never reach the feedback file or the PR
+                // review — only comments the human kept.
+                let kept: Vec<LineComment> =
+                    comments.iter().filter(|c| !c.draft).cloned().collect();
+                if !kept.is_empty() {
+                    line_comment_count += kept.len();
+                    line_comment_sections.push((file.path.clone(), kept));
+                }
             }
         }
 
@@ -1375,6 +1610,97 @@ fn build_walkthrough_prompt(file: &crate::diff::DiffFile) -> String {
     )
 }
 
+/// Build the headless prompt for an AI co-review pass over a single file. The
+/// diff is rendered with each current-side line tagged by its **new** line
+/// number so the model can anchor findings precisely, and bounded like the
+/// walkthrough so a large file can't blow up token cost.
+fn build_co_review_prompt(file: &crate::diff::DiffFile) -> String {
+    use crate::diff::DiffLineKind;
+    const MAX_BODY: usize = 8000;
+
+    let mut body = String::new();
+    for hunk in &file.hunks {
+        let mut new_line = hunk.new_start;
+        for line in &hunk.lines {
+            match line.kind {
+                DiffLineKind::Context => {
+                    body.push_str(&format!("{new_line:>6}   {}\n", line.text));
+                    new_line += 1;
+                }
+                DiffLineKind::Added => {
+                    body.push_str(&format!("{new_line:>6} + {}\n", line.text));
+                    new_line += 1;
+                }
+                DiffLineKind::Removed => {
+                    body.push_str(&format!("       - {}\n", line.text));
+                }
+                DiffLineKind::NoNewlineMarker => {}
+            }
+        }
+    }
+    if body.len() > MAX_BODY {
+        body.truncate(MAX_BODY);
+        body.push_str("\n… (diff truncated)");
+    }
+
+    format!(
+        "You are an AI co-reviewer doing a first pass on a code change so a human \
+         reviewer can adjudicate your findings. Review the diff below for bugs, \
+         correctness issues, missing edge cases, and clear quality problems. Be \
+         selective — only flag things worth a human's attention; skip nits and \
+         style unless they matter.\n\n\
+         Each line is prefixed with its line number in the new file; `+` marks an \
+         added line, `-` a removed line (removed lines have no number).\n\n\
+         Output ONLY your findings, one per line, each formatted EXACTLY as \
+         `<line>|<comment>` where `<line>` is the new-file line number the comment \
+         is about (pick an added or context line, never a removed `-` line). Keep \
+         each comment to one or two sentences. If you find nothing worth raising, \
+         output nothing at all.\n\n\
+         File: {}\n\n```\n{}\n```",
+        file.path, body
+    )
+}
+
+/// Parse the `<line>|<comment>` findings emitted by `build_co_review_prompt`'s
+/// pass into draft line comments, anchored by new-file line number onto the
+/// file's `addressable_lines()`. Lines that don't parse or don't resolve to a
+/// commentable current-side line are skipped.
+fn parse_co_review_output(
+    output: &str,
+    locs: &[crate::diff::DiffLineLocation],
+) -> Vec<LineComment> {
+    let mut out = Vec::new();
+    for raw in output.lines() {
+        let line = raw.trim();
+        let Some((num, text)) = line.split_once('|') else {
+            continue;
+        };
+        // Tolerate a leading bullet / marker before the number (e.g. "- 42|…").
+        let Ok(new_line) = num.trim().trim_start_matches(['-', '*', '•', ' ']).trim().parse::<usize>()
+        else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let Some(location) = locs
+            .iter()
+            .find(|l| l.new_line == Some(new_line))
+            .copied()
+        else {
+            continue;
+        };
+        out.push(LineComment {
+            location,
+            start: None,
+            text: text.to_string(),
+            draft: true,
+        });
+    }
+    out
+}
+
 /// Parse `.claude/review-notes.md` into a map of file path -> note body.
 ///
 /// Review mode writes one section per changed file, headed either `## <path> —
@@ -1433,7 +1759,10 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_review_notes};
+    use super::{
+        build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_co_review_output,
+        parse_review_notes,
+    };
     use crate::app::LineComment;
     use crate::diff::DiffLineLocation;
 
@@ -1442,6 +1771,7 @@ mod tests {
             location: DiffLineLocation { old_line, new_line },
             start: None,
             text: text.to_string(),
+            draft: false,
         }
     }
 
@@ -1457,7 +1787,45 @@ mod tests {
                 new_line: Some(start),
             }),
             text: text.to_string(),
+            draft: false,
         }
+    }
+
+    #[test]
+    fn co_review_output_parses_findings_onto_addressable_lines() {
+        let locs = vec![
+            DiffLineLocation {
+                old_line: Some(10),
+                new_line: Some(10),
+            },
+            DiffLineLocation {
+                old_line: None,
+                new_line: Some(11),
+            },
+            DiffLineLocation {
+                old_line: Some(12),
+                new_line: None,
+            },
+        ];
+        let output = "11|This add looks risky.\n\
+             10 | context concern\n\
+             - 11|tolerate a bullet prefix\n\
+             999|no such line, dropped\n\
+             not a finding line\n\
+             11|\n";
+        let drafts = parse_co_review_output(output, &locs);
+
+        // The 999 finding has no matching new_line and the empty-text and
+        // non-matching lines are skipped; the rest become draft comments.
+        assert_eq!(drafts.len(), 3);
+        assert!(drafts.iter().all(|c| c.draft && c.start.is_none()));
+        assert_eq!(drafts[0].location.new_line, Some(11));
+        assert_eq!(drafts[0].text, "This add looks risky.");
+        // ` 10 | …` (spaces around the pipe) still resolves to new_line 10.
+        assert_eq!(drafts[1].location.new_line, Some(10));
+        assert_eq!(drafts[1].text, "context concern");
+        // The leading-bullet finding still anchors to line 11.
+        assert_eq!(drafts[2].location.new_line, Some(11));
     }
 
     #[test]

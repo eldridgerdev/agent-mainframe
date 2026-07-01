@@ -1,8 +1,9 @@
 # Final Review Enhancements
 
-- **Status:** Shipped — every item under **Progress** is implemented
-  and merged. The only thing left is the design **open question**
-  below (composed review summary); reopen if that's pursued.
+- **Status:** Core shipped; Round 2 in backlog — every item under
+  **Progress → Round 1** is implemented and merged. A second round of
+  reviewer-workflow enhancements (**Round 2**, below) is captured but
+  not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -111,7 +112,88 @@ any order.
 - **File-list filters.** Show only undecided / only rejected files for
   large changesets.
 
+### Round 2 — deeper review workflow
+
+A second batch, captured after the core shipped. Roughly ordered by
+impact. Each is independent and grounded in the plumbing it reuses.
+
+- **AI co-reviewer first pass (pre-fill draft comments).** Instead of
+  starting from a blank diff, run a headless pass (reuse the
+  `generate_review_walkthrough` / `walkthrough_child` machinery and/or
+  the `code-review` skill) that seeds `line_comments` as *draft*
+  comments the human accepts / edits / dismisses (e.g. Tab through
+  them). Shifts the reviewer from "find everything" to "adjudicate the
+  AI's findings". **Token cost is the main constraint** — a
+  whole-changeset headless pass is expensive, so it must be opt-in and
+  bounded: per-file / on-demand triggering and/or a diff-size cap rather
+  than an automatic sweep on open. Treat draft comments as clearly
+  distinct from human ones until accepted.
+- **Suggested-change blocks.** Let a line comment carry
+  a *replacement* for the cursored line/span (reuses `comment_cursor` /
+  `comment_anchor` and the range plumbing). Emit a GitHub fenced
+  `suggestion` block so it's one-click-appliable on the PR, and feed
+  the same exact replacement into the agent prompt as a verbatim patch
+  rather than prose to interpret. Touches `build_pr_review` and the
+  feedback-file rendering.
+- **Severity tags on comments / rejections.** Tag each comment / file
+  rejection with a severity (`blocker` / `suggestion` / `nit` /
+  `question` / `praise`, conventional-comments style). Buys three things
+  cheaply: (1) map the overall verdict to the GitHub review *event* —
+  all-approve → `APPROVE`, any blocker → `REQUEST_CHANGES`, else
+  `COMMENT` (today `create_review` is hardcoded to `COMMENT`; keep that
+  as the default and only escalate when the reviewer is **not** the PR
+  author, since GitHub forbids approving / requesting-changes on your
+  own PR); (2) tell the agent in the prompt what's mandatory vs optional
+  (it currently weights every item equally); (3) add a severity option
+  to the existing `FileFilter` cycle ("blockers only").
+- **Agent writes responses back into the feedback file.**
+  `REVIEW_FEEDBACK_PROMPT` tells the agent to *address* the latest round
+  but never to *respond*. Extend it so the agent appends a structured
+  `**Agent:** …` reply under each item ("fixed in X" / "disagree because
+  Y"). The next review round can then render the agent's reasoning
+  beside the original comment — turning fire-and-forget feedback into a
+  threaded conversation. Pairs with thread state, below.
+- **Resolve / unresolve thread state across rounds.** Each round in
+  `final-review-feedback.md` is independent today; the re-review loop
+  only flags *files* that changed (`changed_since_last`). Track
+  per-comment resolved state (paired with the agent-response item) so a
+  re-review can show "N unresolved threads" and filter to just those —
+  GitHub-style resolvable conversations without leaving AMF.
+- **Re-anchor comments across edits.** Store a small context snippet
+  (the commented line + ~2 neighbours) alongside the `DiffLineLocation`.
+  On re-review, if the exact line moved, fuzzy-match the snippet to
+  re-locate it; if it can't be found, surface the comment as "anchor
+  lost — possibly addressed" rather than silently dropping it. This is
+  the concrete answer to the first open question and the prerequisite
+  that makes thread state survive the agent actually editing the code.
+- **Changeset overview + diff stats (manual only — never automatic).**
+  Two parts: (a) a key to generate an on-demand whole-diff
+  overview / risk summary via headless (same mechanism as the per-file
+  walkthroughs, whole-diff scope); (b) `+/-` counts and risk markers
+  (large / no developer note / no test coverage) on the file-list rows
+  so attention goes where it matters (the snapshot already fingerprints
+  every file in `save_review_snapshot`). **Must be reviewer-triggered**,
+  not run automatically on open, to avoid surprise token spend.
+- **Build / test gate before approve.** Offer a check command run on
+  finish; surface pass/fail in the summary and optionally block an
+  all-approve on failure — a final review that approves code that
+  doesn't compile is a miss. The command must be **configurable
+  per-project** (e.g. point it at the project's existing proof / CI
+  script) rather than a hardcoded `cargo build`.
+- **File-level PR comments instead of body-dumping.** Whole-file
+  rejections currently collapse into the review *body* (no anchor).
+  GitHub's API supports `subject_type: file` comments — anchor them to
+  the file so they stay inline on the PR instead of in the summary.
+  Touches `build_pr_review` and the `GhCli::create_review` payload.
+- **Jump-by-hunk navigation.** A key to jump the patch cursor to the
+  next / previous hunk for fast traversal of large diffs.
+- **Search within the diff.** Incremental search over the current
+  file's patch (and/or across files) to jump to a match.
+
 ## Progress
+
+### Round 1 (shipped)
+
 
 - [x] Paste-vs-submit toggle for the agent prompt
 - [x] Notes scroll-to-bottom precision (wrapped height)
@@ -180,11 +262,48 @@ any order.
       parameterized by session label) and `create_dedicated_review_session`
       (now accepting a label + optional harness override).
 
+### Round 2 (planned)
+
+- [x] AI co-reviewer first pass (pre-fill draft comments) — press `A` in
+      the final review to run a headless Claude pass over the **current
+      file only** (reviewer-triggered + per-file + diff truncated, so it's
+      opt-in and bounded for token cost). The pass reports findings as
+      `<line>|<comment>`, parsed onto `addressable_lines()` and seeded as
+      *draft* line comments (`LineComment.draft`, serde-defaulted so old
+      progress files load). Drafts render distinctly — a hollow `○` gutter
+      marker in the warning colour vs a kept comment's filled `●`, and the
+      peek box / footer label them and surface `a` accept · `d` dismiss ·
+      Enter edit. With the line cursor active, `a` accepts the draft under
+      the cursor (promote to a permanent comment), `d` dismisses it, and
+      `Tab` jumps to the next draft ("Tab through them"); editing a draft
+      and submitting also accepts it. Unaccepted drafts are excluded from
+      the finished feedback file and the PR review, and persist across a
+      pause/resume via the progress file. Reuses the
+      `spawn_headless`/poll machinery (a second child slot alongside the
+      walkthrough's) — `generate_co_review` / `poll_co_review` in
+      `src/app/review.rs`.
+- [ ] Suggested-change blocks (GitHub fenced `suggestion` on the PR +
+      verbatim patch in the agent prompt)
+- [ ] Severity tags on comments / rejections (drive the GitHub review
+      event + agent prioritization + a severity filter)
+- [ ] Agent writes responses back into the feedback file
+- [ ] Resolve / unresolve thread state across rounds
+- [ ] Re-anchor comments across edits (context snippet + fuzzy
+      re-locate; answers the first open question)
+- [ ] Changeset overview + diff stats — manual / reviewer-triggered only
+- [ ] Build / test gate before approve — per-project configurable check
+      command
+- [ ] File-level PR comments instead of body-dumping whole-file
+      rejections (`subject_type: file`)
+- [ ] Jump-by-hunk navigation in the diff
+- [ ] Search within the diff
+
 ## Open questions
 
 - Line comments: how to anchor a comment to a line that later moves
   (store file + line + a snippet of context, and best-effort re-locate
-  on re-review)?
+  on re-review)? — proposed answer captured as the **Round 2 →
+  re-anchor comments** item above.
 - Should multi-line feedback and the agent prompt move to a single
   composed "review summary" the reviewer edits before it's sent, rather
   than assembling the file from per-file inputs?

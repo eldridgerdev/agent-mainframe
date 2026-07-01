@@ -74,7 +74,7 @@ are tagged.
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
   shows the scoped fix before it's injected (press `f` while reviewing PR
   comments, then `e` to edit) is now a full editor instead of a plain text
-  box. Toggle **vim keys** with `Ctrl+V` — the choice sticks for the rest of
+  box. Toggle **vim keys** with `Ctrl+T` — the choice sticks for the rest of
   the PR, so reopening the dialog for the next comment keeps your keymap, and
   the title shows `· vim insert` / `· vim normal` so you know whether `Esc`
   leaves the dialog or just drops to normal mode. Long prompts now **scroll**
@@ -82,6 +82,13 @@ are tagged.
   you type, and you get undo/redo and word motions for free. **`Tab` injects**
   the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
   still injects from the confirm view.
+- **Consistent vim-toggle key across every editor.** All the multi-line editor
+  dialogs now toggle vim mode with the same key, **`Ctrl+T`**. Previously the
+  steering prompt, the diff-review feedback editor, and the PR-comment fix
+  prompt used `Ctrl+V` while the compose box, prompt library, and fill-in
+  fields used `Ctrl+T`. They're unified on `Ctrl+T` — which also frees `Ctrl+V`
+  from clashing with paste. Footers, the status bar, and the help screen all
+  reflect the new key.
 
 ### Migration
 

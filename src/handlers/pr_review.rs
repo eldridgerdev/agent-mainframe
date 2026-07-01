@@ -114,7 +114,7 @@ fn handle_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 ///
 /// Confirm view (`editing == false`): `⏎` injects, `e` edits, `esc`/`q` cancel.
 /// Edit mode (`editing == true`): keystrokes flow to the prompt editor, which
-/// now supports vim (toggle with `Ctrl+V`), scrolling (`Ctrl+J/K`,
+/// now supports vim (toggle with `Ctrl+T`), scrolling (`Ctrl+J/K`,
 /// `PgUp/PgDn`), and a `Tab` submit gesture that coexists with multi-line
 /// editing. `Esc` leaves edit mode in plain keymap; under vim it goes to the
 /// editor (Insert→Normal), so `Ctrl+Q` is the keymap-independent way back to
@@ -128,7 +128,7 @@ fn handle_fix_confirm_key(app: &mut App, key: KeyEvent, editing: bool) -> Result
         if key.code == KeyCode::Tab {
             return app.pr_review_inject_fix();
         }
-        if ctrl && key.code == KeyCode::Char('v') {
+        if ctrl && key.code == KeyCode::Char('t') {
             app.pr_review_fix_toggle_vim();
             return Ok(());
         }

@@ -141,7 +141,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("Ctrl+D/U", "Scroll detail down/up"),
         ("h", "Hide/show resolved comments"),
         ("f", "Inject scoped fix into agent session"),
-        ("", "(e edit · Tab inject · Ctrl+V vim)"),
+        ("", "(e edit · Tab inject · Ctrl+T vim)"),
         ("Space", "Mark comment for batch fix"),
         ("F", "Queue all marked fixes into the session"),
         ("t", "Toggle fix target session"),

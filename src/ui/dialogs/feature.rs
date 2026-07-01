@@ -1255,7 +1255,7 @@ pub fn draw_steering_prompt_dialog(
         Span::raw(" page  "),
         Span::styled("Ctrl+L", Style::default().fg(theme.warning.to_color())),
         Span::raw(" clear  "),
-        Span::styled("Ctrl+V", Style::default().fg(theme.warning.to_color())),
+        Span::styled("Ctrl+T", Style::default().fg(theme.warning.to_color())),
         Span::raw(if state.editor.vim_mode().is_some() {
             " vim off  "
         } else {

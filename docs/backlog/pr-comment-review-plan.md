@@ -600,8 +600,10 @@ from the last *N* PRs) is reached from the PR entry flow:
 - [x] **Upgrade the fix confirm/edit dialog editor (vim + full editing).**
       The dialog added in Epic B seeded a plain `TextEditor::new(prompt)` and
       forwarded keys to it only in edit mode; it now has the niceties the other
-      editor-backed dialogs already have. **Vim keymap support** via `Ctrl+V`
-      (`TextEditor::toggle_vim`), with the choice **persisted on the pane**
+      editor-backed dialogs already have. **Vim keymap support** via `Ctrl+T`
+      (`TextEditor::toggle_vim` — the app-wide vim-toggle key, matching the
+      compose box, steering prompt, and diff-feedback editors), with the choice
+      **persisted on the pane**
       (`PrReviewState::fix_vim_enabled`, the same approach as
       `PlaceholderFillState::vim_enabled`) so it survives the editor being rebuilt
       when the dialog is reopened for another comment — a new `new_fix_confirm`
@@ -697,6 +699,21 @@ from the last *N* PRs) is reached from the PR entry flow:
       API in `GhCli` so the classification is reliable rather than a length
       heuristic alone. → `src/app/pr_review.rs`, `src/github.rs`,
       `src/ui/dialogs/pr_review.rs`.
+- [ ] **Strip quoted diffs / residual bot scaffolding from comment bodies
+      (token polish — low priority).** `strip_bot_boilerplate`
+      (`src/app/pr_review.rs`) already removes `<details>`, HTML comments,
+      `<summary>` tags, and images, but it leaves **fenced quoted-diff blocks**
+      (e.g. the ```` ```diff ```` / ```` ```suggestion ```` snippets CodeRabbit
+      and other bots paste back into a comment body). Those repeat context the
+      agent already has — the comment's own `diff_hunk` plus the checked-out
+      repo — so they inflate `fix_prompt()` for no value (principle #5, "strip
+      boilerplate before sending"). Extend the stripper to drop fenced
+      quoted-diff/suggestion blocks (and any leading `> ` quoted-diff lines)
+      from the text that reaches `agent_text` / the fix prompt, while leaving
+      the *displayed* body intact if we want the detail pane to still show
+      them. Low priority: the win is smaller than the file-level-hunk item
+      above and only bites on bots that quote diffs inline. Unit-test the
+      stripper against a CodeRabbit-style body. → `src/app/pr_review.rs`.
 - [ ] **AI attribution on AMF-posted comments (honesty — from real use).**
       When AMF posts content the agent harness generated (Epic E AI-review
       findings, and any future AI-drafted reply), append a **subtle, machine

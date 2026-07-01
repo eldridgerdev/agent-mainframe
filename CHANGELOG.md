@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **AI co-reviewer first pass in a final review.** Press `A` to have Claude do
+  a first pass over the file you're looking at and suggest line comments, so you
+  start from a draft instead of a blank diff. Suggestions show up as *draft*
+  comments — a hollow `○` in the gutter (vs the filled `●` of a comment you've
+  kept) — and you adjudicate each one: with the line cursor active (`c`), `a`
+  accepts the draft under the cursor, `d` dismisses it, `Tab` jumps to the next
+  one, and `⏎` opens it to edit (editing also accepts). Drafts you don't accept
+  are ignored — they never reach the feedback file or a posted PR review — but
+  they do survive pausing and resuming a review. It runs only when you ask and
+  only on the current file (with the diff capped), so it stays cheap on tokens.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a
@@ -50,6 +60,15 @@ are tagged.
   migrated automatically (any per-commit duplicates collapse to your latest
   mark).
 
+- **Agent usage now binds to the right session more reliably.** New Claude,
+  Codex, and opencode panes now pass enough session identity through their
+  local hooks/plugins for AMF to attach token usage to the matching dashboard
+  session instead of guessing from the newest transcript in the worktree.
+- **Inferred usage is safer for older sessions.** When AMF has to fall back to
+  workdir/timestamp matching, it no longer assigns the same inferred provider
+  session to multiple same-harness panes in one feature; unmatched sessions stay
+  unbound until a better match or exact provider event appears.
+
 ### Changed
 
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
@@ -63,6 +82,11 @@ are tagged.
   you type, and you get undo/redo and word motions for free. **`Tab` injects**
   the prompt straight from edit mode (where `Enter` makes a newline); `Enter`
   still injects from the confirm view.
+
+### Migration
+
+- No migration is required. Existing inferred usage sources can be replaced
+  automatically when the next exact provider event arrives.
 
 ## [v0.28.0] - 2026-06-29
 

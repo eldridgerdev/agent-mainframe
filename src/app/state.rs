@@ -274,6 +274,12 @@ pub struct LineComment {
     #[serde(default)]
     pub start: Option<crate::diff::DiffLineLocation>,
     pub text: String,
+    /// True while this is an AI co-reviewer *draft* the human has not yet
+    /// accepted. Draft comments render distinctly and are excluded from the
+    /// finished feedback file / PR review until accepted. Defaulted so older
+    /// progress files (all human comments) deserialize unchanged.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 impl LineComment {
@@ -410,6 +416,12 @@ pub struct DiffViewerState {
     /// Path the in-flight walkthrough is being generated for, so the result is
     /// filed correctly even if the reviewer navigates to another file.
     pub walkthrough_file: Option<String>,
+    /// In-flight headless AI co-review pass (one at a time). Separate slot from
+    /// the walkthrough so the two can't clobber each other.
+    pub co_review_child: Option<Child>,
+    /// Path the in-flight co-review is being generated for, so draft comments
+    /// land on the right file even if the reviewer navigates away.
+    pub co_review_file: Option<String>,
     /// When true the developer-notes panel takes the full patch column.
     pub notes_expanded: bool,
     pub notes_scroll: usize,
@@ -471,6 +483,8 @@ impl DiffViewerState {
             generated_notes: std::collections::HashMap::new(),
             walkthrough_child: None,
             walkthrough_file: None,
+            co_review_child: None,
+            co_review_file: None,
             notes_expanded: false,
             notes_scroll: 0,
             notes_rendered_lines: 0,

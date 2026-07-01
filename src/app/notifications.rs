@@ -13,6 +13,7 @@ use crate::automation::{
     CreateBatchFeaturesRequest, CreateFeatureRequest, CreateProjectRequest,
     automation_error_response,
 };
+use crate::token_tracking::{TokenUsageSource, provider_for_session_kind};
 
 #[derive(Deserialize)]
 struct IpcMsg {
@@ -21,6 +22,12 @@ struct IpcMsg {
     source: Option<String>,
     session_id: Option<String>,
     amf_session: Option<String>,
+    amf_feature_session_id: Option<String>,
+    provider_session_id: Option<String>,
+    #[allow(dead_code)] // explicit tmux session, currently logged by hooks/plugins for diagnostics
+    amf_tmux_session: Option<String>,
+    #[allow(dead_code)] // explicit tmux window, currently logged by hooks/plugins for diagnostics
+    amf_tmux_window: Option<String>,
     cwd: Option<String>,
     message: Option<String>,
     notification_type: Option<String>,
@@ -150,6 +157,94 @@ impl App {
                     return;
                 }
             }
+        }
+    }
+
+    fn bind_exact_token_usage_source_from_ipc(&mut self, msg: &IpcMsg) {
+        let Some(feature_session_id) = msg
+            .amf_feature_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+        let Some(provider_session_id) = msg
+            .provider_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return;
+        };
+
+        let mut binding_log: Option<(String, String, String, String)> = None;
+        let mut ignored_log: Option<String> = None;
+        let mut changed = false;
+
+        'outer: for project in &mut self.store.projects {
+            for feature in &mut project.features {
+                for session in &mut feature.sessions {
+                    if session.id != feature_session_id {
+                        continue;
+                    }
+
+                    let Some(provider) = provider_for_session_kind(&session.kind) else {
+                        ignored_log = Some(
+                            format!(
+                                "ignored exact usage binding for unsupported session kind {:?} (amf_session_id={feature_session_id})",
+                                session.kind
+                            ),
+                        );
+                        break 'outer;
+                    };
+
+                    let source = TokenUsageSource {
+                        provider,
+                        id: provider_session_id.to_string(),
+                    };
+                    let was_exact_match =
+                        session.token_usage_source.as_ref() == Some(&source)
+                            && session.token_usage_source_match
+                                == Some(crate::project::TokenUsageSourceMatch::Exact);
+                    if !was_exact_match {
+                        session.set_token_usage_source_exact(source);
+                        changed = true;
+                        binding_log = Some((
+                            feature.tmux_session.clone(),
+                            session.tmux_window.clone(),
+                            feature_session_id.to_string(),
+                            provider_session_id.to_string(),
+                        ));
+                    }
+                    break 'outer;
+                }
+            }
+        }
+
+        if let Some(message) = ignored_log {
+            self.log_debug("usage", message);
+            return;
+        }
+
+        if !changed {
+            return;
+        }
+
+        if let Some((tmux_session, tmux_window, amf_id, provider_id)) = binding_log {
+            self.log_info(
+                "usage",
+                format!(
+                    "bound exact usage source from IPC: amf_session_id={amf_id} provider_session_id={provider_id} tmux={tmux_session}:{tmux_window}"
+                ),
+            );
+        }
+
+        if let Err(err) = self.save() {
+            self.log_warn(
+                "usage",
+                format!("Failed to persist exact token usage source from IPC: {err}"),
+            );
         }
     }
 
@@ -713,6 +808,7 @@ impl App {
             Ok(m) => m,
             Err(_) => return,
         };
+        self.bind_exact_token_usage_source_from_ipc(&msg);
 
         let msg_type = msg.msg_type.as_deref().unwrap_or("stop").to_string();
 

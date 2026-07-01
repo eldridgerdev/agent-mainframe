@@ -349,8 +349,7 @@ impl App {
                 env_prefix
             };
             self.tmux.send_literal(&tmux_session, &window, &shell_cmd)?;
-            self.tmux
-                .send_key_name(&tmux_session, &window, "Enter")?;
+            self.tmux.send_key_name(&tmux_session, &window, "Enter")?;
         }
 
         self.save()?;
@@ -389,10 +388,7 @@ impl App {
         match kind {
             SessionKind::Terminal => self.add_terminal_session_for_picker(pi, fi, label),
             SessionKind::Nvim => self.add_nvim_session_for_picker(pi, fi, label),
-            SessionKind::Claude
-            | SessionKind::Opencode
-            | SessionKind::Codex
-            | SessionKind::Pi => {
+            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex | SessionKind::Pi => {
                 self.add_agent_session_for_picker(pi, fi, kind, label)
             }
             SessionKind::Vscode => self.add_vscode_session_for_picker(pi, fi),
@@ -481,8 +477,7 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
 
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
@@ -528,8 +523,7 @@ impl App {
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         self.tmux.send_keys(&tmux_session, &window, "nvim")?;
 
         feature.collapsed = false;
@@ -615,26 +609,27 @@ impl App {
             Some(label) => feature.add_session_named(kind.clone(), label),
             None => feature.add_session(kind.clone()),
         };
+        let session_id = session.id.clone();
         let window = session.tmux_window.clone();
         let label = session.label.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         match agent {
             AgentKind::Claude => {
                 self.tmux
-                    .launch_claude(&tmux_session, &window, None, extra_args)?;
+                    .launch_claude(&tmux_session, &window, &session_id, None, extra_args)?;
             }
             AgentKind::Opencode => {
-                self.tmux.launch_opencode(&tmux_session, &window)?;
+                self.tmux
+                    .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
                 let codex_args = crate::codex_config::launch_override_args(&workdir);
                 self.tmux
-                    .launch_codex(&tmux_session, &window, None, codex_args)?;
+                    .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
             AgentKind::Pi => {
-                self.tmux.launch_pi(&tmux_session, &window)?;
+                self.tmux.launch_pi(&tmux_session, &window, &session_id)?;
             }
         }
 
@@ -716,25 +711,26 @@ impl App {
         ensure_review_claude_md(&workdir, feature.review);
 
         let session = feature.add_session_named(kind.clone(), label.to_string());
+        let session_id = session.id.clone();
         let window = session.tmux_window.clone();
 
-        self.tmux
-            .create_window(&tmux_session, &window, &workdir)?;
+        self.tmux.create_window(&tmux_session, &window, &workdir)?;
         match agent {
             AgentKind::Claude => {
                 self.tmux
-                    .launch_claude(&tmux_session, &window, None, extra_args)?;
+                    .launch_claude(&tmux_session, &window, &session_id, None, extra_args)?;
             }
             AgentKind::Opencode => {
-                self.tmux.launch_opencode(&tmux_session, &window)?;
+                self.tmux
+                    .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
                 let codex_args = crate::codex_config::launch_override_args(&workdir);
                 self.tmux
-                    .launch_codex(&tmux_session, &window, None, codex_args)?;
+                    .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
             AgentKind::Pi => {
-                self.tmux.launch_pi(&tmux_session, &window)?;
+                self.tmux.launch_pi(&tmux_session, &window, &session_id)?;
             }
         }
 

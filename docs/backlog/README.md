@@ -88,6 +88,13 @@ doc always says exactly what remains.
   indexed Codex transcript access and sequenced startup I/O are
   implemented, with provider consolidation and deeper instrumentation
   still planned.
+- [Per-session agent usage](per-session-usage-plan.md) — _Partial._ Split
+  usage scopes so feature rows show aggregate feature usage while
+  dashboard harness rows and sidebars show usage for the selected agent
+  session. Exact provider-session binding and safer inference fallback
+  have shipped for Claude, Codex, and opencode; feature-row aggregation
+  remains. Pi remains unsupported until it exposes usable per-session
+  usage metadata.
 - [Vim mode](vim-mode-plan.md) — _Partial._ Ranked checklist of vim
   features for the in-house editor (`src/editor.rs`). Tier 1 core editing
   largely shipped; change operators and Tiers 2-3 remain.
@@ -103,12 +110,17 @@ doc always says exactly what remains.
   Grow config wizard keybinding support beyond dashboard actions to
   leader commands and other scoped command surfaces.
 - [Final review enhancements](final-review-enhancements-plan.md) —
-  _Shipped._ Follow-ups for the native final review have all landed:
+  _Core shipped; Round 2 in backlog._ Round 1 follow-ups all landed:
   line-level and multi-line comments, multi-line/markdown feedback and
   notes, on-demand walkthroughs, finish gating, resumable state,
   base-ref selection, file-list filters, review history, re-review
-  loop, PR integration, and dispatch-to-a-fresh-harness. One design
-  open question (a single composed review summary) remains.
+  loop, PR integration, and dispatch-to-a-fresh-harness. A captured
+  Round 2 deepens the reviewer workflow: AI co-reviewer first pass,
+  suggested-change blocks, severity tags driving the GitHub review
+  event, agent-writes-responses-back, resolve/unresolve threads,
+  comment re-anchoring, a manual changeset overview, a per-project
+  build/test gate, file-level PR comments, and jump-by-hunk / in-diff
+  search.
 - [PR comment review](pr-comment-review-plan.md) — _Backlog._ Triage a
   GitHub PR's comments (inline, review summaries, conversation, bots)
   inside AMF and, per comment, inject a token-minimal fix into the live

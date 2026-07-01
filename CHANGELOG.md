@@ -22,6 +22,15 @@ are tagged.
   are ignored — they never reach the feedback file or a posted PR review — but
   they do survive pausing and resuming a review. It runs only when you ask and
   only on the current file (with the diff capped), so it stays cheap on tokens.
+- **Suggested changes in a final review.** With the line cursor active (`c`),
+  press `S` to propose a concrete replacement for the line (or `v` range) you're
+  on — the editor opens pre-filled with the current code so you tweak it rather
+  than retype it. A suggestion can stand alone or ride along with a comment on
+  the same line(s). It's written into the feedback file as a fenced
+  ` ```suggestion ` block — a verbatim patch the agent can apply directly
+  instead of interpreting prose — and, when you have PR posting on, it's
+  appended to the inline PR comment as a GitHub suggestion so it's
+  one-click-appliable on the pull request.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a
@@ -52,6 +61,15 @@ are tagged.
 
 ### Fixed
 
+- **Notification hook scripts are written atomically.** AMF rewrites its
+  helper hook scripts (`tool-start.sh`, `notify.sh`, and friends) under
+  `~/.config/amf` on startup. Those writes happened in place, so if a script
+  changed (e.g. after an upgrade) at the moment the agent harness was executing
+  it, the shell could read a half-rewritten file and fail with a spurious
+  syntax error — which surfaced as a hook error blocking a tool call. AMF now
+  stages each script in a temp file and renames it into place, so a running
+  hook always sees a complete file (old or new, never a mix).
+
 - **PR-comment triage marks no longer vanish after the agent pushes a fix.**
   When reviewing PR comments, marking a comment done/skipped, injecting a fix,
   or posting a reply records local triage state — but that state was keyed by
@@ -70,9 +88,18 @@ are tagged.
   workdir/timestamp matching, it no longer assigns the same inferred provider
   session to multiple same-harness panes in one feature; unmatched sessions stay
   unbound until a better match or exact provider event appears.
+- **New Codex panes no longer inherit old usage.** A newly created Codex pane
+  could briefly show a large cost from an older Codex thread in the same
+  worktree before Codex emitted its exact session identity. AMF now ignores
+  stale inferred Codex sources and clears any older bad inferred binding on the
+  next refresh, so new panes stay blank until their own usage is known.
 
 ### Changed
 
+- **Feature rows now show total agent usage.** The dashboard feature row shows a
+  compact feature-level usage total, while each agent session row and sidebar
+  keeps showing only that specific pane's usage. Terminal, editor, custom, and
+  unsupported Pi sessions are excluded from the feature total.
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
   shows the scoped fix before it's injected (press `f` while reviewing PR
   comments, then `e` to edit) is now a full editor instead of a plain text
@@ -95,7 +122,8 @@ are tagged.
 ### Migration
 
 - No migration is required. Existing inferred usage sources can be replaced
-  automatically when the next exact provider event arrives.
+  automatically when the next exact provider event arrives, and stale inferred
+  Codex usage is cleared on refresh.
 
 ## [v0.28.0] - 2026-06-29
 

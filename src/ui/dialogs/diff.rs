@@ -57,7 +57,10 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     // The review footer grows to host the multi-line feedback editor while it
     // is open; otherwise it is a two-row key hint.
     let footer_height = if state.review
-        && (state.feedback_editing || state.editing_general || state.editing_line_comment)
+        && (state.feedback_editing
+            || state.editing_general
+            || state.editing_line_comment
+            || state.editing_suggestion)
     {
         inner.height.saturating_sub(10).clamp(4, 12)
     } else if state.review {
@@ -755,8 +758,26 @@ fn cursor_comment(state: &DiffViewerState) -> Option<&crate::app::LineComment> {
 }
 
 /// The body text of [`cursor_comment`].
+#[cfg(test)]
 fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
     cursor_comment(state).map(|c| c.text.as_str())
+}
+
+/// The lines shown in the cursor-comment peek box: the prose (if any) followed
+/// by a labelled preview of the suggested change (if any). Never empty.
+fn cursor_comment_peek_lines(comment: &crate::app::LineComment) -> Vec<String> {
+    let mut lines: Vec<String> = comment.text.lines().map(|l| l.to_string()).collect();
+    if let Some(suggestion) = &comment.suggestion {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("suggested change:".to_string());
+        lines.extend(suggestion.lines().map(|l| l.to_string()));
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Height (in rows, including the box border) the footer needs to peek the
@@ -764,9 +785,9 @@ fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
 /// is capped so a long comment is glimpsed rather than fully scrolled — the
 /// editor (Enter) still shows it in full.
 fn cursor_comment_preview_rows(state: &DiffViewerState) -> u16 {
-    match cursor_comment_text(state) {
-        Some(text) => {
-            let content = text.lines().count().clamp(1, 6) as u16;
+    match cursor_comment(state) {
+        Some(comment) => {
+            let content = cursor_comment_peek_lines(comment).len().clamp(1, 6) as u16;
             content + 2
         }
         None => 0,
@@ -912,7 +933,11 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme
 fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
     let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
 
-    if state.feedback_editing || state.editing_general || state.editing_line_comment {
+    if state.feedback_editing
+        || state.editing_general
+        || state.editing_line_comment
+        || state.editing_suggestion
+    {
         draw_feedback_editor(frame, area, state, theme);
         return;
     }
@@ -997,6 +1022,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             }),
             key("Enter"),
             Span::raw(" comment  "),
+            key("S"),
+            Span::raw(" suggest  "),
             key("n"),
             Span::raw("/"),
             key("p"),
@@ -1020,6 +1047,12 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             let title = match (comment.draft, comment.is_range()) {
                 (true, true) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
                 (true, false) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
+                (false, true) if comment.suggestion.is_some() => {
+                    " suggestion on these lines (Enter comment · S suggest) "
+                }
+                (false, false) if comment.suggestion.is_some() => {
+                    " suggestion on this line (Enter comment · S suggest) "
+                }
                 (false, true) => " comment on these lines (Enter to edit) ",
                 (false, false) => " comment on this line (Enter to edit) ",
             };
@@ -1029,10 +1062,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 theme.info.to_color()
             };
             let preview = Paragraph::new(
-                comment
-                    .text
-                    .lines()
-                    .map(|line| Line::from(line.to_string()))
+                cursor_comment_peek_lines(comment)
+                    .into_iter()
+                    .map(Line::from)
                     .collect::<Vec<_>>(),
             )
             .block(
@@ -1206,7 +1238,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
             format!(" General Feedback{mode_label} "),
             theme.info.to_color(),
         )
-    } else if state.editing_line_comment {
+    } else if state.editing_line_comment || state.editing_suggestion {
         let anchor = state
             .comment_cursor
             .and_then(|idx| {
@@ -1222,8 +1254,13 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
                     }))
             })
             .unwrap_or_else(|| "line".to_string());
+        let label = if state.editing_suggestion {
+            "Suggested change"
+        } else {
+            "Line Comment"
+        };
         (
-            format!(" Line Comment — {anchor}{mode_label} "),
+            format!(" {label} — {anchor}{mode_label} "),
             theme.warning.to_color(),
         )
     } else {
@@ -1245,11 +1282,13 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     let editor_inner = block.inner(rows[0]);
     frame.render_widget(block, rows[0]);
 
-    let editor_lines = super::editor_view::editor_lines(
-        &state.feedback_editor,
-        theme,
-        "Write feedback for the agent. Markdown is fine.",
-    );
+    let placeholder = if state.editing_suggestion {
+        "Edit the replacement code for these line(s)."
+    } else {
+        "Write feedback for the agent. Markdown is fine."
+    };
+    let editor_lines =
+        super::editor_view::editor_lines(&state.feedback_editor, theme, placeholder);
     let visible_lines = editor_inner.height as usize;
     let mut wrap_width = editor_inner.width as usize;
     let mut total_visual_lines =
@@ -2778,6 +2817,7 @@ index 0000000..1111111
                 start: None,
                 text: "needs a guard\nfor None".to_string(),
                 draft: false,
+                suggestion: None,
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
@@ -2799,6 +2839,7 @@ index 0000000..1111111
                 start: None,
                 text: body,
                 draft: false,
+                suggestion: None,
             }],
         );
         // 20 body lines clamp to 6 visible + 2 border rows.

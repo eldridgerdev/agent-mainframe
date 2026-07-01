@@ -520,6 +520,7 @@ mod tests {
                 on_stop: None,
                 pre_check: None,
                 status_text: None,
+                token_usage: None,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,

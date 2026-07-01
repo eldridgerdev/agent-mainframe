@@ -189,6 +189,17 @@ impact. Each is independent and grounded in the plumbing it reuses.
   next / previous hunk for fast traversal of large diffs.
 - **Search within the diff.** Incremental search over the current
   file's patch (and/or across files) to jump to a match.
+- **Line comment auto-rejects its file.** Leaving a line comment on a file is
+  itself a signal the file needs work, so a file with any (kept, non-draft) line
+  comment should be treated as "needs revision" rather than requiring a separate
+  explicit rejection. On storing the first such comment
+  (`diff_review_submit_line_comment`), default the file's `decisions` entry to
+  `ReviewDecision::Reject` (with empty feedback, since the line comments carry
+  the specifics) unless the reviewer has already set an explicit verdict; clear
+  it again if the last comment on the file is removed. Keep it overridable — an
+  explicit approve/skip after commenting should win — and decide whether an
+  accepted AI draft counts. Surfaces in the file-list markers and the
+  approved/needs-work/skipped counts on finish.
 
 ## Progress
 
@@ -282,8 +293,19 @@ impact. Each is independent and grounded in the plumbing it reuses.
       `spawn_headless`/poll machinery (a second child slot alongside the
       walkthrough's) — `generate_co_review` / `poll_co_review` in
       `src/app/review.rs`.
-- [ ] Suggested-change blocks (GitHub fenced `suggestion` on the PR +
-      verbatim patch in the agent prompt)
+- [x] Suggested-change blocks — with the line cursor active (optionally over a
+      `v` range), press `S` to open a suggestion editor pre-filled with the
+      span's current code (`DiffFile::addressable_line_texts`, diff-prefix
+      stripped); the edited replacement is stored on the span's `LineComment` as
+      `suggestion: Option<String>` (serde-defaulted, so old progress files load).
+      A suggestion may accompany prose or stand alone (empty-prose comment);
+      emptying a suggestion-only comment deletes it. On finish it renders as a
+      fenced ```suggestion block in `.claude/final-review-feedback.md` (a
+      verbatim patch for the agent, not prose) and, when posting to the PR,
+      `build_pr_review` appends the same block to the inline comment body so it's
+      one-click-appliable. The peek box and footer surface it (`S suggest`);
+      `diff_review_start_suggestion` / `diff_review_submit_suggestion` in
+      `src/app/review.rs`.
 - [ ] Severity tags on comments / rejections (drive the GitHub review
       event + agent prioritization + a severity filter)
 - [ ] Agent writes responses back into the feedback file
@@ -297,6 +319,8 @@ impact. Each is independent and grounded in the plumbing it reuses.
       rejections (`subject_type: file`)
 - [ ] Jump-by-hunk navigation in the diff
 - [ ] Search within the diff
+- [ ] Line comment auto-rejects its file (a commented file is implicitly
+      "needs revision")
 
 ## Open questions
 

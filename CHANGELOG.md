@@ -12,6 +12,15 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.29.2] - 2026-07-01
+
+### Fixed
+
+- Older AMF installs can now upgrade through the legacy Linux download path
+  again. The standalone compatibility binaries are small enough for older
+  upgraders to download, so `amf upgrade` no longer fails with a response-size
+  limit before it can install the newer updater.
+
 ## [v0.29.1] - 2026-07-01
 
 ### Fixed

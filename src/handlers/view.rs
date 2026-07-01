@@ -414,6 +414,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('v') => {
             app.toggle_expanded_todos_in_view();
         }
+        KeyCode::Char('N') => {
+            app.open_todo_quick_capture();
+        }
         KeyCode::Char('m') => {
             app.open_markdown_viewer_from_view()?;
         }
@@ -1201,6 +1204,72 @@ mod tests {
             AppMode::Viewing(view) => assert_eq!(view.scroll_offset, 12 - VIEW_FAST_SCROLL_STEP),
             _ => panic!("expected Viewing mode"),
         }
+    }
+
+    #[test]
+    fn leader_shift_n_opens_todo_quick_capture() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
+
+        match &app.mode {
+            AppMode::TodoQuickCapture(state) => {
+                assert_eq!(state.project_name, "demo");
+                assert_eq!(state.input, "");
+                assert_eq!(state.view.session, "amf-feature");
+            }
+            _ => panic!("expected TodoQuickCapture mode"),
+        }
+    }
+
+    #[test]
+    fn todo_quick_capture_commit_creates_todos_session_and_returns_to_view() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+        assert!(!app.store.projects[0].has_todos_session());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
+        for c in "ship it".chars() {
+            crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        // The project gains a TODOs session, auto-created under the current
+        // feature (there was none before quick-capture).
+        assert!(app.store.projects[0].has_todos_session());
+    }
+
+    #[test]
+    fn todo_quick_capture_escape_cancels_without_creating_session() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
+        crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char('x'))).unwrap();
+        crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert!(!app.store.projects[0].has_todos_session());
+    }
+
+    #[test]
+    fn todo_quick_capture_empty_title_is_a_noop() {
+        let repo = TempDir::new().unwrap();
+        let mut app = app_for_viewing_repo(repo.path());
+
+        app.activate_leader();
+        handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
+        // Enter with only whitespace typed: nothing is added.
+        crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(' '))).unwrap();
+        crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert!(matches!(&app.mode, AppMode::Viewing(_)));
+        assert!(!app.store.projects[0].has_todos_session());
     }
 
     fn init_repo_with_branch_change() -> TempDir {

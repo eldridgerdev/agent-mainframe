@@ -399,7 +399,7 @@ impl App {
     /// Add a native TODOs session under the given feature and create the
     /// project's `todo_lists` row. Enforces one TODOs session per project.
     /// No tmux window is created.
-    fn add_todos_session_for_picker(
+    pub(crate) fn add_todos_session_for_picker(
         &mut self,
         pi: usize,
         fi: usize,

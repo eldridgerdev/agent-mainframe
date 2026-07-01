@@ -39,13 +39,33 @@ pub fn handle_todos_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('a') | KeyCode::Char('n') => app.todos_begin_add(),
         KeyCode::Char('e') => app.todos_begin_edit_title(),
         KeyCode::Char('o') => app.todos_begin_edit_notes(),
-        KeyCode::Char('b') => app.todos_begin_edit_carry_over(),
+        KeyCode::Char('b') => app.todos_begin_edit_scratchpad(),
         KeyCode::Char(' ') | KeyCode::Char('x') => app.todos_toggle_done()?,
         KeyCode::Char('p') => app.todos_cycle_priority()?,
         KeyCode::Char('J') => app.todos_reorder(1)?,
         KeyCode::Char('K') => app.todos_reorder(-1)?,
         KeyCode::Char('d') => app.todos_request_delete(),
         KeyCode::Char('g') | KeyCode::Enter => app.todos_spawn_agent()?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key dispatch for the one-line TODO quick-capture (`AppMode::TodoQuickCapture`).
+pub fn handle_todo_quick_capture_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => app.cancel_todo_quick_capture(),
+        KeyCode::Enter => app.commit_todo_quick_capture()?,
+        KeyCode::Backspace => {
+            if let AppMode::TodoQuickCapture(state) = &mut app.mode {
+                state.input.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let AppMode::TodoQuickCapture(state) = &mut app.mode {
+                state.input.push(c);
+            }
+        }
         _ => {}
     }
     Ok(())

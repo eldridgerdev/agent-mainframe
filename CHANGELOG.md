@@ -34,20 +34,22 @@ are tagged.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a
-  native full-screen list (no tmux pane) with a "left off here" note at the
-  top, and each project gets at most one list, shared across all its features.
-  Inside the list: `a` add, `e` edit a title, `o` edit longer notes on an item,
-  `space` toggle done (completed items get a strikethrough and sink to the
-  bottom, never auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete
-  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. Press
-  `g` (or `Enter`) on an item to **launch an agent for it**: AMF opens a fresh
-  agent session in the list's feature — using that feature's harness and
-  mode — and pre-fills the composer with a prompt built from the item's title
-  and notes, left editable so you review it before sending. Launched items show
-  a marker, and pressing `g` again jumps back to the same session (adding onto
-  it rather than spawning a second). The list is saved per checkout, so it
-  survives restarts. Quick-capture of a TODO from other sessions is still to
-  come.
+  native full-screen list (no tmux pane) with a free-form **scratchpad** note
+  at the top (for context, links, or where you left off), and each project gets
+  at most one list, shared across all its features. Inside the list: `a` add,
+  `e` edit a title, `o` edit longer notes on an item, `space` toggle done
+  (completed items get a strikethrough and sink to the bottom, never
+  auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete (with confirm),
+  `b` edit the scratchpad note, and `j`/`k` to move. Press `g` (or `Enter`) on
+  an item to **launch an agent for it**: AMF opens a fresh agent session in the
+  list's feature — using that feature's harness and mode — and pre-fills the
+  composer with a prompt built from the item's title and notes, left editable so
+  you review it before sending. Launched items show a marker, and pressing `g`
+  again jumps back to the same session (adding onto it rather than spawning a
+  second). You can also **quick-capture** a TODO without leaving whatever session
+  you're in: from a session view, leader → `N` opens a one-line input that
+  appends to the project's list (auto-creating the list if there isn't one yet).
+  The list is saved per checkout, so it survives restarts.
 - **Fix several PR comments in one pass.** While reviewing PR comments, press
   `space` to mark comments (a `●` flags them, and the footer shows how many),
   then `F` to queue a scoped fix for every marked comment into the review

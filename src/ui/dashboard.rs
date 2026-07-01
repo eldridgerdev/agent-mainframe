@@ -813,6 +813,7 @@ fn mode_view_context(mode: &AppMode) -> Option<&crate::app::ViewState> {
         AppMode::DiffViewerLoading(state) | AppMode::DiffViewer(state) => Some(&state.from_view),
         AppMode::SteeringPrompt(state) => Some(&state.view),
         AppMode::Compose(state) => Some(&state.view),
+        AppMode::TodoQuickCapture(state) => Some(&state.view),
         AppMode::SessionPicker(state) => state.from_view.as_ref(),
         AppMode::DiffReviewPrompt(state) => state.return_to_view.as_ref(),
         AppMode::LatestPrompt(state) => Some(&state.view),
@@ -1088,6 +1089,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let AppMode::Compose(state) = &mut app.mode {
         super::dialogs::draw_compose_dialog(frame, state, &app.theme);
+        draw_mode_context_bar(frame, &app.mode, &app.theme);
+        return;
+    }
+
+    let quick_capture_from_view = if let AppMode::TodoQuickCapture(state) = &app.mode {
+        Some(state.view.clone())
+    } else {
+        None
+    };
+    if let Some(view) = quick_capture_from_view.as_ref() {
+        draw_view_pane(frame, app, view, false, false);
+    }
+    if let AppMode::TodoQuickCapture(state) = &app.mode {
+        super::dialogs::draw_todo_quick_capture_dialog(frame, state, &app.theme);
         draw_mode_context_bar(frame, &app.mode, &app.theme);
         return;
     }

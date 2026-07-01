@@ -12,6 +12,15 @@ are tagged.
 
 _No unreleased changes yet._
 
+## [v0.29.1] - 2026-07-01
+
+### Fixed
+
+- GitHub releases now include legacy bare `amf-<target>` binaries alongside
+  the bundled `.tar.gz` assets, so older Linux installs that still download the
+  pre-bundle asset name can run `amf upgrade` successfully instead of failing
+  with a missing download.
+
 ## [v0.29.0] - 2026-07-01
 
 ### Added

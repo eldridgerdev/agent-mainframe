@@ -104,16 +104,21 @@ jobs:
       - name: Package release bundle
         run: |
           src="target/${{ matrix.target }}/release/amf"
+          legacy_dst="dist/amf-${{ matrix.target }}"
           dst="dist/amf-${{ matrix.target }}.tar.gz"
           mkdir -p dist
           strip "$src" 2>/dev/null || true
+          cp "$src" "$legacy_dst"
+          chmod +x "$legacy_dst"
           bash scripts/package-release-bundle.sh "${{ matrix.target }}" "$src" "$dst"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: amf-${{ matrix.target }}
-          path: dist/amf-${{ matrix.target }}.tar.gz
+          path: |
+            dist/amf-${{ matrix.target }}
+            dist/amf-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   release:

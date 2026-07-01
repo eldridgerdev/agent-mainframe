@@ -1296,7 +1296,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         Span::raw(" cancel  "),
         key("Enter"),
         Span::raw(" newline  "),
-        key("Ctrl+V"),
+        key("Ctrl+T"),
         Span::raw(if vim.is_some() { " vim off  " } else { " vim on  " }),
         key("Ctrl+J/K"),
         Span::raw(" scroll"),

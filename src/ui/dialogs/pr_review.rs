@@ -469,9 +469,9 @@ fn draw_fix_confirm(
         // Under vim, Esc is consumed by the editor (Insert→Normal), so the way
         // back to the confirm view is Ctrl+Q; in plain mode Esc does it.
         if confirm.editor.vim_mode().is_some() {
-            "[tab] inject   [^v] vim   [^q] done editing"
+            "[tab] inject   [^t] vim   [^q] done editing"
         } else {
-            "[tab] inject   [^v] vim   [esc] done editing"
+            "[tab] inject   [^t] vim   [esc] done editing"
         }
     } else {
         "[⏎] inject   [e] edit   [esc] cancel"

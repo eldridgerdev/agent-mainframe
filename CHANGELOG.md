@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.29.0] - 2026-07-01
+
 ### Added
 
 - **AI co-reviewer first pass in a final review.** Press `A` to have Claude do

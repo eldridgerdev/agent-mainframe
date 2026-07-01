@@ -239,6 +239,36 @@ impl SessionTokenTracker {
         usage
     }
 
+    pub fn source_updated_at_seconds(
+        &mut self,
+        source: &TokenUsageSource,
+        workdir: &Path,
+    ) -> Option<i64> {
+        match source.provider {
+            TokenUsageProvider::Claude => self
+                .claude_projects_dir(workdir)
+                .map(|dir| dir.join(format!("{}.jsonl", source.id)))
+                .and_then(|path| file_modified_millis(&path))
+                .map(|millis| millis / 1000),
+            TokenUsageProvider::Opencode => self
+                .opencode_sessions()
+                .iter()
+                .find(|meta| meta.id == source.id && meta.directory == workdir)
+                .map(|meta| meta.updated / 1000),
+            TokenUsageProvider::Codex => self
+                .home_dir
+                .as_deref()
+                .and_then(|home| crate::codex::indexed_session_in(home, workdir, &source.id))
+                .map(|session| session.updated_at)
+                .or_else(|| {
+                    self.codex_sessions()
+                        .iter()
+                        .find(|record| record.id == source.id && record.cwd == workdir)
+                        .map(|record| record.updated)
+                }),
+        }
+    }
+
     fn current_usage_signature(
         &mut self,
         source: &TokenUsageSource,
@@ -438,7 +468,6 @@ impl SessionTokenTracker {
         let threshold = created_at.timestamp();
         let created_at_seconds = created_at.timestamp();
         let mut closest_match: Option<(String, u64)> = None;
-        let mut newest_any: Option<(String, i64)> = None;
 
         let sessions = self
             .home_dir
@@ -462,12 +491,6 @@ impl SessionTokenTracker {
             if excluded_ids.contains(&id) {
                 continue;
             }
-            if newest_any
-                .as_ref()
-                .is_none_or(|(_, current)| updated > *current)
-            {
-                newest_any = Some((id.clone(), updated));
-            }
             let distance = updated.abs_diff(created_at_seconds);
             if updated >= threshold
                 && closest_match
@@ -478,12 +501,10 @@ impl SessionTokenTracker {
             }
         }
 
-        closest_match
-            .or(newest_any.map(|(id, _)| (id, 0)))
-            .map(|(id, _)| TokenUsageSource {
-                provider: TokenUsageProvider::Codex,
-                id,
-            })
+        closest_match.map(|(id, _)| TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id,
+        })
     }
 
     fn read_codex_usage(
@@ -876,6 +897,55 @@ pub fn format_token_usage(usage: &SessionTokenUsage, pricing: &TokenPricingConfi
         format_token_count(usage.output_tokens),
         format_token_count(equiv),
     );
+    if pricing.show_cost {
+        format!("{} · {}", base, format_dollar_cost(pricing.cost_usd(usage)))
+    } else {
+        base
+    }
+}
+
+pub fn aggregate_token_usage<'a>(
+    usages: impl IntoIterator<Item = &'a SessionTokenUsage>,
+) -> Option<SessionTokenUsage> {
+    let mut aggregate = SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "feature-total".to_string(),
+        },
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 0,
+    };
+    let mut has_usage = false;
+
+    for usage in usages {
+        has_usage = true;
+        aggregate.input_tokens = aggregate.input_tokens.saturating_add(usage.input_tokens);
+        aggregate.output_tokens = aggregate.output_tokens.saturating_add(usage.output_tokens);
+        aggregate.cache_read_tokens = aggregate
+            .cache_read_tokens
+            .saturating_add(usage.cache_read_tokens);
+        aggregate.cache_write_tokens = aggregate
+            .cache_write_tokens
+            .saturating_add(usage.cache_write_tokens);
+        aggregate.reasoning_tokens = aggregate
+            .reasoning_tokens
+            .saturating_add(usage.reasoning_tokens);
+        aggregate.total_tokens = aggregate.total_tokens.saturating_add(usage.total_tokens);
+    }
+
+    has_usage.then_some(aggregate)
+}
+
+pub fn format_feature_token_usage(
+    usage: &SessionTokenUsage,
+    pricing: &TokenPricingConfig,
+) -> String {
+    let equiv = pricing.cost_equivalent_tokens(usage);
+    let base = format!("usage {} eff", format_token_count(equiv));
     if pricing.show_cost {
         format!("{} · {}", base, format_dollar_cost(pricing.cost_usd(usage)))
     } else {
@@ -1453,6 +1523,60 @@ mod tests {
     }
 
     #[test]
+    fn codex_inference_ignores_sources_updated_before_session_creation() {
+        let home = TempDir::new().unwrap();
+        let data = TempDir::new().unwrap();
+        let workdir = home.path().join("repo");
+        let codex_dir = home.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let rollout = codex_dir.join("old-rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            format!(
+                concat!(
+                    "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"old-codex\",\"cwd\":\"{}\"}}}}\n",
+                    "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":1000000,\"output_tokens\":1000000,\"total_tokens\":2000000}}}}}}}}\n"
+                ),
+                workdir.display()
+            ),
+        )
+        .unwrap();
+
+        let conn = rusqlite::Connection::open(codex_dir.join("state_5.sqlite")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                rollout_path TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                cwd TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, rollout_path, updated_at, cwd, archived)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            rusqlite::params![
+                "old-codex",
+                rollout.to_string_lossy(),
+                Utc.with_ymd_and_hms(2026, 3, 13, 14, 0, 0)
+                    .unwrap()
+                    .timestamp(),
+                workdir.to_string_lossy(),
+            ],
+        )
+        .unwrap();
+
+        let mut tracker = tracker_with_roots(home.path(), data.path());
+        let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 14, 5, 0).unwrap();
+
+        assert_eq!(
+            tracker.discover_source(&SessionKind::Codex, &workdir, created_at),
+            None
+        );
+    }
+
+    #[test]
     fn discovers_and_reads_opencode_usage_from_storage() {
         let home = TempDir::new().unwrap();
         let data = TempDir::new().unwrap();
@@ -1524,6 +1648,54 @@ mod tests {
         };
         let formatted = format_token_usage(&usage, &pricing);
         assert_eq!(formatted, "16.0k in · 2.0k out · 21.8k eff · $0.07");
+    }
+
+    #[test]
+    fn aggregates_and_formats_feature_token_usage() {
+        let pricing = TokenPricingConfig::default();
+        let first = SessionTokenUsage {
+            source: TokenUsageSource {
+                provider: TokenUsageProvider::Claude,
+                id: "claude-1".to_string(),
+            },
+            input_tokens: 10_000,
+            output_tokens: 2_000,
+            cache_read_tokens: 5_000,
+            cache_write_tokens: 1_000,
+            reasoning_tokens: 0,
+            total_tokens: 18_000,
+        };
+        let second = SessionTokenUsage {
+            source: TokenUsageSource {
+                provider: TokenUsageProvider::Codex,
+                id: "codex-1".to_string(),
+            },
+            input_tokens: 1_000,
+            output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 1_000,
+            total_tokens: 2_500,
+        };
+
+        let aggregate = aggregate_token_usage([&first, &second]).unwrap();
+
+        assert_eq!(aggregate.input_tokens, 11_000);
+        assert_eq!(aggregate.output_tokens, 2_500);
+        assert_eq!(aggregate.cache_read_tokens, 5_000);
+        assert_eq!(aggregate.cache_write_tokens, 1_000);
+        assert_eq!(aggregate.reasoning_tokens, 1_000);
+        assert_eq!(aggregate.total_tokens, 20_500);
+        assert_eq!(
+            format_feature_token_usage(&aggregate, &pricing),
+            "usage 30.2k eff · $0.09"
+        );
+    }
+
+    #[test]
+    fn aggregate_token_usage_omits_empty_sets() {
+        let usages: [&SessionTokenUsage; 0] = [];
+        assert!(aggregate_token_usage(usages).is_none());
     }
 
     #[test]

@@ -1574,7 +1574,109 @@ mod tests {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         }
+    }
+
+    fn sidebar_usage_session(
+        id: &str,
+        kind: SessionKind,
+        window: &str,
+        label: &str,
+        status_text: &str,
+    ) -> FeatureSession {
+        FeatureSession {
+            id: id.into(),
+            kind,
+            label: label.into(),
+            tmux_window: window.into(),
+            claude_session_id: None,
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: chrono::Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: Some(status_text.into()),
+            token_usage: None,
+        }
+    }
+
+    fn sidebar_usage_app(kind: SessionKind) -> App {
+        let now = chrono::Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![
+                sidebar_usage_session(
+                    "session-1",
+                    kind.clone(),
+                    "agent-1",
+                    "Agent 1",
+                    "1.0k in · 100 out · 1.5k eff · $0.01",
+                ),
+                sidebar_usage_session(
+                    "session-2",
+                    kind.clone(),
+                    "agent-2",
+                    "Agent 2",
+                    "2.0k in · 200 out · 3.0k eff · $0.02",
+                ),
+            ],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            remote_control: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        App::new_for_test(
+            ProjectStore {
+                version: 5,
+                projects: vec![Project {
+                    id: "proj-1".into(),
+                    name: "demo".into(),
+                    repo: PathBuf::from("/tmp/demo"),
+                    collapsed: false,
+                    features: vec![feature],
+                    created_at: now,
+                    preferred_agent: AgentKind::Claude,
+                    is_git: false,
+                }],
+                session_bookmarks: vec![],
+                available_harnesses: vec![],
+                prompt_templates: Vec::new(),
+                extra: HashMap::new(),
+            },
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        )
+    }
+
+    fn sidebar_usage_view(kind: SessionKind, window: &str, label: &str) -> ViewState {
+        ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            window.into(),
+            label.into(),
+            kind,
+            VibeMode::Vibeless,
+            false,
+        )
     }
 
     #[test]
@@ -1671,6 +1773,30 @@ mod tests {
             format_codex_usage_source_confidence(&SessionKind::Codex, Some(&session)),
             None
         );
+    }
+
+    #[test]
+    fn sidebar_usage_follows_selected_agent_window() {
+        for kind in [
+            SessionKind::Claude,
+            SessionKind::Codex,
+            SessionKind::Opencode,
+        ] {
+            let app = sidebar_usage_app(kind.clone());
+            let first = build_agent_sidebar_data(
+                &app,
+                &sidebar_usage_view(kind.clone(), "agent-1", "Agent 1"),
+            )
+            .unwrap();
+            let second =
+                build_agent_sidebar_data(&app, &sidebar_usage_view(kind, "agent-2", "Agent 2"))
+                    .unwrap();
+
+            assert!(first.status_text.contains("Input: 1.0k tokens"));
+            assert!(!first.status_text.contains("Input: 2.0k tokens"));
+            assert!(second.status_text.contains("Input: 2.0k tokens"));
+            assert!(!second.status_text.contains("Input: 1.0k tokens"));
+        }
     }
 
     #[test]
@@ -1797,6 +1923,7 @@ mod tests {
                 on_stop: None,
                 pre_check: None,
                 status_text: None,
+                token_usage: None,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -1903,6 +2030,7 @@ mod tests {
                 on_stop: None,
                 pre_check: None,
                 status_text: None,
+                token_usage: None,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,
@@ -2009,6 +2137,7 @@ mod tests {
                 on_stop: None,
                 pre_check: None,
                 status_text: None,
+                token_usage: None,
             }],
             collapsed: false,
             mode: VibeMode::Vibeless,

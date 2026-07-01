@@ -12,6 +12,9 @@ use ratatui::{
 use crate::app::{App, Selection, VisibleItem};
 use crate::project::{ProjectStatus, SessionKind, VibeMode};
 use crate::theme::Theme;
+use crate::token_tracking::{
+    aggregate_token_usage, format_feature_token_usage, provider_for_session_kind,
+};
 
 fn format_age(dt: DateTime<Utc>) -> String {
     let secs = Utc::now().signed_duration_since(dt).num_seconds();
@@ -327,6 +330,21 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(theme.text_muted.to_color()),
                         ));
                     }
+                    if let Some(usage) = aggregate_token_usage(
+                        feature
+                            .sessions
+                            .iter()
+                            .filter(|session| provider_for_session_kind(&session.kind).is_some())
+                            .filter_map(|session| session.token_usage.as_ref()),
+                    ) {
+                        line_spans.push(Span::styled(
+                            format!(
+                                " [{}]",
+                                format_feature_token_usage(&usage, &app.config.token_pricing)
+                            ),
+                            Style::default().fg(theme.status_detail.to_color()),
+                        ));
+                    }
                     line_spans.extend(mode_badge_spans);
                     if feature.review {
                         line_spans.push(Span::styled(
@@ -552,4 +570,207 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     );
 
     frame.render_widget(list, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use chrono::Utc;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use crate::app::App;
+    use crate::project::{AgentKind, Feature, FeatureSession, Project, ProjectStore};
+    use crate::token_tracking::{SessionTokenUsage, TokenUsageProvider, TokenUsageSource};
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+
+    fn usage(
+        provider: TokenUsageProvider,
+        id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        reasoning_tokens: u64,
+    ) -> SessionTokenUsage {
+        SessionTokenUsage {
+            source: TokenUsageSource {
+                provider,
+                id: id.to_string(),
+            },
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            total_tokens: input_tokens
+                .saturating_add(output_tokens)
+                .saturating_add(cache_read_tokens)
+                .saturating_add(cache_write_tokens)
+                .saturating_add(reasoning_tokens),
+        }
+    }
+
+    fn session(
+        kind: SessionKind,
+        label: &str,
+        token_usage: Option<SessionTokenUsage>,
+    ) -> FeatureSession {
+        FeatureSession {
+            id: format!("session-{label}"),
+            kind,
+            label: label.to_string(),
+            tmux_window: label.to_ascii_lowercase().replace(' ', "-"),
+            claude_session_id: None,
+            token_usage_source: None,
+            token_usage_source_match: None,
+            created_at: Utc::now(),
+            command: None,
+            on_stop: None,
+            pre_check: None,
+            status_text: None,
+            token_usage,
+        }
+    }
+
+    fn render_feature_row(sessions: Vec<FeatureSession>) -> String {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".to_string(),
+            name: "usage-feat".to_string(),
+            branch: "usage-feat".to_string(),
+            workdir: PathBuf::from("/tmp/usage-feat"),
+            is_worktree: true,
+            tmux_session: "amf-usage-feat".to_string(),
+            sessions,
+            collapsed: true,
+            mode: VibeMode::default(),
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Claude,
+            enable_chrome: false,
+            remote_control: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "proj-1".to_string(),
+                name: "usage-project".to_string(),
+                repo: PathBuf::from("/tmp/usage-project"),
+                collapsed: false,
+                features: vec![feature],
+                created_at: now,
+                preferred_agent: AgentKind::Claude,
+                is_git: false,
+            }],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = crate::app::Selection::Feature(0, 0);
+
+        let backend = TestBackend::new(140, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::draw(frame, &mut app, frame.area()))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn feature_row_omits_usage_when_no_agent_usage_exists() {
+        let rendered = render_feature_row(vec![session(SessionKind::Claude, "Claude 1", None)]);
+
+        assert!(rendered.contains("usage-feat"));
+        assert!(!rendered.contains("[usage "));
+    }
+
+    #[test]
+    fn feature_row_shows_single_agent_usage() {
+        let rendered = render_feature_row(vec![session(
+            SessionKind::Claude,
+            "Claude 1",
+            Some(usage(
+                TokenUsageProvider::Claude,
+                "claude-1",
+                10_000,
+                2_000,
+                5_000,
+                1_000,
+                0,
+            )),
+        )]);
+
+        assert!(rendered.contains("[usage 21.8k eff · $0.07]"));
+    }
+
+    #[test]
+    fn feature_row_sums_multiple_agent_usages_and_excludes_non_agents() {
+        let rendered = render_feature_row(vec![
+            session(
+                SessionKind::Claude,
+                "Claude 1",
+                Some(usage(
+                    TokenUsageProvider::Claude,
+                    "claude-1",
+                    10_000,
+                    2_000,
+                    5_000,
+                    1_000,
+                    0,
+                )),
+            ),
+            session(
+                SessionKind::Codex,
+                "Codex 1",
+                Some(usage(
+                    TokenUsageProvider::Codex,
+                    "codex-1",
+                    1_000,
+                    500,
+                    0,
+                    0,
+                    1_000,
+                )),
+            ),
+            session(
+                SessionKind::Terminal,
+                "Terminal",
+                Some(usage(
+                    TokenUsageProvider::Claude,
+                    "terminal-ignored",
+                    1_000_000,
+                    1_000_000,
+                    0,
+                    0,
+                    0,
+                )),
+            ),
+        ]);
+
+        assert!(rendered.contains("[usage 30.2k eff · $0.09]"));
+        assert!(!rendered.contains("5.0M"));
+    }
 }

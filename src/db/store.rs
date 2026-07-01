@@ -364,6 +364,7 @@ fn load_sessions(conn: &Connection, feature_id: &str) -> Result<Vec<FeatureSessi
                 on_stop: row.get(9)?,
                 pre_check: row.get(10)?,
                 status_text: None,
+                token_usage: None,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -628,6 +629,7 @@ mod tests {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         };
 
         let feature = Feature {

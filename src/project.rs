@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-use crate::token_tracking::TokenUsageSource;
+use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 
 pub(crate) const CURRENT_PROJECT_STORE_VERSION: u32 = 5;
 
@@ -155,6 +155,8 @@ pub struct FeatureSession {
     pub pre_check: Option<String>,
     #[serde(skip)]
     pub status_text: Option<String>,
+    #[serde(skip)]
+    pub token_usage: Option<SessionTokenUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -178,6 +180,7 @@ impl FeatureSession {
     pub fn clear_token_usage_source(&mut self) {
         self.token_usage_source = None;
         self.token_usage_source_match = None;
+        self.token_usage = None;
     }
 }
 
@@ -592,6 +595,7 @@ impl Feature {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -627,6 +631,7 @@ impl Feature {
             on_stop,
             pre_check,
             status_text: None,
+            token_usage: None,
         };
         self.sessions.push(session);
         self.sessions.last_mut().unwrap()
@@ -1041,6 +1046,7 @@ impl ProjectStore {
                                 on_stop: None,
                                 pre_check: None,
                                 status_text: None,
+                                token_usage: None,
                             },
                             FeatureSession {
                                 id: Uuid::new_v4().to_string(),
@@ -1055,6 +1061,7 @@ impl ProjectStore {
                                 on_stop: None,
                                 pre_check: None,
                                 status_text: None,
+                                token_usage: None,
                             },
                         ];
                         Feature {
@@ -1216,6 +1223,7 @@ mod tests {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         }
     }
 
@@ -1285,6 +1293,7 @@ mod tests {
                         on_stop: None,
                         pre_check: None,
                         status_text: None,
+                        token_usage: None,
                     }],
                     collapsed: true,
                     mode: VibeMode::Vibeless,
@@ -1345,6 +1354,7 @@ mod tests {
                                 on_stop: None,
                                 pre_check: None,
                                 status_text: None,
+                                token_usage: None,
                             },
                             FeatureSession {
                                 id: "session-2".to_string(),
@@ -1359,6 +1369,7 @@ mod tests {
                                 on_stop: None,
                                 pre_check: None,
                                 status_text: None,
+                                token_usage: None,
                             },
                         ],
                         collapsed: false,

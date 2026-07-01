@@ -8605,7 +8605,7 @@ fn todos_delete_requires_confirmation() {
 }
 
 #[test]
-fn todos_edit_carry_over_banner() {
+fn todos_edit_scratchpad_banner() {
     let mut app = todos_app();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
     type_str(&mut app, "finishing the parser");

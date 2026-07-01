@@ -1250,8 +1250,9 @@ pub enum TodoEditTarget {
     Title,
     /// Editing the selected item's notes/detail body (multi-line).
     Notes,
-    /// Editing the list's "left off here" carry-over banner.
-    CarryOver,
+    /// Editing the list's free-form scratchpad note (persisted in the
+    /// legacy `carry_over` column).
+    Scratchpad,
 }
 
 /// An in-progress inline edit within the TODOs overlay.
@@ -1287,9 +1288,22 @@ pub struct TodoViewState {
     pub pending_delete: bool,
 }
 
+/// Single-line quick-capture of a TODO from inside a session view. The typed
+/// title is appended to the current project's list, auto-creating the list (and
+/// a TODOs session under the current feature) when the project has none yet.
+/// `view` is the session view to return to on commit/cancel.
+pub struct TodoQuickCaptureState {
+    pub view: ViewState,
+    /// Name of the project the TODO will be added to (shown in the dialog).
+    pub project_name: String,
+    /// The title being typed.
+    pub input: String,
+}
+
 pub enum AppMode {
     Normal,
     Todos(TodoViewState),
+    TodoQuickCapture(TodoQuickCaptureState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     DeletingProject(String),

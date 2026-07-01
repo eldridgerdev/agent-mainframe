@@ -130,6 +130,106 @@ impl App {
         }
     }
 
+    // ----- quick-capture from a session view ----------------------------
+
+    /// Open the one-line TODO quick-capture over the current session view. The
+    /// typed title is appended to the current project's list on commit. No-op
+    /// unless a session view is active.
+    pub fn open_todo_quick_capture(&mut self) {
+        let view = match &self.mode {
+            AppMode::Viewing(view) => view.clone(),
+            _ => return,
+        };
+        let project_name = view.project_name.clone();
+        self.mode = AppMode::TodoQuickCapture(crate::app::TodoQuickCaptureState {
+            view,
+            project_name,
+            input: String::new(),
+        });
+    }
+
+    /// Cancel quick-capture, returning to the session view unchanged.
+    pub fn cancel_todo_quick_capture(&mut self) {
+        if let AppMode::TodoQuickCapture(state) = &self.mode {
+            self.mode = AppMode::Viewing(state.view.clone());
+        }
+    }
+
+    /// Append the typed title to the current project's TODO list, then return to
+    /// the session view. An empty title is a no-op cancel. If the project has no
+    /// TODOs session yet, one is created (with its list) under the current
+    /// feature before the item is appended.
+    pub fn commit_todo_quick_capture(&mut self) -> Result<()> {
+        let (view, title) = match &self.mode {
+            AppMode::TodoQuickCapture(state) => {
+                (state.view.clone(), state.input.trim().to_string())
+            }
+            _ => return Ok(()),
+        };
+
+        if title.is_empty() {
+            self.mode = AppMode::Viewing(view);
+            return Ok(());
+        }
+
+        match self.viewing_indices(&view) {
+            Some((pi, fi)) => match self.quick_capture_todo(pi, fi, &title) {
+                Ok(()) => {
+                    let shown = Self::truncate_title(&title, 40);
+                    self.push_toast_success(format!("Added TODO: {shown}"));
+                }
+                Err(e) => {
+                    self.log_error("todos", format!("quick capture failed: {e}"));
+                    self.push_toast_error(format!("Failed to add TODO: {e}"));
+                }
+            },
+            None => self.push_toast_warning("Couldn't resolve the project for this TODO"),
+        }
+
+        self.mode = AppMode::Viewing(view);
+        Ok(())
+    }
+
+    /// Resolve the `(project, feature)` indices a session view belongs to by its
+    /// project/feature names.
+    fn viewing_indices(&self, view: &crate::app::ViewState) -> Option<(usize, usize)> {
+        let pi = self
+            .store
+            .projects
+            .iter()
+            .position(|p| p.name == view.project_name)?;
+        let fi = self.store.projects[pi]
+            .features
+            .iter()
+            .position(|f| f.name == view.feature_name)?;
+        Some((pi, fi))
+    }
+
+    /// Ensure the project has a TODOs session + list (creating one under feature
+    /// `fi` when it doesn't), then append `title` to the list.
+    fn quick_capture_todo(&mut self, pi: usize, fi: usize, title: &str) -> Result<()> {
+        // No-op create when the project already has a TODOs session; otherwise
+        // this adds one (and its list) under the current feature.
+        self.add_todos_session_for_picker(pi, fi, None)?;
+
+        let (project_id, feature_id) = match self.store.projects.get(pi) {
+            Some(project) => (
+                project.id.clone(),
+                project.features.get(fi).map(|f| f.id.clone()),
+            ),
+            None => anyhow::bail!("project not found"),
+        };
+        let feature_id = feature_id.unwrap_or_default();
+
+        // Persist only when a DB is present; without one (tests) the session was
+        // still created in memory, matching the overlay's DB-optional behavior.
+        if let Some(db) = &self.db {
+            let list = db.load_or_create_todo_list(&project_id, &feature_id)?;
+            db.add_todo(&list.id, title, None, TodoPriority::Med)?;
+        }
+        Ok(())
+    }
+
     // ----- inline editing -----------------------------------------------
 
     /// Begin an inline edit, seeding the editor with `initial` text.
@@ -174,8 +274,8 @@ impl App {
         }
     }
 
-    /// Start editing the list's "left off here" carry-over banner.
-    pub fn todos_begin_edit_carry_over(&mut self) {
+    /// Start editing the list's free-form scratchpad note.
+    pub fn todos_begin_edit_scratchpad(&mut self) {
         let initial = match &self.mode {
             AppMode::Todos(state) => state
                 .list
@@ -184,7 +284,7 @@ impl App {
                 .unwrap_or_default(),
             _ => return,
         };
-        self.todos_begin_edit(crate::app::TodoEditTarget::CarryOver, initial);
+        self.todos_begin_edit(crate::app::TodoEditTarget::Scratchpad, initial);
     }
 
     /// Cancel the active inline edit, discarding changes.
@@ -227,8 +327,8 @@ impl App {
                 };
                 self.todos_update_selected(|t| t.body = body.clone())?;
             }
-            TodoEditTarget::CarryOver => {
-                self.todos_set_carry_over(text.trim().to_string())?;
+            TodoEditTarget::Scratchpad => {
+                self.todos_set_scratchpad(text.trim().to_string())?;
             }
         }
 
@@ -405,8 +505,9 @@ impl App {
         Ok(())
     }
 
-    /// Update the carry-over banner note, persisting it.
-    fn todos_set_carry_over(&mut self, note: String) -> Result<()> {
+    /// Update the list's scratchpad note, persisting it. (Stored in the legacy
+    /// `carry_over` column / `set_todo_carry_over` DB method.)
+    fn todos_set_scratchpad(&mut self, note: String) -> Result<()> {
         let list_id = self.todos_ensure_list_id();
         let value = if note.is_empty() { None } else { Some(note) };
         if let (Some(db), Some(list_id)) = (&self.db, &list_id) {
@@ -525,6 +626,17 @@ impl App {
             prompt.push_str(body);
         }
         prompt
+    }
+
+    /// Truncate `title` to at most `max` characters, appending an ellipsis when
+    /// it was shortened.
+    fn truncate_title(title: &str, max: usize) -> String {
+        if title.chars().count() > max {
+            let truncated: String = title.chars().take(max).collect();
+            format!("{}…", truncated.trim_end())
+        } else {
+            title.to_string()
+        }
     }
 
     /// A short session label derived from a TODO title (truncated).

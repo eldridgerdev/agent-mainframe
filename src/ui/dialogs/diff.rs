@@ -608,6 +608,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
     let ReviewLineMarkers {
         cursor: cursor_loc,
         commented,
+        draft,
         selection,
     } = review_cursor_info(state);
 
@@ -629,6 +630,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
                 is_new_diff_file(file),
                 cursor_loc,
                 &commented,
+                &draft,
                 &selection,
                 &mut cursor_row,
             );
@@ -670,6 +672,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
             new_file_presentation: file.map(is_new_diff_file).unwrap_or(false),
             cursor: cursor_loc,
             commented,
+            draft,
             selection,
         },
         theme,
@@ -684,6 +687,9 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
 struct ReviewLineMarkers {
     cursor: Option<DiffLineLocation>,
     commented: std::collections::HashSet<DiffLineLocation>,
+    /// Lines covered by an unaccepted AI draft comment — marked distinctly from
+    /// `commented` so the reviewer can tell suggestions apart from kept comments.
+    draft: std::collections::HashSet<DiffLineLocation>,
     selection: std::collections::HashSet<DiffLineLocation>,
 }
 
@@ -692,6 +698,7 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
     let empty = || ReviewLineMarkers {
         cursor: None,
         commented: HashSet::new(),
+        draft: HashSet::new(),
         selection: HashSet::new(),
     };
     if !state.review {
@@ -703,10 +710,16 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
     let locs = file.addressable_lines();
     let cursor = state.comment_cursor.and_then(|idx| locs.get(idx).copied());
     let mut commented = HashSet::new();
+    let mut draft = HashSet::new();
     if let Some(comments) = state.line_comments.get(&file.path) {
         for comment in comments {
             if let Some(range) = comment.covered_indices(&locs) {
-                commented.extend(range.filter_map(|idx| locs.get(idx).copied()));
+                let set = if comment.draft {
+                    &mut draft
+                } else {
+                    &mut commented
+                };
+                set.extend(range.filter_map(|idx| locs.get(idx).copied()));
             }
         }
     }
@@ -720,6 +733,7 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
     ReviewLineMarkers {
         cursor,
         commented,
+        draft,
         selection,
     }
 }
@@ -768,8 +782,12 @@ pub(crate) struct PatchPanelOptions {
     pub new_file_presentation: bool,
     /// Review line cursor location (unified view only); highlighted when set.
     pub cursor: Option<DiffLineLocation>,
-    /// Diff-line locations that carry a review comment (unified view only).
+    /// Diff-line locations that carry a kept (non-draft) review comment (unified
+    /// view only).
     pub commented: std::collections::HashSet<DiffLineLocation>,
+    /// Diff-line locations covered by an unaccepted AI draft comment (unified
+    /// view only); marked distinctly from `commented`.
+    pub draft: std::collections::HashSet<DiffLineLocation>,
     /// Diff-line locations in the in-progress multi-line selection (unified view
     /// only); the gutter is tinted across the span while the reviewer extends it.
     pub selection: std::collections::HashSet<DiffLineLocation>,
@@ -786,6 +804,7 @@ impl Default for PatchPanelOptions {
             new_file_presentation: false,
             cursor: None,
             commented: std::collections::HashSet::new(),
+            draft: std::collections::HashSet::new(),
             selection: std::collections::HashSet::new(),
         }
     }
@@ -838,6 +857,7 @@ pub(crate) fn draw_patch_panel(
                 options.new_file_presentation,
                 options.cursor,
                 &options.commented,
+                &options.draft,
                 &options.selection,
                 &mut cursor_row,
             );
@@ -997,10 +1017,16 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(2)])
                 .split(area);
-            let title = if comment.is_range() {
-                " comment on these lines (Enter to edit) "
+            let title = match (comment.draft, comment.is_range()) {
+                (true, true) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
+                (true, false) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
+                (false, true) => " comment on these lines (Enter to edit) ",
+                (false, false) => " comment on this line (Enter to edit) ",
+            };
+            let box_color = if comment.draft {
+                theme.warning.to_color()
             } else {
-                " comment on this line (Enter to edit) "
+                theme.info.to_color()
             };
             let preview = Paragraph::new(
                 comment
@@ -1012,11 +1038,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(theme.info.to_color()))
-                    .title(Span::styled(
-                        title,
-                        Style::default().fg(theme.info.to_color()),
-                    )),
+                    .border_style(Style::default().fg(box_color))
+                    .title(Span::styled(title, Style::default().fg(box_color))),
             )
             .wrap(Wrap { trim: false });
             frame.render_widget(preview, chunks[0]);
@@ -1140,6 +1163,11 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         first_line.push(key("w"));
         first_line.push(Span::raw(" gen walkthrough"));
     }
+
+    // Reviewer-triggered AI co-review pass over the current file.
+    first_line.push(Span::raw("  "));
+    first_line.push(key("A"));
+    first_line.push(Span::raw(" AI review"));
 
     // Surface the jump-to-next-undecided affordance only while files still lack
     // a verdict.
@@ -1356,6 +1384,7 @@ fn patch_lines(
     new_file_presentation: bool,
     cursor: Option<DiffLineLocation>,
     commented: &std::collections::HashSet<DiffLineLocation>,
+    draft: &std::collections::HashSet<DiffLineLocation>,
     selection: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
@@ -1385,6 +1414,7 @@ fn patch_lines(
     let annotation = |loc: DiffLineLocation| GutterAnnotation {
         cursor: cursor == Some(loc),
         has_comment: commented.contains(&loc),
+        draft: draft.contains(&loc),
         selected: selection.contains(&loc),
     };
 
@@ -1538,6 +1568,7 @@ fn side_by_side_lines(
             None,
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
     }
@@ -1555,6 +1586,7 @@ fn side_by_side_lines(
             include_prologue,
             false,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &mut None,
@@ -1926,6 +1958,9 @@ fn raw_patch_wrapped_lines(file: &DiffFile, width: usize, theme: &Theme) -> Vec<
 struct GutterAnnotation {
     cursor: bool,
     has_comment: bool,
+    /// Line carries an unaccepted AI draft comment (rendered as a hollow marker
+    /// distinct from a kept comment's filled one).
+    draft: bool,
     selected: bool,
 }
 
@@ -1956,11 +1991,23 @@ fn wrap_gutter_line(
     } else {
         line_number_fg(style, row_bg)
     };
-    let (marker, marker_fg) = match (annotation.cursor, annotation.has_comment) {
-        (true, true) => ("◆ ", theme.warning.to_color()),
-        (true, false) => ("▶ ", theme.warning.to_color()),
-        (false, true) => ("● ", theme.info.to_color()),
-        (false, false) => ("│ ", line_number_fg(style, row_bg)),
+    // A kept comment takes priority over a draft marker when both somehow land on
+    // a line. Drafts read as a hollow circle in the warning colour ("pending
+    // adjudication") vs a kept comment's filled info-coloured dot.
+    let (marker, marker_fg) = if annotation.cursor {
+        if annotation.has_comment {
+            ("◆ ", theme.warning.to_color())
+        } else if annotation.draft {
+            ("◈ ", theme.warning.to_color())
+        } else {
+            ("▶ ", theme.warning.to_color())
+        }
+    } else if annotation.has_comment {
+        ("● ", theme.info.to_color())
+    } else if annotation.draft {
+        ("○ ", theme.warning.to_color())
+    } else {
+        ("│ ", line_number_fg(style, row_bg))
     };
     for (index, chunk_line) in wrapped.into_iter().enumerate() {
         let old_label = if index == 0 {
@@ -2578,6 +2625,7 @@ index 0000000..1111111
             None,
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
         let indented_code_line = &lines[2];
@@ -2648,6 +2696,7 @@ index 0000000..1111111
             false,
             true,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &mut None,
@@ -2728,6 +2777,7 @@ index 0000000..1111111
                 location: loc,
                 start: None,
                 text: "needs a guard\nfor None".to_string(),
+                draft: false,
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
@@ -2748,6 +2798,7 @@ index 0000000..1111111
                 location: loc,
                 start: None,
                 text: body,
+                draft: false,
             }],
         );
         // 20 body lines clamp to 6 visible + 2 border rows.

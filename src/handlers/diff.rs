@@ -141,6 +141,22 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_toggle_range_anchor();
                     return Ok(());
                 }
+                KeyCode::Char('a') => {
+                    // Accept an AI draft under the cursor; otherwise fall through
+                    // to the file-level approve binding below.
+                    if app.diff_review_accept_draft_under_cursor() {
+                        return Ok(());
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if app.diff_review_dismiss_draft_under_cursor() {
+                        return Ok(());
+                    }
+                }
+                KeyCode::Tab => {
+                    app.diff_review_jump_next_draft();
+                    return Ok(());
+                }
                 KeyCode::Enter | KeyCode::Char('C') => {
                     app.diff_review_start_line_comment();
                     return Ok(());
@@ -168,6 +184,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('w') => {
                 app.generate_review_walkthrough();
+                return Ok(());
+            }
+            KeyCode::Char('A') => {
+                app.generate_co_review();
                 return Ok(());
             }
             KeyCode::Char('a') => {

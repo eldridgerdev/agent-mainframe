@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **AI co-reviewer first pass in a final review.** Press `A` to have Claude do
+  a first pass over the file you're looking at and suggest line comments, so you
+  start from a draft instead of a blank diff. Suggestions show up as *draft*
+  comments — a hollow `○` in the gutter (vs the filled `●` of a comment you've
+  kept) — and you adjudicate each one: with the line cursor active (`c`), `a`
+  accepts the draft under the cursor, `d` dismisses it, `Tab` jumps to the next
+  one, and `⏎` opens it to edit (editing also accepts). Drafts you don't accept
+  are ignored — they never reach the feedback file or a posted PR review — but
+  they do survive pausing and resuming a review. It runs only when you ask and
+  only on the current file (with the diff capped), so it stays cheap on tokens.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a

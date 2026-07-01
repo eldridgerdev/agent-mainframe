@@ -89,6 +89,12 @@ are tagged.
 
 ### Changed
 
+- **Readable comment rows in the interactive PR review.** Each row now leads
+  with the **reviewer's name** — bold and in the accent color — so you can scan
+  who left each comment at a glance. Long file paths no longer hide the part
+  that matters: the location is truncated from the *left* with a leading `…`, so
+  the filename and line number stay visible even when the path is too long for
+  the pane (e.g. `@reviewer  …/dialogs/pr_review.rs:123`).
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
   shows the scoped fix before it's injected (press `f` while reviewing PR
   comments, then `e` to edit) is now a full editor instead of a plain text

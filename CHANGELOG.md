@@ -100,6 +100,12 @@ _No unreleased changes yet._
 
 ### Changed
 
+- **Readable comment rows in the interactive PR review.** Each row now leads
+  with the **reviewer's name** — bold and in the accent color — so you can scan
+  who left each comment at a glance. Long file paths no longer hide the part
+  that matters: the location is truncated from the *left* with a leading `…`, so
+  the filename and line number stay visible even when the path is too long for
+  the pane (e.g. `@reviewer  …/dialogs/pr_review.rs:123`).
 - **Feature rows now show total agent usage.** The dashboard feature row shows a
   compact feature-level usage total, while each agent session row and sidebar
   keeps showing only that specific pane's usage. Terminal, editor, custom, and

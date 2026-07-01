@@ -577,12 +577,14 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
         return;
     }
 
+    // Inner width available for row text (block borders take one column each side).
+    let inner_width = area.width.saturating_sub(2) as usize;
     let mut items: Vec<ListItem> = visible
         .iter()
         .map(|&i| {
             let comment = &state.review.comments[i];
             let is_marked = state.marked.contains(&comment.id);
-            ListItem::new(comment_list_line(comment, is_marked, theme))
+            ListItem::new(comment_list_line(comment, is_marked, theme, inner_width))
         })
         .collect();
 
@@ -610,8 +612,14 @@ fn draw_comment_list(frame: &mut Frame, area: Rect, state: &PrReviewState, theme
 }
 
 /// One row in the comment list: a batch-mark dot, a local-triage checkbox, a
-/// resolution marker, location, author, snippet.
-fn comment_list_line<'a>(c: &'a PrComment, is_marked: bool, theme: &Theme) -> Line<'a> {
+/// resolution marker, author, location, snippet. Long paths are truncated from
+/// the left so the filename and line number stay visible when the row is narrow.
+fn comment_list_line<'a>(
+    c: &'a PrComment,
+    is_marked: bool,
+    theme: &Theme,
+    width: usize,
+) -> Line<'a> {
     let marker = if c.is_resolved { "✓" } else { " " };
     // A leading `●` flags comments marked (space) for the `F` batch fix.
     let mark = if is_marked { "●" } else { " " };
@@ -627,29 +635,53 @@ fn comment_list_line<'a>(c: &'a PrComment, is_marked: bool, theme: &Theme) -> Li
         Style::default().fg(theme.text.to_color())
     };
 
+    let mark_span = format!("{mark} ");
+    let triage_span = format!("[{}] ", c.triage.marker());
+    let marker_span = format!("{marker} ");
+    let author_span = format!("@{}  ", c.author);
+
+    // Everything before the location is fixed-width; give the rest to the
+    // location and left-ellipsize so the tail (filename:line) survives.
+    let prefix_width = mark_span.chars().count()
+        + triage_span.chars().count()
+        + marker_span.chars().count()
+        + author_span.chars().count();
+    let location = truncate_left(&location, width.saturating_sub(prefix_width));
+
     Line::from(vec![
+        Span::styled(mark_span, Style::default().fg(theme.warning.to_color())),
         Span::styled(
-            format!("{mark} "),
-            Style::default().fg(theme.warning.to_color()),
-        ),
-        Span::styled(
-            format!("[{}] ", c.triage.marker()),
+            triage_span,
             Style::default().fg(triage_color(c.triage, theme)),
         ),
+        Span::styled(marker_span, Style::default().fg(theme.success.to_color())),
         Span::styled(
-            format!("{marker} "),
-            Style::default().fg(theme.success.to_color()),
+            author_span,
+            Style::default()
+                .fg(theme.primary.to_color())
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(location, location_style),
-        Span::styled(
-            format!("  @{}", c.author),
-            Style::default().fg(theme.secondary.to_color()),
-        ),
         Span::styled(
             format!("  {}", c.snippet),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ])
+}
+
+/// Truncate `s` to at most `max` display columns, keeping the tail and marking
+/// the elision with a leading `…`. Used for file paths so the filename (and its
+/// line number) remain visible when the row is too narrow for the full path.
+fn truncate_left(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let tail: String = s.chars().skip(len - (max - 1)).collect();
+    format!("…{tail}")
 }
 
 /// Render the detail pane for the selected comment and return the number of

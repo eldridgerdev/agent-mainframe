@@ -26,6 +26,11 @@ const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes 
 struct ReviewProgress {
     #[serde(default)]
     decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// Which of `decisions`' rejections were auto-set by a line comment rather
+    /// than explicitly. Defaulted so older progress files load unchanged (their
+    /// rejections simply read as explicit — the conservative direction).
+    #[serde(default)]
+    auto_rejected: std::collections::HashSet<String>,
     #[serde(default)]
     line_comments: std::collections::HashMap<String, Vec<LineComment>>,
     #[serde(default)]
@@ -56,6 +61,12 @@ struct ReviewSnapshot {
     /// file path -> diff fingerprint at the time of the last finished review.
     #[serde(default)]
     files: std::collections::HashMap<String, String>,
+    /// file path -> the verdict that file carried when the round finished, so a
+    /// re-review can restore approvals for files that have not changed since.
+    /// Defaulted so snapshots written before this field load unchanged (no
+    /// carried verdicts, everything simply re-checked).
+    #[serde(default)]
+    decisions: std::collections::HashMap<String, ReviewDecision>,
 }
 
 /// Path of the saved review-snapshot file for a feature workdir.
@@ -131,6 +142,7 @@ impl App {
         }
         let progress = ReviewProgress {
             decisions: state.decisions.clone(),
+            auto_rejected: state.auto_rejected.clone(),
             line_comments: state.line_comments.clone(),
             general_feedback: state.general_feedback.clone(),
             selected_file: state.selected_file,
@@ -166,12 +178,23 @@ impl App {
     /// files changed since (the re-review loop). Best-effort: a write failure is
     /// logged, not surfaced — it only degrades change detection on the next
     /// round. Unlike the progress file, this is *not* cleared on finish.
-    fn save_review_snapshot(&mut self, workdir: &Path, files: &[crate::diff::DiffFile]) {
+    fn save_review_snapshot(
+        &mut self,
+        workdir: &Path,
+        files: &[crate::diff::DiffFile],
+        decisions: &std::collections::HashMap<String, ReviewDecision>,
+    ) {
         let snapshot = ReviewSnapshot {
             reviewed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             files: files
                 .iter()
                 .map(|f| (f.path.clone(), file_fingerprint(f)))
+                .collect(),
+            // Only persist verdicts for files still in the diff, keyed the same
+            // as the fingerprints above.
+            decisions: files
+                .iter()
+                .filter_map(|f| decisions.get(&f.path).map(|d| (f.path.clone(), d.clone())))
                 .collect(),
         };
         let path = review_snapshot_path(workdir);
@@ -216,6 +239,11 @@ impl App {
             .decisions
             .into_iter()
             .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+        state.auto_rejected = progress
+            .auto_rejected
+            .into_iter()
+            .filter(|path| known.contains(path.as_str()))
             .collect();
         state.line_comments = progress
             .line_comments
@@ -268,13 +296,29 @@ impl App {
         let total = state.files.len();
         let changed = state.changed_since_last.len();
         // Only steer a fresh review: leave an in-progress / refreshed review's
-        // filter and selection untouched.
+        // filter and selection untouched. Computed before any carry-over below
+        // so restored approvals don't make the open read as non-pristine.
         let pristine = state.decisions.is_empty()
             && state.line_comments.is_empty()
             && state.general_feedback.is_empty()
             && state.file_filter == FileFilter::All;
         if !pristine {
             return;
+        }
+        // Fresh open of a re-review: carry over approvals for files that have not
+        // changed since the last finished round, so the reviewer resumes from the
+        // saved approved state and only re-checks the changed / rejected files.
+        // Changed files were dropped from `changed_since_last`'s complement, so
+        // their stale approval is deliberately not restored.
+        let carry: Vec<String> = state
+            .files
+            .iter()
+            .filter(|f| !state.changed_since_last.contains(&f.path))
+            .filter(|f| matches!(snapshot.decisions.get(&f.path), Some(ReviewDecision::Approve)))
+            .map(|f| f.path.clone())
+            .collect();
+        for path in carry {
+            state.decisions.insert(path, ReviewDecision::Approve);
         }
         let when = if snapshot.reviewed_at.is_empty() {
             String::new()
@@ -313,6 +357,9 @@ impl App {
                 state
                     .decisions
                     .insert(file.path.clone(), ReviewDecision::Approve);
+                // An explicit verdict wins over (and sticks against) a
+                // rejection auto-set by a line comment.
+                state.auto_rejected.remove(&file.path);
             }
         }
         self.diff_review_advance();
@@ -327,6 +374,10 @@ impl App {
             }
             if let Some(file) = state.files.get(state.selected_file) {
                 state.decisions.remove(&file.path);
+                // An explicit skip clears a comment-implied rejection. A later
+                // comment mutation on the file re-defaults it — a fresh signal
+                // on a file with no verdict.
+                state.auto_rejected.remove(&file.path);
             }
         }
         self.diff_review_advance();
@@ -387,6 +438,49 @@ impl App {
                 cur.saturating_add(delta as usize).min(max)
             };
             state.comment_cursor = Some(next.min(max));
+            state.cursor_sync_to_view = true;
+        }
+    }
+
+    /// Jump the line cursor to the next (`delta > 0`) or previous hunk's first
+    /// line, activating the cursor if it is off (next lands on the first hunk,
+    /// prev on the last). "Previous" picks the largest hunk start strictly below
+    /// the cursor, so from mid-hunk it first snaps back to the current hunk's
+    /// start. The selection anchor is kept, so a `v` range can extend across
+    /// hunks; the patch follows via the cursor sync.
+    pub fn diff_review_jump_hunk(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let starts = file.hunk_start_indices();
+            let (Some(&first), Some(&last)) = (starts.first(), starts.last()) else {
+                self.message = Some("No hunks to jump between".to_string());
+                return;
+            };
+            let target = match state.comment_cursor {
+                None => {
+                    if delta > 0 {
+                        first
+                    } else {
+                        last
+                    }
+                }
+                Some(cur) if delta > 0 => {
+                    match starts.iter().find(|&&idx| idx > cur) {
+                        Some(&next) => next,
+                        None => return, // already in the last hunk
+                    }
+                }
+                Some(cur) => match starts.iter().rev().find(|&&idx| idx < cur) {
+                    Some(&prev) => prev,
+                    None => return, // already at the first hunk's start
+                },
+            };
+            state.comment_cursor = Some(target);
             state.cursor_sync_to_view = true;
         }
     }
@@ -464,6 +558,7 @@ impl App {
     /// comments overlapping the span and clears the selection anchor. Does not
     /// advance the cursor, so a reviewer can keep annotating nearby lines.
     pub fn diff_review_submit_line_comment(&mut self) {
+        let mut commented_path = None;
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.editing_line_comment {
                 return;
@@ -485,6 +580,7 @@ impl App {
                     .get(state.selected_file)
                     .map(|f| f.addressable_lines())
                     .unwrap_or_default();
+                commented_path = Some(path.clone());
                 let comments = state.line_comments.entry(path).or_default();
                 // Carry over a suggested change already attached to the span so
                 // editing the prose doesn't drop it.
@@ -524,7 +620,43 @@ impl App {
             state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
+        if let Some(path) = commented_path {
+            self.diff_review_sync_auto_reject(&path);
+        }
         self.persist_review_progress();
+    }
+
+    /// Reconcile a file's implicit "needs revision" verdict with its kept
+    /// (non-draft) line comments: a commented file is a file that needs work, so
+    /// the first kept comment defaults an undecided file to `Reject` with empty
+    /// feedback (the comments carry the specifics), and removing the last kept
+    /// comment clears a rejection that was auto-set this way. An explicit
+    /// verdict — approve/skip/reject, or a carried-over approval — is never
+    /// overridden. Called after every comment mutation, before the progress
+    /// persist, so what's on disk always reflects the synced verdict.
+    fn diff_review_sync_auto_reject(&mut self, path: &str) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let has_kept = state
+                .line_comments
+                .get(path)
+                .is_some_and(|comments| comments.iter().any(|c| !c.draft));
+            if has_kept {
+                if !state.decisions.contains_key(path) {
+                    state.decisions.insert(
+                        path.to_string(),
+                        ReviewDecision::Reject {
+                            feedback: String::new(),
+                        },
+                    );
+                    state.auto_rejected.insert(path.to_string());
+                }
+            } else if state.auto_rejected.remove(path) {
+                state.decisions.remove(path);
+            }
+        }
     }
 
     /// Open the suggested-change editor for the cursored line(s). Pre-fills the
@@ -589,6 +721,7 @@ impl App {
     /// span (creating a comment with empty prose when none exists). An empty
     /// suggestion clears it — deleting the comment when it also has no prose.
     pub fn diff_review_submit_suggestion(&mut self) {
+        let mut commented_path = None;
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.editing_suggestion {
                 return;
@@ -613,6 +746,7 @@ impl App {
                     .get(state.selected_file)
                     .map(|f| f.addressable_lines())
                     .unwrap_or_default();
+                commented_path = Some(path.clone());
                 let comments = state.line_comments.entry(path).or_default();
                 // Preserve the prose of an existing comment on the span; a fresh
                 // suggestion-only comment carries empty prose.
@@ -648,6 +782,9 @@ impl App {
             state.editing_suggestion = false;
             state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+        if let Some(path) = commented_path {
+            self.diff_review_sync_auto_reject(&path);
         }
         self.persist_review_progress();
     }
@@ -881,8 +1018,9 @@ impl App {
             let Some(file) = state.files.get(state.selected_file) else {
                 return false;
             };
+            let path = file.path.clone();
             let locs = file.addressable_lines();
-            match state.line_comments.get_mut(&file.path).and_then(|comments| {
+            match state.line_comments.get_mut(&path).and_then(|comments| {
                 comments.iter_mut().find(|c| {
                     c.draft
                         && c.covered_indices(&locs)
@@ -891,18 +1029,23 @@ impl App {
             }) {
                 Some(comment) => {
                     comment.draft = false;
-                    true
+                    Some(path)
                 }
-                None => false,
+                None => None,
             }
         } else {
-            false
+            None
         };
-        if acted {
+        if let Some(path) = acted {
             self.message = Some("Draft comment accepted".to_string());
+            // An accepted draft is a human-affirmed finding: it counts toward
+            // the file's implicit "needs revision" verdict like a hand-written
+            // comment.
+            self.diff_review_sync_auto_reject(&path);
             self.persist_review_progress();
+            return true;
         }
-        acted
+        false
     }
 
     /// Dismiss (delete) the AI draft comment under the line cursor. Returns
@@ -915,8 +1058,9 @@ impl App {
             let Some(file) = state.files.get(state.selected_file) else {
                 return false;
             };
+            let path = file.path.clone();
             let locs = file.addressable_lines();
-            match state.line_comments.get_mut(&file.path) {
+            match state.line_comments.get_mut(&path) {
                 Some(comments) => {
                     let before = comments.len();
                     comments.retain(|c| {
@@ -924,18 +1068,22 @@ impl App {
                             && c.covered_indices(&locs)
                                 .is_some_and(|range| range.contains(&cur)))
                     });
-                    comments.len() != before
+                    (comments.len() != before).then_some(path)
                 }
-                None => false,
+                None => None,
             }
         } else {
-            false
+            None
         };
-        if acted {
+        if let Some(path) = acted {
             self.message = Some("Draft comment dismissed".to_string());
+            // Dismissing a draft can't add a kept comment, but the sync keeps
+            // every comment-mutation path uniform.
+            self.diff_review_sync_auto_reject(&path);
             self.persist_review_progress();
+            return true;
         }
-        acted
+        false
     }
 
     /// Move the line cursor to the next draft comment in the current file
@@ -1051,6 +1199,9 @@ impl App {
                 state
                     .decisions
                     .insert(file.path.clone(), ReviewDecision::Reject { feedback });
+                // The reviewer typed this rejection themselves: it is explicit
+                // now and no longer tracks the file's comments.
+                state.auto_rejected.remove(&file.path);
             }
             state.feedback_editing = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
@@ -1270,7 +1421,7 @@ impl App {
         // …but record a fingerprint of what was reviewed (even an all-approved
         // round) so the next review can flag files that changed since.
         if !files.is_empty() {
-            self.save_review_snapshot(&workdir, &files);
+            self.save_review_snapshot(&workdir, &files, &decisions);
         }
 
         let total = files.len();
@@ -1354,7 +1505,16 @@ impl App {
                 for (file, feedback) in &rejected {
                     round.push_str(&format!("#### {file}\n\n"));
                     if feedback.is_empty() {
-                        round.push_str("(No feedback provided — needs revision)\n\n");
+                        // For a rejection implied by line comments the comments
+                        // are the feedback — send the agent there instead of
+                        // reporting a missing rationale.
+                        if line_comment_sections.iter().any(|(path, _)| path == file) {
+                            round.push_str(
+                                "(Needs revision — see this file's line comments below)\n\n",
+                            );
+                        } else {
+                            round.push_str("(No feedback provided — needs revision)\n\n");
+                        }
                     } else {
                         round.push_str(feedback);
                         round.push_str("\n\n");

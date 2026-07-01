@@ -237,7 +237,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     " normal  "
                 },
             ),
-            Span::styled("Ctrl+V", key_style()),
+            Span::styled("Ctrl+T", key_style()),
             Span::raw(if state.editor.vim_mode().is_some() {
                 " vim off  "
             } else {

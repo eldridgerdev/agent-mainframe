@@ -314,7 +314,7 @@ pub fn handle_steering_prompt_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v') {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
         if let AppMode::SteeringPrompt(state) = &mut app.mode {
             state.editor.toggle_vim();
             app.message = Some(if state.editor.vim_mode().is_some() {
@@ -725,13 +725,13 @@ mod tests {
     }
 
     #[test]
-    fn steering_prompt_ctrl_v_toggles_vim_mode() {
+    fn steering_prompt_ctrl_t_toggles_vim_mode() {
         let repo = TempDir::new().unwrap();
         let mut app = steering_app(repo.path(), "draft");
 
         handle_steering_prompt_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
         )
         .unwrap();
 
@@ -745,7 +745,7 @@ mod tests {
 
         handle_steering_prompt_key(
             &mut app,
-            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
         )
         .unwrap();
 

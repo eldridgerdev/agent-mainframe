@@ -300,7 +300,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
 
 /// Drive the multi-line feedback editor (per-file rejection or general
 /// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
-/// Ctrl+V toggles vim, and Ctrl+J/K plus PgUp/PgDn scroll the editor.
+/// Ctrl+T toggles vim, and Ctrl+J/K plus PgUp/PgDn scroll the editor.
 fn handle_feedback_editor_key(
     app: &mut App,
     key: KeyEvent,
@@ -312,7 +312,7 @@ fn handle_feedback_editor_key(
         app.diff_review_cancel_feedback();
         return Ok(());
     }
-    if ctrl && key.code == KeyCode::Char('v') {
+    if ctrl && key.code == KeyCode::Char('t') {
         if let AppMode::DiffViewer(state) = &mut app.mode {
             state.feedback_editor.toggle_vim();
         }

@@ -59,6 +59,15 @@ are tagged.
 
 ### Fixed
 
+- **Notification hook scripts are written atomically.** AMF rewrites its
+  helper hook scripts (`tool-start.sh`, `notify.sh`, and friends) under
+  `~/.config/amf` on startup. Those writes happened in place, so if a script
+  changed (e.g. after an upgrade) at the moment the agent harness was executing
+  it, the shell could read a half-rewritten file and fail with a spurious
+  syntax error — which surfaced as a hook error blocking a tool call. AMF now
+  stages each script in a temp file and renames it into place, so a running
+  hook always sees a complete file (old or new, never a mix).
+
 - **PR-comment triage marks no longer vanish after the agent pushes a fix.**
   When reviewing PR comments, marking a comment done/skipped, injecting a fix,
   or posting a reply records local triage state — but that state was keyed by

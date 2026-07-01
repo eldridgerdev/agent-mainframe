@@ -31,7 +31,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     let editing_feedback = matches!(
         &app.mode,
         AppMode::DiffViewer(state)
-            if state.feedback_editing || state.editing_general || state.editing_line_comment
+            if state.feedback_editing
+                || state.editing_general
+                || state.editing_line_comment
+                || state.editing_suggestion
     );
 
     // While typing feedback (per-file rejection or general) the keys drive a
@@ -159,6 +162,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 }
                 KeyCode::Enter | KeyCode::Char('C') => {
                     app.diff_review_start_line_comment();
+                    return Ok(());
+                }
+                KeyCode::Char('S') => {
+                    app.diff_review_start_suggestion();
                     return Ok(());
                 }
                 KeyCode::Esc | KeyCode::Char('c') => {
@@ -367,10 +374,13 @@ fn handle_feedback_editor_key(
 
     let editing_line_comment =
         matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_line_comment);
+    let editing_suggestion =
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_suggestion);
 
     match key.code {
         KeyCode::Tab if editing_general => app.diff_review_submit_general_feedback(),
         KeyCode::Tab if editing_line_comment => app.diff_review_submit_line_comment(),
+        KeyCode::Tab if editing_suggestion => app.diff_review_submit_suggestion(),
         KeyCode::Tab => app.diff_review_submit_feedback(),
         KeyCode::Esc
             if matches!(
@@ -943,6 +953,113 @@ mod tests {
         assert!(feedback.contains("bug here"));
         assert!(feedback.contains("**Line comments:** 1"));
         assert!(matches!(app.mode, AppMode::Viewing(_)));
+    }
+
+    #[test]
+    fn suggestion_prefills_line_and_writes_suggestion_block() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Activate the cursor (on the added line), open the suggestion editor with
+        // `S`: it pre-fills with the line's current text (prefix stripped).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.editing_suggestion);
+                assert_eq!(state.feedback_editor.text(), "added line");
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // Replace the text and submit with Tab: a suggestion-only comment is
+        // stored (empty prose).
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor = crate::editor::TextEditor::new("replaced line".to_string());
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.editing_suggestion);
+                let comments = state.line_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comments.len(), 1);
+                assert_eq!(comments[0].text, "");
+                assert_eq!(comments[0].suggestion.as_deref(), Some("replaced line"));
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // Finishing writes the suggestion as a fenced block in the feedback file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        let feedback =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(feedback.contains("### a.rs:2"));
+        assert!(feedback.contains("```suggestion\nreplaced line\n```"));
+    }
+
+    #[test]
+    fn emptying_a_suggestion_only_comment_deletes_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Create a suggestion-only comment.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor = crate::editor::TextEditor::new("x".to_string());
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(s) if s.line_comments.get("a.rs").is_some_and(|c| c.len() == 1)
+        ));
+
+        // Re-open the suggestion and clear it: the prose-less comment is removed.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.line_comments.get("a.rs").is_none_or(|c| c.is_empty()));
+            }
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn suggestion_preserves_existing_comment_prose() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Write a prose comment first.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for ch in "prose".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(ch))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // Now add a suggestion on the same line: the prose survives.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('S'))).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.feedback_editor = crate::editor::TextEditor::new("newcode".to_string());
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                let comments = state.line_comments.get("a.rs").expect("comment stored");
+                assert_eq!(comments.len(), 1);
+                assert_eq!(comments[0].text, "prose");
+                assert_eq!(comments[0].suggestion.as_deref(), Some("newcode"));
+            }
+            _ => panic!("expected diff viewer"),
+        }
     }
 
     /// Give the review app's single file a hunk with two added lines (plus a

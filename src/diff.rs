@@ -87,6 +87,24 @@ impl DiffFile {
         }
         out
     }
+
+    /// The content of each addressable line, in the same order (and 1:1) as
+    /// `addressable_lines()`, with the single-char diff prefix (`+`/`-`/space)
+    /// stripped. Used to pre-fill a suggested-change editor with the current
+    /// text of the line(s) a comment covers.
+    pub fn addressable_line_texts(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for hunk in &self.hunks {
+            for line in &hunk.lines {
+                if matches!(line.kind, DiffLineKind::NoNewlineMarker) {
+                    continue;
+                }
+                // The prefix byte is ASCII, so slicing at 1 is a valid boundary.
+                out.push(line.text.get(1..).unwrap_or("").to_string());
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

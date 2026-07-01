@@ -326,27 +326,64 @@ fn cleanup_claude_settings_file(path: &Path, state_path: Option<&Path>) {
     }
 }
 
+/// Atomically write `content` to `path`: stage it in a temp file in the same
+/// directory (so the final `rename` stays on one filesystem and is atomic),
+/// optionally set its mode, then rename over the target.
+///
+/// This matters because these files are hook scripts that the agent harness
+/// executes. A plain in-place `fs::write` truncates and rewrites the *same*
+/// inode, so a shell that is mid-execution reading the script can observe a
+/// half-rewritten file and fail with a spurious syntax error. Renaming a fully
+/// written temp over the target means a running hook keeps reading the complete
+/// old inode while new runs pick up the complete new one — never a mix.
+fn write_atomic(path: &Path, content: &str, mode: Option<u32>) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("script");
+    let tmp = dir.join(format!(".{file_name}.tmp.{}", std::process::id()));
+
+    let write_result = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        std::fs::rename(&tmp, path)
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    write_result
+}
+
 /// Write `content` to `path` only when the on-disk content differs.
 /// Avoids unnecessary write syscalls when the file is already up to date,
 /// which matters because `ensure_notify_scripts` is called once per feature
-/// on startup.
+/// on startup. The write itself is atomic (see `write_atomic`).
 fn write_if_changed(path: &Path, content: &str) {
     if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
         return;
     }
-    let _ = std::fs::write(path, content);
+    let _ = write_atomic(path, content, None);
 }
 
 /// Same as `write_if_changed` but also ensures the file is executable.
 /// Permissions are only set when the file content was actually rewritten.
 #[cfg(unix)]
 fn write_executable_if_changed(path: &Path, content: &str) {
-    use std::os::unix::fs::PermissionsExt;
     if std::fs::read_to_string(path).ok().as_deref() == Some(content) {
         return;
     }
-    let _ = std::fs::write(path, content);
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    let _ = write_atomic(path, content, Some(0o755));
 }
 
 #[cfg(not(unix))]
@@ -1113,5 +1150,75 @@ pub fn ensure_review_claude_md(workdir: &Path, enabled: bool) {
         } else {
             let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The staged temp file must not be left behind after a successful write —
+    /// a lingering `.name.tmp.<pid>` would clutter the config dir.
+    fn temp_files_in(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.contains(".tmp."))
+            .collect()
+    }
+
+    #[test]
+    fn write_atomic_writes_content_and_leaves_no_temp() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.sh");
+
+        write_atomic(&path, "echo hi\n", None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "echo hi\n");
+        assert!(
+            temp_files_in(dir.path()).is_empty(),
+            "no staging temp file should remain"
+        );
+    }
+
+    #[test]
+    fn write_atomic_replaces_existing_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.sh");
+        std::fs::write(&path, "old\n").unwrap();
+
+        write_atomic(&path, "new\n", None).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_sets_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.sh");
+
+        write_atomic(&path, "#!/bin/sh\n", Some(0o755)).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    #[test]
+    fn write_executable_if_changed_skips_when_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hook.sh");
+        write_executable_if_changed(&path, "same\n");
+        let first = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        // A second call with identical content must not rewrite the file.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_executable_if_changed(&path, "same\n");
+        let second = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        assert_eq!(first, second, "unchanged content should not be rewritten");
     }
 }

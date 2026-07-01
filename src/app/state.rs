@@ -377,6 +377,12 @@ pub struct DiffViewerState {
     pub review: bool,
     /// File path -> verdict. Skipped files have no entry.
     pub decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// Paths whose `Reject` entry in `decisions` was defaulted by storing a
+    /// kept line comment (a commented file implicitly needs revision) rather
+    /// than set explicitly. Removing the file's last kept comment clears an
+    /// auto-set rejection; an explicit approve/skip/reject drops the path from
+    /// this set so the reviewer's verdict sticks.
+    pub auto_rejected: std::collections::HashSet<String>,
     /// File path -> line-level comments anchored to specific diff lines.
     pub line_comments: std::collections::HashMap<String, Vec<LineComment>>,
     /// Active line-comment cursor: index into the current file's
@@ -477,6 +483,7 @@ impl DiffViewerState {
             error: None,
             review: false,
             decisions: std::collections::HashMap::new(),
+            auto_rejected: std::collections::HashSet::new(),
             line_comments: std::collections::HashMap::new(),
             comment_cursor: None,
             comment_anchor: None,

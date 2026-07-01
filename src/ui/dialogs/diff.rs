@@ -1014,6 +1014,10 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw("/"),
             key("k"),
             Span::raw(" move  "),
+            key("["),
+            Span::raw("/"),
+            key("]"),
+            Span::raw(" hunk  "),
             key("v"),
             Span::raw(if state.comment_anchor.is_some() {
                 " clear range  "

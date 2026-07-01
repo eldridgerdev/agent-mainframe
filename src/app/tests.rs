@@ -8209,6 +8209,88 @@ fn final_review_progress_persists_and_resumes() {
 }
 
 #[test]
+fn comment_auto_reject_survives_pause_and_resume() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // One commentable hunk on src/a.rs: a context line and an added line.
+    let hunk = crate::diff::DiffHunk {
+        header: "@@ -1,1 +1,2 @@".into(),
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        lines: vec![
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Context,
+                text: " ctx".into(),
+            },
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Added,
+                text: "+added".into(),
+            },
+        ],
+    };
+
+    // Comment the added line: the file auto-rejects and progress persists.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk.clone()];
+        state.comment_cursor = Some(1);
+        state.editing_line_comment = true;
+        state.feedback_editor = crate::editor::TextEditor::new("bug".into());
+    }
+    app.diff_review_submit_line_comment();
+
+    // Reopen the review fresh and restore: the verdict comes back still marked
+    // as comment-implied, not explicit.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk];
+    }
+    app.restore_review_progress();
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert_eq!(
+                state.decisions.get("src/a.rs"),
+                Some(&ReviewDecision::Reject {
+                    feedback: String::new()
+                })
+            );
+            assert!(state.auto_rejected.contains("src/a.rs"));
+        }
+        _ => panic!("expected diff viewer after restore"),
+    }
+
+    // Deleting the restored comment (empty re-submit) still clears the
+    // implicit verdict — the distinction survived the round-trip.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(1);
+        state.editing_line_comment = true;
+        state.feedback_editor = crate::editor::TextEditor::new(String::new());
+    }
+    app.diff_review_submit_line_comment();
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.decisions.is_empty());
+            assert!(state.auto_rejected.is_empty());
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
 fn restore_review_progress_skips_when_decisions_present() {
     let workdir = TempDir::new().unwrap();
     let mut app = App::new_for_test(
@@ -8352,6 +8434,63 @@ fn re_review_no_changes_keeps_all_filter() {
                 FileFilter::All,
                 "an unchanged re-review leaves the filter untouched"
             );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn re_review_carries_approvals_for_unchanged_files() {
+    use crate::app::FileFilter;
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Round 1: approve src/a.rs, reject src/b.rs, and finish. The snapshot now
+    // records a.rs=Approve and b.rs=Reject.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.diff_review_approve_current();
+    app.diff_review_start_feedback();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.feedback_editor = crate::editor::TextEditor::new("fix this".into());
+    }
+    app.diff_review_submit_feedback();
+    app.finish_final_review().unwrap();
+
+    // Round 2: the fix landed, so b.rs's diff changed; a.rs is untouched.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[1].patch = "@@ -1 +1 @@\n-old\n+new".into();
+    }
+    app.apply_review_snapshot_diff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            // The unchanged, previously-approved file keeps its verdict — the
+            // reviewer resumes from the saved approved state.
+            assert_eq!(
+                state.decisions.get("src/a.rs"),
+                Some(&ReviewDecision::Approve),
+                "an unchanged approved file carries its approval into the re-review"
+            );
+            // The changed (and previously rejected) file is reset for a fresh
+            // look, and the review narrows onto it.
+            assert!(
+                !state.decisions.contains_key("src/b.rs"),
+                "a changed file does not carry a stale verdict"
+            );
+            assert_eq!(state.file_filter, FileFilter::Changed);
+            assert_eq!(state.selected_file, 1);
         }
         _ => panic!("expected diff viewer"),
     }

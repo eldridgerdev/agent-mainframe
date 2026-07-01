@@ -35,6 +35,22 @@ _No unreleased changes yet._
   instead of interpreting prose — and, when you have PR posting on, it's
   appended to the inline PR comment as a GitHub suggestion so it's
   one-click-appliable on the pull request.
+- **Jump between hunks while commenting in a final review.** With the line
+  cursor active (`c`), press `]` / `[` to jump straight to the next / previous
+  hunk instead of holding `j`/`k` through a long file — handy for skimming a big
+  diff change-by-change. If the cursor is off, the first press turns it on (`]`
+  on the first hunk, `[` on the last), and from the middle of a hunk `[` snaps to
+  that hunk's top first. A range you're marking with `v` carries across the jump,
+  so you can still select a span that spans hunks.
+- **A line comment now flags its file as needing work.** Leaving a comment (or a
+  suggested change) on a file in a final review is itself a signal the file
+  isn't done, so AMF now marks that file "needs revision" for you — no separate
+  reject step, and the comments themselves stand in as the reason. Your own call
+  always wins: explicitly approving, skipping, or rejecting a file overrides the
+  automatic mark and sticks, and clearing a file's last comment clears an
+  automatic mark again. Accepting an AI draft comment counts the same as writing
+  one; dismissing a draft doesn't. The distinction is remembered if you pause and
+  resume a review.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a

@@ -1,8 +1,8 @@
 # Feature TODOs
 
-- **Status:** Partial — Epics 1–4 shipped (persistence, session kind,
-  native view, editing). Epic 5 (spawn agent from a TODO) and Epic 6
-  (quick-capture, keybinding/help wiring, docs) remain.
+- **Status:** Partial — Epics 1–5 shipped (persistence, session kind,
+  native view, editing, spawn agent from a TODO). Epic 6 (quick-capture,
+  keybinding/help wiring, docs) remains.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -215,14 +215,18 @@ project/feature is deleted (extend the existing delete paths).
 
 ### Epic 5 — Spawn agent from a TODO
 
-- [ ] `g`/`Enter` creates a new agent-harness session in the host
+- [x] `g`/`Enter` creates a new agent-harness session in the host
       feature (inheriting its agent/vibe/plan settings) and switches to
       it. If the TODO already links a live session, jump to it and add
-      onto it instead of creating a second.
-- [ ] Seed composer (editable, not submitted) with the generated prompt
-      from title + body.
-- [ ] Record `spawned_session_id`; show "launched" marker and allow
-      jump-back to that session.
+      onto it instead of creating a second. (`todos_spawn_agent` resolves
+      the host feature from `list.feature_id`; the launch reuses a new
+      generic `create_agent_session_labeled` extracted from the PR-review
+      session path, running the host feature's `agent` + mode/flags.)
+- [x] Seed composer (editable, not submitted) with the generated prompt
+      from title + body (`todo_spawn_prompt` → `open_compose_seeded`).
+- [x] Record `spawned_session_id`; show "launched" marker (green ▸ /
+      nerd-font icon in the row) and allow jump-back — the reuse path
+      jumps to the linked live session when `g`/`Enter` is pressed again.
 
 ### Epic 6 — Quick-capture & polish
 

@@ -656,6 +656,23 @@ impl App {
         label: &str,
         harness: Option<AgentKind>,
     ) -> Result<usize> {
+        self.create_agent_session_labeled(pi, fi, label, harness)
+    }
+
+    /// Create an agent-harness session in `(pi, fi)` with a caller-provided
+    /// `label`, running `harness` (or the project's preferred agent when
+    /// `None`) with the feature's mode/flags — the same launch path a
+    /// picker-launched agent session uses. Unlike the picker path this leaves
+    /// `self.selection` and `self.message` untouched, so callers can route the
+    /// new session wherever they need. Returns the new session's index in
+    /// `feature.sessions`.
+    pub(crate) fn create_agent_session_labeled(
+        &mut self,
+        pi: usize,
+        fi: usize,
+        label: &str,
+        harness: Option<AgentKind>,
+    ) -> Result<usize> {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let repo = self.store.projects[pi].repo.clone();

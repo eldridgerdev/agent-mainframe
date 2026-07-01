@@ -183,6 +183,13 @@ fn todo_line<'a>(
         _ => "",
     };
 
+    // Marker for a TODO that has launched an agent session.
+    let launched_indicator = if todo.spawned_session_id.is_some() {
+        if nerd_font { "  \u{f135}" } else { "  ▸" }
+    } else {
+        ""
+    };
+
     let mut spans = vec![
         Span::styled(
             cursor,
@@ -210,12 +217,18 @@ fn todo_line<'a>(
             Style::default().fg(theme.text_muted.to_color()),
         ));
     }
+    if !launched_indicator.is_empty() {
+        spans.push(Span::styled(
+            launched_indicator,
+            Style::default().fg(theme.success.to_color()),
+        ));
+    }
     Line::from(spans)
 }
 
 fn draw_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
     let hint = Line::from(vec![Span::styled(
-        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  b banner  d del  Esc/q close",
+        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g agent  b banner  d del  Esc/q close",
         Style::default().fg(theme.text_muted.to_color()),
     )]);
     frame.render_widget(Paragraph::new(hint), area);

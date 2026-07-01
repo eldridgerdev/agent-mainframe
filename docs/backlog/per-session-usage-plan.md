@@ -141,6 +141,8 @@ behaviorally secondary.
   the same feature when there are multiple plausible provider sessions.
 - [x] Prefer unmatched provider sessions closest to each
   `FeatureSession.created_at`.
+- [x] For Codex, ignore inferred sources updated before the AMF session was
+  created, and clear any stale inferred Codex binding on refresh.
 - [ ] Keep `TokenUsageSourceMatch::Inferred` visible for Codex and extend
   confidence text to other providers if useful.
 - [x] Replace an inferred source with an exact source as soon as an exact
@@ -158,15 +160,15 @@ Acceptance criteria:
 
 Goal: show feature usage only on the feature row.
 
-- [ ] Extend sync results or app state with raw `SessionTokenUsage` per
+- [x] Extend sync results or app state with raw `SessionTokenUsage` per
   `FeatureSession`, not only formatted `status_text`.
-- [ ] Add an aggregation helper that sums agent-harness sessions per
+- [x] Add an aggregation helper that sums agent-harness sessions per
   feature.
-- [ ] Format the aggregate compactly for the dashboard feature row.
-- [ ] Render the aggregate next to the feature name in `src/ui/list.rs`,
+- [x] Format the aggregate compactly for the dashboard feature row.
+- [x] Render the aggregate next to the feature name in `src/ui/list.rs`,
   before mode/review/plan badges.
-- [ ] Exclude Terminal, Nvim, VSCode, Custom, and unsupported Pi sessions.
-- [ ] Add UI tests/snapshots for feature rows with zero, one, and multiple
+- [x] Exclude Terminal, Nvim, VSCode, Custom, and unsupported Pi sessions.
+- [x] Add UI tests/snapshots for feature rows with zero, one, and multiple
   agent usage sources.
 
 Acceptance criteria:
@@ -179,14 +181,14 @@ Acceptance criteria:
 
 Goal: make the scope obvious in every visible location.
 
-- [ ] Confirm sidebar builders always select the session matching
+- [x] Confirm sidebar builders always select the session matching
   `ViewState.window` before falling back to same-kind sessions.
-- [ ] Keep sidebar usage derived from the selected `FeatureSession` only.
+- [x] Keep sidebar usage derived from the selected `FeatureSession` only.
 - [ ] Decide whether session-row usage stays on its current second line or
   moves beside the harness label.
 - [ ] If moved inline, add truncation/width handling so long cost strings
   do not crowd labels.
-- [ ] Add tests for switching between two agent windows with different
+- [x] Add tests for switching between two agent windows with different
   usage values.
 
 Acceptance criteria:

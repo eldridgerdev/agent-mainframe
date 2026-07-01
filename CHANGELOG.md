@@ -86,9 +86,18 @@ are tagged.
   workdir/timestamp matching, it no longer assigns the same inferred provider
   session to multiple same-harness panes in one feature; unmatched sessions stay
   unbound until a better match or exact provider event appears.
+- **New Codex panes no longer inherit old usage.** A newly created Codex pane
+  could briefly show a large cost from an older Codex thread in the same
+  worktree before Codex emitted its exact session identity. AMF now ignores
+  stale inferred Codex sources and clears any older bad inferred binding on the
+  next refresh, so new panes stay blank until their own usage is known.
 
 ### Changed
 
+- **Feature rows now show total agent usage.** The dashboard feature row shows a
+  compact feature-level usage total, while each agent session row and sidebar
+  keeps showing only that specific pane's usage. Terminal, editor, custom, and
+  unsupported Pi sessions are excluded from the feature total.
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
   shows the scoped fix before it's injected (press `f` while reviewing PR
   comments, then `e` to edit) is now a full editor instead of a plain text
@@ -111,7 +120,8 @@ are tagged.
 ### Migration
 
 - No migration is required. Existing inferred usage sources can be replaced
-  automatically when the next exact provider event arrives.
+  automatically when the next exact provider event arrives, and stale inferred
+  Codex usage is cleared on refresh.
 
 ## [v0.28.0] - 2026-06-29
 

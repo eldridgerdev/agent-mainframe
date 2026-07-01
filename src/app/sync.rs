@@ -3,8 +3,8 @@ use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
 use crate::token_tracking::{
-    SessionTokenTracker, TokenPricingConfig, TokenUsageProvider, TokenUsageSource,
-    format_token_usage, provider_for_session_kind,
+    SessionTokenTracker, SessionTokenUsage, TokenPricingConfig, TokenUsageProvider,
+    TokenUsageSource, format_token_usage, provider_for_session_kind,
 };
 
 use chrono::Utc;
@@ -92,6 +92,7 @@ struct SessionStatusUpdate {
     session_id: String,
     source_action: SourceAction,
     status_text: Option<String>,
+    token_usage: Option<SessionTokenUsage>,
 }
 
 pub(crate) struct SessionStatusBgResult {
@@ -144,6 +145,7 @@ fn run_jobs(
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: job.custom_status_text,
+                token_usage: None,
             });
             continue;
         }
@@ -153,6 +155,7 @@ fn run_jobs(
                 session_id: job.session_id,
                 source_action: SourceAction::NoChange,
                 status_text: None,
+                token_usage: None,
             });
             continue;
         };
@@ -186,6 +189,18 @@ fn run_jobs(
             sources_discovered = true;
         }
 
+        if let Some(existing) = source.as_ref()
+            && job.existing_source_match == Some(TokenUsageSourceMatch::Inferred)
+            && existing.provider == TokenUsageProvider::Codex
+            && tracker
+                .source_updated_at_seconds(existing, &job.workdir)
+                .is_some_and(|updated| updated < job.created_at.timestamp())
+        {
+            source = None;
+            action = SourceAction::Clear;
+            sources_discovered = true;
+        }
+
         if let Some(existing) = source.as_ref() {
             let key = (
                 job.feature_id.clone(),
@@ -212,14 +227,12 @@ fn run_jobs(
                 })
                 .map(|(_, _, id)| id.clone())
                 .collect::<HashSet<_>>();
-            if let Some(new_source) =
-                tracker.discover_source_excluding(
-                    &job.kind,
-                    &job.workdir,
-                    job.created_at,
-                    &excluded_ids,
-                )
-            {
+            if let Some(new_source) = tracker.discover_source_excluding(
+                &job.kind,
+                &job.workdir,
+                job.created_at,
+                &excluded_ids,
+            ) {
                 reserved_sources.insert((
                     job.feature_id.clone(),
                     new_source.provider.clone(),
@@ -231,15 +244,18 @@ fn run_jobs(
             }
         }
 
-        let status_text = source
+        let token_usage = source
             .as_ref()
-            .and_then(|src| tracker.read_usage(src, &job.workdir))
-            .map(|usage| format_token_usage(&usage, pricing));
+            .and_then(|src| tracker.read_usage(src, &job.workdir));
+        let status_text = token_usage
+            .as_ref()
+            .map(|usage| format_token_usage(usage, pricing));
 
         updates.push(SessionStatusUpdate {
             session_id: job.session_id,
             source_action: action,
             status_text,
+            token_usage,
         });
     }
 
@@ -271,6 +287,7 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
                         SourceAction::NoChange => {}
                     }
                     session.status_text = update.status_text;
+                    session.token_usage = update.token_usage;
                     break 'outer;
                 }
             }
@@ -430,11 +447,13 @@ impl App {
                             &feature.workdir,
                             self.db.as_ref(),
                         );
+                        session.token_usage = None;
                         continue;
                     }
 
                     let Some(expected_provider) = provider_for_session_kind(&session.kind) else {
                         session.status_text = None;
+                        session.token_usage = None;
                         continue;
                     };
 
@@ -455,6 +474,17 @@ impl App {
                         .token_usage_source
                         .as_ref()
                         .is_some_and(|source| source.provider != expected_provider)
+                    {
+                        session.clear_token_usage_source();
+                        discovered_sources = true;
+                    }
+
+                    if let Some(source) = session.token_usage_source.as_ref()
+                        && session.token_usage_source_match == Some(TokenUsageSourceMatch::Inferred)
+                        && source.provider == TokenUsageProvider::Codex
+                        && tracker
+                            .source_updated_at_seconds(source, &feature.workdir)
+                            .is_some_and(|updated| updated < session.created_at.timestamp())
                     {
                         session.clear_token_usage_source();
                         discovered_sources = true;
@@ -490,11 +520,14 @@ impl App {
                         }
                     }
 
-                    session.status_text = session
+                    session.token_usage = session
                         .token_usage_source
                         .as_ref()
-                        .and_then(|source| tracker.read_usage(source, &feature.workdir))
-                        .map(|usage| format_token_usage(&usage, &pricing));
+                        .and_then(|source| tracker.read_usage(source, &feature.workdir));
+                    session.status_text = session
+                        .token_usage
+                        .as_ref()
+                        .map(|usage| format_token_usage(usage, &pricing));
                 }
             }
         }

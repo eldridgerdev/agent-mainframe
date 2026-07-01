@@ -331,6 +331,7 @@ fn sync_feature_agent_sessions(feature: &mut Feature, next_agent: &AgentKind) {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         };
         feature.sessions.insert(0, session);
         return;

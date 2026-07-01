@@ -1,8 +1,9 @@
 # Feature TODOs
 
 - **Status:** Partial — Epics 1–5 shipped (persistence, session kind,
-  native view, editing, spawn agent from a TODO). Epic 6 (quick-capture,
-  keybinding/help wiring, docs) remains.
+  native view, editing, spawn agent from a TODO). Epic 6 in progress:
+  quick-capture (with auto-create) and the scratchpad relabel done;
+  keybinding/help wiring and docs remain.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -230,22 +231,33 @@ project/feature is deleted (extend the existing delete paths).
 
 ### Epic 6 — Quick-capture & polish
 
-- [ ] View-mode keystroke to append a TODO to the project list.
-- [ ] When no TODOS session exists yet, auto-create the list + session
-      under the current feature, then append.
-- [ ] Generalize the "left off here" carry-over banner into a generic
-      list-level **notes** section. The `todo_lists.carry_over` column
-      already holds free-form text; this is mostly a relabel + framing
-      change so the box reads as general scratch space for the list
-      (context, links, reminders) rather than only "where I left off".
-      - Rename the banner title (e.g. "Notes") and the `b` edit hint;
-        keep `b` as the edit key. Multi-line is already supported.
-      - Optionally rename the `carry_over` field/column to `notes` (or
-        keep the column name and only change the UI labels to avoid a
-        migration). Decide before implementing.
-      - Update `TodoEditTarget::CarryOver` / `todos_set_carry_over` and
-        the `set_todo_carry_over` DB method names to match the chosen
-        wording.
+- [x] View-mode keystroke to append a TODO to the project list. Bound to
+      leader `N` ("New TODO") in the embedded session view — `t`/`T` were
+      already session-cycling. Opens a one-line
+      `AppMode::TodoQuickCapture` overlay (`open_todo_quick_capture`,
+      `handlers/todos.rs::handle_todo_quick_capture_key`,
+      `ui/dialogs/todos.rs::draw_todo_quick_capture_dialog`); Enter appends,
+      Esc cancels, empty title is a no-op.
+- [x] When no TODOS session exists yet, auto-create the list + session
+      under the current feature, then append
+      (`quick_capture_todo` reuses `add_todos_session_for_picker`, a no-op
+      when the project already has a TODOs session, then
+      `load_or_create_todo_list` + `add_todo`). Works DB-less (tests): the
+      session is created in memory; persistence is skipped without a DB.
+- [x] Generalize the "left off here" carry-over banner into a generic
+      list-level **scratchpad** section. Decisions: labeled **"Scratchpad"**
+      (per-item body is already "notes", so "Notes" would collide); `b` stays
+      the edit key, hint reads `b scratch`; multi-line already supported.
+      - **DB column kept as `carry_over`** — no migration. The persistence
+        layer (`TodoList.carry_over` field, `set_carry_over` /
+        `set_todo_carry_over` methods, SQL column) is unchanged; only the
+        app/UI surface is renamed.
+      - App/UI renames: `TodoEditTarget::CarryOver` → `Scratchpad`,
+        `todos_begin_edit_carry_over` → `todos_begin_edit_scratchpad`,
+        `todos_set_carry_over` → `todos_set_scratchpad`,
+        `draw_carry_over` → `draw_scratchpad`; banner/editor titles
+        "Left off here" → "Scratchpad". A bridging comment notes the legacy
+        column name. Test renamed to `todos_edit_scratchpad_banner`.
 - [ ] Wire keys into `keybindings.json` / config wizard and help
       overlay (`ui/dialogs/help.rs`).
 - [ ] Update `CLAUDE.md` architecture notes and `CHANGELOG.md`.

@@ -7,14 +7,54 @@ use ratatui::{
 };
 
 use super::super::dashboard::centered_rect;
-use crate::app::{TodoEditTarget, TodoEditor, TodoViewState};
+use crate::app::{TodoEditTarget, TodoEditor, TodoQuickCaptureState, TodoViewState};
 use crate::db::todos::{Todo, TodoPriority};
 use crate::theme::Theme;
 
 const CURSOR: &str = "\u{2588}";
 
-/// Full-screen native TODOs overlay: a "left off here" carry-over banner on
-/// top, then the project's TODO items.
+/// One-line quick-capture dialog overlaid on a session view. Collects a TODO
+/// title to append to the current project's list.
+pub fn draw_todo_quick_capture_dialog(
+    frame: &mut Frame,
+    state: &TodoQuickCaptureState,
+    theme: &Theme,
+) {
+    let area = centered_rect(60, 22, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(format!(" New TODO · {} ", state.project_name))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
+
+    let input = Paragraph::new(Line::from(vec![
+        Span::styled(" Title: ", Style::default().fg(theme.primary.to_color())),
+        Span::styled(&state.input, Style::default().fg(theme.text.to_color())),
+        Span::styled(CURSOR, Style::default().fg(theme.primary.to_color())),
+    ]));
+    frame.render_widget(input, chunks[0]);
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" add  ", Style::default().fg(theme.text.to_color())),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(" cancel", Style::default().fg(theme.text.to_color())),
+    ]));
+    frame.render_widget(hint, chunks[2]);
+}
+
+/// Full-screen native TODOs overlay: a free-form scratchpad banner on top,
+/// then the project's TODO items.
 pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, nerd_font: bool) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
@@ -26,15 +66,15 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
         area,
     );
 
-    let carry_over = state
+    let scratchpad = state
         .list
         .as_ref()
         .and_then(|l| l.carry_over.as_deref())
         .filter(|s| !s.trim().is_empty());
 
-    // Header (1) + optional carry-over banner (3) + list (min) + hint (1).
+    // Header (1) + optional scratchpad banner (3) + list (min) + hint (1).
     let mut constraints = vec![Constraint::Length(1)];
-    if carry_over.is_some() {
+    if scratchpad.is_some() {
         constraints.push(Constraint::Length(3));
     }
     constraints.push(Constraint::Min(1));
@@ -47,8 +87,8 @@ pub fn draw_todos_view(frame: &mut Frame, state: &TodoViewState, theme: &Theme, 
     let mut idx = 0;
     draw_header(frame, chunks[idx], state, theme);
     idx += 1;
-    if let Some(note) = carry_over {
-        draw_carry_over(frame, chunks[idx], note, theme);
+    if let Some(note) = scratchpad {
+        draw_scratchpad(frame, chunks[idx], note, theme);
         idx += 1;
     }
     let list_area = chunks[idx];
@@ -89,9 +129,9 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &The
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_carry_over(frame: &mut Frame, area: Rect, note: &str, theme: &Theme) {
+fn draw_scratchpad(frame: &mut Frame, area: Rect, note: &str, theme: &Theme) {
     let block = Block::default()
-        .title(" Left off here ")
+        .title(" Scratchpad ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.warning.to_color()));
     let paragraph = Paragraph::new(Span::styled(note, Style::default().fg(theme.text.to_color())))
@@ -228,7 +268,7 @@ fn todo_line<'a>(
 
 fn draw_hint(frame: &mut Frame, area: Rect, theme: &Theme) {
     let hint = Line::from(vec![Span::styled(
-        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g agent  b banner  d del  Esc/q close",
+        "  j/k move  a add  e title  o notes  space done  p prio  J/K reorder  g agent  b scratch  d del  Esc/q close",
         Style::default().fg(theme.text_muted.to_color()),
     )]);
     frame.render_widget(Paragraph::new(hint), area);
@@ -243,8 +283,8 @@ fn editor_chrome(target: &TodoEditTarget) -> (&'static str, &'static str) {
             " Edit notes ",
             "Enter: save   Alt+Enter: newline   Esc: cancel",
         ),
-        TodoEditTarget::CarryOver => (
-            " Left off here ",
+        TodoEditTarget::Scratchpad => (
+            " Scratchpad ",
             "Enter: save   Alt+Enter: newline   Esc: cancel",
         ),
     }
@@ -253,7 +293,7 @@ fn editor_chrome(target: &TodoEditTarget) -> (&'static str, &'static str) {
 fn draw_editor(frame: &mut Frame, editor: &TodoEditor, theme: &Theme) {
     let multiline = matches!(
         editor.target,
-        TodoEditTarget::Notes | TodoEditTarget::CarryOver
+        TodoEditTarget::Notes | TodoEditTarget::Scratchpad
     );
     let area = if multiline {
         centered_rect(70, 40, frame.area())

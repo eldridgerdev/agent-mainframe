@@ -102,6 +102,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("m", "Markdown file picker/viewer"),
         ("b", "Show/hide sidebar"),
         ("v", "Expand/collapse todos"),
+        ("N", "Quick-capture a TODO for this project"),
         ("t / T", "Cycle next/prev session"),
         ("w", "Session switcher"),
         ("h", "Bookmark picker popup"),

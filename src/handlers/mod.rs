@@ -62,7 +62,7 @@ pub use prompt_library::{
 };
 pub use search::handle_search_key;
 pub use skill_picker::handle_skill_picker_key;
-pub use todos::handle_todos_key;
+pub use todos::{handle_todo_quick_capture_key, handle_todos_key};
 pub use view::handle_view_key;
 
 pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
@@ -71,6 +71,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
     match &app.mode {
         AppMode::Normal => handle_normal_key(app, key),
         AppMode::Todos(_) => handle_todos_key(app, key),
+        AppMode::TodoQuickCapture(_) => handle_todo_quick_capture_key(app, key),
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),

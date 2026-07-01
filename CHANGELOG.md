@@ -10,6 +10,10 @@ are tagged.
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+## [v0.29.0] - 2026-07-01
+
 ### Added
 
 - **AI co-reviewer first pass in a final review.** Press `A` to have Claude do
@@ -34,20 +38,22 @@ are tagged.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a
-  native full-screen list (no tmux pane) with a "left off here" note at the
-  top, and each project gets at most one list, shared across all its features.
-  Inside the list: `a` add, `e` edit a title, `o` edit longer notes on an item,
-  `space` toggle done (completed items get a strikethrough and sink to the
-  bottom, never auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete
-  (with confirm), `b` edit the "left off here" note, and `j`/`k` to move. Press
-  `g` (or `Enter`) on an item to **launch an agent for it**: AMF opens a fresh
-  agent session in the list's feature — using that feature's harness and
-  mode — and pre-fills the composer with a prompt built from the item's title
-  and notes, left editable so you review it before sending. Launched items show
-  a marker, and pressing `g` again jumps back to the same session (adding onto
-  it rather than spawning a second). The list is saved per checkout, so it
-  survives restarts. Quick-capture of a TODO from other sessions is still to
-  come.
+  native full-screen list (no tmux pane) with a free-form **scratchpad** note
+  at the top (for context, links, or where you left off), and each project gets
+  at most one list, shared across all its features. Inside the list: `a` add,
+  `e` edit a title, `o` edit longer notes on an item, `space` toggle done
+  (completed items get a strikethrough and sink to the bottom, never
+  auto-cleared), `p` cycle priority, `J`/`K` reorder, `d` delete (with confirm),
+  `b` edit the scratchpad note, and `j`/`k` to move. Press `g` (or `Enter`) on
+  an item to **launch an agent for it**: AMF opens a fresh agent session in the
+  list's feature — using that feature's harness and mode — and pre-fills the
+  composer with a prompt built from the item's title and notes, left editable so
+  you review it before sending. Launched items show a marker, and pressing `g`
+  again jumps back to the same session (adding onto it rather than spawning a
+  second). You can also **quick-capture** a TODO without leaving whatever session
+  you're in: from a session view, leader → `N` opens a one-line input that
+  appends to the project's list (auto-creating the list if there isn't one yet).
+  The list is saved per checkout, so it survives restarts.
 - **Fix several PR comments in one pass.** While reviewing PR comments, press
   `space` to mark comments (a `●` flags them, and the footer shows how many),
   then `F` to queue a scoped fix for every marked comment into the review
@@ -86,6 +92,11 @@ are tagged.
   workdir/timestamp matching, it no longer assigns the same inferred provider
   session to multiple same-harness panes in one feature; unmatched sessions stay
   unbound until a better match or exact provider event appears.
+- **New Codex panes no longer inherit old usage.** A newly created Codex pane
+  could briefly show a large cost from an older Codex thread in the same
+  worktree before Codex emitted its exact session identity. AMF now ignores
+  stale inferred Codex sources and clears any older bad inferred binding on the
+  next refresh, so new panes stay blank until their own usage is known.
 
 ### Changed
 
@@ -95,6 +106,10 @@ are tagged.
   that matters: the location is truncated from the *left* with a leading `…`, so
   the filename and line number stay visible even when the path is too long for
   the pane (e.g. `@reviewer  …/dialogs/pr_review.rs:123`).
+- **Feature rows now show total agent usage.** The dashboard feature row shows a
+  compact feature-level usage total, while each agent session row and sidebar
+  keeps showing only that specific pane's usage. Terminal, editor, custom, and
+  unsupported Pi sessions are excluded from the feature total.
 - **A real editor for the PR-comment fix prompt.** The confirm dialog that
   shows the scoped fix before it's injected (press `f` while reviewing PR
   comments, then `e` to edit) is now a full editor instead of a plain text
@@ -117,7 +132,8 @@ are tagged.
 ### Migration
 
 - No migration is required. Existing inferred usage sources can be replaced
-  automatically when the next exact provider event arrives.
+  automatically when the next exact provider event arrives, and stale inferred
+  Codex usage is cleared on refresh.
 
 ## [v0.28.0] - 2026-06-29
 

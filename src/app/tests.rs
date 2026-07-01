@@ -830,6 +830,7 @@ fn make_session(label: &str, status_text: Option<&str>) -> FeatureSession {
         on_stop: None,
         pre_check: None,
         status_text: status_text.map(str::to_string),
+        token_usage: None,
     }
 }
 
@@ -3212,6 +3213,7 @@ fn session_picker_enter_opens_name_step_with_default_label() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     });
 
     let mut app = App::new_for_test(
@@ -4114,6 +4116,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         },
         crate::project::FeatureSession {
             id: "terminal-session".to_string(),
@@ -4128,6 +4131,7 @@ fn apply_session_config_switches_agent_and_rewrites_agent_sessions() {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         },
     ];
 
@@ -4254,6 +4258,7 @@ fn store_with_custom_session(workdir: &std::path::Path, session_id: &str) -> Pro
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -4314,6 +4319,7 @@ fn store_with_codex_session(workdir: &std::path::Path, is_worktree: bool) -> Pro
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -4380,6 +4386,7 @@ fn store_with_single_agent_session(
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -4529,6 +4536,7 @@ fn sync_session_status_shows_agent_token_usage() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -4588,6 +4596,13 @@ fn sync_session_status_shows_agent_token_usage() {
         app.store.projects[0].features[0].sessions[0].status_text,
         Some("12 in · 4 out · 32 eff · <$0.01".to_string()),
     );
+    let usage = app.store.projects[0].features[0].sessions[0]
+        .token_usage
+        .as_ref()
+        .unwrap();
+    assert_eq!(usage.input_tokens, 12);
+    assert_eq!(usage.output_tokens, 4);
+    assert_eq!(usage.total_tokens, 16);
     assert_eq!(
         app.store.projects[0].features[0].sessions[0].token_usage_source_match,
         Some(TokenUsageSourceMatch::Exact),
@@ -4633,6 +4648,7 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -4702,6 +4718,131 @@ fn sync_session_status_marks_discovered_codex_usage_as_inferred() {
 }
 
 #[test]
+fn sync_session_status_does_not_infer_stale_codex_usage_for_new_session() {
+    let home = TempDir::new().unwrap();
+    let data = TempDir::new().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let codex_dir = home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let rollout = codex_dir.join("old-rollout.jsonl");
+    std::fs::write(
+        &rollout,
+        format!(
+            concat!(
+                "{{\"timestamp\":\"2026-03-13T14:00:00Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"old-codex\",\"cwd\":\"{}\"}}}}\n",
+                "{{\"timestamp\":\"2026-03-13T14:01:00Z\",\"type\":\"event_msg\",\"payload\":{{\"type\":\"token_count\",\"info\":{{\"total_token_usage\":{{\"input_tokens\":1000000,\"output_tokens\":1000000,\"total_tokens\":2000000}}}}}}}}\n"
+            ),
+            workdir.path().display()
+        ),
+    )
+    .unwrap();
+    let conn = rusqlite::Connection::open(codex_dir.join("state_5.sqlite")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            cwd TEXT NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO threads (id, rollout_path, updated_at, cwd, archived)
+         VALUES (?1, ?2, ?3, ?4, 0)",
+        rusqlite::params![
+            "old-codex",
+            rollout.to_string_lossy(),
+            Utc.with_ymd_and_hms(2026, 3, 13, 14, 0, 0)
+                .unwrap()
+                .timestamp(),
+            workdir.path().to_string_lossy(),
+        ],
+    )
+    .unwrap();
+
+    let created_at = Utc.with_ymd_and_hms(2026, 3, 13, 14, 5, 0).unwrap();
+    let session = FeatureSession {
+        id: "codex-sess".to_string(),
+        kind: SessionKind::Codex,
+        label: "Codex".to_string(),
+        tmux_window: "codex".to_string(),
+        claude_session_id: None,
+        token_usage_source: Some(TokenUsageSource {
+            provider: TokenUsageProvider::Codex,
+            id: "old-codex".to_string(),
+        }),
+        token_usage_source_match: Some(TokenUsageSourceMatch::Inferred),
+        created_at,
+        command: None,
+        on_stop: None,
+        pre_check: None,
+        status_text: None,
+        token_usage: None,
+    };
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "my-feat".to_string(),
+        branch: "my-feat".to_string(),
+        workdir: workdir.path().to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-my-feat".to_string(),
+        sessions: vec![session],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::Codex,
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Idle,
+        created_at,
+        last_accessed: created_at,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "my-project".to_string(),
+        repo: workdir.path().to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at,
+        preferred_agent: AgentKind::Codex,
+        is_git: false,
+    };
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+
+    let mut tracker = SessionTokenTracker::new(
+        Some(home.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.sync_session_status_with_tracker(&mut tracker);
+
+    let session = &app.store.projects[0].features[0].sessions[0];
+    assert_eq!(session.token_usage_source, None);
+    assert_eq!(session.token_usage_source_match, None);
+    assert_eq!(session.status_text, None);
+    assert_eq!(session.token_usage, None);
+}
+
+#[test]
 fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
     let home = TempDir::new().unwrap();
     let data = TempDir::new().unwrap();
@@ -4740,6 +4881,7 @@ fn sync_session_status_does_not_duplicate_inferred_sources_in_feature() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let second = FeatureSession {
         id: "codex-sess-2".to_string(),
@@ -4839,6 +4981,7 @@ fn sync_session_status_checks_sidebar_inputs_off_thread() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -5690,6 +5833,7 @@ fn custom_diff_review_notification_opens_prompt_while_viewing() {
             on_stop: None,
             pre_check: None,
             status_text: None,
+            token_usage: None,
         }],
     );
     let mut app = App::new_for_test(
@@ -6223,6 +6367,7 @@ fn sync_session_status_skips_non_custom_sessions() {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -6448,6 +6593,7 @@ fn store_with_single_claude_session() -> ProjectStore {
         on_stop: None,
         pre_check: None,
         status_text: None,
+        token_usage: None,
     };
     let feature = Feature {
         id: "feat-1".to_string(),
@@ -8605,7 +8751,7 @@ fn todos_delete_requires_confirmation() {
 }
 
 #[test]
-fn todos_edit_carry_over_banner() {
+fn todos_edit_scratchpad_banner() {
     let mut app = todos_app();
     crate::handlers::handle_todos_key(&mut app, ke(KeyCode::Char('b'))).unwrap();
     type_str(&mut app, "finishing the parser");

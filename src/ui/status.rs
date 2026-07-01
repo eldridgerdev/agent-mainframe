@@ -342,6 +342,12 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc/q", key_style()),
             Span::raw(" close"),
         ]),
+        AppMode::TodoQuickCapture(_) => Line::from(vec![
+            Span::styled("Enter", key_style()),
+            Span::raw(" add TODO  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::Help(_) => Line::from(vec![
             Span::styled("Esc/q/?", key_style()),
             Span::raw(" close help"),

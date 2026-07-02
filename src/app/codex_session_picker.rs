@@ -266,7 +266,8 @@ impl App {
         for session in &mut feature.sessions {
             match session.kind {
                 SessionKind::Codex => {
-                    let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
+                    let codex_args =
+                        crate::codex_config::launch_override_args(&feature.workdir, &feature.mode);
                     session.set_token_usage_source_exact(TokenUsageSource {
                         provider: TokenUsageProvider::Codex,
                         id: codex_session_id.to_string(),

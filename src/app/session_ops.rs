@@ -624,7 +624,7 @@ impl App {
                     .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
-                let codex_args = crate::codex_config::launch_override_args(&workdir);
+                let codex_args = crate::codex_config::launch_override_args(&workdir, &mode);
                 self.tmux
                     .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }
@@ -725,7 +725,7 @@ impl App {
                     .launch_opencode(&tmux_session, &window, &session_id)?;
             }
             AgentKind::Codex => {
-                let codex_args = crate::codex_config::launch_override_args(&workdir);
+                let codex_args = crate::codex_config::launch_override_args(&workdir, &mode);
                 self.tmux
                     .launch_codex(&tmux_session, &window, &session_id, None, codex_args)?;
             }

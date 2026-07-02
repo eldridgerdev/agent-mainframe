@@ -10,7 +10,11 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- Codex SuperVibe sessions now launch with Codex full-access/no-approval flags
+  (`--sandbox danger-full-access --ask-for-approval never`) so they match the
+  mode's no-prompt behavior.
 
 ## [v0.29.0] - 2026-07-01
 

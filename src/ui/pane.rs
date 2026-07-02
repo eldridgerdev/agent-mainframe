@@ -166,6 +166,7 @@ pub fn draw(
     next_prev_feature: (Option<char>, Option<char>),
     theme: &Theme,
 ) {
+    let throbber_state = throbber_widgets_tui::ThrobberState::default();
     draw_with_lines(
         frame,
         view,
@@ -177,6 +178,7 @@ pub fn draw(
         tmux_cursor,
         compose_intercept,
         next_prev_feature,
+        &throbber_state,
         theme,
     );
 }
@@ -193,6 +195,7 @@ pub(crate) fn draw_with_lines(
     tmux_cursor: Option<(u16, u16)>,
     compose_intercept: Option<bool>,
     next_prev_feature: (Option<char>, Option<char>),
+    throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
     let area = frame.area();
@@ -333,7 +336,7 @@ pub(crate) fn draw_with_lines(
     }
 
     if view.startup_mask_active() {
-        draw_startup_loading(frame, main_content_area, view, theme);
+        draw_startup_loading(frame, main_content_area, view, throbber_state, theme);
     } else if view.scroll_mode && !view.scroll_passthrough {
         let scrollbar_width = SCROLLBAR_WIDTH.min(main_content_area.width);
         let content_width = main_content_area.width.saturating_sub(scrollbar_width);
@@ -437,7 +440,13 @@ pub(crate) fn draw_with_lines(
     }
 }
 
-fn draw_startup_loading(frame: &mut Frame, area: Rect, view: &ViewState, theme: &Theme) {
+fn draw_startup_loading(
+    frame: &mut Frame,
+    area: Rect,
+    view: &ViewState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
     let bg = theme.effective_bg();
     frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
 
@@ -455,13 +464,21 @@ fn draw_startup_loading(frame: &mut Frame, area: Rect, view: &ViewState, theme: 
         SessionKind::Pi => "Pi",
         _ => "agent",
     };
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .throbber_style(Style::default().fg(theme.warning.to_color()))
+        .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+        .use_type(throbber_widgets_tui::WhichUse::Spin);
+    let spinner = throbber.to_symbol_span(throbber_state);
     let lines = vec![
-        Line::from(Span::styled(
-            format!("Starting {harness}"),
-            Style::default()
-                .fg(theme.text.to_color())
-                .add_modifier(Modifier::BOLD),
-        )),
+        Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Starting {harness}"),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
         Line::from(Span::styled(
             "Preparing the harness...",
             Style::default().fg(theme.secondary.to_color()),

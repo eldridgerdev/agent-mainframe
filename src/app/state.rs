@@ -3,13 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Child;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
 use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
+
+pub const STARTUP_MASK_MAX_DURATION: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ForkFeatureStep {
@@ -121,7 +123,8 @@ impl ViewState {
     }
 
     pub fn startup_mask_active(&self) -> bool {
-        self.startup_mask_started_at.is_some()
+        self.startup_mask_started_at
+            .is_some_and(|started_at| started_at.elapsed() < STARTUP_MASK_MAX_DURATION)
     }
 
     pub fn sidebar_session_kind(&self) -> Option<SessionKind> {

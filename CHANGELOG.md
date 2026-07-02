@@ -33,10 +33,15 @@ are tagged.
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
   launch command and environment setup. Existing running sessions open normally.
+- **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
+  ignores duplicate Enter-repeat events and raw carriage-return/newline
+  characters in embedded terminal input, so pressing Enter submits once instead
+  of making the pane jump down by several lines.
 
 ### Migration
 
 - No action required for the startup loading-screen fix.
+- No action required for the macOS terminal input fix.
 - If you relied on `n` / `p` to move between features in a session, add
   `"next_feature"` / `"prev_feature"` keybindings to your config to restore
   them.

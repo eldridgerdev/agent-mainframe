@@ -101,7 +101,6 @@ pub const VIEW_REANCHOR_BOUNCE_DWELL: Duration = Duration::from_millis(60);
 /// revealed — this is what hides the bounce's flicker.
 pub const VIEW_REANCHOR_REVEAL_DELAY: Duration = Duration::from_millis(140);
 pub const VIEW_STARTUP_WARM_DURATION: Duration = Duration::from_millis(2500);
-const VIEW_STARTUP_MASK_MAX_DURATION: Duration = Duration::from_secs(8);
 pub const VIEW_STARTUP_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 pub const VIEW_STARTUP_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(350);
 pub const VIEW_BURST_DURATION: Duration = Duration::from_millis(175);
@@ -1754,18 +1753,19 @@ impl App {
         let AppMode::Viewing(view) = &mut self.mode else {
             return;
         };
-        let Some(started_at) = view.startup_mask_started_at else {
+        if view.startup_mask_started_at.is_none() {
             return;
-        };
+        }
 
-        let timed_out = started_at.elapsed() >= VIEW_STARTUP_MASK_MAX_DURATION;
         let launch_echo_visible = self.pane_content.contains("AMF_TMUX_BIN=")
             || self.pane_content.contains("AMF_TMUX_SOCKET=")
             || self.pane_content.contains("AMF_TMUX_WINDOW=")
             || self.pane_content.contains("AMF_FEATURE_SESSION_ID=")
             || self.pane_content.contains("AMF_SESSION_ID=")
             || self.pane_content.contains("AMF_SESSION=");
-        if timed_out || (!self.pane_content.trim().is_empty() && !launch_echo_visible) {
+        if !view.startup_mask_active()
+            || (!self.pane_content.trim().is_empty() && !launch_echo_visible)
+        {
             view.startup_mask_started_at = None;
         }
     }

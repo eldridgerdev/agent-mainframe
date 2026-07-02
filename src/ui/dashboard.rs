@@ -774,6 +774,7 @@ fn draw_view_pane(
         tmux_cursor,
         compose_intercept,
         next_prev_feature,
+        &app.throbber_state,
         &app.theme,
     );
 }

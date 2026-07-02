@@ -14,6 +14,33 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~Terminal sessions insert extra blank lines on macOS~~ (Fixed)
+
+- **Status:** Fixed (2026-07-02)
+- **Reported:** 2026-07-02
+- **Relates to:** embedded terminal input (`src/handlers/view.rs`)
+- **Root cause:** AMF treated every Enter repeat event as a real submit and
+  could also forward raw carriage-return/newline character events as literal
+  terminal input. On macOS terminals this could show up as several blank lines
+  from a single input action.
+- **Fix:** Ignore repeated Enter events in view-mode tmux key translation and
+  drop raw `\r` / `\n` character events instead of forwarding them as literal
+  input. Plain Enter still forwards exactly one tmux `Enter` key.
+
+### Repro
+
+1. On macOS, open a plain terminal session inside AMF.
+2. Press Enter or submit input in the embedded terminal.
+
+### Expected
+
+The terminal receives one Enter and advances once.
+
+### Actual
+
+The embedded terminal sometimes advances by several lines, making the pane look
+awkward and jumpy.
+
 ## ~~New agent sessions show their launch command before the harness opens~~ (Fixed)
 
 - **Status:** Fixed (2026-07-02)

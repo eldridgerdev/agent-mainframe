@@ -41,6 +41,25 @@ fn startup_harness_setup_allows_quit_with_q() {
 }
 
 #[test]
+fn startup_mask_expires_without_snapshot_updates() {
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex-2".to_string(),
+        "Codex 2".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.show_startup_mask();
+    assert!(view.startup_mask_active());
+
+    view.startup_mask_started_at = Some(Instant::now() - STARTUP_MASK_MAX_DURATION);
+    assert!(!view.startup_mask_active());
+}
+
+#[test]
 fn control_view_parser_cursor_move_keeps_relative_redraws_on_tmux_row() {
     let mut parser = vt100::Parser::new(6, 40, 0);
     parser.process(b"\x1b[2;1Hscreen");

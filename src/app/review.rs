@@ -19,7 +19,11 @@ const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes 
      review round (the first \"## Review\" section); earlier sections are prior rounds kept for \
      history. Each item is tagged with a severity in brackets: [blocker] must be fixed, \
      [suggestion] and [nit] are improvements worth making, [question] wants an answer (not \
-     necessarily a code change), and [praise] needs no action. Prioritize the blockers.";
+     necessarily a code change), and [praise] needs no action. Prioritize the blockers. \
+     After you address an item, append a reply directly under it in that same file on its own \
+     line, starting with \"**Agent:** \" — say what you changed (e.g. \"fixed in src/foo.rs\") or, \
+     if you disagree or are answering a [question], why. Keep each reply to a sentence or two. \
+     These replies are shown to the reviewer beside your changes on the next review round.";
 
 /// The resumable parts of an in-flight final review, persisted to
 /// `.claude/final-review-progress.json` so a long review can be paused
@@ -347,6 +351,34 @@ impl App {
                  review{when} — showing changed only (F to cycle filter)"
             ));
         }
+    }
+
+    /// On opening a re-review, load the feature agent's replies from the last
+    /// round of `.claude/final-review-feedback.md` (the `**Agent:**` blocks it
+    /// was prompted to append) so they can be shown beside each file's diff.
+    /// Only files still present in the diff are kept; a first review (no feedback
+    /// file) leaves the map empty.
+    pub fn load_prior_agent_responses(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        state.prior_agent_responses.clear();
+        let path = state
+            .workdir
+            .join(".claude")
+            .join("final-review-feedback.md");
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let known: std::collections::HashSet<&str> =
+            state.files.iter().map(|f| f.path.as_str()).collect();
+        state.prior_agent_responses = parse_agent_responses(&contents)
+            .into_iter()
+            .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
     }
 
     /// Approve the file currently selected in the review viewer and advance.
@@ -1994,6 +2026,88 @@ fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
     out
 }
 
+/// Reduce an item's anchor heading (`src/foo.rs:42`, `src/foo.rs:42-48 (base)`,
+/// or a bare `src/foo.rs`) to the file path it belongs to. A `:` followed by a
+/// digit marks the start of the line suffix; anything before it is the path.
+fn anchor_file_path(anchor: &str) -> &str {
+    match anchor.find(':') {
+        Some(idx) if anchor[idx + 1..].starts_with(|c: char| c.is_ascii_digit()) => &anchor[..idx],
+        _ => anchor,
+    }
+}
+
+/// Parse the latest review round's agent replies from a feedback file, grouped
+/// by file path. Rounds are prepended (see `compose_feedback_log`), so the first
+/// `## Review` section is the most recent. Each `#### {anchor} — [severity]` item
+/// may be followed by a `**Agent:** …` reply the feature agent appended (see
+/// `REVIEW_FEEDBACK_PROMPT`); only items whose agent actually replied are
+/// returned. The reply runs from the `**Agent:**` marker to the next heading.
+fn parse_agent_responses(
+    feedback: &str,
+) -> std::collections::HashMap<String, Vec<crate::app::state::AgentResponse>> {
+    use crate::app::state::AgentResponse;
+    let mut out: std::collections::HashMap<String, Vec<AgentResponse>> =
+        std::collections::HashMap::new();
+
+    let mut lines = feedback.lines();
+    // Advance to the newest round; bail if the file has none.
+    for line in lines.by_ref() {
+        if line.starts_with("## Review") {
+            break;
+        }
+    }
+
+    let mut anchor: Option<String> = None;
+    // The reply text currently being collected for `anchor`, once a `**Agent:**`
+    // marker has been seen. `None` until the marker, so the item's own text is
+    // skipped.
+    let mut reply: Option<Vec<String>> = None;
+
+    // Flush the collected reply (if any) onto the current anchor.
+    let flush = |anchor: &Option<String>, reply: &mut Option<Vec<String>>,
+                 out: &mut std::collections::HashMap<String, Vec<AgentResponse>>| {
+        if let (Some(anchor), Some(body)) = (anchor.as_ref(), reply.take()) {
+            let response = body.join("\n").trim().to_string();
+            if !response.is_empty() {
+                out.entry(anchor_file_path(anchor).to_string())
+                    .or_default()
+                    .push(AgentResponse {
+                        anchor: anchor.clone(),
+                        response,
+                    });
+            }
+        }
+    };
+
+    for line in lines {
+        // A new round ends the latest one — stop before older history.
+        if line.starts_with("## Review") || line.starts_with("# ") {
+            flush(&anchor, &mut reply, &mut out);
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("#### ") {
+            flush(&anchor, &mut reply, &mut out);
+            // Heading is `{anchor} — [severity]`; keep just the anchor.
+            anchor = Some(rest.split(" — [").next().unwrap_or(rest).trim().to_string());
+            continue;
+        }
+        if line.starts_with("### ") {
+            // A section heading (General Feedback / Files Needing Revision /
+            // Line Comments) ends the current item's reply but stays in-round.
+            flush(&anchor, &mut reply, &mut out);
+            anchor = None;
+            continue;
+        }
+        if let Some(body) = &mut reply {
+            body.push(line.to_string());
+        } else if let Some(rest) = line.trim_start().strip_prefix("**Agent:**") {
+            reply = Some(vec![rest.trim_start().to_string()]);
+        }
+    }
+    flush(&anchor, &mut reply, &mut out);
+    out
+}
+
 /// Build the prompt for an on-demand walkthrough of a file's diff. Large
 /// patches are truncated to keep the headless request bounded.
 fn build_walkthrough_prompt(file: &crate::diff::DiffFile) -> String {
@@ -2169,8 +2283,8 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_co_review_output,
-        parse_review_notes, severity_review_event,
+        anchor_file_path, build_pr_review, build_walkthrough_prompt, compose_feedback_log,
+        parse_agent_responses, parse_co_review_output, parse_review_notes, severity_review_event,
     };
     use crate::app::{LineComment, Severity};
     use crate::diff::DiffLineLocation;
@@ -2421,6 +2535,124 @@ mod tests {
         let out = compose_feedback_log(Some(existing), "## Review — x\n\nnew.\n\n");
         assert!(out.starts_with("# Final Review Feedback\n\n## Review — x"));
         assert!(out.contains("old."));
+    }
+
+    #[test]
+    fn anchor_file_path_strips_line_suffix() {
+        assert_eq!(anchor_file_path("src/foo.rs"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42-48"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42 (base)"), "src/foo.rs");
+        // A colon not followed by a digit is part of the path, not a suffix.
+        assert_eq!(anchor_file_path("weird:name.rs"), "weird:name.rs");
+    }
+
+    #[test]
+    fn parse_agent_responses_groups_replies_by_file() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Files Needing Revision
+
+#### src/foo.rs — [blocker]
+
+Needs error handling.
+
+**Agent:** fixed in src/foo.rs — added a match on the Result.
+
+### Line Comments
+
+#### src/foo.rs:42 — [suggestion]
+
+Rename this variable.
+
+**Agent:** done, renamed to `count`.
+
+#### src/bar.rs:10-12 — [question]
+
+Why the loop?
+
+**Agent:** disagree — the loop is needed for the retry.
+";
+        let out = parse_agent_responses(feedback);
+        let foo = out.get("src/foo.rs").expect("foo replies");
+        assert_eq!(foo.len(), 2);
+        assert_eq!(foo[0].anchor, "src/foo.rs");
+        assert!(foo[0].response.contains("added a match"));
+        assert_eq!(foo[1].anchor, "src/foo.rs:42");
+        assert!(foo[1].response.contains("renamed to"));
+        let bar = out.get("src/bar.rs").expect("bar replies");
+        assert_eq!(bar[0].anchor, "src/bar.rs:10-12");
+        assert!(bar[0].response.contains("disagree"));
+    }
+
+    #[test]
+    fn parse_agent_responses_only_reads_latest_round() {
+        // Older rounds (below the first `## Review`) must not leak in.
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [nit]
+
+New item.
+
+## Review — 2026-07-01T00:00:00Z
+
+### Line Comments
+
+#### src/old.rs:9 — [blocker]
+
+Old item.
+
+**Agent:** addressed last round.
+";
+        let out = parse_agent_responses(feedback);
+        // The newest round's item has no reply; the old round's reply is ignored.
+        assert!(out.is_empty(), "only the latest round is parsed, {out:?}");
+    }
+
+    #[test]
+    fn parse_agent_responses_skips_item_text_without_reply() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [nit]
+
+Just a comment, no agent reply yet.
+";
+        assert!(parse_agent_responses(feedback).is_empty());
+    }
+
+    #[test]
+    fn parse_agent_responses_captures_multiline_reply() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [suggestion]
+
+Do the thing.
+
+**Agent:** first line of reply.
+second line of reply.
+";
+        let out = parse_agent_responses(feedback);
+        let reply = &out.get("src/foo.rs").unwrap()[0].response;
+        assert!(reply.contains("first line"));
+        assert!(reply.contains("second line"));
     }
 
 

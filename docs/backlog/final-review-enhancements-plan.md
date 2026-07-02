@@ -3,9 +3,10 @@
 - **Status:** Core shipped; Rounds 2–3 in backlog — every item under
   **Progress → Round 1** is implemented and merged, and Round 2's AI
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
-  comment-implied rejections and severity tags have shipped. The
-  remaining Round 2 items and a third round of review-loop / viewer
-  upgrades (**Round 3**, captured 2026-07-01) are not yet started.
+  comment-implied rejections, severity tags and agent replies-back
+  have shipped. The remaining Round 2 items and a third round of
+  review-loop / viewer upgrades (**Round 3**, captured 2026-07-01) are
+  not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -291,6 +292,24 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   shows one file's diff in isolation, so it can't catch "renamed here
   but not there". Include the changeset's file list plus the other
   files' hunk headers (still bounded) to raise finding quality.
+- **Ask the AI a question in-line, without leaving the review.** The
+  co-reviewer (`A`) and walkthrough (`w`) are one-shot: the reviewer
+  can't ask a follow-up ("why is this safe?", "does this handle the
+  empty case?") while forming a verdict. Add a key to type a free-form
+  question about the current file (or a `v`-selected span), fire it
+  headless with the file's diff as context (reuse the
+  `spawn_headless`/poll machinery and the diff-truncation from
+  `build_walkthrough_prompt`), and show the answer **without rejecting
+  the file or leaving the screen** — no losing your place in the diff.
+  Two candidate presentations: (a) a modal answer dialog over the
+  viewer (dismiss to return to exactly where you were), or (b) split
+  the developer-notes panel into two boxes — the note/walkthrough on
+  the left, the AI answer on the right — so question and diff stay
+  visible together. Keep it reviewer-triggered and per-file so token
+  cost stays bounded, and consider threading follow-ups (append to the
+  same answer box) rather than one-shot. Pairs with the notes-panel
+  plumbing that already renders markdown + the agent replies-back
+  section (`draw_notes_panel`, `src/ui/dialogs/diff.rs`).
 
 #### Workflow & entry points
 
@@ -422,7 +441,19 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       check confirms the reviewer isn't the PR author (GitHub forbids self
       approve / request-changes). A new `Blockers` step in the `F` file-filter
       cycle narrows the list to blocker-carrying files.
-- [ ] Agent writes responses back into the feedback file
+- [x] Agent writes responses back into the feedback file — `REVIEW_FEEDBACK_PROMPT`
+      now asks the agent, after addressing each item, to append a `**Agent:** …`
+      reply on its own line under that item (what it changed / why it disagrees /
+      an answer to a `[question]`). On the next review round AMF parses the latest
+      round's replies from `.claude/final-review-feedback.md`
+      (`parse_agent_responses` in `src/app/review.rs`, grouped by file) and, in
+      `load_prior_agent_responses`, files them onto
+      `DiffViewerState.prior_agent_responses` for files still in the diff. The
+      notes panel renders them as an "Agent replies (last round)" markdown section
+      beneath the developer note / walkthrough, so re-reviewing a file shows what
+      the agent said it did. Surfaced per file (anchor-free), so it ships without
+      the thread-state / re-anchor machinery; per-comment threaded rendering
+      beside each individual line comment still pairs with the two items below.
 - [ ] Resolve / unresolve thread state across rounds
 - [ ] Re-anchor comments across edits (context snippet + fuzzy
       re-locate; answers the first open question)
@@ -489,6 +520,10 @@ AI co-review:
       (`<line>|<severity>|<comment>` + optional fenced replacement)
 - [ ] Cross-file context for the co-reviewer (changeset file list +
       hunk headers in the prompt)
+- [ ] Ask the AI a question in-line without leaving the review —
+      free-form follow-up on the current file / span, answered headless
+      and shown in a modal dialog or a second notes box (AI answer on
+      the right); reviewer-triggered + per-file for bounded cost
 
 Workflow:
 

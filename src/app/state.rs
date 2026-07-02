@@ -431,6 +431,18 @@ impl FileFilter {
     }
 }
 
+/// A reply the feature's agent wrote back under a review item in the previous
+/// round. Parsed out of `.claude/final-review-feedback.md` on re-review (from the
+/// `**Agent:**` blocks `REVIEW_FEEDBACK_PROMPT` asks the agent to append) and
+/// surfaced beside the diff so the reviewer sees what the agent claimed to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResponse {
+    /// The item's anchor heading text, e.g. `src/foo.rs:42` or `src/foo.rs`.
+    pub anchor: String,
+    /// The agent's reply text (the `**Agent:**` block, marker stripped).
+    pub response: String,
+}
+
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
 // generation (matching `DiffReviewState`). Nothing clones this state wholesale.
 pub struct DiffViewerState {
@@ -543,6 +555,11 @@ pub struct DiffViewerState {
     /// Whether a prior review snapshot existed when this review opened. Lets the
     /// UI and the filter cycle distinguish a first review from a re-review.
     pub has_prior_review: bool,
+    /// File path -> the feature agent's replies from the previous review round,
+    /// parsed from `.claude/final-review-feedback.md` on open. Surfaced beside the
+    /// diff so a re-review shows what the agent said it did per file. Empty on a
+    /// first review or when the agent left no `**Agent:**` replies.
+    pub prior_agent_responses: std::collections::HashMap<String, Vec<AgentResponse>>,
     /// Where a finished review's "address this feedback" prompt is dispatched:
     /// the feature's existing agent pane (the default, unchanged behaviour) or a
     /// fresh dedicated review session. Toggled with `t` in the review viewer.
@@ -596,6 +613,7 @@ impl DiffViewerState {
             file_filter: FileFilter::All,
             changed_since_last: std::collections::HashSet::new(),
             has_prior_review: false,
+            prior_agent_responses: std::collections::HashMap::new(),
             fix_target: crate::app::pr_review::FixTarget::ExistingLive,
         }
     }

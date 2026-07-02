@@ -462,28 +462,47 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
             line_count,
         )
     };
-    let (paragraph, rendered_lines) = if let Some(text) = note.as_deref() {
-        render_md(text)
-    } else if generating {
+    // On a re-review, the feature agent's replies to last round's items for this
+    // file (parsed from the feedback file). Rendered as a markdown section under
+    // the developer note / walkthrough so the reviewer sees what the agent said.
+    let responses_md = path
+        .as_ref()
+        .and_then(|p| state.prior_agent_responses.get(p))
+        .filter(|v| !v.is_empty())
+        .map(|responses| {
+            let mut section = String::from("### Agent replies (last round)\n\n");
+            for r in responses {
+                section.push_str(&format!("**{}**\n\n{}\n\n", r.anchor, r.response));
+            }
+            section
+        });
+
+    let (paragraph, rendered_lines) = if generating {
         (
             Paragraph::new("Generating walkthrough…")
                 .wrap(Wrap { trim: false })
                 .style(Style::default().fg(theme.text_muted.to_color())),
             0,
         )
-    } else if let Some(text) = generated.as_deref() {
-        render_md(text)
     } else {
-        (
-            Paragraph::new(
-                "No developer note for this file.\n\nPress w to generate an AI walkthrough of \
-                 this file's diff. Review mode records per-file reasoning in \
-                 .claude/review-notes.md as changes are made.",
-            )
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(theme.text_muted.to_color())),
-            0,
-        )
+        // A developer note wins over a generated walkthrough as the base body;
+        // the agent-replies section (if any) follows either, separated by a rule.
+        let base = note.as_deref().or(generated.as_deref());
+        match (base, responses_md.as_deref()) {
+            (Some(text), Some(resp)) => render_md(&format!("{text}\n\n---\n\n{resp}")),
+            (Some(text), None) => render_md(text),
+            (None, Some(resp)) => render_md(resp),
+            (None, None) => (
+                Paragraph::new(
+                    "No developer note for this file.\n\nPress w to generate an AI walkthrough of \
+                     this file's diff. Review mode records per-file reasoning in \
+                     .claude/review-notes.md as changes are made.",
+                )
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.text_muted.to_color())),
+                0,
+            ),
+        }
     };
 
     // Record the rendered (wrapped) line count and viewport height so the scroll

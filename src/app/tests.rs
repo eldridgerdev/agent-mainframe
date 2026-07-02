@@ -8191,6 +8191,84 @@ fn enter_review_with_two_files(app: &mut App, workdir: &std::path::Path) {
 }
 
 #[test]
+fn load_prior_agent_responses_populates_state_for_known_files() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // A prior round's feedback file: replies on a known file (src/a.rs) and on a
+    // file no longer in the diff (src/gone.rs), which must be filtered out.
+    let claude = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("final-review-feedback.md"),
+        "# Final Review Feedback\n\n## Review — 2026-07-02T00:00:00Z\n\n\
+         ### Line Comments\n\n#### src/a.rs:3 — [suggestion]\n\nRename it.\n\n\
+         **Agent:** done, renamed.\n\n#### src/gone.rs:9 — [blocker]\n\nFix it.\n\n\
+         **Agent:** removed the file.\n",
+    )
+    .unwrap();
+
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.load_prior_agent_responses();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert_eq!(
+                state.prior_agent_responses.len(),
+                1,
+                "only files still in the diff are kept"
+            );
+            let a = state.prior_agent_responses.get("src/a.rs").expect("a.rs");
+            assert_eq!(a[0].anchor, "src/a.rs:3");
+            assert!(a[0].response.contains("renamed"));
+            assert!(
+                !state.prior_agent_responses.contains_key("src/gone.rs"),
+                "a file no longer in the diff is dropped"
+            );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn load_prior_agent_responses_no_feedback_file_is_empty() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.load_prior_agent_responses();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.prior_agent_responses.is_empty());
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
 fn final_review_progress_persists_and_resumes() {
     let workdir = TempDir::new().unwrap();
     let mut app = App::new_for_test(
@@ -8242,7 +8320,9 @@ fn final_review_progress_persists_and_resumes() {
             assert_eq!(
                 state.decisions.get("src/b.rs"),
                 Some(&ReviewDecision::Reject {
-                    feedback: "needs work".into()
+                    feedback: "needs work".into(),
+                    // An explicit rejection defaults to Blocker severity.
+                    severity: crate::app::Severity::Blocker,
                 })
             );
             assert_eq!(state.general_feedback, "overall looks ok");
@@ -8315,7 +8395,10 @@ fn comment_auto_reject_survives_pause_and_resume() {
             assert_eq!(
                 state.decisions.get("src/a.rs"),
                 Some(&ReviewDecision::Reject {
-                    feedback: String::new()
+                    feedback: String::new(),
+                    // An auto-rejection carries the neutral default severity;
+                    // the real severity lives on the line comment.
+                    severity: crate::app::Severity::Suggestion,
                 })
             );
             assert!(state.auto_rejected.contains("src/a.rs"));

@@ -25,6 +25,21 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The diff-search prompt is likewise a single-line input that takes
+    // precedence while open. Incremental: every keystroke re-runs the search and
+    // jumps the line cursor.
+    let editing_search = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_search);
+    if editing_search {
+        match code {
+            KeyCode::Enter => app.diff_search_submit(),
+            KeyCode::Esc => app.diff_search_cancel(),
+            KeyCode::Backspace => app.diff_search_backspace(),
+            KeyCode::Char(c) => app.diff_search_input(c),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
     let editing_general = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
@@ -174,6 +189,12 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_start_suggestion();
                     return Ok(());
                 }
+                KeyCode::Esc if app.diff_search_active() => {
+                    // Unwind a committed search before exiting cursor mode, so
+                    // Esc peels back search → cursor → finish predictably.
+                    app.diff_search_clear();
+                    return Ok(());
+                }
                 KeyCode::Esc | KeyCode::Char('c') => {
                     app.diff_review_toggle_line_cursor();
                     return Ok(());
@@ -227,8 +248,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.diff_review_start_general_feedback();
                 return Ok(());
             }
+            KeyCode::Char('/') => {
+                app.diff_review_start_search();
+                return Ok(());
+            }
             KeyCode::Char('n') => {
-                app.diff_viewer_select_next_file();
+                // While a committed search is active, n/N cycle matches instead
+                // of files; otherwise n keeps its next-file meaning.
+                if app.diff_search_active() {
+                    app.diff_search_next(1);
+                } else {
+                    app.diff_viewer_select_next_file();
+                }
+                return Ok(());
+            }
+            KeyCode::Char('N') => {
+                if app.diff_search_active() {
+                    app.diff_search_next(-1);
+                }
                 return Ok(());
             }
             KeyCode::Char('p') => {
@@ -352,6 +389,19 @@ fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: boo
     if ctrl && key.code == KeyCode::Char('t') {
         if let AppMode::DiffViewer(state) = &mut app.mode {
             state.feedback_editor.toggle_vim();
+        }
+        return Ok(());
+    }
+    // Ctrl+E cycles the severity of the comment / rejection being composed.
+    // Only the line-comment and rejection editors carry a severity — a
+    // suggestion inherits its comment's, and general feedback has none.
+    if ctrl && key.code == KeyCode::Char('e') {
+        if let AppMode::DiffViewer(state) = &mut app.mode
+            && (state.editing_line_comment || state.feedback_editing)
+            && !state.editing_suggestion
+            && !state.editing_general
+        {
+            state.comment_severity = state.comment_severity.next();
         }
         return Ok(());
     }
@@ -489,6 +539,133 @@ mod tests {
         app
     }
 
+    /// A review app whose single file carries real hunks parsed from `patch`, so
+    /// `addressable_lines()` is non-empty (needed to exercise the line cursor and
+    /// diff search).
+    fn make_review_app_with_patch(workdir: &Path, patch: &str) -> App {
+        let mut app = make_review_app(workdir, &["a.rs"]);
+        let files = crate::diff::parse_unified_diff(patch).unwrap();
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files = files;
+        }
+        app
+    }
+
+    /// Matches `SEARCH_PATCH` in the review.rs tests: addressable lines are
+    /// 0 alpha, 1 beta, 2 beta_two, 3 gamma_alpha, 4 delta.
+    const SEARCH_PATCH: &str = "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
++fn gamma_alpha() {}
+ fn delta() {}
+";
+
+    fn search_state(app: &App) -> (&str, &[usize], Option<usize>, Option<usize>, bool) {
+        match &app.mode {
+            AppMode::DiffViewer(s) => (
+                s.search_query.as_str(),
+                s.search_matches.as_slice(),
+                s.search_match_pos,
+                s.comment_cursor,
+                s.editing_search,
+            ),
+            _ => panic!("not in review"),
+        }
+    }
+
+    #[test]
+    fn slash_opens_search_and_typing_jumps_cursor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('/'))).unwrap();
+        assert!(matches!(&app.mode, AppMode::DiffViewer(s) if s.editing_search));
+
+        for c in "beta".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        let (query, matches, pos, cursor, editing) = search_state(&app);
+        assert_eq!(query, "beta");
+        assert_eq!(matches, &[1, 2]);
+        assert_eq!(pos, Some(0));
+        // Cursor jumped from the start (0) to the first match (line index 1).
+        assert_eq!(cursor, Some(1));
+        assert!(editing);
+
+        // Enter commits: prompt closes but the query + matches persist.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        let (query, matches, _, _, editing) = search_state(&app);
+        assert_eq!(query, "beta");
+        assert_eq!(matches, &[1, 2]);
+        assert!(!editing);
+    }
+
+    #[test]
+    fn n_and_shift_n_cycle_matches_with_wraparound() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('/'))).unwrap();
+        for c in "beta".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        // matches [1, 2], starting at pos 0 (cursor 1).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        let (_, _, pos, cursor, _) = search_state(&app);
+        assert_eq!((pos, cursor), (Some(1), Some(2)));
+        // Wrap forward.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        let (_, _, pos, cursor, _) = search_state(&app);
+        assert_eq!((pos, cursor), (Some(0), Some(1)));
+        // Backward wraps to the last match.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('N'))).unwrap();
+        let (_, _, pos, cursor, _) = search_state(&app);
+        assert_eq!((pos, cursor), (Some(1), Some(2)));
+    }
+
+    #[test]
+    fn esc_clears_a_committed_search() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app_with_patch(dir.path(), SEARCH_PATCH);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('/'))).unwrap();
+        for c in "beta".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        assert!(app.diff_search_active());
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Esc)).unwrap();
+        let (query, matches, pos, _, editing) = search_state(&app);
+        assert_eq!(query, "");
+        assert!(matches.is_empty());
+        assert_eq!(pos, None);
+        assert!(!editing);
+        // Still in the review viewer (Esc peeled off the search, not the review).
+        assert!(matches!(app.mode, AppMode::DiffViewer(_)));
+    }
+
+    #[test]
+    fn n_navigates_files_when_no_search_is_active() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs", "b.rs"]);
+
+        let selected = |app: &App| match &app.mode {
+            AppMode::DiffViewer(s) => s.selected_file,
+            _ => panic!("not in review"),
+        };
+        assert_eq!(selected(&app), 0);
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('n'))).unwrap();
+        assert_eq!(selected(&app), 1);
+    }
+
     #[test]
     fn approving_all_files_finishes_without_feedback_file() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -624,7 +801,7 @@ mod tests {
             AppMode::DiffViewer(state) => {
                 assert!(!state.feedback_editing);
                 match state.decisions.get("a.rs") {
-                    Some(crate::app::ReviewDecision::Reject { feedback }) => {
+                    Some(crate::app::ReviewDecision::Reject { feedback, .. }) => {
                         assert_eq!(feedback, "first\nsecond");
                     }
                     other => panic!("expected rejection with feedback, got {other:?}"),
@@ -1349,7 +1526,13 @@ mod tests {
         assert_eq!(filter(&app), FileFilter::Rejected);
         assert_eq!(selected(&app), 2, "snaps onto the only rejected file");
 
-        // F again wraps back to All.
+        // F again -> Blockers: c.rs was rejected explicitly (default Blocker
+        // severity), so it stays visible.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(filter(&app), FileFilter::Blockers);
+        assert_eq!(selected(&app), 2, "snaps onto the only blocker file");
+
+        // F again wraps back to All (Changed is skipped with no prior review).
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
         assert_eq!(filter(&app), FileFilter::All);
     }
@@ -1499,7 +1682,8 @@ mod tests {
                 assert_eq!(
                     state.decisions.get("a.rs"),
                     Some(&crate::app::ReviewDecision::Reject {
-                        feedback: String::new()
+                        feedback: String::new(),
+                        severity: crate::app::Severity::Suggestion,
                     })
                 );
                 assert!(state.auto_rejected.contains("a.rs"));
@@ -1596,8 +1780,39 @@ mod tests {
                     text: "AI finding".into(),
                     draft: true,
                     suggestion: None,
+                    severity: crate::app::Severity::default(),
                 }],
             );
+        }
+    }
+
+    #[test]
+    fn ctrl_e_cycles_line_comment_severity() {
+        use crate::app::Severity;
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Open the line-comment editor (defaults to Suggestion), cycle once with
+        // Ctrl+E to Nit, type, and submit.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        handle_diff_viewer_key(&mut app, ctrl('e')).unwrap();
+        for c in "typo".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                let comment = &state.line_comments.get("a.rs").unwrap()[0];
+                assert_eq!(comment.severity, Severity::Nit);
+                // A blocker line comment would drive the Blockers filter; a nit
+                // does not.
+                assert!(!state.file_has_blocker("a.rs"));
+            }
+            _ => panic!("expected diff viewer"),
         }
     }
 
@@ -1628,7 +1843,8 @@ mod tests {
                 assert_eq!(
                     state.decisions.get("a.rs"),
                     Some(&crate::app::ReviewDecision::Reject {
-                        feedback: String::new()
+                        feedback: String::new(),
+                        severity: crate::app::Severity::Suggestion,
                     })
                 );
                 assert!(state.auto_rejected.contains("a.rs"));
@@ -1655,7 +1871,8 @@ mod tests {
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("**Needs work:** 1"));
-        assert!(feedback.contains("#### a.rs\n"));
+        // The rejection heading carries the (auto-reject default) severity tag.
+        assert!(feedback.contains("#### a.rs — [suggestion]\n"));
         assert!(feedback.contains("(Needs revision — see this file's line comments below)"));
         assert!(feedback.contains("bug"));
     }

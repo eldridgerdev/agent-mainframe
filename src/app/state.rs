@@ -270,12 +270,72 @@ pub enum DiffViewerLayout {
     SideBySide,
 }
 
+/// Severity tag on a line comment or file rejection, conventional-comments
+/// style. Drives three things: the GitHub review *event* (any `Blocker` →
+/// `REQUEST_CHANGES`), the agent prompt's mandatory-vs-optional framing, and
+/// the "blockers only" file filter. Defaults to `Suggestion` — a change worth
+/// making that isn't blocking — so older progress files (which carried no
+/// severity) deserialize to a sane middle ground.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Severity {
+    /// Must be addressed before merge.
+    Blocker,
+    /// Should change, but not blocking (the default).
+    #[default]
+    Suggestion,
+    /// Minor / optional polish.
+    Nit,
+    /// A question for the author, not a demand.
+    Question,
+    /// Positive note; no action needed.
+    Praise,
+}
+
+impl Severity {
+    /// Cycle Blocker → Suggestion → Nit → Question → Praise → Blocker, for the
+    /// editor's Ctrl+E toggle.
+    pub fn next(self) -> Self {
+        match self {
+            Severity::Blocker => Severity::Suggestion,
+            Severity::Suggestion => Severity::Nit,
+            Severity::Nit => Severity::Question,
+            Severity::Question => Severity::Praise,
+            Severity::Praise => Severity::Blocker,
+        }
+    }
+
+    /// The conventional-comments label — also the prefix rendered into the
+    /// feedback file and the PR comment body.
+    pub fn label(self) -> &'static str {
+        match self {
+            Severity::Blocker => "blocker",
+            Severity::Suggestion => "suggestion",
+            Severity::Nit => "nit",
+            Severity::Question => "question",
+            Severity::Praise => "praise",
+        }
+    }
+
+    pub fn is_blocker(self) -> bool {
+        matches!(self, Severity::Blocker)
+    }
+}
+
 /// Per-file verdict in a final review. Absence of an entry means the file
 /// was skipped (neither approved nor rejected).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewDecision {
     Approve,
-    Reject { feedback: String },
+    Reject {
+        feedback: String,
+        /// How blocking the rejection is. Defaulted (`Suggestion`) so older
+        /// progress files load, and so an auto-rejection implied by line
+        /// comments carries a neutral verdict severity — the real severities
+        /// live on its line comments.
+        #[serde(default)]
+        severity: Severity,
+    },
 }
 
 /// A reviewer comment anchored to a diff line (or a span of lines) during a
@@ -302,6 +362,11 @@ pub struct LineComment {
     /// agent as a verbatim patch. Defaulted so older progress files load.
     #[serde(default)]
     pub suggestion: Option<String>,
+    /// Conventional-comments severity for this comment. Chosen in the comment
+    /// editor (Ctrl+E cycles it); defaults to `Suggestion` so older progress
+    /// files load unchanged.
+    #[serde(default)]
+    pub severity: Severity,
 }
 
 impl LineComment {
@@ -338,6 +403,9 @@ pub enum FileFilter {
     Undecided,
     /// Files marked as needing revision.
     Rejected,
+    /// Files that carry a `Blocker`-severity rejection or line comment, so a
+    /// reviewer can focus on the must-fix items in a large changeset.
+    Blockers,
     /// Files whose diff changed since the last finished review round (the
     /// re-review loop). Empty on a first review, so the cycle skips it unless a
     /// prior snapshot exists.
@@ -345,14 +413,15 @@ pub enum FileFilter {
 }
 
 impl FileFilter {
-    /// Cycle All → Undecided → Rejected → Changed → All. Callers that don't have
-    /// a prior review snapshot skip `Changed` (see
+    /// Cycle All → Undecided → Rejected → Blockers → Changed → All. Callers that
+    /// don't have a prior review snapshot skip `Changed` (see
     /// `diff_review_cycle_file_filter`).
     pub fn next(self) -> Self {
         match self {
             FileFilter::All => FileFilter::Undecided,
             FileFilter::Undecided => FileFilter::Rejected,
-            FileFilter::Rejected => FileFilter::Changed,
+            FileFilter::Rejected => FileFilter::Blockers,
+            FileFilter::Blockers => FileFilter::Changed,
             FileFilter::Changed => FileFilter::All,
         }
     }
@@ -362,9 +431,22 @@ impl FileFilter {
             FileFilter::All => "all",
             FileFilter::Undecided => "undecided",
             FileFilter::Rejected => "rejected",
+            FileFilter::Blockers => "blockers",
             FileFilter::Changed => "changed",
         }
     }
+}
+
+/// A reply the feature's agent wrote back under a review item in the previous
+/// round. Parsed out of `.claude/final-review-feedback.md` on re-review (from the
+/// `**Agent:**` blocks `REVIEW_FEEDBACK_PROMPT` asks the agent to append) and
+/// surfaced beside the diff so the reviewer sees what the agent claimed to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResponse {
+    /// The item's anchor heading text, e.g. `src/foo.rs:42` or `src/foo.rs`.
+    pub anchor: String,
+    /// The agent's reply text (the `**Agent:**` block, marker stripped).
+    pub response: String,
 }
 
 // Not `Clone`: holds a `std::process::Child` for the in-flight walkthrough
@@ -416,6 +498,11 @@ pub struct DiffViewerState {
     /// (also reuses `feedback_editor`; mutually exclusive with
     /// `editing_line_comment`). The editor content is the replacement code.
     pub editing_suggestion: bool,
+    /// Severity being composed in the line-comment or rejection editor. Seeded
+    /// when the editor opens (from an existing comment/rejection, else a sensible
+    /// default) and cycled with Ctrl+E; read on submit. Transient — not
+    /// persisted directly (the stored `LineComment` / `ReviewDecision` carries it).
+    pub comment_severity: Severity,
     /// When true the next draw scrolls the patch to keep the comment cursor
     /// visible, mirroring `feedback_sync_to_cursor`.
     pub cursor_sync_to_view: bool,
@@ -474,10 +561,30 @@ pub struct DiffViewerState {
     /// Whether a prior review snapshot existed when this review opened. Lets the
     /// UI and the filter cycle distinguish a first review from a re-review.
     pub has_prior_review: bool,
+    /// File path -> the feature agent's replies from the previous review round,
+    /// parsed from `.claude/final-review-feedback.md` on open. Surfaced beside the
+    /// diff so a re-review shows what the agent said it did per file. Empty on a
+    /// first review or when the agent left no `**Agent:**` replies.
+    pub prior_agent_responses: std::collections::HashMap<String, Vec<AgentResponse>>,
     /// Where a finished review's "address this feedback" prompt is dispatched:
     /// the feature's existing agent pane (the default, unchanged behaviour) or a
     /// fresh dedicated review session. Toggled with `t` in the review viewer.
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// True while the reviewer is typing a diff search query in the prompt
+    /// (opened with `/`). Takes precedence over every other key binding.
+    pub editing_search: bool,
+    /// Active diff search query — also the in-progress text while
+    /// `editing_search`. Empty when no search is active. Matched
+    /// case-insensitively as a substring of the current file's addressable line
+    /// texts.
+    pub search_query: String,
+    /// Indices into the current file's `addressable_lines()` that match
+    /// `search_query`, ascending. Recomputed whenever the query or selected file
+    /// changes; empty when there is no match (or no query). Current-file only.
+    pub search_matches: Vec<usize>,
+    /// Position within `search_matches` of the current match (the one the line
+    /// cursor sits on). `None` when there are no matches.
+    pub search_match_pos: Option<usize>,
 }
 
 impl DiffViewerState {
@@ -505,6 +612,7 @@ impl DiffViewerState {
             comment_anchor: None,
             editing_line_comment: false,
             editing_suggestion: false,
+            comment_severity: Severity::default(),
             cursor_sync_to_view: false,
             finish_confirm: false,
             feedback_editing: false,
@@ -526,8 +634,23 @@ impl DiffViewerState {
             file_filter: FileFilter::All,
             changed_since_last: std::collections::HashSet::new(),
             has_prior_review: false,
+            prior_agent_responses: std::collections::HashMap::new(),
             fix_target: crate::app::pr_review::FixTarget::ExistingLive,
+            editing_search: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_match_pos: None,
         }
+    }
+
+    /// Drop any active diff search (query, matches and current-match position).
+    /// Called when the search is cancelled/cleared and whenever the selected
+    /// file changes, since matches are anchored to a single file.
+    pub fn clear_search(&mut self) {
+        self.editing_search = false;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_match_pos = None;
     }
 
     /// Reset the per-file view state after the selected file changes (patch /
@@ -542,6 +665,24 @@ impl DiffViewerState {
         }
         // A range selection can't carry across files.
         self.comment_anchor = None;
+        // Search matches are anchored to a single file; end the search rather
+        // than leaving a stale query pointing at the previous file.
+        self.clear_search();
+    }
+
+    /// Whether the file at `path` carries a `Blocker`-severity signal: either a
+    /// blocker rejection or any kept (non-draft) blocker line comment. Feeds the
+    /// `Blockers` file filter and the GitHub review-event escalation.
+    pub fn file_has_blocker(&self, path: &str) -> bool {
+        let reject_blocks = matches!(
+            self.decisions.get(path),
+            Some(ReviewDecision::Reject { severity, .. }) if severity.is_blocker()
+        );
+        let comment_blocks = self
+            .line_comments
+            .get(path)
+            .is_some_and(|cs| cs.iter().any(|c| !c.draft && c.severity.is_blocker()));
+        reject_blocks || comment_blocks
     }
 
     /// Whether `file` passes the active file-list filter. Always true outside
@@ -554,6 +695,7 @@ impl DiffViewerState {
                 self.decisions.get(&file.path),
                 Some(ReviewDecision::Reject { .. })
             ),
+            FileFilter::Blockers => self.file_has_blocker(&file.path),
             FileFilter::Changed => self.changed_since_last.contains(&file.path),
         }
     }

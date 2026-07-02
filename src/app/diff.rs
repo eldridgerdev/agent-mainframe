@@ -104,6 +104,7 @@ impl App {
         if was_review {
             self.restore_review_progress();
             self.apply_review_snapshot_diff();
+            self.load_prior_agent_responses();
         }
     }
 

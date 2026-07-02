@@ -236,6 +236,44 @@ impl GhCli {
         }
     }
 
+    /// Whether the authenticated `gh` user authored PR `pr_number` — i.e.
+    /// posting an approve / request-changes review would be a *self-review*,
+    /// which GitHub rejects. Two lightweight `gh` calls (the PR's author login
+    /// and the current user's login), compared case-insensitively. Any `gh`
+    /// failure bubbles up so callers fall back to the always-valid `COMMENT`
+    /// event rather than risk a 422 that discards the whole review.
+    pub fn is_self_review(workdir: &Path, pr_number: u32) -> Result<bool> {
+        let author = Self::gh_stdout(
+            workdir,
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "author",
+                "-q",
+                ".author.login",
+            ],
+        )?;
+        let me = Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])?;
+        Ok(!author.is_empty() && author.eq_ignore_ascii_case(&me))
+    }
+
+    /// Run `gh <args>` in `workdir` and return trimmed stdout, erroring on a
+    /// non-zero exit.
+    fn gh_stdout(workdir: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("gh")
+            .args(args)
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh`.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`gh {}` failed: {}", args.join(" "), stderr.trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
     /// Resolve a PR by explicit number (manual override). Used when the branch
     /// has no associated PR or the user wants to review a different one.
     pub fn fetch_pr_by_number(workdir: &Path, number: u32) -> Result<PrRef> {

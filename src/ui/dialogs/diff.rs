@@ -86,6 +86,79 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.editing_base_ref {
         draw_base_ref_prompt(frame, state, theme);
     }
+    if state.editing_search {
+        draw_search_prompt(frame, state, theme);
+    }
+}
+
+/// A small centered input overlay for searching the current file's diff. Matches
+/// update incrementally as the reviewer types; the line cursor jumps to the
+/// nearest hit and `n`/`N` cycle them after submitting.
+fn draw_search_prompt(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let area = centered_rect(60, 22, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Search Diff ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    // Live hit count for the current query.
+    let status = if state.search_query.trim().is_empty() {
+        "Search this file's diff (case-insensitive):".to_string()
+    } else if state.search_matches.is_empty() {
+        "No matches".to_string()
+    } else {
+        format!(
+            "Match {}/{}",
+            state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+            state.search_matches.len()
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            status,
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("/ ", Style::default().fg(theme.primary.to_color())),
+            Span::styled(
+                state.search_query.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::styled("▏", Style::default().fg(theme.primary.to_color())),
+        ])),
+        rows[1],
+    );
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            key("Enter"),
+            Span::raw(" keep (n/N to cycle)  "),
+            key("Esc"),
+            Span::raw(" cancel"),
+        ])),
+        rows[3],
+    );
 }
 
 /// A small centered input overlay for choosing the diff's base ref. Submitting
@@ -462,28 +535,47 @@ fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
             line_count,
         )
     };
-    let (paragraph, rendered_lines) = if let Some(text) = note.as_deref() {
-        render_md(text)
-    } else if generating {
+    // On a re-review, the feature agent's replies to last round's items for this
+    // file (parsed from the feedback file). Rendered as a markdown section under
+    // the developer note / walkthrough so the reviewer sees what the agent said.
+    let responses_md = path
+        .as_ref()
+        .and_then(|p| state.prior_agent_responses.get(p))
+        .filter(|v| !v.is_empty())
+        .map(|responses| {
+            let mut section = String::from("### Agent replies (last round)\n\n");
+            for r in responses {
+                section.push_str(&format!("**{}**\n\n{}\n\n", r.anchor, r.response));
+            }
+            section
+        });
+
+    let (paragraph, rendered_lines) = if generating {
         (
             Paragraph::new("Generating walkthrough…")
                 .wrap(Wrap { trim: false })
                 .style(Style::default().fg(theme.text_muted.to_color())),
             0,
         )
-    } else if let Some(text) = generated.as_deref() {
-        render_md(text)
     } else {
-        (
-            Paragraph::new(
-                "No developer note for this file.\n\nPress w to generate an AI walkthrough of \
-                 this file's diff. Review mode records per-file reasoning in \
-                 .claude/review-notes.md as changes are made.",
-            )
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(theme.text_muted.to_color())),
-            0,
-        )
+        // A developer note wins over a generated walkthrough as the base body;
+        // the agent-replies section (if any) follows either, separated by a rule.
+        let base = note.as_deref().or(generated.as_deref());
+        match (base, responses_md.as_deref()) {
+            (Some(text), Some(resp)) => render_md(&format!("{text}\n\n---\n\n{resp}")),
+            (Some(text), None) => render_md(text),
+            (None, Some(resp)) => render_md(resp),
+            (None, None) => (
+                Paragraph::new(
+                    "No developer note for this file.\n\nPress w to generate an AI walkthrough of \
+                     this file's diff. Review mode records per-file reasoning in \
+                     .claude/review-notes.md as changes are made.",
+                )
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.text_muted.to_color())),
+                0,
+            ),
+        }
     };
 
     // Record the rendered (wrapped) line count and viewport height so the scroll
@@ -614,7 +706,9 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
         cursor: cursor_loc,
         commented,
         draft,
+        blocker,
         selection,
+        matched,
     } = review_cursor_info(state);
 
     // Keep the comment cursor visible by nudging the patch scroll. Unified only:
@@ -636,7 +730,9 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
                 cursor_loc,
                 &commented,
                 &draft,
+                &blocker,
                 &selection,
+                &matched,
                 &mut cursor_row,
             );
             (lines.len(), cursor_row)
@@ -678,7 +774,9 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
             cursor: cursor_loc,
             commented,
             draft,
+            blocker,
             selection,
+            matched,
         },
         theme,
     );
@@ -695,7 +793,13 @@ struct ReviewLineMarkers {
     /// Lines covered by an unaccepted AI draft comment — marked distinctly from
     /// `commented` so the reviewer can tell suggestions apart from kept comments.
     draft: std::collections::HashSet<DiffLineLocation>,
+    /// Subset of `commented` covered by a `Blocker`-severity comment, so the
+    /// gutter can flag must-fix lines in a higher-contrast colour.
+    blocker: std::collections::HashSet<DiffLineLocation>,
     selection: std::collections::HashSet<DiffLineLocation>,
+    /// Lines matching the active diff search, so the gutter can mark every hit
+    /// (the current match is already the cursor).
+    matched: std::collections::HashSet<DiffLineLocation>,
 }
 
 fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
@@ -704,7 +808,9 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
         cursor: None,
         commented: HashSet::new(),
         draft: HashSet::new(),
+        blocker: HashSet::new(),
         selection: HashSet::new(),
+        matched: HashSet::new(),
     };
     if !state.review {
         return empty();
@@ -716,15 +822,20 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
     let cursor = state.comment_cursor.and_then(|idx| locs.get(idx).copied());
     let mut commented = HashSet::new();
     let mut draft = HashSet::new();
+    let mut blocker = HashSet::new();
     if let Some(comments) = state.line_comments.get(&file.path) {
         for comment in comments {
             if let Some(range) = comment.covered_indices(&locs) {
-                let set = if comment.draft {
-                    &mut draft
+                let covered: Vec<DiffLineLocation> =
+                    range.filter_map(|idx| locs.get(idx).copied()).collect();
+                if comment.draft {
+                    draft.extend(covered);
                 } else {
-                    &mut commented
-                };
-                set.extend(range.filter_map(|idx| locs.get(idx).copied()));
+                    if comment.severity.is_blocker() {
+                        blocker.extend(covered.iter().copied());
+                    }
+                    commented.extend(covered);
+                }
             }
         }
     }
@@ -735,11 +846,19 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
             .collect(),
         _ => HashSet::new(),
     };
+    // Every diff-search hit in the current file (empty when no search is active).
+    let matched = state
+        .search_matches
+        .iter()
+        .filter_map(|&idx| locs.get(idx).copied())
+        .collect();
     ReviewLineMarkers {
         cursor,
         commented,
         draft,
+        blocker,
         selection,
+        matched,
     }
 }
 
@@ -769,6 +888,12 @@ fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
 /// by a labelled preview of the suggested change (if any). Never empty.
 fn cursor_comment_peek_lines(comment: &crate::app::LineComment) -> Vec<String> {
     let mut lines: Vec<String> = comment.text.lines().map(|l| l.to_string()).collect();
+    // Lead a kept comment's peek with its severity so a reviewer scrolling the
+    // diff sees each annotation's priority. Drafts always default to the neutral
+    // severity, so tagging them would be noise.
+    if !comment.draft {
+        lines.insert(0, format!("[{}]", comment.severity.label()));
+    }
     if let Some(suggestion) = &comment.suggestion {
         if !lines.is_empty() {
             lines.push(String::new());
@@ -811,9 +936,15 @@ pub(crate) struct PatchPanelOptions {
     /// Diff-line locations covered by an unaccepted AI draft comment (unified
     /// view only); marked distinctly from `commented`.
     pub draft: std::collections::HashSet<DiffLineLocation>,
+    /// Subset of `commented` covered by a `Blocker`-severity comment (unified
+    /// view only); its gutter marker reads in the danger colour.
+    pub blocker: std::collections::HashSet<DiffLineLocation>,
     /// Diff-line locations in the in-progress multi-line selection (unified view
     /// only); the gutter is tinted across the span while the reviewer extends it.
     pub selection: std::collections::HashSet<DiffLineLocation>,
+    /// Diff-line locations matching the active diff search (unified view only);
+    /// each hit gets a gutter marker so matches are visible while scrolling.
+    pub matched: std::collections::HashSet<DiffLineLocation>,
 }
 
 impl Default for PatchPanelOptions {
@@ -828,7 +959,9 @@ impl Default for PatchPanelOptions {
             cursor: None,
             commented: std::collections::HashSet::new(),
             draft: std::collections::HashSet::new(),
+            blocker: std::collections::HashSet::new(),
             selection: std::collections::HashSet::new(),
+            matched: std::collections::HashSet::new(),
         }
     }
 }
@@ -881,7 +1014,9 @@ pub(crate) fn draw_patch_panel(
                 options.cursor,
                 &options.commented,
                 &options.draft,
+                &options.blocker,
                 &options.selection,
+                &options.matched,
                 &mut cursor_row,
             );
             frame.render_widget(
@@ -999,7 +1134,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             }
             None => format!(" line cursor @ {} ", cursor + 1),
         };
-        let first = Line::from(vec![
+        let mut first_spans = vec![
             Span::styled(
                 position_label,
                 Style::default()
@@ -1010,7 +1145,30 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 format!("({comment_count} comment(s) on this file)  "),
                 Style::default().fg(theme.info.to_color()),
             ),
-        ]);
+        ];
+        // Surface a committed search so its shadowing of n/N is discoverable.
+        if !state.editing_search && !state.search_query.trim().is_empty() {
+            let count = if state.search_matches.is_empty() {
+                "no match".to_string()
+            } else {
+                format!(
+                    "{}/{}",
+                    state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+                    state.search_matches.len()
+                )
+            };
+            first_spans.push(Span::styled(
+                format!("search:{} ({count})  ", state.search_query),
+                Style::default().fg(theme.primary.to_color()),
+            ));
+            first_spans.push(key("n"));
+            first_spans.push(Span::raw("/"));
+            first_spans.push(key("N"));
+            first_spans.push(Span::raw(" match  "));
+            first_spans.push(key("Esc"));
+            first_spans.push(Span::raw(" clear"));
+        }
+        let first = Line::from(first_spans);
         let second = Line::from(vec![
             key(" j"),
             Span::raw("/"),
@@ -1162,7 +1320,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("f"),
         Span::raw(" general feedback  "),
         key("c"),
-        Span::raw(" line comments"),
+        Span::raw(" line comments  "),
+        key("/"),
+        Span::raw(" search"),
     ];
     if !state.general_feedback.trim().is_empty() {
         first_line.push(Span::styled(
@@ -1237,6 +1397,14 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         Some(VimMode::Normal) => " [Vim Normal]",
         None => "",
     };
+    // The line-comment and rejection editors carry a conventional-comments
+    // severity (cycled with Ctrl+E); surface the current one in the title.
+    let carries_severity = state.editing_line_comment || state.feedback_editing;
+    let severity_title = if carries_severity {
+        format!(" [{}]", state.comment_severity.label())
+    } else {
+        String::new()
+    };
     let (title, border_color) = if state.editing_general {
         (
             format!(" General Feedback{mode_label} "),
@@ -1263,12 +1431,12 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
             "Line Comment"
         };
         (
-            format!(" {label} — {anchor}{mode_label} "),
+            format!(" {label} — {anchor}{severity_title}{mode_label} "),
             theme.warning.to_color(),
         )
     } else {
         (
-            format!(" Rejection Feedback{mode_label} "),
+            format!(" Rejection Feedback{severity_title}{mode_label} "),
             theme.danger.to_color(),
         )
     };
@@ -1330,13 +1498,22 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     } else {
         key("Esc")
     };
-    let hint = Line::from(vec![
+    let mut hint_spans = vec![
         key(" Tab"),
         Span::raw(" submit  "),
         cancel_hint,
         Span::raw(" cancel  "),
         key("Enter"),
         Span::raw(" newline  "),
+    ];
+    if carries_severity {
+        hint_spans.push(key("Ctrl+E"));
+        hint_spans.push(Span::raw(format!(
+            " severity: [{}]  ",
+            state.comment_severity.label()
+        )));
+    }
+    hint_spans.extend([
         key("Ctrl+T"),
         Span::raw(if vim.is_some() {
             " vim off  "
@@ -1346,7 +1523,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         key("Ctrl+J/K"),
         Span::raw(" scroll"),
     ]);
-    frame.render_widget(Paragraph::new(hint), rows[1]);
+    frame.render_widget(Paragraph::new(Line::from(hint_spans)), rows[1]);
 }
 
 fn diff_footer_lines(
@@ -1430,7 +1607,9 @@ fn patch_lines(
     cursor: Option<DiffLineLocation>,
     commented: &std::collections::HashSet<DiffLineLocation>,
     draft: &std::collections::HashSet<DiffLineLocation>,
+    blocker: &std::collections::HashSet<DiffLineLocation>,
     selection: &std::collections::HashSet<DiffLineLocation>,
+    matched: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
@@ -1460,7 +1639,9 @@ fn patch_lines(
         cursor: cursor == Some(loc),
         has_comment: commented.contains(&loc),
         draft: draft.contains(&loc),
+        is_blocker: blocker.contains(&loc),
         selected: selection.contains(&loc),
+        search_match: matched.contains(&loc),
     };
 
     let mut lines = Vec::new();
@@ -1614,6 +1795,8 @@ fn side_by_side_lines(
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
     }
@@ -1631,6 +1814,8 @@ fn side_by_side_lines(
             include_prologue,
             false,
             None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
@@ -2009,7 +2194,14 @@ struct GutterAnnotation {
     /// Line carries an unaccepted AI draft comment (rendered as a hollow marker
     /// distinct from a kept comment's filled one).
     draft: bool,
+    /// The kept comment on this line is `Blocker`-severity, so its marker reads
+    /// in the higher-contrast danger colour.
+    is_blocker: bool,
     selected: bool,
+    /// The line matches the active diff search. Lowest-priority marker: shown
+    /// only when the line isn't the cursor / commented / a draft (the current
+    /// match is already the cursor's solid marker).
+    search_match: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2051,9 +2243,20 @@ fn wrap_gutter_line(
             ("▶ ", theme.warning.to_color())
         }
     } else if annotation.has_comment {
-        ("● ", theme.info.to_color())
+        // A blocker's dot reads in danger so must-fix lines stand out.
+        let color = if annotation.is_blocker {
+            theme.danger.to_color()
+        } else {
+            theme.info.to_color()
+        };
+        ("● ", color)
     } else if annotation.draft {
         ("○ ", theme.warning.to_color())
+    } else if annotation.search_match {
+        // A hollow triangle echoes the cursor's solid ▶ so a match reads as
+        // "another place to jump", in the primary colour to stay clear of the
+        // comment / draft marker hues.
+        ("▷ ", theme.primary.to_color())
     } else {
         ("│ ", line_number_fg(style, row_bg))
     };
@@ -2677,6 +2880,8 @@ index 0000000..1111111
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
         let indented_code_line = &lines[2];
@@ -2747,6 +2952,8 @@ index 0000000..1111111
             false,
             true,
             None,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
@@ -2830,10 +3037,12 @@ index 0000000..1111111
                 text: "needs a guard\nfor None".to_string(),
                 draft: false,
                 suggestion: None,
+                severity: crate::app::Severity::default(),
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
-        assert_eq!(cursor_comment_preview_rows(&state), 4);
+        // 2 body lines + the severity header + 2 border rows.
+        assert_eq!(cursor_comment_preview_rows(&state), 5);
     }
 
     #[test]
@@ -2852,9 +3061,10 @@ index 0000000..1111111
                 text: body,
                 draft: false,
                 suggestion: None,
+                severity: crate::app::Severity::default(),
             }],
         );
-        // 20 body lines clamp to 6 visible + 2 border rows.
+        // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.
         assert_eq!(cursor_comment_preview_rows(&state), 8);
     }
 }

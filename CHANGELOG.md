@@ -21,11 +21,19 @@ are tagged.
   feature navigation, the prompt library (leader menu) and the syntax parser
   picker (dashboard) both moved from `P` to `p`.
 
+### Fixed
+
+- **New agent sessions hide their startup command echo.** When AMF starts a
+  fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
+  loading screen until the harness is ready instead of flashing the long tmux
+  launch command and environment setup. Existing running sessions open normally.
+
 ### Migration
 
-- No action required. If you relied on `n` / `p` to move between features in a
-  session, add `"next_feature"` / `"prev_feature"` keybindings to your config to
-  restore them.
+- No action required for the startup loading-screen fix.
+- If you relied on `n` / `p` to move between features in a session, add
+  `"next_feature"` / `"prev_feature"` keybindings to your config to restore
+  them.
 
 ## [v0.29.0] - 2026-07-01
 

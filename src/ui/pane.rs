@@ -332,7 +332,9 @@ pub(crate) fn draw_with_lines(
         );
     }
 
-    if view.scroll_mode && !view.scroll_passthrough {
+    if view.startup_mask_active() {
+        draw_startup_loading(frame, main_content_area, view, theme);
+    } else if view.scroll_mode && !view.scroll_passthrough {
         let scrollbar_width = SCROLLBAR_WIDTH.min(main_content_area.width);
         let content_width = main_content_area.width.saturating_sub(scrollbar_width);
         let content_area = Rect::new(
@@ -433,6 +435,43 @@ pub(crate) fn draw_with_lines(
             next_prev_feature,
         );
     }
+}
+
+fn draw_startup_loading(frame: &mut Frame, area: Rect, view: &ViewState, theme: &Theme) {
+    let bg = theme.effective_bg();
+    frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
+
+    if area.width < 20 || area.height < 3 {
+        return;
+    }
+
+    let panel_height = 5.min(area.height);
+    let panel_y = area.y + area.height.saturating_sub(panel_height) / 2;
+    let panel = Rect::new(area.x, panel_y, area.width, panel_height);
+    let harness = match view.session_kind {
+        SessionKind::Claude => "Claude",
+        SessionKind::Codex => "Codex",
+        SessionKind::Opencode => "opencode",
+        SessionKind::Pi => "Pi",
+        _ => "agent",
+    };
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Starting {harness}"),
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Preparing the harness...",
+            Style::default().fg(theme.secondary.to_color()),
+        )),
+    ];
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(bg))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, panel);
 }
 
 fn draw_agent_sidebar(

@@ -573,6 +573,7 @@ impl App {
         label: Option<String>,
     ) -> Result<()> {
         let repo = self.store.projects[pi].repo.clone();
+        let project_name = self.store.projects[pi].name.clone();
         let Some(agent) = agent_for_session_kind(&kind) else {
             anyhow::bail!("unsupported agent session type");
         };
@@ -592,7 +593,9 @@ impl App {
 
         let workdir = feature.workdir.clone();
         let tmux_session = feature.tmux_session.clone();
+        let feature_name = feature.name.clone();
         let mode = feature.mode.clone();
+        let review = feature.review;
         let use_rc = feature.remote_control && rc_allowed;
         let extra_args: Vec<String> = feature.mode.cli_flags(LaunchOpts {
             enable_chrome: feature.enable_chrome,
@@ -636,6 +639,19 @@ impl App {
         feature.collapsed = false;
         let si = feature.sessions.len() - 1;
         self.selection = Selection::Session(pi, fi, si);
+        let mut view = ViewState::new(
+            project_name,
+            feature_name,
+            tmux_session,
+            window,
+            label.clone(),
+            kind,
+            mode,
+            review,
+        );
+        view.show_startup_mask();
+        self.mode = AppMode::Viewing(view);
+        self.pane_content.clear();
         self.save()?;
         self.message = Some(format!("Added '{}'", label));
 

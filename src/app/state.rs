@@ -81,6 +81,7 @@ pub struct ViewState {
     pub selection: TextSelection,
     pub sidebar_visible: bool,
     pub todos_expanded: bool,
+    pub startup_mask_started_at: Option<Instant>,
 }
 
 impl ViewState {
@@ -111,7 +112,16 @@ impl ViewState {
             selection: TextSelection::default(),
             sidebar_visible: true,
             todos_expanded: false,
+            startup_mask_started_at: None,
         }
+    }
+
+    pub fn show_startup_mask(&mut self) {
+        self.startup_mask_started_at = Some(Instant::now());
+    }
+
+    pub fn startup_mask_active(&self) -> bool {
+        self.startup_mask_started_at.is_some()
     }
 
     pub fn sidebar_session_kind(&self) -> Option<SessionKind> {

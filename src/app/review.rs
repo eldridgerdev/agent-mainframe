@@ -519,6 +519,156 @@ impl App {
         }
     }
 
+    /// Open the diff search prompt in the review viewer (`/`). Requires the
+    /// current file to have addressable diff lines, and activates the line
+    /// cursor if it is off so matches have a jump target. Keeps any existing
+    /// query as the editable seed so `/`↵ repeats the last search.
+    pub fn diff_review_start_search(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let has_lines = state
+                .files
+                .get(state.selected_file)
+                .is_some_and(|f| !f.addressable_lines().is_empty());
+            if !has_lines {
+                self.message = Some("Nothing to search in this file".to_string());
+                return;
+            }
+            if state.comment_cursor.is_none() {
+                state.comment_cursor = Some(0);
+                state.cursor_sync_to_view = true;
+            }
+            state.editing_search = true;
+        }
+    }
+
+    /// Append a typed character to the search query and re-run the incremental
+    /// jump. Control characters are ignored.
+    pub fn diff_search_input(&mut self, c: char) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_search || c.is_control() {
+                return;
+            }
+            state.search_query.push(c);
+        } else {
+            return;
+        }
+        self.diff_search_recompute_and_jump();
+    }
+
+    /// Delete the last character of the search query and re-run the incremental
+    /// jump.
+    pub fn diff_search_backspace(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_search {
+                return;
+            }
+            state.search_query.pop();
+        } else {
+            return;
+        }
+        self.diff_search_recompute_and_jump();
+    }
+
+    /// Commit the search: close the prompt but keep the query and matches so
+    /// `n`/`N` can cycle them. Reports the hit count (or a miss); a blank query
+    /// just clears the search.
+    pub fn diff_search_submit(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.editing_search = false;
+            if state.search_query.trim().is_empty() {
+                state.clear_search();
+                return;
+            }
+            if state.search_matches.is_empty() {
+                self.message = Some(format!("No matches for \"{}\"", state.search_query));
+            } else {
+                self.message = Some(format!(
+                    "Match {}/{} for \"{}\" — n/N next/prev, Esc clear",
+                    state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+                    state.search_matches.len(),
+                    state.search_query
+                ));
+            }
+        }
+    }
+
+    /// Cancel the search prompt (Esc while typing), discarding the query.
+    pub fn diff_search_cancel(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.clear_search();
+        }
+    }
+
+    /// Clear a committed search (Esc while it is active), restoring `n`/`N` to
+    /// their file-navigation meaning. Leaves the line cursor where it is.
+    pub fn diff_search_clear(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.clear_search();
+        }
+    }
+
+    /// Whether a committed (non-editing) search is active, so match-navigation
+    /// keys should shadow file navigation in the key layer.
+    pub fn diff_search_active(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::DiffViewer(state)
+                if state.review && !state.editing_search && !state.search_query.trim().is_empty()
+        )
+    }
+
+    /// Move to the next (`delta > 0`) / previous (`delta < 0`) match, wrapping,
+    /// and land the line cursor on it. Reports a miss when there are no matches.
+    pub fn diff_search_next(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if state.search_matches.is_empty() {
+                self.message = Some(format!("No matches for \"{}\"", state.search_query));
+                return;
+            }
+            let len = state.search_matches.len();
+            let cur = state.search_match_pos.unwrap_or(0) as isize;
+            let next = (cur + delta).rem_euclid(len as isize) as usize;
+            state.search_match_pos = Some(next);
+            state.comment_cursor = Some(state.search_matches[next]);
+            state.cursor_sync_to_view = true;
+            self.message = Some(format!(
+                "Match {}/{} for \"{}\"",
+                next + 1,
+                len,
+                state.search_query
+            ));
+        }
+    }
+
+    /// Recompute matches for the current file + query and jump the cursor to the
+    /// first match at or after its current position (wrapping to the first), so
+    /// the view stays anchored as the reviewer types. Leaves the cursor put when
+    /// there is no match.
+    fn diff_search_recompute_and_jump(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let query = state.search_query.clone();
+            let matches = state
+                .files
+                .get(state.selected_file)
+                .map(|f| compute_search_matches(f, &query))
+                .unwrap_or_default();
+            if matches.is_empty() {
+                state.search_matches = matches;
+                state.search_match_pos = None;
+                return;
+            }
+            let from = state.comment_cursor.unwrap_or(0);
+            let pos = matches.iter().position(|&idx| idx >= from).unwrap_or(0);
+            state.comment_cursor = Some(matches[pos]);
+            state.cursor_sync_to_view = true;
+            state.search_matches = matches;
+            state.search_match_pos = Some(pos);
+        }
+    }
+
     /// Toggle the multi-line selection anchor at the current cursor. With the
     /// anchor set, moving the cursor extends a span that the next comment covers;
     /// toggling again drops back to a single-line comment. No-op without an
@@ -1861,6 +2011,23 @@ fn span_current_text(texts: &[String], range: &std::ops::RangeInclusive<usize>) 
         .join("\n")
 }
 
+/// Indices into `file.addressable_lines()` whose text contains `query`
+/// (case-insensitive substring), ascending. Empty for a blank query. Matches
+/// against `addressable_line_texts()` (diff prefix stripped) so a query hits the
+/// same content regardless of whether the line was added, removed or context.
+fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let needle = query.to_lowercase();
+    file.addressable_line_texts()
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.to_lowercase().contains(&needle))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 /// The `file:line` (or `file:start-end`) heading for a line comment in the
 /// feedback file. A base-side (deletion-only) line is tagged `(base)`.
 fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
@@ -2284,10 +2451,12 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 mod tests {
     use super::{
         anchor_file_path, build_pr_review, build_walkthrough_prompt, compose_feedback_log,
-        parse_agent_responses, parse_co_review_output, parse_review_notes, severity_review_event,
+        compute_search_matches, parse_agent_responses, parse_co_review_output, parse_review_notes,
+        severity_review_event,
     };
+    use crate::app::state::DiffViewerState;
     use crate::app::{LineComment, Severity};
-    use crate::diff::DiffLineLocation;
+    use crate::diff::{DiffLineLocation, parse_unified_diff};
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
         LineComment {
@@ -2733,5 +2902,67 @@ ignored body
             notes.get("src/main.rs").map(String::as_str),
             Some("Did a thing.")
         );
+    }
+
+    const SEARCH_PATCH: &str = "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
++fn gamma_alpha() {}
+ fn delta() {}
+";
+
+    #[test]
+    fn compute_search_matches_finds_case_insensitive_substrings() {
+        let files = parse_unified_diff(SEARCH_PATCH).unwrap();
+        let file = &files[0];
+        // Addressable lines: 0 alpha (ctx), 1 beta (del), 2 beta_two (add),
+        // 3 gamma_alpha (add), 4 delta (ctx).
+        assert_eq!(compute_search_matches(file, "alpha"), vec![0, 3]);
+        assert_eq!(compute_search_matches(file, "beta"), vec![1, 2]);
+        // Case-insensitive.
+        assert_eq!(compute_search_matches(file, "ALPHA"), vec![0, 3]);
+    }
+
+    #[test]
+    fn compute_search_matches_empty_query_or_no_hit_is_empty() {
+        let files = parse_unified_diff(SEARCH_PATCH).unwrap();
+        let file = &files[0];
+        assert!(compute_search_matches(file, "").is_empty());
+        assert!(compute_search_matches(file, "   ").is_empty());
+        assert!(compute_search_matches(file, "nonexistent").is_empty());
+    }
+
+    #[test]
+    fn on_file_changed_clears_active_search() {
+        let mut state = DiffViewerState::new(
+            crate::app::state::ViewState::new(
+                "p".into(),
+                "f".into(),
+                "s".into(),
+                "w".into(),
+                "Claude".into(),
+                crate::project::SessionKind::Claude,
+                crate::project::VibeMode::Vibeless,
+                true,
+            ),
+            std::path::PathBuf::from("/tmp"),
+        );
+        state.search_query = "alpha".into();
+        state.search_matches = vec![0, 3];
+        state.search_match_pos = Some(1);
+        state.editing_search = true;
+
+        state.on_file_changed();
+
+        assert!(state.search_query.is_empty());
+        assert!(state.search_matches.is_empty());
+        assert_eq!(state.search_match_pos, None);
+        assert!(!state.editing_search);
     }
 }

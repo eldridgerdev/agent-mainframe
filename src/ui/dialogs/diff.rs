@@ -86,6 +86,79 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.editing_base_ref {
         draw_base_ref_prompt(frame, state, theme);
     }
+    if state.editing_search {
+        draw_search_prompt(frame, state, theme);
+    }
+}
+
+/// A small centered input overlay for searching the current file's diff. Matches
+/// update incrementally as the reviewer types; the line cursor jumps to the
+/// nearest hit and `n`/`N` cycle them after submitting.
+fn draw_search_prompt(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let area = centered_rect(60, 22, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Search Diff ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+
+    // Live hit count for the current query.
+    let status = if state.search_query.trim().is_empty() {
+        "Search this file's diff (case-insensitive):".to_string()
+    } else if state.search_matches.is_empty() {
+        "No matches".to_string()
+    } else {
+        format!(
+            "Match {}/{}",
+            state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+            state.search_matches.len()
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            status,
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("/ ", Style::default().fg(theme.primary.to_color())),
+            Span::styled(
+                state.search_query.clone(),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::styled("▏", Style::default().fg(theme.primary.to_color())),
+        ])),
+        rows[1],
+    );
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            key("Enter"),
+            Span::raw(" keep (n/N to cycle)  "),
+            key("Esc"),
+            Span::raw(" cancel"),
+        ])),
+        rows[3],
+    );
 }
 
 /// A small centered input overlay for choosing the diff's base ref. Submitting
@@ -633,6 +706,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
         draft,
         blocker,
         selection,
+        matched,
     } = review_cursor_info(state);
 
     // Keep the comment cursor visible by nudging the patch scroll. Unified only:
@@ -656,6 +730,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
                 &draft,
                 &blocker,
                 &selection,
+                &matched,
                 &mut cursor_row,
             );
             (lines.len(), cursor_row)
@@ -699,6 +774,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
             draft,
             blocker,
             selection,
+            matched,
         },
         theme,
     );
@@ -719,6 +795,9 @@ struct ReviewLineMarkers {
     /// gutter can flag must-fix lines in a higher-contrast colour.
     blocker: std::collections::HashSet<DiffLineLocation>,
     selection: std::collections::HashSet<DiffLineLocation>,
+    /// Lines matching the active diff search, so the gutter can mark every hit
+    /// (the current match is already the cursor).
+    matched: std::collections::HashSet<DiffLineLocation>,
 }
 
 fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
@@ -729,6 +808,7 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
         draft: HashSet::new(),
         blocker: HashSet::new(),
         selection: HashSet::new(),
+        matched: HashSet::new(),
     };
     if !state.review {
         return empty();
@@ -764,12 +844,19 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
             .collect(),
         _ => HashSet::new(),
     };
+    // Every diff-search hit in the current file (empty when no search is active).
+    let matched = state
+        .search_matches
+        .iter()
+        .filter_map(|&idx| locs.get(idx).copied())
+        .collect();
     ReviewLineMarkers {
         cursor,
         commented,
         draft,
         blocker,
         selection,
+        matched,
     }
 }
 
@@ -853,6 +940,9 @@ pub(crate) struct PatchPanelOptions {
     /// Diff-line locations in the in-progress multi-line selection (unified view
     /// only); the gutter is tinted across the span while the reviewer extends it.
     pub selection: std::collections::HashSet<DiffLineLocation>,
+    /// Diff-line locations matching the active diff search (unified view only);
+    /// each hit gets a gutter marker so matches are visible while scrolling.
+    pub matched: std::collections::HashSet<DiffLineLocation>,
 }
 
 impl Default for PatchPanelOptions {
@@ -869,6 +959,7 @@ impl Default for PatchPanelOptions {
             draft: std::collections::HashSet::new(),
             blocker: std::collections::HashSet::new(),
             selection: std::collections::HashSet::new(),
+            matched: std::collections::HashSet::new(),
         }
     }
 }
@@ -923,6 +1014,7 @@ pub(crate) fn draw_patch_panel(
                 &options.draft,
                 &options.blocker,
                 &options.selection,
+                &options.matched,
                 &mut cursor_row,
             );
             frame.render_widget(
@@ -1040,7 +1132,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             }
             None => format!(" line cursor @ {} ", cursor + 1),
         };
-        let first = Line::from(vec![
+        let mut first_spans = vec![
             Span::styled(
                 position_label,
                 Style::default()
@@ -1051,7 +1143,30 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 format!("({comment_count} comment(s) on this file)  "),
                 Style::default().fg(theme.info.to_color()),
             ),
-        ]);
+        ];
+        // Surface a committed search so its shadowing of n/N is discoverable.
+        if !state.editing_search && !state.search_query.trim().is_empty() {
+            let count = if state.search_matches.is_empty() {
+                "no match".to_string()
+            } else {
+                format!(
+                    "{}/{}",
+                    state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+                    state.search_matches.len()
+                )
+            };
+            first_spans.push(Span::styled(
+                format!("search:{} ({count})  ", state.search_query),
+                Style::default().fg(theme.primary.to_color()),
+            ));
+            first_spans.push(key("n"));
+            first_spans.push(Span::raw("/"));
+            first_spans.push(key("N"));
+            first_spans.push(Span::raw(" match  "));
+            first_spans.push(key("Esc"));
+            first_spans.push(Span::raw(" clear"));
+        }
+        let first = Line::from(first_spans);
         let second = Line::from(vec![
             key(" j"),
             Span::raw("/"),
@@ -1205,7 +1320,9 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         key("f"),
         Span::raw(" general feedback  "),
         key("c"),
-        Span::raw(" line comments"),
+        Span::raw(" line comments  "),
+        key("/"),
+        Span::raw(" search"),
     ];
     if !state.general_feedback.trim().is_empty() {
         first_line.push(Span::styled(
@@ -1487,6 +1604,7 @@ fn patch_lines(
     draft: &std::collections::HashSet<DiffLineLocation>,
     blocker: &std::collections::HashSet<DiffLineLocation>,
     selection: &std::collections::HashSet<DiffLineLocation>,
+    matched: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
     let content_width = width as usize;
@@ -1518,6 +1636,7 @@ fn patch_lines(
         draft: draft.contains(&loc),
         is_blocker: blocker.contains(&loc),
         selected: selection.contains(&loc),
+        search_match: matched.contains(&loc),
     };
 
     let mut lines = Vec::new();
@@ -1672,6 +1791,7 @@ fn side_by_side_lines(
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
     }
@@ -1689,6 +1809,7 @@ fn side_by_side_lines(
             include_prologue,
             false,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
@@ -2069,6 +2190,10 @@ struct GutterAnnotation {
     /// in the higher-contrast danger colour.
     is_blocker: bool,
     selected: bool,
+    /// The line matches the active diff search. Lowest-priority marker: shown
+    /// only when the line isn't the cursor / commented / a draft (the current
+    /// match is already the cursor's solid marker).
+    search_match: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2119,6 +2244,11 @@ fn wrap_gutter_line(
         ("● ", color)
     } else if annotation.draft {
         ("○ ", theme.warning.to_color())
+    } else if annotation.search_match {
+        // A hollow triangle echoes the cursor's solid ▶ so a match reads as
+        // "another place to jump", in the primary colour to stay clear of the
+        // comment / draft marker hues.
+        ("▷ ", theme.primary.to_color())
     } else {
         ("│ ", line_number_fg(style, row_bg))
     };
@@ -2740,6 +2870,7 @@ index 0000000..1111111
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
         let indented_code_line = &lines[2];
@@ -2810,6 +2941,7 @@ index 0000000..1111111
             false,
             true,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),

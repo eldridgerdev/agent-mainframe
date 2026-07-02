@@ -567,6 +567,21 @@ pub struct DiffViewerState {
     /// the feature's existing agent pane (the default, unchanged behaviour) or a
     /// fresh dedicated review session. Toggled with `t` in the review viewer.
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// True while the reviewer is typing a diff search query in the prompt
+    /// (opened with `/`). Takes precedence over every other key binding.
+    pub editing_search: bool,
+    /// Active diff search query — also the in-progress text while
+    /// `editing_search`. Empty when no search is active. Matched
+    /// case-insensitively as a substring of the current file's addressable line
+    /// texts.
+    pub search_query: String,
+    /// Indices into the current file's `addressable_lines()` that match
+    /// `search_query`, ascending. Recomputed whenever the query or selected file
+    /// changes; empty when there is no match (or no query). Current-file only.
+    pub search_matches: Vec<usize>,
+    /// Position within `search_matches` of the current match (the one the line
+    /// cursor sits on). `None` when there are no matches.
+    pub search_match_pos: Option<usize>,
 }
 
 impl DiffViewerState {
@@ -618,7 +633,21 @@ impl DiffViewerState {
             has_prior_review: false,
             prior_agent_responses: std::collections::HashMap::new(),
             fix_target: crate::app::pr_review::FixTarget::ExistingLive,
+            editing_search: false,
+            search_query: String::new(),
+            search_matches: Vec::new(),
+            search_match_pos: None,
         }
+    }
+
+    /// Drop any active diff search (query, matches and current-match position).
+    /// Called when the search is cancelled/cleared and whenever the selected
+    /// file changes, since matches are anchored to a single file.
+    pub fn clear_search(&mut self) {
+        self.editing_search = false;
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_match_pos = None;
     }
 
     /// Reset the per-file view state after the selected file changes (patch /
@@ -633,6 +662,9 @@ impl DiffViewerState {
         }
         // A range selection can't carry across files.
         self.comment_anchor = None;
+        // Search matches are anchored to a single file; end the search rather
+        // than leaving a stale query pointing at the previous file.
+        self.clear_search();
     }
 
     /// Whether the file at `path` carries a `Blocker`-severity signal: either a

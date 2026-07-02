@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **Search within the final-review diff.** Press `/` in the final review to
+  incrementally search the current file's diff (case-insensitive). The line
+  cursor jumps to the first match as you type; after `Enter`, `n` / `N` cycle
+  matches (wrapping) and `Esc` clears the search. Every hit is flagged with a
+  `▷` gutter marker and the footer shows the match count.
 - **AMF is now licensed under the MIT License.** The repository ships a
   `LICENSE` file, so you can use, modify, and redistribute AMF under
   standard MIT terms. No migration is required.

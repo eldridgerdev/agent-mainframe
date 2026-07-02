@@ -3,10 +3,11 @@
 - **Status:** Core shipped; Rounds 2–3 in backlog — every item under
   **Progress → Round 1** is implemented and merged, and Round 2's AI
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
-  comment-implied rejections, severity tags and agent replies-back
-  have shipped. The remaining Round 2 items and a third round of
-  review-loop / viewer upgrades (**Round 3**, captured 2026-07-01) are
-  not yet started.
+  comment-implied rejections, severity tags, agent replies-back and
+  in-diff search have shipped. The remaining Round 2 items (thread
+  state, re-anchoring, changeset overview, build gate, file-level PR
+  comments) and a third round of review-loop / viewer upgrades
+  (**Round 3**, captured 2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -471,7 +472,18 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       can span hunks, and the cursor-mode footer hints the keys.
       `DiffFile::hunk_start_indices` (`src/diff.rs`) anchors the jumps;
       `diff_review_jump_hunk` in `src/app/review.rs`.
-- [ ] Search within the diff
+- [x] Search within the diff — press `/` in the final review to open an
+      incremental, case-insensitive search over the **current file's** diff
+      (matched against `addressable_line_texts()` so it hits added / removed /
+      context lines alike). Typing jumps the line cursor to the first match at
+      or after its position; on commit (`Enter`) the query sticks and `n` / `N`
+      cycle matches with wraparound (shadowing file navigation only while a
+      search is active), while `Esc` clears it. Every hit carries a hollow `▷`
+      gutter marker (the current match is the cursor's solid `▶`) and the footer
+      shows `search: <q> (i/N)`. Reuses the `comment_cursor` +
+      `cursor_sync_to_view` plumbing for the jump/scroll; `compute_search_matches`
+      / `diff_search_*` in `src/app/review.rs`, `search_*` on `DiffViewerState`.
+      Cross-file search deferred.
 - [x] Line comment auto-rejects its file — storing a file's first kept
       (non-draft) line comment or suggestion defaults its verdict to
       `Reject` with empty feedback (the comments carry the specifics);

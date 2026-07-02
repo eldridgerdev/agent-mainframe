@@ -549,6 +549,10 @@ impl TmuxManager {
         ])
     }
 
+    fn agent_launch_command(cmd: String) -> String {
+        format!("printf '\\033[2J\\033[H'; {cmd}")
+    }
+
     fn pane_default_terminal() -> Option<String> {
         if let Some(value) = std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL") {
             let value = value.to_string_lossy().trim().to_string();
@@ -1488,6 +1492,7 @@ impl TmuxManager {
             cmd_str.push_str(&Self::shell_quote(arg));
         }
 
+        let cmd_str = Self::agent_launch_command(cmd_str);
         Self::run(
             &["send-keys", "-t", &target, &cmd_str, "Enter"],
             "Failed to send claude command to tmux",
@@ -1520,6 +1525,7 @@ impl TmuxManager {
             ),
         };
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send opencode command to tmux",
@@ -1548,6 +1554,7 @@ impl TmuxManager {
             cmd.push_str(&format!(" resume {}", Self::shell_quote(id)));
         }
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send codex command to tmux",
@@ -1563,6 +1570,7 @@ impl TmuxManager {
             Self::agent_launch_env(session, window, feature_session_id)
         );
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send pi command to tmux",
@@ -2337,6 +2345,14 @@ mod tests {
         assert!(prefix.contains("AMF_TMUX_WINDOW='codex'"));
         assert!(prefix.contains("AMF_FEATURE_SESSION_ID='session-123'"));
         assert!(prefix.contains("PATH="));
+    }
+
+    #[test]
+    fn agent_launch_command_clears_shell_echo_before_starting_harness() {
+        let cmd = TmuxManager::agent_launch_command("env AMF_SESSION='amf-test' codex".into());
+
+        assert!(cmd.starts_with("printf '\\033[2J\\033[H'; "));
+        assert!(cmd.ends_with("env AMF_SESSION='amf-test' codex"));
     }
 
     #[test]

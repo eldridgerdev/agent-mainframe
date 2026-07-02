@@ -18,6 +18,9 @@ are tagged.
 
 ### Changed
 
+- **Codex SuperVibe now skips Codex permission prompts.** Codex-backed
+  SuperVibe sessions launch with full-access, no-approval permissions, so the
+  mode now behaves consistently with its no-prompt warning.
 - **Next / previous feature navigation is now opt-in.** The leader `n` / `p`
   shortcuts no longer jump between features by default, and they no longer show
   up in the leader menu unless you bind them. To get them back, bind the

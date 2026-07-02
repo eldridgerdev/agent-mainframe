@@ -742,7 +742,8 @@ impl App {
                     )?;
                 }
                 SessionKind::Codex => {
-                    let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
+                    let codex_args =
+                        crate::codex_config::launch_override_args(&feature.workdir, &feature.mode);
                     // In vibeless mode, launch a diff-review watcher alongside
                     // Codex so each file change can be approved/rejected via
                     // the AMF popup.

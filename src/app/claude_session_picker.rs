@@ -295,7 +295,8 @@ impl App {
                     )?;
                 }
                 SessionKind::Codex => {
-                    let codex_args = crate::codex_config::launch_override_args(&feature.workdir);
+                    let codex_args =
+                        crate::codex_config::launch_override_args(&feature.workdir, &feature.mode);
                     self.tmux.launch_codex(
                         &feature.tmux_session,
                         &session.tmux_window,

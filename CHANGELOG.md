@@ -18,6 +18,9 @@ are tagged.
 
 ### Changed
 
+- **Codex SuperVibe now skips Codex permission prompts.** Codex-backed
+  SuperVibe sessions launch with full-access, no-approval permissions, so the
+  mode now behaves consistently with its no-prompt warning.
 - **Next / previous feature navigation is now opt-in.** The leader `n` / `p`
   shortcuts no longer jump between features by default, and they no longer show
   up in the leader menu unless you bind them. To get them back, bind the
@@ -32,11 +35,24 @@ are tagged.
   (`clippy -D warnings` plus a formatting check), so it stays that way.
   Nothing about AMF's behavior changes.
 
+### Fixed
+
+- **New agent sessions hide their startup command echo.** When AMF starts a
+  fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
+  loading screen until the harness is ready instead of flashing the long tmux
+  launch command and environment setup. Existing running sessions open normally.
+- **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
+  ignores duplicate Enter-repeat events and raw carriage-return/newline
+  characters in embedded terminal input, so pressing Enter submits once instead
+  of making the pane jump down by several lines.
+
 ### Migration
 
-- No action required. If you relied on `n` / `p` to move between features in a
-  session, add `"next_feature"` / `"prev_feature"` keybindings to your config to
-  restore them.
+- No action required for the startup loading-screen fix.
+- No action required for the macOS terminal input fix.
+- If you relied on `n` / `p` to move between features in a session, add
+  `"next_feature"` / `"prev_feature"` keybindings to your config to restore
+  them.
 
 ## [v0.29.0] - 2026-07-01
 

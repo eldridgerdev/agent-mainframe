@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use crate::project::VibeMode;
+
 pub fn ensure_user_config_notify_hook(hook_path: &Path) {
     if cfg!(test) {
         return;
@@ -11,13 +13,13 @@ pub fn ensure_user_config_notify_hook(hook_path: &Path) {
     let _ = ensure_user_config_notify_hook_for(&config_path, hook_path);
 }
 
-pub fn launch_override_args(workdir: &Path) -> Vec<String> {
+pub fn launch_override_args(workdir: &Path, mode: &VibeMode) -> Vec<String> {
     let hook_path = workdir.join(".codex").join("amf-codex-notify.sh");
     let user_config_path = dirs::home_dir()
         .map(|home| home.join(".codex").join("config.toml"))
         .unwrap_or_default();
 
-    launch_override_args_for(&user_config_path, &hook_path, workdir)
+    launch_override_args_for(&user_config_path, &hook_path, workdir, mode)
 }
 
 pub fn configured_model() -> Option<String> {
@@ -34,7 +36,12 @@ fn configured_model_for(config_path: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn launch_override_args_for(config_path: &Path, hook_path: &Path, workdir: &Path) -> Vec<String> {
+fn launch_override_args_for(
+    config_path: &Path,
+    hook_path: &Path,
+    workdir: &Path,
+    mode: &VibeMode,
+) -> Vec<String> {
     let user_config = read_launch_config(config_path).unwrap_or_default();
     let launch_config = build_launch_config(&user_config, hook_path);
     let mut args = vec![
@@ -43,6 +50,14 @@ fn launch_override_args_for(config_path: &Path, hook_path: &Path, workdir: &Path
         "--add-dir".to_string(),
         workdir.to_string_lossy().into_owned(),
     ];
+    if matches!(mode, VibeMode::SuperVibe) {
+        args.extend([
+            "--sandbox".to_string(),
+            "danger-full-access".to_string(),
+            "--ask-for-approval".to_string(),
+            "never".to_string(),
+        ]);
+    }
     args.extend(launch_config_to_args(launch_config));
     args
 }
@@ -135,6 +150,7 @@ fn ensure_user_config_notify_hook_for(config_path: &Path, hook_path: &Path) -> O
 #[cfg(test)]
 mod tests {
     use super::launch_override_args_for;
+    use crate::project::VibeMode;
     use std::fs;
     use tempfile::TempDir;
 
@@ -145,7 +161,7 @@ mod tests {
         let hook_path = dir.path().join("amf-codex-notify.sh");
 
         fs::write(&config_path, "notify = [\"/tmp/existing-hook.sh\"]\n").unwrap();
-        let args = launch_override_args_for(&config_path, &hook_path, dir.path());
+        let args = launch_override_args_for(&config_path, &hook_path, dir.path(), &VibeMode::Vibe);
 
         assert_eq!(args.len(), 6);
         assert_eq!(args[0], "-C");
@@ -169,7 +185,7 @@ mod tests {
         let config_path = dir.path().join("missing.toml");
         let hook_path = dir.path().join("amf-codex-notify.sh");
 
-        let args = launch_override_args_for(&config_path, &hook_path, dir.path());
+        let args = launch_override_args_for(&config_path, &hook_path, dir.path(), &VibeMode::Vibe);
 
         assert_eq!(args.len(), 6);
         assert_eq!(args[0], "-C");
@@ -189,6 +205,25 @@ mod tests {
         assert_eq!(
             super::configured_model_for(&config_path).as_deref(),
             Some("gpt-5.5")
+        );
+    }
+
+    #[test]
+    fn launch_override_args_supervibe_uses_full_access_without_approvals() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("missing.toml");
+        let hook_path = dir.path().join("amf-codex-notify.sh");
+
+        let args =
+            launch_override_args_for(&config_path, &hook_path, dir.path(), &VibeMode::SuperVibe);
+
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--sandbox", "danger-full-access"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--ask-for-approval", "never"])
         );
     }
 }

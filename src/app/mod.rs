@@ -1708,6 +1708,27 @@ impl App {
         self.view_display_frozen_until = Some(Instant::now() + dur);
     }
 
+    fn update_startup_mask_for_pane_content(&mut self) {
+        let AppMode::Viewing(view) = &mut self.mode else {
+            return;
+        };
+        if view.startup_mask_started_at.is_none() {
+            return;
+        }
+
+        let launch_echo_visible = self.pane_content.contains("AMF_TMUX_BIN=")
+            || self.pane_content.contains("AMF_TMUX_SOCKET=")
+            || self.pane_content.contains("AMF_TMUX_WINDOW=")
+            || self.pane_content.contains("AMF_FEATURE_SESSION_ID=")
+            || self.pane_content.contains("AMF_SESSION_ID=")
+            || self.pane_content.contains("AMF_SESSION=");
+        if !view.startup_mask_active()
+            || (!self.pane_content.trim().is_empty() && !launch_echo_visible)
+        {
+            view.startup_mask_started_at = None;
+        }
+    }
+
     pub fn drain_view_snapshots(&mut self) -> (bool, bool) {
         // Hold the last good frame while a re-anchor bounce is in flight
         // so the shrink/restore and Claude Code's repaint stay off-screen.
@@ -1755,6 +1776,7 @@ impl App {
                 && self.pane_content != pane_content
             {
                 self.pane_content = pane_content;
+                self.update_startup_mask_for_pane_content();
                 pane_changed = true;
             }
 

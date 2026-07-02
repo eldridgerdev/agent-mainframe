@@ -897,7 +897,9 @@ pub fn handle_new_session_name_key(app: &mut App, key: KeyCode) -> Result<()> {
                 }
             }
 
-            if let Some(view) = state.return_to.from_view {
+            if !matches!(app.mode, AppMode::Viewing(_))
+                && let Some(view) = state.return_to.from_view
+            {
                 app.mode = AppMode::Viewing(view);
             }
         }

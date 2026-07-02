@@ -412,7 +412,7 @@ the agent handles permissions:
 | --- | --- |
 | **Vibeless** | Diff-review hook gates all Edit/Write operations. You review each change before it's applied. Available for Claude Code and Opencode. Codex does not support Vibeless diff review. |
 | **Vibe** | Auto-accepts edits (`--permission-mode acceptEdits`). No diff-review hook. |
-| **SuperVibe** | Skips all permission checks (`--dangerously-skip-permissions`). Shows a confirmation warning before creation. |
+| **SuperVibe** | Skips permission prompts. Claude uses `--dangerously-skip-permissions`; Codex uses `--sandbox danger-full-access --ask-for-approval never`. Shows a confirmation warning before creation. |
 
 ### Diff-Review Hook
 

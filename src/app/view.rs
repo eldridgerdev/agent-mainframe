@@ -72,6 +72,13 @@ impl App {
             return Ok(());
         }
 
+        let feature_was_stopped = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .is_some_and(|feature| feature.status == ProjectStatus::Stopped);
+
         self.ensure_feature_running(pi, fi)?;
 
         let (
@@ -132,7 +139,7 @@ impl App {
 
         let pending_project_name = project_name.clone();
         let pending_feature_name = feature_name.clone();
-        let view = ViewState::new(
+        let mut view = ViewState::new(
             project_name,
             feature_name,
             tmux_session,
@@ -142,6 +149,9 @@ impl App {
             vibe_mode,
             review,
         );
+        if feature_was_stopped && view.session_kind.is_agent_harness() {
+            view.show_startup_mask();
+        }
 
         self.save()?;
         self.pane_content.clear();

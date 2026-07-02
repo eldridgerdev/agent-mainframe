@@ -41,6 +41,11 @@ other modal command surfaces.
 
 ## Progress
 
+- First view-leader bindings are now config-driven: `next_feature` and
+  `prev_feature` (previously hardcoded to leader `n`/`p`) have no default,
+  are read from the existing `keybindings` map, and only appear in the leader
+  menu when bound. This is an ad-hoc lookup, not yet the shared scoped catalog
+  below, but it establishes the "no-default, opt-in leader command" pattern.
 - [ ] Inventory all hardcoded dashboard and view leader commands
 - [ ] Design scoped action id + storage format
 - [ ] Preserve compatibility with existing dashboard `keybindings`

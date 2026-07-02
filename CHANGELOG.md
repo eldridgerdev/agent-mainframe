@@ -10,7 +10,36 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **AMF is now licensed under the MIT License.** The repository ships a
+  `LICENSE` file, so you can use, modify, and redistribute AMF under
+  standard MIT terms. No migration is required.
+
+### Changed
+
+- **Next / previous feature navigation is now opt-in.** The leader `n` / `p`
+  shortcuts no longer jump between features by default, and they no longer show
+  up in the leader menu unless you bind them. To get them back, bind the
+  `next_feature` and `prev_feature` actions in your config (or via the config
+  wizard) — they'll reappear in the menu using whatever keys you choose.
+- **Freed-up shortcuts moved to lowercase.** With `n` / `p` no longer taken by
+  feature navigation, the prompt library (leader menu) and the syntax parser
+  picker (dashboard) both moved from `P` to `p`.
+
+### Fixed
+
+- **New agent sessions hide their startup command echo.** When AMF starts a
+  fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
+  loading screen until the harness is ready instead of flashing the long tmux
+  launch command and environment setup. Existing running sessions open normally.
+
+### Migration
+
+- No action required for the startup loading-screen fix.
+- If you relied on `n` / `p` to move between features in a session, add
+  `"next_feature"` / `"prev_feature"` keybindings to your config to restore
+  them.
 
 ## [v0.29.0] - 2026-07-01
 

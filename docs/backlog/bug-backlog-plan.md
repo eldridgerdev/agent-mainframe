@@ -14,6 +14,38 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~New agent sessions show their launch command before the harness opens~~ (Fixed)
+
+- **Status:** Fixed (2026-07-02)
+- **Reported:** 2026-07-02
+- **Root cause:** AMF created the tmux pane and immediately rendered captured
+  pane content. For newly launched agent sessions, the first captured frame can
+  still be the shell echo of AMF's long harness launch command and environment.
+  The first loading-mask attempt only covered brand-new feature tmux sessions,
+  but adding `Codex 2` / another agent from the session picker creates a new
+  tmux window inside an already-running feature tmux session. A content-only
+  fallback then over-corrected because the launch echo can remain in captured
+  scrollback after the harness is already running.
+- **Fix:** Track a transient startup mask on the specific `ViewState` created
+  for a new agent pane. Brand-new feature sessions and new agent windows from
+  the session picker set that mask explicitly. The mask clears when fresh pane
+  content no longer looks like AMF's launch echo, with a timeout fallback so a
+  failed launch becomes visible.
+
+### Repro
+
+1. From an existing feature, add a new agent session such as `Codex 2`.
+2. AMF switches into the new session view while the harness is launching.
+
+### Expected
+
+AMF shows a short loading screen until the agent harness is visible.
+
+### Actual
+
+The embedded pane briefly shows the full tmux launch command and exported AMF
+environment before the harness takes over.
+
 ## PR review: triage / reply state is lost on return
 
 - **Status:** Open

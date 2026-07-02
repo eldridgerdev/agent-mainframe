@@ -47,7 +47,9 @@ pub use hooks::{handle_deleting_feature_key, handle_hook_prompt_key, handle_runn
 pub use input::handle_paste;
 pub use mouse::handle_mouse;
 pub use normal::handle_normal_key;
-pub(crate) use normal::{DASHBOARD_KEYBINDING_ACTIONS, default_key_for_action};
+pub(crate) use normal::{
+    DASHBOARD_KEYBINDING_ACTIONS, EXTRA_KEYBINDING_ACTIONS, default_key_for_action,
+};
 pub use picker::{
     handle_bookmark_picker_key, handle_claude_session_confirm_key,
     handle_claude_session_picker_key, handle_codex_session_confirm_key,

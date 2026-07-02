@@ -258,6 +258,21 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     app.deactivate_leader();
 
+    // Next/prev feature navigation has no default binding. Dispatch it only
+    // when the user has configured a key for it. This runs before the static
+    // match so a configured key wins over any static binding on that char.
+    if let KeyCode::Char(c) = key.code {
+        let kb = &app.active_extension.keybindings;
+        if kb.get("next_feature") == Some(&c) {
+            app.view_next_feature()?;
+            return Ok(());
+        }
+        if kb.get("prev_feature") == Some(&c) {
+            app.view_prev_feature()?;
+            return Ok(());
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             app.exit_view();
@@ -267,12 +282,6 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('T') => {
             app.view_prev_session();
-        }
-        KeyCode::Char('n') => {
-            app.view_next_feature()?;
-        }
-        KeyCode::Char('p') => {
-            app.view_prev_feature()?;
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
@@ -398,7 +407,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
         }
-        KeyCode::Char('P') => {
+        KeyCode::Char('p') => {
             let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {

@@ -10,7 +10,22 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Changed
+
+- **Next / previous feature navigation is now opt-in.** The leader `n` / `p`
+  shortcuts no longer jump between features by default, and they no longer show
+  up in the leader menu unless you bind them. To get them back, bind the
+  `next_feature` and `prev_feature` actions in your config (or via the config
+  wizard) — they'll reappear in the menu using whatever keys you choose.
+- **Freed-up shortcuts moved to lowercase.** With `n` / `p` no longer taken by
+  feature navigation, the prompt library (leader menu) and the syntax parser
+  picker (dashboard) both moved from `P` to `p`.
+
+### Migration
+
+- No action required. If you relied on `n` / `p` to move between features in a
+  session, add `"next_feature"` / `"prev_feature"` keybindings to your config to
+  restore them.
 
 ## [v0.28.0] - 2026-06-29
 

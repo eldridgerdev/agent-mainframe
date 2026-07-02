@@ -428,14 +428,18 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
     }
 }
 
-fn sorted_keybinding_actions(map: &HashMap<String, char>) -> Vec<String> {
+fn sorted_keybinding_actions(_map: &HashMap<String, char>) -> Vec<String> {
+    // All dashboard actions have a default key, so they are always listed.
+    // Extra actions have no default but are always offered so they can be
+    // discovered and bound from the wizard.
     crate::handlers::DASHBOARD_KEYBINDING_ACTIONS
         .iter()
         .map(|(action, _)| (*action).to_string())
-        .filter(|action| {
-            map.contains_key(action.as_str())
-                || crate::handlers::default_key_for_action(action).is_some()
-        })
+        .chain(
+            crate::handlers::EXTRA_KEYBINDING_ACTIONS
+                .iter()
+                .map(|action| (*action).to_string()),
+        )
         .collect()
 }
 

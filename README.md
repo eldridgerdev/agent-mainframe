@@ -274,7 +274,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `y` | Toggle ready state for the selected feature |
 | `Z` | Generate a one-line summary for the selected feature |
 | `T` | Open the theme picker |
-| `P` | Open the syntax parser picker |
+| `p` | Open the syntax parser picker |
 | `L` | Open the prompt library |
 | `i` | Input requests picker |
 | `/` | Search and jump |
@@ -300,8 +300,6 @@ All keys are forwarded to the tmux session except:
 | `t` / `T` | Cycle between sessions |
 | `w` | Open session switcher |
 | `h` | Open bookmark picker popup |
-| `n` | Next feature (same project) |
-| `p` | Previous feature (same project) |
 | `/` | Command palette |
 | `a` | Command palette focused on AMF local actions |
 | `i` | Input requests picker |
@@ -309,12 +307,17 @@ All keys are forwarded to the tmux session except:
 | `x` | Stop session and exit view |
 | `f` | Trigger final review |
 | `l` | Show the latest saved prompt |
-| `P` | Open the prompt library (inject a saved prompt) — same as `Ctrl+P` in the compose box |
+| `p` | Open the prompt library (inject a saved prompt) — same as `Ctrl+P` in the compose box |
 | `o` / `S` | Toggle pane scroll mode |
 | `D` | Open debug log |
 | `H` / `M` | Bookmark / unbookmark current session |
 | `1`-`9` | Jump to bookmark slot |
 | `?` | Show help |
+
+> **Next / previous feature** navigation has no default key. Bind the
+> `next_feature` and `prev_feature` actions in your config (or via the config
+> wizard) to enable them as leader commands; they only appear in the leader
+> menu once bound.
 
 ### Command Palette
 
@@ -700,7 +703,7 @@ language parser in the binary.
 The curated picker currently includes Bash, C, C++, CSS, Go, HTML, Java,
 JavaScript, JSON, Markdown, Python, Rust, TOML, TSX, TypeScript, and YAML.
 
-1. Press `P` in the dashboard to open the syntax parser picker.
+1. Press `p` in the dashboard to open the syntax parser picker.
 2. Use `Enter` or `i` to install or reinstall the selected parser.
 3. Use `x` to remove a parser you no longer need.
 

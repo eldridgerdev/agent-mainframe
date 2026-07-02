@@ -758,6 +758,11 @@ fn draw_view_pane(
         .is_agent_harness()
         .then(|| app.compose_intercept_active(view));
 
+    let next_prev_feature = (
+        app.active_extension.keybindings.get("next_feature").copied(),
+        app.active_extension.keybindings.get("prev_feature").copied(),
+    );
+
     super::pane::draw_with_lines(
         frame,
         view,
@@ -768,6 +773,7 @@ fn draw_view_pane(
         app.pending_inputs.len(),
         tmux_cursor,
         compose_intercept,
+        next_prev_feature,
         &app.theme,
     );
 }

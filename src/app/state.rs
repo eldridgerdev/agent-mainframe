@@ -81,6 +81,7 @@ pub struct ViewState {
     pub selection: TextSelection,
     pub sidebar_visible: bool,
     pub todos_expanded: bool,
+    pub startup_mask_started_at: Option<Instant>,
 }
 
 impl ViewState {
@@ -111,7 +112,16 @@ impl ViewState {
             selection: TextSelection::default(),
             sidebar_visible: true,
             todos_expanded: false,
+            startup_mask_started_at: None,
         }
+    }
+
+    pub fn show_startup_mask(&mut self) {
+        self.startup_mask_started_at = Some(Instant::now());
+    }
+
+    pub fn startup_mask_active(&self) -> bool {
+        self.startup_mask_started_at.is_some()
     }
 
     pub fn sidebar_session_kind(&self) -> Option<SessionKind> {
@@ -377,6 +387,12 @@ pub struct DiffViewerState {
     pub review: bool,
     /// File path -> verdict. Skipped files have no entry.
     pub decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// Paths whose `Reject` entry in `decisions` was defaulted by storing a
+    /// kept line comment (a commented file implicitly needs revision) rather
+    /// than set explicitly. Removing the file's last kept comment clears an
+    /// auto-set rejection; an explicit approve/skip/reject drops the path from
+    /// this set so the reviewer's verdict sticks.
+    pub auto_rejected: std::collections::HashSet<String>,
     /// File path -> line-level comments anchored to specific diff lines.
     pub line_comments: std::collections::HashMap<String, Vec<LineComment>>,
     /// Active line-comment cursor: index into the current file's
@@ -477,6 +493,7 @@ impl DiffViewerState {
             error: None,
             review: false,
             decisions: std::collections::HashMap::new(),
+            auto_rejected: std::collections::HashSet::new(),
             line_comments: std::collections::HashMap::new(),
             comment_cursor: None,
             comment_anchor: None,

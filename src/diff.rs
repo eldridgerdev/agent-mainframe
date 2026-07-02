@@ -88,6 +88,27 @@ impl DiffFile {
         out
     }
 
+    /// The index into `addressable_lines()` of each hunk's first addressable
+    /// line, in hunk order. The anchor list for jump-by-hunk navigation of the
+    /// review line cursor. Hunks with no addressable lines are skipped so a
+    /// jump always lands on a real cursor position.
+    pub fn hunk_start_indices(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut idx = 0usize;
+        for hunk in &self.hunks {
+            let addressable = hunk
+                .lines
+                .iter()
+                .filter(|l| !matches!(l.kind, DiffLineKind::NoNewlineMarker))
+                .count();
+            if addressable > 0 {
+                out.push(idx);
+            }
+            idx += addressable;
+        }
+        out
+    }
+
     /// The content of each addressable line, in the same order (and 1:1) as
     /// `addressable_lines()`, with the single-char diff prefix (`+`/`-`/space)
     /// stripped. Used to pre-fill a suggested-change editor with the current
@@ -764,6 +785,56 @@ index 1111111..2222222 100644
                 },
             ]
         );
+    }
+
+    #[test]
+    fn hunk_start_indices_anchor_each_hunk_and_skip_empty_ones() {
+        let make_hunk = |lines: Vec<DiffLine>| DiffHunk {
+            header: "@@".into(),
+            old_start: 1,
+            old_lines: 1,
+            new_start: 1,
+            new_lines: 1,
+            lines,
+        };
+        let file = DiffFile {
+            old_path: Some("a.rs".into()),
+            path: "a.rs".into(),
+            status: DiffFileStatus::Modified,
+            additions: 2,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![
+                // Two addressable lines: indices 0 and 1.
+                make_hunk(vec![
+                    DiffLine {
+                        kind: DiffLineKind::Context,
+                        text: " ctx".into(),
+                    },
+                    DiffLine {
+                        kind: DiffLineKind::Added,
+                        text: "+one".into(),
+                    },
+                ]),
+                // No addressable lines: must be skipped, not anchored.
+                make_hunk(vec![DiffLine {
+                    kind: DiffLineKind::NoNewlineMarker,
+                    text: "\\ No newline at end of file".into(),
+                }]),
+                // One addressable line at index 2.
+                make_hunk(vec![DiffLine {
+                    kind: DiffLineKind::Added,
+                    text: "+two".into(),
+                }]),
+            ],
+        };
+
+        assert_eq!(file.hunk_start_indices(), vec![0, 2]);
+        // Indices are valid positions in addressable_lines().
+        assert_eq!(file.addressable_lines().len(), 3);
     }
 
     #[test]

@@ -1,9 +1,11 @@
 # Final Review Enhancements
 
-- **Status:** Core shipped; Round 2 in backlog — every item under
-  **Progress → Round 1** is implemented and merged. A second round of
-  reviewer-workflow enhancements (**Round 2**, below) is captured but
-  not yet started.
+- **Status:** Core shipped; Rounds 2–3 in backlog — every item under
+  **Progress → Round 1** is implemented and merged, and Round 2's AI
+  co-reviewer, suggested-change blocks, jump-by-hunk navigation and
+  comment-implied rejections have shipped. The remaining Round 2 items
+  and a third round of review-loop / viewer upgrades (**Round 3**,
+  captured 2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -201,6 +203,103 @@ impact. Each is independent and grounded in the plumbing it reuses.
   accepted AI draft counts. Surfaces in the file-list markers and the
   approved/needs-work/skipped counts on finish.
 
+### Round 3 — review-loop and viewer upgrades
+
+A third batch, captured 2026-07-01 from a fresh pass over the shipped
+feature (including the Round 2 items that have since landed: AI
+co-review drafts, suggestion blocks, the `Changed` re-review filter).
+Grouped by theme; each item is independent. Overlaps with existing
+Round 2 items are cross-referenced rather than duplicated — in
+particular, feedback-resolution tracking is already covered by
+**Round 2 → resolve/unresolve thread state** + **re-anchor comments**,
+and outcome-driven PR review events by **Round 2 → severity tags**.
+
+#### Closing the review→fix→re-review loop
+
+- **Interdiff on re-review.** `final-review-snapshot.json` stores only
+  per-file fingerprints, so a re-review can say *which* files changed
+  but then shows the full branch diff again — the reviewer re-reads
+  everything to find the fix. Store the per-file patch (or the
+  base+head blob ids) in the snapshot so a changed file can offer a
+  "since last review" view: the diff between what was reviewed last
+  round and what's there now. Answers the actual re-review question
+  directly; the single highest-leverage item in this round.
+- **"Fixes ready — re-review?" notification.** After a finished review
+  dispatches the fix prompt, watch the target agent session via the
+  existing thinking-status sync; when it goes idle, raise a
+  notification (existing notification plumbing) with a one-key jump
+  straight back into the review — which, paired with interdiff, opens
+  pre-filtered to changed files. Turns review rounds into a loop
+  instead of the reviewer polling the pane.
+- **Apply suggestions locally.** A suggestion is already a verbatim
+  replacement with an exact line span — everything needed to patch the
+  worktree directly. A key on a suggestion-carrying comment (or an
+  "apply all suggestions" option at finish) skips the agent round-trip
+  for mechanical fixes, reserving the agent for prose feedback. Guard
+  with a dirty-file / span-still-matches check and report what was
+  applied in the finish summary.
+- **Finish summary screen.** `q` currently gates on undecided files and
+  then immediately writes and dispatches. Insert an editable summary
+  overlay first — every verdict, comment and suggestion in one list,
+  Enter jumps back to any item to edit — one last look before the
+  feedback becomes an agent prompt and possibly a PR review. Also fixes
+  a smaller gap: editing feedback on an earlier file today means
+  hunting it down in the list again. This is the concrete answer to the
+  open question about a composed "review summary".
+
+#### Viewer ergonomics
+
+- **Expand context around hunks.** `DiffFile` already carries
+  `old_content`/`new_content`, so GitHub-style "expand N lines
+  above/below" (or a whole-file toggle) is mostly a rendering change.
+  Hunks alone often hide what's needed to judge a change — the
+  enclosing function signature, the surrounding match.
+- **Word-level intra-line diff highlighting.** Highlight which tokens
+  changed within a modified line pair (the other half of diff
+  readability alongside the existing syntax highlighting). Cheap and
+  adjacent: an ignore-whitespace toggle (`git diff -w` semantics).
+- **Global comment navigation + undo verdict.** Tab cycles AI drafts
+  only within the current file; add next/prev *comment* navigation
+  across all files. And an undo for the last verdict — an accidental
+  `a` currently just advances and the file must be re-found manually.
+- **Open at line in `$EDITOR`.** With the line cursor active, a key to
+  suspend the TUI and open the file at the cursored line — sometimes
+  the reviewer needs to poke around before writing the comment.
+- **`?` help overlay for review mode.** The key surface is large now
+  (a/r/s/f/c/v/S/C/A/w/e/u/F/t/b/n/p/[/]/Tab, plus cursor-mode
+  overloads of a/d/Esc); the footer can't teach all of it. Reuse the
+  dashboard's help-overlay pattern with review-specific groupings.
+- **Mouse support in the diff viewer.** `handlers/mouse.rs` already
+  handles the dashboard; add click-to-select in the file list,
+  wheel-scroll in the patch, and click-to-place the comment cursor.
+
+#### AI co-review upgrades
+
+- **Whole-changeset co-review.** `A` runs per-file only. Add a variant
+  that queues all non-binary, undecided files through the same per-file
+  pass — one headless child at a time, a progress marker in the file
+  list, drafts landing as each file finishes — a true first-pass
+  reviewer while keeping token cost bounded and visible.
+- **Severity + suggestions in AI findings.** Extend the output contract
+  to `<line>|<severity>|<comment>` so drafts colour-code and filter by
+  severity (skim blockers first — feeds the Round 2 severity-tags
+  item), and let the model optionally attach a fenced replacement that
+  lands as a *draft suggestion* — which, with apply-suggestions-locally
+  above, becomes "AI proposes, human accepts, patch applies" end to
+  end.
+- **Cross-file context for the co-reviewer.** The prompt currently
+  shows one file's diff in isolation, so it can't catch "renamed here
+  but not there". Include the changeset's file list plus the other
+  files' hunk headers (still bounded) to raise finding quality.
+
+#### Workflow & entry points
+
+- **Start a review from the dashboard.** `trigger_final_review`
+  requires `AppMode::Viewing`; add a dashboard binding on the selected
+  feature, plus a "review pending" badge on features whose agent went
+  idle since the last review snapshot — making reviews visible as a
+  queue instead of a hop through the feature view.
+
 ## Progress
 
 ### Round 1 (shipped)
@@ -317,10 +416,68 @@ impact. Each is independent and grounded in the plumbing it reuses.
       command
 - [ ] File-level PR comments instead of body-dumping whole-file
       rejections (`subject_type: file`)
-- [ ] Jump-by-hunk navigation in the diff
+- [x] Jump-by-hunk navigation in the diff — press `]` / `[` in the final
+      review to jump the line cursor to the next / previous hunk's first
+      line (activating the cursor if it's off; `]` lands on the first
+      hunk, `[` on the last). From mid-hunk, `[` first snaps to the
+      current hunk's start, vim-style. The patch follows via the
+      existing cursor sync, the selection anchor is kept so a `v` range
+      can span hunks, and the cursor-mode footer hints the keys.
+      `DiffFile::hunk_start_indices` (`src/diff.rs`) anchors the jumps;
+      `diff_review_jump_hunk` in `src/app/review.rs`.
 - [ ] Search within the diff
-- [ ] Line comment auto-rejects its file (a commented file is implicitly
-      "needs revision")
+- [x] Line comment auto-rejects its file — storing a file's first kept
+      (non-draft) line comment or suggestion defaults its verdict to
+      `Reject` with empty feedback (the comments carry the specifics);
+      deleting the file's last kept comment clears a verdict that was
+      auto-set this way. Explicit verdicts win: an existing decision is
+      never overwritten, and approve / skip / typed-rejection drop the
+      file from the auto set so the reviewer's call sticks (after a
+      skip, only a fresh comment mutation re-defaults it). An accepted
+      AI draft counts (it's a human-affirmed finding); a dismissed one
+      doesn't. The implicit/explicit distinction persists across
+      pause/resume (`auto_rejected` in the progress file, serde-defaulted
+      so old files load), auto-rejected files surface in the existing
+      rejected file-list marker / filter / finish counts, and the
+      feedback file renders "(Needs revision — see this file's line
+      comments below)" instead of "no feedback provided".
+      `diff_review_sync_auto_reject` in `src/app/review.rs`.
+
+### Round 3 (planned)
+
+Loop:
+
+- [ ] Interdiff on re-review (store per-file patches / blob ids in the
+      snapshot; show "since last review" diffs for changed files)
+- [ ] "Fixes ready — re-review?" notification (watch the fix session's
+      idle status; one-key jump back into the review)
+- [ ] Apply suggestions locally (patch the worktree directly from
+      suggestion blocks; per-comment and apply-all-at-finish)
+- [ ] Finish summary screen (editable overview of all verdicts /
+      comments / suggestions before write + dispatch)
+
+Viewer:
+
+- [ ] Expand context around hunks (old/new content already loaded)
+- [ ] Word-level intra-line diff highlighting + ignore-whitespace toggle
+- [ ] Global comment navigation across files + undo last verdict
+- [ ] Open at cursored line in `$EDITOR`
+- [ ] `?` help overlay for review mode
+- [ ] Mouse support in the diff viewer (file list, patch scroll,
+      comment cursor)
+
+AI co-review:
+
+- [ ] Whole-changeset co-review (queued per-file passes, progress in
+      the file list)
+- [ ] Severity + draft suggestions in AI findings
+      (`<line>|<severity>|<comment>` + optional fenced replacement)
+- [ ] Cross-file context for the co-reviewer (changeset file list +
+      hunk headers in the prompt)
+
+Workflow:
+
+- [ ] Start a review from the dashboard + "review pending" badge
 
 ## Open questions
 
@@ -330,7 +487,8 @@ impact. Each is independent and grounded in the plumbing it reuses.
   re-anchor comments** item above.
 - Should multi-line feedback and the agent prompt move to a single
   composed "review summary" the reviewer edits before it's sent, rather
-  than assembling the file from per-file inputs?
+  than assembling the file from per-file inputs? — proposed answer
+  captured as the **Round 3 → finish summary screen** item above.
 - ~~Dispatching fixes to a new session: default to the same harness as the
   feature, or prompt for one each time? And should the existing pane stay an
   option (e.g. a toggle / picker at finish) rather than being replaced?~~

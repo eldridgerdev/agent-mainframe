@@ -272,7 +272,7 @@ pub fn handle_normal_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('T') => {
             app.start_theme_picker();
         }
-        KeyCode::Char('P') => {
+        KeyCode::Char('p') => {
             app.start_syntax_language_picker();
         }
         KeyCode::Char('L') => {
@@ -308,12 +308,17 @@ pub(crate) const DASHBOARD_KEYBINDING_ACTIONS: &[(&str, char)] = &[
     ("search", '/'),
     ("refresh", 'r'),
     ("filter", 'f'),
-    ("syntax_picker", 'P'),
+    ("syntax_picker", 'p'),
     ("pr_review", 'G'),
     ("session_config", 'u'),
     ("fork_feature", 'F'),
     ("mark_ready", 'y'),
 ];
+
+/// Configurable actions that have no default key. These are only active when
+/// the user binds a key to them in the config; they are always offered in the
+/// config wizard so they can be discovered and bound.
+pub(crate) const EXTRA_KEYBINDING_ACTIONS: &[&str] = &["next_feature", "prev_feature"];
 
 /// Returns the default canonical key character for a named action.
 /// These correspond to the hardcoded keys in handle_normal_key().
@@ -390,7 +395,7 @@ mod tests {
         assert_eq!(default_key_for_action("search"), Some('/'));
         assert_eq!(default_key_for_action("refresh"), Some('r'));
         assert_eq!(default_key_for_action("filter"), Some('f'));
-        assert_eq!(default_key_for_action("syntax_picker"), Some('P'));
+        assert_eq!(default_key_for_action("syntax_picker"), Some('p'));
         assert_eq!(default_key_for_action("session_config"), Some('u'));
         assert_eq!(default_key_for_action("mark_ready"), Some('y'));
     }

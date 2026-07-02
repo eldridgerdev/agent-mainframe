@@ -16,6 +16,10 @@ enum TmuxKey {
 }
 
 fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
+    if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
+        return None;
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && let KeyCode::Char(c) = key.code
     {
@@ -29,6 +33,7 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 
     match key.code {
+        KeyCode::Char('\n' | '\r') => None,
         KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),
         KeyCode::Enter => Some(TmuxKey::Named("Enter".into())),
         KeyCode::Backspace => Some(TmuxKey::Named("BSpace".into())),
@@ -513,6 +518,22 @@ mod tests {
             crossterm_key_to_tmux(&k),
             Some(TmuxKey::Named(s)) if s == "Enter"
         ));
+    }
+
+    #[test]
+    fn repeated_enter_is_ignored() {
+        let k = KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            crossterm::event::KeyEventKind::Repeat,
+        );
+        assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+
+    #[test]
+    fn raw_newline_chars_are_not_forwarded_as_literals() {
+        assert!(crossterm_key_to_tmux(&key(KeyCode::Char('\n'))).is_none());
+        assert!(crossterm_key_to_tmux(&key(KeyCode::Char('\r'))).is_none());
     }
 
     #[test]

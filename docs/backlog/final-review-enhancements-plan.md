@@ -2,10 +2,12 @@
 
 - **Status:** Core shipped; Rounds 2–3 in backlog — every item under
   **Progress → Round 1** is implemented and merged, and Round 2's AI
-  co-reviewer, suggested-change blocks, jump-by-hunk navigation and
-  comment-implied rejections have shipped. The remaining Round 2 items
-  and a third round of review-loop / viewer upgrades (**Round 3**,
-  captured 2026-07-01) are not yet started.
+  co-reviewer, suggested-change blocks, jump-by-hunk navigation,
+  comment-implied rejections, severity tags, agent replies-back and
+  in-diff search have shipped. The remaining Round 2 items (thread
+  state, re-anchoring, changeset overview, build gate, file-level PR
+  comments) and a third round of review-loop / viewer upgrades
+  (**Round 3**, captured 2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -291,6 +293,24 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
   shows one file's diff in isolation, so it can't catch "renamed here
   but not there". Include the changeset's file list plus the other
   files' hunk headers (still bounded) to raise finding quality.
+- **Ask the AI a question in-line, without leaving the review.** The
+  co-reviewer (`A`) and walkthrough (`w`) are one-shot: the reviewer
+  can't ask a follow-up ("why is this safe?", "does this handle the
+  empty case?") while forming a verdict. Add a key to type a free-form
+  question about the current file (or a `v`-selected span), fire it
+  headless with the file's diff as context (reuse the
+  `spawn_headless`/poll machinery and the diff-truncation from
+  `build_walkthrough_prompt`), and show the answer **without rejecting
+  the file or leaving the screen** — no losing your place in the diff.
+  Two candidate presentations: (a) a modal answer dialog over the
+  viewer (dismiss to return to exactly where you were), or (b) split
+  the developer-notes panel into two boxes — the note/walkthrough on
+  the left, the AI answer on the right — so question and diff stay
+  visible together. Keep it reviewer-triggered and per-file so token
+  cost stays bounded, and consider threading follow-ups (append to the
+  same answer box) rather than one-shot. Pairs with the notes-panel
+  plumbing that already renders markdown + the agent replies-back
+  section (`draw_notes_panel`, `src/ui/dialogs/diff.rs`).
 
 #### Workflow & entry points
 
@@ -405,9 +425,36 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       one-click-appliable. The peek box and footer surface it (`S suggest`);
       `diff_review_start_suggestion` / `diff_review_submit_suggestion` in
       `src/app/review.rs`.
-- [ ] Severity tags on comments / rejections (drive the GitHub review
-      event + agent prioritization + a severity filter)
-- [ ] Agent writes responses back into the feedback file
+- [x] Severity tags on comments / rejections — each line comment and file
+      rejection carries a conventional-comments severity (`blocker` /
+      `suggestion` / `nit` / `question` / `praise`, `Severity` in
+      `src/app/state.rs`, serde-defaulted so old progress files load). In the
+      comment / rejection editor `Ctrl+E` cycles it (shown in the editor title
+      and footer); a fresh line comment defaults to `suggestion`, an explicit
+      file rejection to `blocker`. The finished feedback file tags every item
+      (`#### src/foo.rs:42 — [blocker]`) and the agent prompt explains the tags
+      so blockers are prioritized; a blocker line comment tints its `●` gutter
+      marker danger and the cursor peek box leads with the severity. Posting to
+      a PR prefixes each inline comment / summary line with the tag and maps the
+      review to a GitHub *event* (`build_pr_review` / `severity_review_event`):
+      any blocker → `REQUEST_CHANGES`, no rejection → `APPROVE`, else `COMMENT`
+      — only escalating past `COMMENT` when a best-effort `GhCli::is_self_review`
+      check confirms the reviewer isn't the PR author (GitHub forbids self
+      approve / request-changes). A new `Blockers` step in the `F` file-filter
+      cycle narrows the list to blocker-carrying files.
+- [x] Agent writes responses back into the feedback file — `REVIEW_FEEDBACK_PROMPT`
+      now asks the agent, after addressing each item, to append a `**Agent:** …`
+      reply on its own line under that item (what it changed / why it disagrees /
+      an answer to a `[question]`). On the next review round AMF parses the latest
+      round's replies from `.claude/final-review-feedback.md`
+      (`parse_agent_responses` in `src/app/review.rs`, grouped by file) and, in
+      `load_prior_agent_responses`, files them onto
+      `DiffViewerState.prior_agent_responses` for files still in the diff. The
+      notes panel renders them as an "Agent replies (last round)" markdown section
+      beneath the developer note / walkthrough, so re-reviewing a file shows what
+      the agent said it did. Surfaced per file (anchor-free), so it ships without
+      the thread-state / re-anchor machinery; per-comment threaded rendering
+      beside each individual line comment still pairs with the two items below.
 - [ ] Resolve / unresolve thread state across rounds
 - [ ] Re-anchor comments across edits (context snippet + fuzzy
       re-locate; answers the first open question)
@@ -425,7 +472,18 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       can span hunks, and the cursor-mode footer hints the keys.
       `DiffFile::hunk_start_indices` (`src/diff.rs`) anchors the jumps;
       `diff_review_jump_hunk` in `src/app/review.rs`.
-- [ ] Search within the diff
+- [x] Search within the diff — press `/` in the final review to open an
+      incremental, case-insensitive search over the **current file's** diff
+      (matched against `addressable_line_texts()` so it hits added / removed /
+      context lines alike). Typing jumps the line cursor to the first match at
+      or after its position; on commit (`Enter`) the query sticks and `n` / `N`
+      cycle matches with wraparound (shadowing file navigation only while a
+      search is active), while `Esc` clears it. Every hit carries a hollow `▷`
+      gutter marker (the current match is the cursor's solid `▶`) and the footer
+      shows `search: <q> (i/N)`. Reuses the `comment_cursor` +
+      `cursor_sync_to_view` plumbing for the jump/scroll; `compute_search_matches`
+      / `diff_search_*` in `src/app/review.rs`, `search_*` on `DiffViewerState`.
+      Cross-file search deferred.
 - [x] Line comment auto-rejects its file — storing a file's first kept
       (non-draft) line comment or suggestion defaults its verdict to
       `Reject` with empty feedback (the comments carry the specifics);
@@ -474,6 +532,10 @@ AI co-review:
       (`<line>|<severity>|<comment>` + optional fenced replacement)
 - [ ] Cross-file context for the co-reviewer (changeset file list +
       hunk headers in the prompt)
+- [ ] Ask the AI a question in-line without leaving the review —
+      free-form follow-up on the current file / span, answered headless
+      and shown in a modal dialog or a second notes box (AI answer on
+      the right); reviewer-triggered + per-file for bounded cost
 
 Workflow:
 

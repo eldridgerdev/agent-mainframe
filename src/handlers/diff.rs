@@ -361,6 +361,19 @@ fn handle_feedback_editor_key(
         }
         return Ok(());
     }
+    // Ctrl+E cycles the severity of the comment / rejection being composed.
+    // Only the line-comment and rejection editors carry a severity — a
+    // suggestion inherits its comment's, and general feedback has none.
+    if ctrl && key.code == KeyCode::Char('e') {
+        if let AppMode::DiffViewer(state) = &mut app.mode
+            && (state.editing_line_comment || state.feedback_editing)
+            && !state.editing_suggestion
+            && !state.editing_general
+        {
+            state.comment_severity = state.comment_severity.next();
+        }
+        return Ok(());
+    }
 
     if let AppMode::DiffViewer(state) = &mut app.mode {
         match key.code {
@@ -623,7 +636,7 @@ mod tests {
             AppMode::DiffViewer(state) => {
                 assert!(!state.feedback_editing);
                 match state.decisions.get("a.rs") {
-                    Some(crate::app::ReviewDecision::Reject { feedback }) => {
+                    Some(crate::app::ReviewDecision::Reject { feedback, .. }) => {
                         assert_eq!(feedback, "first\nsecond");
                     }
                     other => panic!("expected rejection with feedback, got {other:?}"),
@@ -1352,7 +1365,13 @@ mod tests {
         assert_eq!(filter(&app), FileFilter::Rejected);
         assert_eq!(selected(&app), 2, "snaps onto the only rejected file");
 
-        // F again wraps back to All.
+        // F again -> Blockers: c.rs was rejected explicitly (default Blocker
+        // severity), so it stays visible.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        assert_eq!(filter(&app), FileFilter::Blockers);
+        assert_eq!(selected(&app), 2, "snaps onto the only blocker file");
+
+        // F again wraps back to All (Changed is skipped with no prior review).
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
         assert_eq!(filter(&app), FileFilter::All);
     }
@@ -1502,7 +1521,8 @@ mod tests {
                 assert_eq!(
                     state.decisions.get("a.rs"),
                     Some(&crate::app::ReviewDecision::Reject {
-                        feedback: String::new()
+                        feedback: String::new(),
+                        severity: crate::app::Severity::Suggestion,
                     })
                 );
                 assert!(state.auto_rejected.contains("a.rs"));
@@ -1594,8 +1614,39 @@ mod tests {
                     text: "AI finding".into(),
                     draft: true,
                     suggestion: None,
+                    severity: crate::app::Severity::default(),
                 }],
             );
+        }
+    }
+
+    #[test]
+    fn ctrl_e_cycles_line_comment_severity() {
+        use crate::app::Severity;
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Open the line-comment editor (defaults to Suggestion), cycle once with
+        // Ctrl+E to Nit, type, and submit.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        handle_diff_viewer_key(&mut app, ctrl('e')).unwrap();
+        for c in "typo".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                let comment = &state.line_comments.get("a.rs").unwrap()[0];
+                assert_eq!(comment.severity, Severity::Nit);
+                // A blocker line comment would drive the Blockers filter; a nit
+                // does not.
+                assert!(!state.file_has_blocker("a.rs"));
+            }
+            _ => panic!("expected diff viewer"),
         }
     }
 
@@ -1626,7 +1677,8 @@ mod tests {
                 assert_eq!(
                     state.decisions.get("a.rs"),
                     Some(&crate::app::ReviewDecision::Reject {
-                        feedback: String::new()
+                        feedback: String::new(),
+                        severity: crate::app::Severity::Suggestion,
                     })
                 );
                 assert!(state.auto_rejected.contains("a.rs"));
@@ -1653,7 +1705,8 @@ mod tests {
         let feedback =
             std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
         assert!(feedback.contains("**Needs work:** 1"));
-        assert!(feedback.contains("#### a.rs\n"));
+        // The rejection heading carries the (auto-reject default) severity tag.
+        assert!(feedback.contains("#### a.rs — [suggestion]\n"));
         assert!(feedback.contains("(Needs revision — see this file's line comments below)"));
         assert!(feedback.contains("bug"));
     }

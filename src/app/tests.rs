@@ -8192,7 +8192,9 @@ fn final_review_progress_persists_and_resumes() {
             assert_eq!(
                 state.decisions.get("src/b.rs"),
                 Some(&ReviewDecision::Reject {
-                    feedback: "needs work".into()
+                    feedback: "needs work".into(),
+                    // An explicit rejection defaults to Blocker severity.
+                    severity: crate::app::Severity::Blocker,
                 })
             );
             assert_eq!(state.general_feedback, "overall looks ok");
@@ -8265,7 +8267,10 @@ fn comment_auto_reject_survives_pause_and_resume() {
             assert_eq!(
                 state.decisions.get("src/a.rs"),
                 Some(&ReviewDecision::Reject {
-                    feedback: String::new()
+                    feedback: String::new(),
+                    // An auto-rejection carries the neutral default severity;
+                    // the real severity lives on the line comment.
+                    severity: crate::app::Severity::Suggestion,
                 })
             );
             assert!(state.auto_rejected.contains("src/a.rs"));

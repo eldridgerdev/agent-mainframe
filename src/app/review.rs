@@ -17,7 +17,9 @@ pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
 const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes in \
      .claude/final-review-feedback.md. Read that file and address every item in the most recent \
      review round (the first \"## Review\" section); earlier sections are prior rounds kept for \
-     history.";
+     history. Each item is tagged with a severity in brackets: [blocker] must be fixed, \
+     [suggestion] and [nit] are improvements worth making, [question] wants an answer (not \
+     necessarily a code change), and [praise] needs no action. Prioritize the blockers.";
 
 /// The resumable parts of an in-flight final review, persisted to
 /// `.claude/final-review-progress.json` so a long review can be paused
@@ -532,16 +534,20 @@ impl App {
                 comments.iter().find_map(|c| {
                     c.covered_indices(&locs)
                         .filter(|range| range.contains(&cur))
-                        .map(|range| (c.text.clone(), range))
+                        .map(|range| (c.text.clone(), c.severity, range))
                 })
             });
-            let text = if let Some((text, range)) = existing {
+            let text = if let Some((text, severity, range)) = existing {
                 if state.comment_anchor.is_none() {
                     state.comment_anchor = Some(*range.start());
                     state.comment_cursor = Some(*range.end());
                 }
+                // Editing an existing comment resumes at its severity; a fresh
+                // comment starts at the neutral default.
+                state.comment_severity = severity;
                 text
             } else {
+                state.comment_severity = crate::app::Severity::default();
                 String::new()
             };
             state.feedback_editor = crate::editor::TextEditor::new(text);
@@ -609,6 +615,7 @@ impl App {
                         // draft, even if it replaced an AI draft on this span.
                         draft: false,
                         suggestion,
+                        severity: state.comment_severity,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -649,6 +656,9 @@ impl App {
                         path.to_string(),
                         ReviewDecision::Reject {
                             feedback: String::new(),
+                            // The file's real severity lives on its line comments;
+                            // the auto-rejection verdict itself stays neutral.
+                            severity: crate::app::Severity::default(),
                         },
                     );
                     state.auto_rejected.insert(path.to_string());
@@ -688,20 +698,24 @@ impl App {
                 comments.iter().find_map(|c| {
                     c.covered_indices(&locs)
                         .filter(|range| range.contains(&cur))
-                        .map(|range| (c.suggestion.clone(), range))
+                        .map(|range| (c.suggestion.clone(), c.severity, range))
                 })
             });
             let prefill = match existing {
-                Some((suggestion, range)) => {
+                Some((suggestion, severity, range)) => {
                     if state.comment_anchor.is_none() {
                         state.comment_anchor = Some(*range.start());
                         state.comment_cursor = Some(*range.end());
                     }
+                    // Carry the existing comment's severity onto the (re)written
+                    // suggestion; the suggestion editor doesn't cycle it.
+                    state.comment_severity = severity;
                     // Existing suggestion: edit it. Otherwise seed from the span's
                     // current code.
                     suggestion.unwrap_or_else(|| span_current_text(&texts, &range))
                 }
                 None => {
+                    state.comment_severity = crate::app::Severity::default();
                     let lo = state.comment_anchor.unwrap_or(cur).min(cur);
                     let hi = state.comment_anchor.unwrap_or(cur).max(cur);
                     span_current_text(&texts, &(lo..=hi))
@@ -748,17 +762,16 @@ impl App {
                     .unwrap_or_default();
                 commented_path = Some(path.clone());
                 let comments = state.line_comments.entry(path).or_default();
-                // Preserve the prose of an existing comment on the span; a fresh
-                // suggestion-only comment carries empty prose.
-                let prose = comments
-                    .iter()
-                    .find(|c| {
-                        c.covered_indices(&locs)
-                            .map(|r| !(*r.end() < lo || *r.start() > hi))
-                            .unwrap_or(false)
-                    })
-                    .map(|c| c.text.clone())
-                    .unwrap_or_default();
+                // Preserve the prose (and severity) of an existing comment on the
+                // span; a fresh suggestion-only comment carries empty prose and
+                // the composed default severity.
+                let existing = comments.iter().find(|c| {
+                    c.covered_indices(&locs)
+                        .map(|r| !(*r.end() < lo || *r.start() > hi))
+                        .unwrap_or(false)
+                });
+                let prose = existing.map(|c| c.text.clone()).unwrap_or_default();
+                let severity = existing.map(|c| c.severity).unwrap_or(state.comment_severity);
                 comments.retain(|c| {
                     c.covered_indices(&locs)
                         .map(|r| *r.end() < lo || *r.start() > hi)
@@ -772,6 +785,7 @@ impl App {
                         text: prose,
                         draft: false,
                         suggestion,
+                        severity,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -1136,11 +1150,16 @@ impl App {
                 .get(state.selected_file)
                 .and_then(|f| state.decisions.get(&f.path))
                 .and_then(|d| match d {
-                    ReviewDecision::Reject { feedback } => Some(feedback.clone()),
+                    ReviewDecision::Reject { feedback, severity } => {
+                        Some((feedback.clone(), *severity))
+                    }
                     ReviewDecision::Approve => None,
-                })
-                .unwrap_or_default();
-            state.feedback_editor = crate::editor::TextEditor::new(existing);
+                });
+            // Resume an existing rejection's severity; a fresh rejection defaults
+            // to Blocker — rejecting a file outright is a must-fix signal.
+            let (text, severity) = existing.unwrap_or((String::new(), Severity::Blocker));
+            state.comment_severity = severity;
+            state.feedback_editor = crate::editor::TextEditor::new(text);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.feedback_editing = true;
@@ -1195,10 +1214,11 @@ impl App {
                 return;
             }
             let feedback = state.feedback_editor.text().trim().to_string();
+            let severity = state.comment_severity;
             if let Some(file) = state.files.get(state.selected_file) {
                 state
                     .decisions
-                    .insert(file.path.clone(), ReviewDecision::Reject { feedback });
+                    .insert(file.path.clone(), ReviewDecision::Reject { feedback, severity });
                 // The reviewer typed this rejection themselves: it is explicit
                 // now and no longer tracks the file's comments.
                 state.auto_rejected.remove(&file.path);
@@ -1426,12 +1446,12 @@ impl App {
 
         let total = files.len();
         let mut approved = 0usize;
-        let mut rejected: Vec<(String, String)> = Vec::new();
+        let mut rejected: Vec<(String, String, Severity)> = Vec::new();
         for file in &files {
             match decisions.get(&file.path) {
                 Some(ReviewDecision::Approve) => approved += 1,
-                Some(ReviewDecision::Reject { feedback }) => {
-                    rejected.push((file.path.clone(), feedback.clone()));
+                Some(ReviewDecision::Reject { feedback, severity }) => {
+                    rejected.push((file.path.clone(), feedback.clone(), *severity));
                 }
                 None => {}
             }
@@ -1502,8 +1522,8 @@ impl App {
 
             if !rejected.is_empty() {
                 round.push_str("### Files Needing Revision\n\n");
-                for (file, feedback) in &rejected {
-                    round.push_str(&format!("#### {file}\n\n"));
+                for (file, feedback, severity) in &rejected {
+                    round.push_str(&format!("#### {file} — [{}]\n\n", severity.label()));
                     if feedback.is_empty() {
                         // For a rejection implied by line comments the comments
                         // are the feedback — send the agent there instead of
@@ -1527,7 +1547,10 @@ impl App {
                 for (file, comments) in &line_comment_sections {
                     for comment in comments {
                         let anchor = comment_anchor_label(file, comment);
-                        round.push_str(&format!("#### {anchor}\n\n"));
+                        round.push_str(&format!(
+                            "#### {anchor} — [{}]\n\n",
+                            comment.severity.label()
+                        ));
                         if !comment.text.is_empty() {
                             round.push_str(&comment.text);
                             round.push_str("\n\n");
@@ -1754,7 +1777,7 @@ impl App {
     fn post_final_review_to_pr(
         &mut self,
         workdir: &Path,
-        rejected: &[(String, String)],
+        rejected: &[(String, String, Severity)],
         line_comment_sections: &[(String, Vec<LineComment>)],
         general_feedback: &str,
     ) -> String {
@@ -1771,7 +1794,14 @@ impl App {
                 return format!(" — couldn't post to PR: {err}");
             }
         };
-        match GhCli::create_review(workdir, &pr, &body, "COMMENT", &comments) {
+        // Map the review's severities onto a GitHub review event, but only
+        // escalate past COMMENT when we can confirm the reviewer isn't the PR
+        // author (GitHub rejects self approve / request-changes).
+        let event = resolve_review_event(workdir, pr.number, rejected, line_comment_sections);
+        if event != "COMMENT" {
+            self.log_info("review", format!("PR review event: {event} (PR #{})", pr.number));
+        }
+        match GhCli::create_review(workdir, &pr, &body, event, &comments) {
             Ok(()) => {
                 let what = if comments.is_empty() {
                     "review summary".to_string()
@@ -1823,13 +1853,59 @@ fn pr_line_side(loc: &crate::diff::DiffLineLocation) -> Option<(usize, &'static 
     }
 }
 
+/// Map a finished review's severities onto a GitHub review event. Any
+/// `Blocker` (rejection or line comment) → `REQUEST_CHANGES`; otherwise, when no
+/// file was rejected, `APPROVE` (an approving review, possibly with non-blocking
+/// notes); else `COMMENT`. Escalating past `COMMENT` requires confirming the
+/// reviewer is **not** the PR author — GitHub 422s a self approve /
+/// request-changes — so a self-review, or an inconclusive author check, stays
+/// `COMMENT` (always valid). Best-effort by design: the local feedback file is
+/// the source of truth regardless.
+fn resolve_review_event(
+    workdir: &Path,
+    pr_number: u32,
+    rejected: &[(String, String, Severity)],
+    line_comment_sections: &[(String, Vec<LineComment>)],
+) -> &'static str {
+    let escalated = severity_review_event(rejected, line_comment_sections);
+    if escalated == "COMMENT" {
+        return "COMMENT";
+    }
+    match crate::github::GhCli::is_self_review(workdir, pr_number) {
+        Ok(false) => escalated,
+        // Self-review, or we couldn't tell → the always-safe COMMENT.
+        _ => "COMMENT",
+    }
+}
+
+/// The GitHub review event a finished review's severities *want*, before the
+/// self-review guard: any `Blocker` → `REQUEST_CHANGES`; else, with no file
+/// rejected, `APPROVE`; else `COMMENT`.
+fn severity_review_event(
+    rejected: &[(String, String, Severity)],
+    line_comment_sections: &[(String, Vec<LineComment>)],
+) -> &'static str {
+    let has_blocker = rejected.iter().any(|(_, _, s)| s.is_blocker())
+        || line_comment_sections
+            .iter()
+            .flat_map(|(_, cs)| cs)
+            .any(|c| c.severity.is_blocker());
+    if has_blocker {
+        "REQUEST_CHANGES"
+    } else if rejected.is_empty() {
+        "APPROVE"
+    } else {
+        "COMMENT"
+    }
+}
+
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
 /// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`); the
 /// general feedback and whole-file rejections (which have no single line to
 /// anchor to) become the review's summary body. Returns `(body, comments)`.
 fn build_pr_review(
-    rejected: &[(String, String)],
+    rejected: &[(String, String, Severity)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
 ) -> (String, Vec<crate::github::PrReviewComment>) {
@@ -1847,14 +1923,17 @@ fn build_pr_review(
                 .and_then(|s| pr_line_side(&s))
                 .map(|(l, sd)| (Some(l), Some(sd)))
                 .unwrap_or((None, None));
+            // Lead with the conventional-comments severity tag so the priority is
+            // visible on the PR (GitHub has no native severity field).
+            let mut body = format!("**[{}]**", comment.severity.label());
+            if !comment.text.is_empty() {
+                body.push(' ');
+                body.push_str(&comment.text);
+            }
             // A suggested change posts as a GitHub fenced ```suggestion block so
             // it's one-click-appliable on the PR. Append it to any prose.
-            let mut body = comment.text.clone();
             if let Some(suggestion) = &comment.suggestion {
-                if !body.is_empty() {
-                    body.push_str("\n\n");
-                }
-                body.push_str(&format!("```suggestion\n{suggestion}\n```"));
+                body.push_str(&format!("\n\n```suggestion\n{suggestion}\n```"));
             }
             comments.push(crate::github::PrReviewComment {
                 path: path.clone(),
@@ -1875,12 +1954,13 @@ fn build_pr_review(
     }
     if !rejected.is_empty() {
         body.push_str("## Files needing revision\n\n");
-        for (file, feedback) in rejected {
+        for (file, feedback, severity) in rejected {
             let feedback = feedback.trim();
+            let tag = severity.label();
             if feedback.is_empty() {
-                body.push_str(&format!("- **{file}** — needs revision\n"));
+                body.push_str(&format!("- **{file}** — needs revision [{tag}]\n"));
             } else {
-                body.push_str(&format!("- **{file}**\n\n{feedback}\n\n"));
+                body.push_str(&format!("- **{file}** [{tag}]\n\n{feedback}\n\n"));
             }
         }
     }
@@ -2024,6 +2104,7 @@ fn parse_co_review_output(
             text: text.to_string(),
             draft: true,
             suggestion: None,
+            severity: crate::app::Severity::default(),
         });
     }
     out
@@ -2089,9 +2170,9 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 mod tests {
     use super::{
         build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_co_review_output,
-        parse_review_notes,
+        parse_review_notes, severity_review_event,
     };
-    use crate::app::LineComment;
+    use crate::app::{LineComment, Severity};
     use crate::diff::DiffLineLocation;
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
@@ -2101,6 +2182,7 @@ mod tests {
             text: text.to_string(),
             draft: false,
             suggestion: None,
+            severity: Severity::default(),
         }
     }
 
@@ -2118,6 +2200,7 @@ mod tests {
             text: text.to_string(),
             draft: false,
             suggestion: None,
+            severity: Severity::default(),
         }
     }
 
@@ -2161,8 +2244,12 @@ mod tests {
     #[test]
     fn pr_review_maps_lines_inline_and_folds_files_into_body() {
         let rejected = vec![
-            ("src/a.rs".to_string(), "tighten this up".to_string()),
-            ("src/b.rs".to_string(), String::new()),
+            (
+                "src/a.rs".to_string(),
+                "tighten this up".to_string(),
+                Severity::Suggestion,
+            ),
+            ("src/b.rs".to_string(), String::new(), Severity::Blocker),
         ];
         let line_comments = vec![(
             "src/c.rs".to_string(),
@@ -2234,9 +2321,10 @@ mod tests {
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
         let (_, comments) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments.len(), 1);
+        // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
             comments[0].body,
-            "use a guard\n\n```suggestion\nlet x = y?;\n```"
+            "**[suggestion]** use a guard\n\n```suggestion\nlet x = y?;\n```"
         );
     }
 
@@ -2246,7 +2334,46 @@ mod tests {
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
         let (_, comments) = build_pr_review(&[], &line_comments, "");
-        assert_eq!(comments[0].body, "```suggestion\nlet x = y?;\n```");
+        // Even a suggestion-only comment carries its severity tag.
+        assert_eq!(
+            comments[0].body,
+            "**[suggestion]**\n\n```suggestion\nlet x = y?;\n```"
+        );
+    }
+
+    fn blocker_comment(new_line: usize, text: &str) -> LineComment {
+        let mut c = line_comment(Some(new_line), None, text);
+        c.severity = Severity::Blocker;
+        c
+    }
+
+    #[test]
+    fn severity_event_requests_changes_on_a_blocker() {
+        // A blocker rejection escalates.
+        let rejected = vec![("a.rs".to_string(), "no".to_string(), Severity::Blocker)];
+        assert_eq!(severity_review_event(&rejected, &[]), "REQUEST_CHANGES");
+        // A blocker line comment escalates even with no rejection.
+        let sections = vec![("a.rs".to_string(), vec![blocker_comment(3, "must fix")])];
+        assert_eq!(severity_review_event(&[], &sections), "REQUEST_CHANGES");
+    }
+
+    #[test]
+    fn severity_event_approves_with_no_rejections_else_comments() {
+        // No rejection, only non-blocking notes → an approving review.
+        let sections = vec![("a.rs".to_string(), vec![line_comment(Some(3), None, "nit")])];
+        assert_eq!(severity_review_event(&[], &sections), "APPROVE");
+        assert_eq!(severity_review_event(&[], &[]), "APPROVE");
+        // A non-blocking rejection is a plain comment review.
+        let rejected = vec![("a.rs".to_string(), "meh".to_string(), Severity::Suggestion)];
+        assert_eq!(severity_review_event(&rejected, &[]), "COMMENT");
+    }
+
+    #[test]
+    fn feedback_body_tags_line_comments_with_severity() {
+        // The PR summary body tags a whole-file rejection with its severity.
+        let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
+        let (body, _) = build_pr_review(&rejected, &[], "");
+        assert!(body.contains("**a.rs** [blocker]"), "body was: {body}");
     }
 
     #[test]

@@ -2,10 +2,10 @@
 
 - **Status:** Core shipped; Rounds 2–3 in backlog — every item under
   **Progress → Round 1** is implemented and merged, and Round 2's AI
-  co-reviewer, suggested-change blocks, jump-by-hunk navigation and
-  comment-implied rejections have shipped. The remaining Round 2 items
-  and a third round of review-loop / viewer upgrades (**Round 3**,
-  captured 2026-07-01) are not yet started.
+  co-reviewer, suggested-change blocks, jump-by-hunk navigation,
+  comment-implied rejections and severity tags have shipped. The
+  remaining Round 2 items and a third round of review-loop / viewer
+  upgrades (**Round 3**, captured 2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -405,8 +405,23 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       one-click-appliable. The peek box and footer surface it (`S suggest`);
       `diff_review_start_suggestion` / `diff_review_submit_suggestion` in
       `src/app/review.rs`.
-- [ ] Severity tags on comments / rejections (drive the GitHub review
-      event + agent prioritization + a severity filter)
+- [x] Severity tags on comments / rejections — each line comment and file
+      rejection carries a conventional-comments severity (`blocker` /
+      `suggestion` / `nit` / `question` / `praise`, `Severity` in
+      `src/app/state.rs`, serde-defaulted so old progress files load). In the
+      comment / rejection editor `Ctrl+E` cycles it (shown in the editor title
+      and footer); a fresh line comment defaults to `suggestion`, an explicit
+      file rejection to `blocker`. The finished feedback file tags every item
+      (`#### src/foo.rs:42 — [blocker]`) and the agent prompt explains the tags
+      so blockers are prioritized; a blocker line comment tints its `●` gutter
+      marker danger and the cursor peek box leads with the severity. Posting to
+      a PR prefixes each inline comment / summary line with the tag and maps the
+      review to a GitHub *event* (`build_pr_review` / `severity_review_event`):
+      any blocker → `REQUEST_CHANGES`, no rejection → `APPROVE`, else `COMMENT`
+      — only escalating past `COMMENT` when a best-effort `GhCli::is_self_review`
+      check confirms the reviewer isn't the PR author (GitHub forbids self
+      approve / request-changes). A new `Blockers` step in the `F` file-filter
+      cycle narrows the list to blocker-carrying files.
 - [ ] Agent writes responses back into the feedback file
 - [ ] Resolve / unresolve thread state across rounds
 - [ ] Re-anchor comments across edits (context snippet + fuzzy

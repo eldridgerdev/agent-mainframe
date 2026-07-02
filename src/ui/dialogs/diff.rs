@@ -612,6 +612,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
         cursor: cursor_loc,
         commented,
         draft,
+        blocker,
         selection,
     } = review_cursor_info(state);
 
@@ -634,6 +635,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
                 cursor_loc,
                 &commented,
                 &draft,
+                &blocker,
                 &selection,
                 &mut cursor_row,
             );
@@ -676,6 +678,7 @@ fn draw_patch(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme:
             cursor: cursor_loc,
             commented,
             draft,
+            blocker,
             selection,
         },
         theme,
@@ -693,6 +696,9 @@ struct ReviewLineMarkers {
     /// Lines covered by an unaccepted AI draft comment — marked distinctly from
     /// `commented` so the reviewer can tell suggestions apart from kept comments.
     draft: std::collections::HashSet<DiffLineLocation>,
+    /// Subset of `commented` covered by a `Blocker`-severity comment, so the
+    /// gutter can flag must-fix lines in a higher-contrast colour.
+    blocker: std::collections::HashSet<DiffLineLocation>,
     selection: std::collections::HashSet<DiffLineLocation>,
 }
 
@@ -702,6 +708,7 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
         cursor: None,
         commented: HashSet::new(),
         draft: HashSet::new(),
+        blocker: HashSet::new(),
         selection: HashSet::new(),
     };
     if !state.review {
@@ -714,15 +721,20 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
     let cursor = state.comment_cursor.and_then(|idx| locs.get(idx).copied());
     let mut commented = HashSet::new();
     let mut draft = HashSet::new();
+    let mut blocker = HashSet::new();
     if let Some(comments) = state.line_comments.get(&file.path) {
         for comment in comments {
             if let Some(range) = comment.covered_indices(&locs) {
-                let set = if comment.draft {
-                    &mut draft
+                let covered: Vec<DiffLineLocation> =
+                    range.filter_map(|idx| locs.get(idx).copied()).collect();
+                if comment.draft {
+                    draft.extend(covered);
                 } else {
-                    &mut commented
-                };
-                set.extend(range.filter_map(|idx| locs.get(idx).copied()));
+                    if comment.severity.is_blocker() {
+                        blocker.extend(covered.iter().copied());
+                    }
+                    commented.extend(covered);
+                }
             }
         }
     }
@@ -737,6 +749,7 @@ fn review_cursor_info(state: &DiffViewerState) -> ReviewLineMarkers {
         cursor,
         commented,
         draft,
+        blocker,
         selection,
     }
 }
@@ -767,6 +780,12 @@ fn cursor_comment_text(state: &DiffViewerState) -> Option<&str> {
 /// by a labelled preview of the suggested change (if any). Never empty.
 fn cursor_comment_peek_lines(comment: &crate::app::LineComment) -> Vec<String> {
     let mut lines: Vec<String> = comment.text.lines().map(|l| l.to_string()).collect();
+    // Lead a kept comment's peek with its severity so a reviewer scrolling the
+    // diff sees each annotation's priority. Drafts always default to the neutral
+    // severity, so tagging them would be noise.
+    if !comment.draft {
+        lines.insert(0, format!("[{}]", comment.severity.label()));
+    }
     if let Some(suggestion) = &comment.suggestion {
         if !lines.is_empty() {
             lines.push(String::new());
@@ -809,6 +828,9 @@ pub(crate) struct PatchPanelOptions {
     /// Diff-line locations covered by an unaccepted AI draft comment (unified
     /// view only); marked distinctly from `commented`.
     pub draft: std::collections::HashSet<DiffLineLocation>,
+    /// Subset of `commented` covered by a `Blocker`-severity comment (unified
+    /// view only); its gutter marker reads in the danger colour.
+    pub blocker: std::collections::HashSet<DiffLineLocation>,
     /// Diff-line locations in the in-progress multi-line selection (unified view
     /// only); the gutter is tinted across the span while the reviewer extends it.
     pub selection: std::collections::HashSet<DiffLineLocation>,
@@ -826,6 +848,7 @@ impl Default for PatchPanelOptions {
             cursor: None,
             commented: std::collections::HashSet::new(),
             draft: std::collections::HashSet::new(),
+            blocker: std::collections::HashSet::new(),
             selection: std::collections::HashSet::new(),
         }
     }
@@ -879,6 +902,7 @@ pub(crate) fn draw_patch_panel(
                 options.cursor,
                 &options.commented,
                 &options.draft,
+                &options.blocker,
                 &options.selection,
                 &mut cursor_row,
             );
@@ -1237,6 +1261,14 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         Some(VimMode::Normal) => " [Vim Normal]",
         None => "",
     };
+    // The line-comment and rejection editors carry a conventional-comments
+    // severity (cycled with Ctrl+E); surface the current one in the title.
+    let carries_severity = state.editing_line_comment || state.feedback_editing;
+    let severity_title = if carries_severity {
+        format!(" [{}]", state.comment_severity.label())
+    } else {
+        String::new()
+    };
     let (title, border_color) = if state.editing_general {
         (
             format!(" General Feedback{mode_label} "),
@@ -1264,12 +1296,12 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
             "Line Comment"
         };
         (
-            format!(" {label} — {anchor}{mode_label} "),
+            format!(" {label} — {anchor}{severity_title}{mode_label} "),
             theme.warning.to_color(),
         )
     } else {
         (
-            format!(" Rejection Feedback{mode_label} "),
+            format!(" Rejection Feedback{severity_title}{mode_label} "),
             theme.danger.to_color(),
         )
     };
@@ -1332,19 +1364,25 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     } else {
         key("Esc")
     };
-    let hint = Line::from(vec![
+    let mut hint_spans = vec![
         key(" Tab"),
         Span::raw(" submit  "),
         cancel_hint,
         Span::raw(" cancel  "),
         key("Enter"),
         Span::raw(" newline  "),
+    ];
+    if carries_severity {
+        hint_spans.push(key("Ctrl+E"));
+        hint_spans.push(Span::raw(format!(" severity: [{}]  ", state.comment_severity.label())));
+    }
+    hint_spans.extend([
         key("Ctrl+T"),
         Span::raw(if vim.is_some() { " vim off  " } else { " vim on  " }),
         key("Ctrl+J/K"),
         Span::raw(" scroll"),
     ]);
-    frame.render_widget(Paragraph::new(hint), rows[1]);
+    frame.render_widget(Paragraph::new(Line::from(hint_spans)), rows[1]);
 }
 
 fn diff_footer_lines(
@@ -1428,6 +1466,7 @@ fn patch_lines(
     cursor: Option<DiffLineLocation>,
     commented: &std::collections::HashSet<DiffLineLocation>,
     draft: &std::collections::HashSet<DiffLineLocation>,
+    blocker: &std::collections::HashSet<DiffLineLocation>,
     selection: &std::collections::HashSet<DiffLineLocation>,
     cursor_row: &mut Option<usize>,
 ) -> Vec<Line<'static>> {
@@ -1458,6 +1497,7 @@ fn patch_lines(
         cursor: cursor == Some(loc),
         has_comment: commented.contains(&loc),
         draft: draft.contains(&loc),
+        is_blocker: blocker.contains(&loc),
         selected: selection.contains(&loc),
     };
 
@@ -1612,6 +1652,7 @@ fn side_by_side_lines(
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
     }
@@ -1629,6 +1670,7 @@ fn side_by_side_lines(
             include_prologue,
             false,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
@@ -2004,6 +2046,9 @@ struct GutterAnnotation {
     /// Line carries an unaccepted AI draft comment (rendered as a hollow marker
     /// distinct from a kept comment's filled one).
     draft: bool,
+    /// The kept comment on this line is `Blocker`-severity, so its marker reads
+    /// in the higher-contrast danger colour.
+    is_blocker: bool,
     selected: bool,
 }
 
@@ -2046,7 +2091,13 @@ fn wrap_gutter_line(
             ("▶ ", theme.warning.to_color())
         }
     } else if annotation.has_comment {
-        ("● ", theme.info.to_color())
+        // A blocker's dot reads in danger so must-fix lines stand out.
+        let color = if annotation.is_blocker {
+            theme.danger.to_color()
+        } else {
+            theme.info.to_color()
+        };
+        ("● ", color)
     } else if annotation.draft {
         ("○ ", theme.warning.to_color())
     } else {
@@ -2669,6 +2720,7 @@ index 0000000..1111111
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &mut None,
         );
         let indented_code_line = &lines[2];
@@ -2739,6 +2791,7 @@ index 0000000..1111111
             false,
             true,
             None,
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
@@ -2822,10 +2875,12 @@ index 0000000..1111111
                 text: "needs a guard\nfor None".to_string(),
                 draft: false,
                 suggestion: None,
+                severity: crate::app::Severity::default(),
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
-        assert_eq!(cursor_comment_preview_rows(&state), 4);
+        // 2 body lines + the severity header + 2 border rows.
+        assert_eq!(cursor_comment_preview_rows(&state), 5);
     }
 
     #[test]
@@ -2844,9 +2899,10 @@ index 0000000..1111111
                 text: body,
                 draft: false,
                 suggestion: None,
+                severity: crate::app::Severity::default(),
             }],
         );
-        // 20 body lines clamp to 6 visible + 2 border rows.
+        // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.
         assert_eq!(cursor_comment_preview_rows(&state), 8);
     }
 }

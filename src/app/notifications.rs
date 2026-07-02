@@ -15,6 +15,16 @@ use crate::automation::{
 };
 use crate::token_tracking::{TokenUsageSource, provider_for_session_kind};
 
+/// Resolution of a notification to a feature: `(project name, feature name,
+/// agent display name, (project index, feature index))`. Each part is `None`
+/// when the message couldn't be matched to it.
+type FeatureMatch = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<(usize, usize)>,
+);
+
 #[derive(Deserialize)]
 struct IpcMsg {
     #[serde(rename = "type")]
@@ -190,12 +200,10 @@ impl App {
                     }
 
                     let Some(provider) = provider_for_session_kind(&session.kind) else {
-                        ignored_log = Some(
-                            format!(
-                                "ignored exact usage binding for unsupported session kind {:?} (amf_session_id={feature_session_id})",
-                                session.kind
-                            ),
-                        );
+                        ignored_log = Some(format!(
+                            "ignored exact usage binding for unsupported session kind {:?} (amf_session_id={feature_session_id})",
+                            session.kind
+                        ));
                         break 'outer;
                     };
 
@@ -203,10 +211,9 @@ impl App {
                         provider,
                         id: provider_session_id.to_string(),
                     };
-                    let was_exact_match =
-                        session.token_usage_source.as_ref() == Some(&source)
-                            && session.token_usage_source_match
-                                == Some(crate::project::TokenUsageSourceMatch::Exact);
+                    let was_exact_match = session.token_usage_source.as_ref() == Some(&source)
+                        && session.token_usage_source_match
+                            == Some(crate::project::TokenUsageSourceMatch::Exact);
                     if !was_exact_match {
                         session.set_token_usage_source_exact(source);
                         changed = true;
@@ -255,26 +262,27 @@ impl App {
         proceed_signal: Option<&str>,
         payload: serde_json::Value,
     ) {
-        if let (Some(req), Some(sock)) = (request_id, reply_socket) {
-            if !req.is_empty() && !sock.is_empty() {
-                let mut body = payload;
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert("request_id".to_string(), serde_json::json!(req));
+        if let (Some(req), Some(sock)) = (request_id, reply_socket)
+            && !req.is_empty()
+            && !sock.is_empty()
+        {
+            let mut body = payload;
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("request_id".to_string(), serde_json::json!(req));
+            }
+            let serialized = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
+            match crate::ipc::send(Path::new(sock), &serialized) {
+                Ok(_) => {
+                    self.log_debug("ipc", format!("Replied over IPC to request {req}"));
+                    return;
                 }
-                let serialized = serde_json::to_string(&body).unwrap_or_else(|_| "{}".to_string());
-                match crate::ipc::send(Path::new(sock), &serialized) {
-                    Ok(_) => {
-                        self.log_debug("ipc", format!("Replied over IPC to request {req}"));
-                        return;
-                    }
-                    Err(e) => {
-                        self.log_warn(
-                            "ipc",
-                            format!(
-                                "IPC reply failed for request {req}: {e}; falling back to signal file"
-                            ),
-                        );
-                    }
+                Err(e) => {
+                    self.log_warn(
+                        "ipc",
+                        format!(
+                            "IPC reply failed for request {req}: {e}; falling back to signal file"
+                        ),
+                    );
                 }
             }
         }
@@ -288,15 +296,7 @@ impl App {
         }
     }
 
-    fn project_feature_for_cwd(
-        &self,
-        cwd_path: &Path,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<(usize, usize)>,
-    ) {
+    fn project_feature_for_cwd(&self, cwd_path: &Path) -> FeatureMatch {
         let mut project_name = None;
         let mut feature_name = None;
         let mut agent_name = None;
@@ -321,15 +321,7 @@ impl App {
         (project_name, feature_name, agent_name, indices)
     }
 
-    fn project_feature_for_amf_session(
-        &self,
-        amf_session: Option<&str>,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<(usize, usize)>,
-    ) {
+    fn project_feature_for_amf_session(&self, amf_session: Option<&str>) -> FeatureMatch {
         let Some(amf_session) = amf_session.filter(|value| !value.is_empty()) else {
             return (None, None, None, None);
         };
@@ -354,12 +346,7 @@ impl App {
         &self,
         amf_session: Option<&str>,
         cwd_path: &Path,
-    ) -> (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<(usize, usize)>,
-    ) {
+    ) -> FeatureMatch {
         let by_session = self.project_feature_for_amf_session(amf_session);
         if by_session.3.is_some() {
             by_session
@@ -468,7 +455,7 @@ impl App {
     fn pending_diff_review_index(&self, preferred_feature: Option<&str>) -> Option<usize> {
         let matches_feature = |input: &PendingInput, feature: Option<&str>| {
             input.notification_type == "diff-review"
-                && feature.map_or(true, |name| input.feature_name.as_deref() == Some(name))
+                && feature.is_none_or(|name| input.feature_name.as_deref() == Some(name))
         };
 
         if let Some(feature_name) = preferred_feature
@@ -1042,10 +1029,10 @@ impl App {
         // Resolve project/feature from the AMF tmux session first, then cwd.
         let (project_name, feature_name, agent_name, indices) =
             self.project_feature_for_message(amf_session.as_deref(), &cwd_path);
-        if let Some((pi, fi)) = indices {
-            if self.store.projects[pi].features[fi].agent == AgentKind::Codex {
-                self.refresh_sidebar_plan_for_feature(pi, fi);
-            }
+        if let Some((pi, fi)) = indices
+            && self.store.projects[pi].features[fi].agent == AgentKind::Codex
+        {
+            self.refresh_sidebar_plan_for_feature(pi, fi);
         }
 
         // For diff-review while viewing the matching
@@ -1055,19 +1042,18 @@ impl App {
         if notification_type == "diff-review"
             && !self.use_custom_diff_review_viewer()
             && let AppMode::Viewing(ref view) = self.mode
+            && feature_name.as_deref() == Some(&view.feature_name)
         {
-            if feature_name.as_deref() == Some(&view.feature_name) {
-                self.respond_to_notification(
-                    msg.request_id.as_deref(),
-                    msg.reply_socket.as_deref(),
-                    msg.proceed_signal.as_deref(),
-                    serde_json::json!({
-                        "type": "review-response",
-                        "decision": "proceed"
-                    }),
-                );
-                auto_responded = true;
-            }
+            self.respond_to_notification(
+                msg.request_id.as_deref(),
+                msg.reply_socket.as_deref(),
+                msg.proceed_signal.as_deref(),
+                serde_json::json!({
+                    "type": "review-response",
+                    "decision": "proceed"
+                }),
+            );
+            auto_responded = true;
         }
         if auto_responded {
             return;

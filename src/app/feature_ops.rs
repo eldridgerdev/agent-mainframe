@@ -792,21 +792,21 @@ impl App {
                 }
                 SessionKind::Custom => {
                     // Run pre_check before launching
-                    if let Some(ref check) = session.pre_check {
-                        if !check.is_empty() {
-                            let ok = std::process::Command::new("bash")
-                                .arg("-c")
-                                .arg(check)
-                                .current_dir(&feature.workdir)
-                                .output()
-                                .map(|o| o.status.success())
-                                .unwrap_or(false);
-                            if !ok {
-                                // Skip this session silently
-                                // on restart; the tmux window
-                                // will show a shell prompt.
-                                continue;
-                            }
+                    if let Some(ref check) = session.pre_check
+                        && !check.is_empty()
+                    {
+                        let ok = std::process::Command::new("bash")
+                            .arg("-c")
+                            .arg(check)
+                            .current_dir(&feature.workdir)
+                            .output()
+                            .map(|o| o.status.success())
+                            .unwrap_or(false);
+                        if !ok {
+                            // Skip this session silently
+                            // on restart; the tmux window
+                            // will show a shell prompt.
+                            continue;
                         }
                     }
                     let status_dir = feature.workdir.join(".amf").join("session-status");
@@ -879,24 +879,24 @@ impl App {
 
         // If on_start has a prompt, show the picker first.
         let on_start = self.active_extension.lifecycle_hooks.on_start.clone();
-        if let Some(ref cfg) = on_start {
-            if let Some(prompt) = cfg.prompt() {
-                let workdir = self
-                    .store
-                    .projects
-                    .get(pi)
-                    .and_then(|p| p.features.get(fi))
-                    .map(|f| f.workdir.clone())
-                    .unwrap_or_default();
-                self.start_hook_prompt(
-                    cfg.script().to_string(),
-                    workdir,
-                    prompt.title.clone(),
-                    prompt.options.clone(),
-                    HookNext::StartFeature { pi, fi },
-                );
-                return Ok(());
-            }
+        if let Some(ref cfg) = on_start
+            && let Some(prompt) = cfg.prompt()
+        {
+            let workdir = self
+                .store
+                .projects
+                .get(pi)
+                .and_then(|p| p.features.get(fi))
+                .map(|f| f.workdir.clone())
+                .unwrap_or_default();
+            self.start_hook_prompt(
+                cfg.script().to_string(),
+                workdir,
+                prompt.title.clone(),
+                prompt.options.clone(),
+                HookNext::StartFeature { pi, fi },
+            );
+            return Ok(());
         }
 
         self.ensure_feature_running(pi, fi)?;
@@ -966,17 +966,17 @@ impl App {
         let workdir_for_hook = feature.workdir.clone();
 
         // If on_stop has a prompt, show the picker first.
-        if let Some(ref cfg) = on_stop_hook {
-            if let Some(prompt) = cfg.prompt() {
-                self.start_hook_prompt(
-                    cfg.script().to_string(),
-                    workdir_for_hook,
-                    prompt.title.clone(),
-                    prompt.options.clone(),
-                    HookNext::StopFeature { pi, fi },
-                );
-                return Ok(());
-            }
+        if let Some(ref cfg) = on_stop_hook
+            && let Some(prompt) = cfg.prompt()
+        {
+            self.start_hook_prompt(
+                cfg.script().to_string(),
+                workdir_for_hook,
+                prompt.title.clone(),
+                prompt.options.clone(),
+                HookNext::StopFeature { pi, fi },
+            );
+            return Ok(());
         }
 
         if let Some(ref cfg) = on_stop_hook {

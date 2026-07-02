@@ -400,9 +400,7 @@ impl App {
         };
 
         let new_todo = match (&self.db, &list_id) {
-            (Some(db), Some(list_id)) => {
-                db.add_todo(list_id, &title, None, TodoPriority::Med)?
-            }
+            (Some(db), Some(list_id)) => db.add_todo(list_id, &title, None, TodoPriority::Med)?,
             _ => Todo {
                 id: Uuid::new_v4().to_string(),
                 list_id: list_id.unwrap_or_default(),
@@ -659,14 +657,10 @@ impl App {
         session_id: &str,
     ) -> Result<()> {
         let updated = match &mut self.mode {
-            AppMode::Todos(state) => state
-                .todos
-                .iter_mut()
-                .find(|t| t.id == todo_id)
-                .map(|t| {
-                    t.spawned_session_id = Some(session_id.to_string());
-                    t.clone()
-                }),
+            AppMode::Todos(state) => state.todos.iter_mut().find(|t| t.id == todo_id).map(|t| {
+                t.spawned_session_id = Some(session_id.to_string());
+                t.clone()
+            }),
             _ => None,
         };
         if let (Some(db), Some(todo)) = (&self.db, &updated) {
@@ -717,10 +711,6 @@ impl App {
 
     /// Sort items into display order: open first, then by manual `sort_order`.
     fn resort_todos(todos: &mut [Todo]) {
-        todos.sort_by(|a, b| {
-            a.done
-                .cmp(&b.done)
-                .then(a.sort_order.cmp(&b.sort_order))
-        });
+        todos.sort_by(|a, b| a.done.cmp(&b.done).then(a.sort_order.cmp(&b.sort_order)));
     }
 }

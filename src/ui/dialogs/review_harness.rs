@@ -52,7 +52,10 @@ pub fn draw_review_harness_pick(frame: &mut Frame, state: &ReviewHarnessPickStat
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" Enter", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" run fixes here  ", Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            " run fixes here  ",
+            Style::default().fg(theme.text.to_color()),
+        ),
         Span::styled("q/Esc", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " skip (feedback already saved)",

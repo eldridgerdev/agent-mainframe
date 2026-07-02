@@ -185,7 +185,6 @@ impl ClaudeLauncher {
             .spawn()
             .context("Failed to spawn claude in headless mode")
     }
-
 }
 
 #[cfg(test)]

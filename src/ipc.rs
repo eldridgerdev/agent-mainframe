@@ -153,6 +153,101 @@ pub fn start_with_wakeup(path: &Path, wakeup: Option<Arc<OwnedFd>>) -> Result<Ip
     })
 }
 
+/// Connect to a running AMF instance and send a single
+/// newline-terminated JSON payload. Used by the `amf notify`
+/// subcommand so hook scripts can push messages without `nc`.
+/// Returns an error (non-zero exit) when AMF is not running,
+/// allowing shell scripts to fall back to file-based delivery.
+pub fn send(path: &Path, payload: &str) -> Result<()> {
+    use std::io::Write;
+    let payload = payload.trim();
+    if payload.is_empty() {
+        anyhow::bail!("Payload is empty");
+    }
+    let mut stream = std::os::unix::net::UnixStream::connect(path).with_context(|| {
+        format!(
+            "AMF socket not found at {} — is amf running?",
+            path.display()
+        )
+    })?;
+    writeln!(stream, "{payload}").context("Failed to write to AMF socket")?;
+    stream.flush().context("Failed to flush AMF socket")?;
+    Ok(())
+}
+
+/// Send JSON payload and wait for a single JSON reply on a temporary
+/// callback socket. Adds `request_id` and `reply_socket` fields to
+/// the outbound payload if they are absent.
+pub fn send_wait(path: &Path, payload: &str, timeout: Duration) -> Result<serde_json::Value> {
+    use serde_json::json;
+    use std::io::BufRead;
+
+    let mut msg: serde_json::Value =
+        serde_json::from_str(payload.trim()).context("Payload must be valid JSON")?;
+    let obj = msg
+        .as_object_mut()
+        .context("Payload must be a JSON object")?;
+
+    let request_id = obj
+        .get("request_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    let reply_path = reply_dir().join(format!("{request_id}.sock"));
+    if let Some(parent) = reply_path.parent() {
+        std::fs::create_dir_all(parent).context("Failed to create reply socket directory")?;
+    }
+    let _ = std::fs::remove_file(&reply_path);
+
+    let listener = std::os::unix::net::UnixListener::bind(&reply_path)
+        .with_context(|| format!("Failed to bind reply socket at {}", reply_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .context("Failed to set reply listener nonblocking")?;
+
+    obj.insert("request_id".to_string(), json!(request_id));
+    obj.insert(
+        "reply_socket".to_string(),
+        json!(reply_path.display().to_string()),
+    );
+
+    let outbound = serde_json::to_string(&msg)?;
+    let send_result = send(path, &outbound);
+    if send_result.is_err() {
+        let _ = std::fs::remove_file(&reply_path);
+    }
+    send_result?;
+
+    let start = Instant::now();
+    let result = loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let mut reader = std::io::BufReader::new(stream);
+                let mut line = String::new();
+                reader
+                    .read_line(&mut line)
+                    .context("Failed to read reply from AMF")?;
+                let reply: serde_json::Value =
+                    serde_json::from_str(line.trim()).context("Reply was not valid JSON")?;
+                break Ok(reply);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if start.elapsed() >= timeout {
+                    break Err(anyhow::anyhow!("Timed out waiting for AMF reply"));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => {
+                break Err(anyhow::anyhow!("Failed waiting for AMF reply: {e}"));
+            }
+        }
+    };
+
+    let _ = std::fs::remove_file(&reply_path);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,99 +381,4 @@ mod tests {
         wait(50);
         assert!(guard.rx.try_recv().is_err());
     }
-}
-
-/// Connect to a running AMF instance and send a single
-/// newline-terminated JSON payload. Used by the `amf notify`
-/// subcommand so hook scripts can push messages without `nc`.
-/// Returns an error (non-zero exit) when AMF is not running,
-/// allowing shell scripts to fall back to file-based delivery.
-pub fn send(path: &Path, payload: &str) -> Result<()> {
-    use std::io::Write;
-    let payload = payload.trim();
-    if payload.is_empty() {
-        anyhow::bail!("Payload is empty");
-    }
-    let mut stream = std::os::unix::net::UnixStream::connect(path).with_context(|| {
-        format!(
-            "AMF socket not found at {} — is amf running?",
-            path.display()
-        )
-    })?;
-    writeln!(stream, "{payload}").context("Failed to write to AMF socket")?;
-    stream.flush().context("Failed to flush AMF socket")?;
-    Ok(())
-}
-
-/// Send JSON payload and wait for a single JSON reply on a temporary
-/// callback socket. Adds `request_id` and `reply_socket` fields to
-/// the outbound payload if they are absent.
-pub fn send_wait(path: &Path, payload: &str, timeout: Duration) -> Result<serde_json::Value> {
-    use serde_json::json;
-    use std::io::BufRead;
-
-    let mut msg: serde_json::Value =
-        serde_json::from_str(payload.trim()).context("Payload must be valid JSON")?;
-    let obj = msg
-        .as_object_mut()
-        .context("Payload must be a JSON object")?;
-
-    let request_id = obj
-        .get("request_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    let reply_path = reply_dir().join(format!("{request_id}.sock"));
-    if let Some(parent) = reply_path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create reply socket directory")?;
-    }
-    let _ = std::fs::remove_file(&reply_path);
-
-    let listener = std::os::unix::net::UnixListener::bind(&reply_path)
-        .with_context(|| format!("Failed to bind reply socket at {}", reply_path.display()))?;
-    listener
-        .set_nonblocking(true)
-        .context("Failed to set reply listener nonblocking")?;
-
-    obj.insert("request_id".to_string(), json!(request_id));
-    obj.insert(
-        "reply_socket".to_string(),
-        json!(reply_path.display().to_string()),
-    );
-
-    let outbound = serde_json::to_string(&msg)?;
-    let send_result = send(path, &outbound);
-    if send_result.is_err() {
-        let _ = std::fs::remove_file(&reply_path);
-    }
-    send_result?;
-
-    let start = Instant::now();
-    let result = loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                let mut reader = std::io::BufReader::new(stream);
-                let mut line = String::new();
-                reader
-                    .read_line(&mut line)
-                    .context("Failed to read reply from AMF")?;
-                let reply: serde_json::Value =
-                    serde_json::from_str(line.trim()).context("Reply was not valid JSON")?;
-                break Ok(reply);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                if start.elapsed() >= timeout {
-                    break Err(anyhow::anyhow!("Timed out waiting for AMF reply"));
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(e) => {
-                break Err(anyhow::anyhow!("Failed waiting for AMF reply: {e}"));
-            }
-        }
-    };
-
-    let _ = std::fs::remove_file(&reply_path);
-    result
 }

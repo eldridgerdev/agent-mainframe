@@ -87,9 +87,7 @@ fn preferred_sidebar_width(view: &ViewState) -> u16 {
 }
 
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
-    if view.sidebar_session_kind().is_none() {
-        return None;
-    }
+    view.sidebar_session_kind()?;
 
     let sidebar_width = preferred_sidebar_width(view);
     if total_width < SIDEBAR_MIN_MAIN_WIDTH + sidebar_width {
@@ -741,9 +739,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if title == "Todos" {
         theme.success.to_color()
-    } else if title == "Prompt" {
-        theme.text.to_color()
-    } else if title == "Summary" {
+    } else if title == "Prompt" || title == "Summary" {
         theme.text.to_color()
     } else if label == "Usage" {
         theme.status_detail.to_color()
@@ -895,11 +891,7 @@ fn scroll_content_to_lines_with_selection(
     for (visible_row, i) in (start..end).enumerate() {
         let content_row = start + visible_row;
         let line_text = all_lines.get(i).unwrap_or(&"");
-        let is_selected_row = has_selection
-            && ((content_row > sel_start_row && content_row < sel_end_row)
-                || (content_row == sel_start_row && content_row == sel_end_row)
-                || (content_row == sel_start_row && content_row < sel_end_row)
-                || (content_row > sel_start_row && content_row == sel_end_row));
+        let is_selected_row = has_selection && (sel_start_row..=sel_end_row).contains(&content_row);
 
         lines.push(render_ansi_line_with_selection(
             line_text,
@@ -919,6 +911,9 @@ fn scroll_content_to_lines_with_selection(
     lines
 }
 
+// Selection geometry travels as scalars from the mouse handler; see
+// TextSelection::normalized().
+#[allow(clippy::too_many_arguments)]
 fn render_ansi_line_with_selection(
     line_text: &str,
     cols: u16,
@@ -1759,7 +1754,18 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "hello", None, false, 0, None, None, (None, None), &theme);
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    None,
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
             })
             .unwrap();
 
@@ -1776,12 +1782,14 @@ mod tests {
     #[test]
     fn scroll_selection_highlights_visible_slice() {
         let theme = Theme::default();
-        let mut selection = TextSelection::default();
-        selection.start_row = 2;
-        selection.start_col = 1;
-        selection.end_row = 2;
-        selection.end_col = 3;
-        selection.has_selection = true;
+        let selection = TextSelection {
+            start_row: 2,
+            start_col: 1,
+            end_row: 2,
+            end_col: 3,
+            has_selection: true,
+            ..TextSelection::default()
+        };
 
         let lines = scroll_content_to_lines_with_selection(
             "zero\none\ntwo\nthree",
@@ -1820,7 +1828,18 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "", None, false, 0, None, None, (None, None), &theme);
+                draw(
+                    frame,
+                    &view,
+                    "",
+                    None,
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
             })
             .unwrap();
 

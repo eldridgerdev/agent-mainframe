@@ -39,6 +39,10 @@ impl App {
         true
     }
 
+    // The args are the feature-creation wizard's field set, threaded through
+    // the worktree-hook chain (see also finalize_worktree_hook_feature and
+    // start_worktree_hook); a param struct would just restate the wizard.
+    #[allow(clippy::too_many_arguments)]
     fn upsert_pending_worktree_feature(
         &mut self,
         project_name: &str,
@@ -114,6 +118,8 @@ impl App {
         Some((pi, fi))
     }
 
+    // Same wizard field set as upsert_pending_worktree_feature.
+    #[allow(clippy::too_many_arguments)]
     fn finalize_worktree_hook_feature(
         &mut self,
         workdir: PathBuf,
@@ -350,6 +356,8 @@ impl App {
         Ok(())
     }
 
+    // Same wizard field set as upsert_pending_worktree_feature.
+    #[allow(clippy::too_many_arguments)]
     pub fn start_worktree_hook(
         &mut self,
         script: &str,
@@ -409,20 +417,22 @@ impl App {
                 let tx2 = tx.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in std::io::BufReader::new(stdout).lines() {
-                        if let Ok(l) = line {
-                            let _ = tx2.send(l);
-                        }
+                    for l in std::io::BufReader::new(stdout)
+                        .lines()
+                        .map_while(Result::ok)
+                    {
+                        let _ = tx2.send(l);
                     }
                 });
             }
             if let Some(stderr) = c.stderr.take() {
                 std::thread::spawn(move || {
                     use std::io::BufRead;
-                    for line in std::io::BufReader::new(stderr).lines() {
-                        if let Ok(l) = line {
-                            let _ = tx.send(l);
-                        }
+                    for l in std::io::BufReader::new(stderr)
+                        .lines()
+                        .map_while(Result::ok)
+                    {
+                        let _ = tx.send(l);
                     }
                 });
             }

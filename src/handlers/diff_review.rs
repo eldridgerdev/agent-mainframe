@@ -210,25 +210,26 @@ fn submit_diff_review(app: &mut App, reject: bool, skip: bool) -> Result<()> {
     };
 
     let mut responded_over_ipc = false;
-    if let (Some(req), Some(sock)) = (request_id, reply_socket) {
-        if !req.is_empty() && !sock.is_empty() {
-            let mut payload = response.clone();
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("request_id".to_string(), serde_json::json!(req));
-            }
-            if crate::ipc::send(
-                std::path::Path::new(&sock),
-                &serde_json::to_string(&payload).unwrap_or_default(),
-            )
-            .is_ok()
-            {
-                responded_over_ipc = true;
-            } else {
-                app.log_warn(
-                    "ipc",
-                    "Failed IPC response for change-reason; falling back to files".to_string(),
-                );
-            }
+    if let (Some(req), Some(sock)) = (request_id, reply_socket)
+        && !req.is_empty()
+        && !sock.is_empty()
+    {
+        let mut payload = response.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("request_id".to_string(), serde_json::json!(req));
+        }
+        if crate::ipc::send(
+            std::path::Path::new(&sock),
+            &serde_json::to_string(&payload).unwrap_or_default(),
+        )
+        .is_ok()
+        {
+            responded_over_ipc = true;
+        } else {
+            app.log_warn(
+                "ipc",
+                "Failed IPC response for change-reason; falling back to files".to_string(),
+            );
         }
     }
 

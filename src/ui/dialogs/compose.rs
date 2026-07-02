@@ -47,9 +47,7 @@ pub fn draw_compose_dialog(frame: &mut Frame, state: &mut ComposeState, theme: &
     let mut total_visual_lines = count_wrapped_editor_lines(&lines, wrap_width.max(1));
     // Never let the box (content + borders) outgrow the frame on
     // short terminals.
-    let max_rows = (area.height.saturating_sub(4) as usize)
-        .min(COMPOSE_MAX_INPUT_ROWS)
-        .max(1);
+    let max_rows = (area.height.saturating_sub(4) as usize).clamp(1, COMPOSE_MAX_INPUT_ROWS);
     let visible_lines = total_visual_lines.clamp(COMPOSE_MIN_INPUT_ROWS.min(max_rows), max_rows);
     if total_visual_lines > visible_lines && wrap_width > 1 {
         wrap_width -= 1;

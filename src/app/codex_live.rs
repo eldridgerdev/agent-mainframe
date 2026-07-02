@@ -16,10 +16,10 @@ impl CodexLiveThreadState {
     pub fn apply_event(&mut self, raw: &Value) -> bool {
         let mut changed = false;
 
-        changed |= assign_if_some(&mut self.thread_id, first_string(raw, &THREAD_ID_PATHS));
-        changed |= assign_if_some(&mut self.turn_id, first_string(raw, &TURN_ID_PATHS));
+        changed |= assign_if_some(&mut self.thread_id, first_string(raw, THREAD_ID_PATHS));
+        changed |= assign_if_some(&mut self.turn_id, first_string(raw, TURN_ID_PATHS));
 
-        let Some(event_type) = first_string(raw, &EVENT_TYPE_PATHS) else {
+        let Some(event_type) = first_string(raw, EVENT_TYPE_PATHS) else {
             return changed;
         };
 
@@ -175,7 +175,10 @@ fn extract_reasoning_text(raw: &Value) -> Option<String> {
 
 fn extract_command_text(raw: &Value) -> Option<String> {
     let command = first_string(raw, &["/payload/command", "/command"])?;
-    let lines = vec![format!("State: running tool"), format!("Tool: {command}")];
+    let lines = [
+        "State: running tool".to_string(),
+        format!("Tool: {command}"),
+    ];
     Some(lines.join("\n"))
 }
 

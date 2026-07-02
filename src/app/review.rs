@@ -314,7 +314,12 @@ impl App {
             .files
             .iter()
             .filter(|f| !state.changed_since_last.contains(&f.path))
-            .filter(|f| matches!(snapshot.decisions.get(&f.path), Some(ReviewDecision::Approve)))
+            .filter(|f| {
+                matches!(
+                    snapshot.decisions.get(&f.path),
+                    Some(ReviewDecision::Approve)
+                )
+            })
             .map(|f| f.path.clone())
             .collect();
         for path in carry {
@@ -807,9 +812,7 @@ impl App {
             let path = file.path.clone();
             // A developer note or an already-generated walkthrough makes this a
             // no-op.
-            if state.review_notes.contains_key(&path)
-                || state.generated_notes.contains_key(&path)
-            {
+            if state.review_notes.contains_key(&path) || state.generated_notes.contains_key(&path) {
                 return;
             }
             if file.is_binary {
@@ -858,9 +861,10 @@ impl App {
         };
 
         let (child, path) = match &mut self.mode {
-            AppMode::DiffViewer(state) => {
-                (state.walkthrough_child.take(), state.walkthrough_file.take())
-            }
+            AppMode::DiffViewer(state) => (
+                state.walkthrough_child.take(),
+                state.walkthrough_file.take(),
+            ),
             _ => (None, None),
         };
         let (Some(child), Some(path)) = (child, path) else {
@@ -975,10 +979,7 @@ impl App {
                 // Don't stack a draft on a line that already carries a comment
                 // (human or a prior draft).
                 let overlaps = existing.iter().any(|c| {
-                    match (
-                        c.covered_indices(&locs),
-                        draft.covered_indices(&locs),
-                    ) {
+                    match (c.covered_indices(&locs), draft.covered_indices(&locs)) {
                         (Some(a), Some(b)) => *a.start() <= *b.end() && *b.start() <= *a.end(),
                         _ => false,
                     }
@@ -1154,8 +1155,7 @@ impl App {
             if !state.review {
                 return;
             }
-            state.feedback_editor =
-                crate::editor::TextEditor::new(state.general_feedback.clone());
+            state.feedback_editor = crate::editor::TextEditor::new(state.general_feedback.clone());
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_general = true;
@@ -1436,7 +1436,9 @@ impl App {
                 None => {}
             }
         }
-        let skipped = total.saturating_sub(approved).saturating_sub(rejected.len());
+        let skipped = total
+            .saturating_sub(approved)
+            .saturating_sub(rejected.len());
         let general_feedback = general_feedback.trim().to_string();
         let post_to_pr = self.config.final_review_post_to_pr;
 
@@ -1714,8 +1716,9 @@ impl App {
             Ok(si) => si,
             Err(e) => {
                 self.show_error(e);
-                self.message =
-                    Some(format!("{summary} (feedback saved; couldn't start review session)"));
+                self.message = Some(format!(
+                    "{summary} (feedback saved; couldn't start review session)"
+                ));
                 self.mode = AppMode::Viewing(from_view);
                 return Ok(());
             }
@@ -1805,7 +1808,10 @@ fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
     let line_of = |loc: &crate::diff::DiffLineLocation| loc.new_line.or(loc.old_line);
     let base = comment.location.new_line.is_none() && comment.location.old_line.is_some();
     let suffix = if base { " (base)" } else { "" };
-    match (comment.start.as_ref().and_then(line_of), line_of(&comment.location)) {
+    match (
+        comment.start.as_ref().and_then(line_of),
+        line_of(&comment.location),
+    ) {
         (Some(start), Some(end)) if start != end => format!("{file}:{start}-{end}{suffix}"),
         (_, Some(end)) => format!("{file}:{end}{suffix}"),
         (_, None) => file.to_string(),
@@ -2003,7 +2009,11 @@ fn parse_co_review_output(
             continue;
         };
         // Tolerate a leading bullet / marker before the number (e.g. "- 42|…").
-        let Ok(new_line) = num.trim().trim_start_matches(['-', '*', '•', ' ']).trim().parse::<usize>()
+        let Ok(new_line) = num
+            .trim()
+            .trim_start_matches(['-', '*', '•', ' '])
+            .trim()
+            .parse::<usize>()
         else {
             continue;
         };
@@ -2011,11 +2021,7 @@ fn parse_co_review_output(
         if text.is_empty() {
             continue;
         }
-        let Some(location) = locs
-            .iter()
-            .find(|l| l.new_line == Some(new_line))
-            .copied()
-        else {
+        let Some(location) = locs.iter().find(|l| l.new_line == Some(new_line)).copied() else {
             continue;
         };
         out.push(LineComment {
@@ -2270,7 +2276,10 @@ mod tests {
     fn first_round_writes_title_then_round() {
         let round = "## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n";
         let out = compose_feedback_log(None, round);
-        assert_eq!(out, "# Final Review Feedback\n\n## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n");
+        assert_eq!(
+            out,
+            "# Final Review Feedback\n\n## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n"
+        );
     }
 
     #[test]
@@ -2295,7 +2304,6 @@ mod tests {
         assert!(out.starts_with("# Final Review Feedback\n\n## Review — x"));
         assert!(out.contains("old."));
     }
-
 
     #[test]
     fn walkthrough_prompt_includes_path_and_patch() {

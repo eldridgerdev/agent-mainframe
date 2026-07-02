@@ -948,11 +948,13 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn begin_block(&mut self, kind: EmittedBlockKind) {
-        if !self.lines.is_empty()
-            && !matches!(self.lines.last(), Some(line) if line.spans.is_empty())
-            && !(self.last_block_kind == Some(EmittedBlockKind::ListItem)
-                && kind == EmittedBlockKind::ListItem)
-        {
+        // No separating blank at the top, after an existing blank, or between
+        // consecutive list items.
+        let skip_blank = self.lines.is_empty()
+            || matches!(self.lines.last(), Some(line) if line.spans.is_empty())
+            || (self.last_block_kind == Some(EmittedBlockKind::ListItem)
+                && kind == EmittedBlockKind::ListItem);
+        if !skip_blank {
             self.lines.push(Line::raw(""));
         }
         self.last_block_kind = Some(kind);
@@ -1102,6 +1104,9 @@ fn wrap_inline_nodes(
     lines
 }
 
+// Threads the wrap loop's mutable state through; a struct would need the
+// same borrows split anyway.
+#[allow(clippy::too_many_arguments)]
 fn push_wrapped_token(
     token: &str,
     style: Style,

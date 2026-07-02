@@ -337,7 +337,7 @@ fn opencode_sidebar_todos_text(
     let sidebar = opencode_sidebar?;
     let todo_count = sidebar
         .todo_count
-        .unwrap_or_else(|| sidebar.todo_preview.len() as u64) as usize;
+        .unwrap_or(sidebar.todo_preview.len() as u64) as usize;
     if todo_count == 0 && sidebar.todo_preview.is_empty() {
         return None;
     }
@@ -759,8 +759,14 @@ fn draw_view_pane(
         .then(|| app.compose_intercept_active(view));
 
     let next_prev_feature = (
-        app.active_extension.keybindings.get("next_feature").copied(),
-        app.active_extension.keybindings.get("prev_feature").copied(),
+        app.active_extension
+            .keybindings
+            .get("next_feature")
+            .copied(),
+        app.active_extension
+            .keybindings
+            .get("prev_feature")
+            .copied(),
     );
 
     super::pane::draw_with_lines(

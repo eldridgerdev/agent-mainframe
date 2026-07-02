@@ -273,10 +273,10 @@ impl VibeMode {
         // blocked at the call site.
         if opts.remote_control {
             flags.push("--remote-control".into());
-            if let Some(name) = opts.session_name {
-                if !name.is_empty() {
-                    flags.push(name);
-                }
+            if let Some(name) = opts.session_name
+                && !name.is_empty()
+            {
+                flags.push(name);
             }
         }
         flags
@@ -1871,10 +1871,7 @@ mod tests {
             VibeMode::Vibeless.cli_flags(opts(false)),
             Vec::<String>::new()
         );
-        assert_eq!(
-            VibeMode::Vibeless.cli_flags(opts(true)),
-            vec!["--chrome"]
-        );
+        assert_eq!(VibeMode::Vibeless.cli_flags(opts(true)), vec!["--chrome"]);
     }
 
     #[test]

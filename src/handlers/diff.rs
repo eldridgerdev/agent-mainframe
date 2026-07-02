@@ -26,8 +26,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     }
 
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
-    let editing_general =
-        matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
+    let editing_general = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
         &app.mode,
         AppMode::DiffViewer(state)
@@ -46,8 +45,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // Review verdict / completion keys take precedence over the read-only
     // bindings below; everything they don't handle falls through to the
     // shared navigation match.
-    let notes_expanded =
-        matches!(&app.mode, AppMode::DiffViewer(state) if state.notes_expanded);
+    let notes_expanded = matches!(&app.mode, AppMode::DiffViewer(state) if state.notes_expanded);
 
     if review {
         // A pending finish confirmation (some files have no verdict) takes
@@ -344,11 +342,7 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
 /// Drive the multi-line feedback editor (per-file rejection or general
 /// feedback). Tab submits, Esc cancels in plain mode, Ctrl+Q always cancels,
 /// Ctrl+T toggles vim, and Ctrl+J/K plus PgUp/PgDn scroll the editor.
-fn handle_feedback_editor_key(
-    app: &mut App,
-    key: KeyEvent,
-    editing_general: bool,
-) -> Result<()> {
+fn handle_feedback_editor_key(app: &mut App, key: KeyEvent, editing_general: bool) -> Result<()> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if ctrl && key.code == KeyCode::Char('q') {
@@ -438,7 +432,9 @@ mod tests {
     use super::*;
     use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, ViewState};
     use crate::diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind};
-    use crate::project::{AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode};
+    use crate::project::{
+        AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
+    };
     use crate::traits::{MockTmuxOps, MockWorktreeOps};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -554,7 +550,12 @@ mod tests {
         let mut app = make_review_app(dir.path(), &["a.rs"]);
         // The dispatch resolves the feature by the view's project/feature names,
         // so the store must hold a matching feature with no agent session yet.
-        let mut project = Project::new("proj".into(), dir.path().to_path_buf(), true, AgentKind::Claude);
+        let mut project = Project::new(
+            "proj".into(),
+            dir.path().to_path_buf(),
+            true,
+            AgentKind::Claude,
+        );
         project.features.push(Feature::new(
             "feat".into(),
             "branch".into(),
@@ -702,9 +703,7 @@ mod tests {
             .returning(|_, _, _| Ok(()));
         let (ks, kw) = (agent_session.clone(), agent_window.clone());
         tmux.expect_send_key_name()
-            .withf(move |session, window, name| {
-                session == ks && window == kw && name == "Enter"
-            })
+            .withf(move |session, window, name| session == ks && window == kw && name == "Enter")
             .times(1)
             .returning(|_, _, _| Ok(()));
 
@@ -716,8 +715,7 @@ mod tests {
             prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
-        let mut app =
-            App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
 
         let mut state = DiffViewerState::new(
             ViewState::new(
@@ -808,8 +806,7 @@ mod tests {
             prompt_templates: Vec::new(),
             extra: HashMap::new(),
         };
-        let mut app =
-            App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+        let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
         app.config.final_review_submit_prompt = false;
 
         let mut state = DiffViewerState::new(
@@ -1573,7 +1570,12 @@ mod tests {
                 assert!(state.decisions.is_empty(), "skip clears the verdict");
                 assert!(state.auto_rejected.is_empty());
                 // The comment itself is kept — only the verdict was cleared.
-                assert!(state.line_comments.get("a.rs").is_some_and(|c| c.len() == 1));
+                assert!(
+                    state
+                        .line_comments
+                        .get("a.rs")
+                        .is_some_and(|c| c.len() == 1)
+                );
             }
             _ => panic!("expected diff viewer"),
         }

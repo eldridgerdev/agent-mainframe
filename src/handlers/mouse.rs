@@ -250,7 +250,7 @@ fn handle_click(
         return Ok(());
     }
 
-    if row == 1 && app.pending_inputs.len() > 0 {
+    if row == 1 && !app.pending_inputs.is_empty() {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -472,7 +472,7 @@ fn copy_to_clipboard_osc52(text: &str) {
 
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;

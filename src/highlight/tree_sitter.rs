@@ -578,25 +578,23 @@ fn load_highlights_query(
 ) -> Result<String> {
     let mut parts = vec![read_query_file(source_dir, grammar.highlights_query)?];
 
-    if matches!(language, HighlightLanguage::Tsx) {
-        if let Some(query) = read_existing_query_file(
+    if matches!(language, HighlightLanguage::Tsx)
+        && let Some(query) = read_existing_query_file(
             source_dir,
             "node_modules/tree-sitter-javascript/queries/highlights-jsx.scm",
-        )? {
-            parts.push(query);
-        }
+        )?
+    {
+        parts.push(query);
     }
 
     if matches!(
         language,
         HighlightLanguage::Tsx | HighlightLanguage::TypeScript
-    ) {
-        if let Some(query) = read_existing_query_file(
-            source_dir,
-            "node_modules/tree-sitter-javascript/queries/highlights.scm",
-        )? {
-            parts.push(query);
-        }
+    ) && let Some(query) = read_existing_query_file(
+        source_dir,
+        "node_modules/tree-sitter-javascript/queries/highlights.scm",
+    )? {
+        parts.push(query);
     }
 
     Ok(combine_queries(parts))
@@ -616,13 +614,11 @@ fn load_injections_query(
     if matches!(
         language,
         HighlightLanguage::Tsx | HighlightLanguage::TypeScript
-    ) {
-        if let Some(query) = read_existing_query_file(
-            source_dir,
-            "node_modules/tree-sitter-javascript/queries/injections.scm",
-        )? {
-            parts.push(query);
-        }
+    ) && let Some(query) = read_existing_query_file(
+        source_dir,
+        "node_modules/tree-sitter-javascript/queries/injections.scm",
+    )? {
+        parts.push(query);
     }
 
     Ok(combine_queries(parts))
@@ -642,13 +638,11 @@ fn load_locals_query(
     if matches!(
         language,
         HighlightLanguage::Tsx | HighlightLanguage::TypeScript
-    ) {
-        if let Some(query) = read_existing_query_file(
-            source_dir,
-            "node_modules/tree-sitter-javascript/queries/locals.scm",
-        )? {
-            parts.push(query);
-        }
+    ) && let Some(query) = read_existing_query_file(
+        source_dir,
+        "node_modules/tree-sitter-javascript/queries/locals.scm",
+    )? {
+        parts.push(query);
     }
 
     Ok(combine_queries(parts))

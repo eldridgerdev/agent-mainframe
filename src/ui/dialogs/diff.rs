@@ -295,10 +295,7 @@ fn draw_header(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &T
                     .add_modifier(Modifier::BOLD),
             ),
             if state.override_base_ref.is_some() {
-                Span::styled(
-                    "  (manual)",
-                    Style::default().fg(theme.warning.to_color()),
-                )
+                Span::styled("  (manual)", Style::default().fg(theme.warning.to_color()))
             } else {
                 Span::raw("")
             },
@@ -417,7 +414,10 @@ fn draw_review_body(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, 
 }
 
 fn draw_notes_panel(frame: &mut Frame, area: Rect, state: &mut DiffViewerState, theme: &Theme) {
-    let path = state.files.get(state.selected_file).map(|file| file.path.clone());
+    let path = state
+        .files
+        .get(state.selected_file)
+        .map(|file| file.path.clone());
     let note = path
         .as_ref()
         .and_then(|p| state.review_notes.get(p))
@@ -521,7 +521,9 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
             if state.review {
                 let (symbol, color) = match state.decisions.get(&file.path) {
                     Some(crate::app::ReviewDecision::Approve) => ("✓", theme.success.to_color()),
-                    Some(crate::app::ReviewDecision::Reject { .. }) => ("✗", theme.danger.to_color()),
+                    Some(crate::app::ReviewDecision::Reject { .. }) => {
+                        ("✗", theme.danger.to_color())
+                    }
                     None => ("·", theme.text_muted.to_color()),
                 };
                 spans.push(Span::styled(
@@ -1093,12 +1095,7 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
         return;
     }
 
-    let mut second_line = vec![
-        key(" j"),
-        Span::raw("/"),
-        key("k"),
-        Span::raw(" scroll  "),
-    ];
+    let mut second_line = vec![key(" j"), Span::raw("/"), key("k"), Span::raw(" scroll  ")];
 
     // Surface the syntax-highlight install/select affordance for the selected
     // file, mirroring the read-only diff viewer footer. Highlighting itself is
@@ -1148,7 +1145,10 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             (" target: live  ", theme.text_muted.to_color())
         }
     };
-    second_line.push(Span::styled(target_label, Style::default().fg(target_color)));
+    second_line.push(Span::styled(
+        target_label,
+        Style::default().fg(target_color),
+    ));
     second_line.push(key("q"));
     second_line.push(Span::raw(" finish review (writes feedback)"));
 
@@ -1246,16 +1246,15 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         let anchor = state
             .comment_cursor
             .and_then(|idx| {
-                state
-                    .files
-                    .get(state.selected_file)
-                    .and_then(|file| file.addressable_lines().get(idx).copied().map(|loc| {
+                state.files.get(state.selected_file).and_then(|file| {
+                    file.addressable_lines().get(idx).copied().map(|loc| {
                         match (loc.new_line, loc.old_line) {
                             (Some(new_line), _) => format!("{}:{new_line}", file.path),
                             (None, Some(old_line)) => format!("{}:{old_line} (base)", file.path),
                             (None, None) => file.path.clone(),
                         }
-                    }))
+                    })
+                })
             })
             .unwrap_or_else(|| "line".to_string());
         let label = if state.editing_suggestion {
@@ -1291,8 +1290,7 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
     } else {
         "Write feedback for the agent. Markdown is fine."
     };
-    let editor_lines =
-        super::editor_view::editor_lines(&state.feedback_editor, theme, placeholder);
+    let editor_lines = super::editor_view::editor_lines(&state.feedback_editor, theme, placeholder);
     let visible_lines = editor_inner.height as usize;
     let mut wrap_width = editor_inner.width as usize;
     let mut total_visual_lines =
@@ -1340,7 +1338,11 @@ fn draw_feedback_editor(frame: &mut Frame, area: Rect, state: &mut DiffViewerSta
         key("Enter"),
         Span::raw(" newline  "),
         key("Ctrl+T"),
-        Span::raw(if vim.is_some() { " vim off  " } else { " vim on  " }),
+        Span::raw(if vim.is_some() {
+            " vim off  "
+        } else {
+            " vim on  "
+        }),
         key("Ctrl+J/K"),
         Span::raw(" scroll"),
     ]);
@@ -1834,6 +1836,9 @@ fn trim_diff_prefix(line: &DiffLine) -> &str {
         .unwrap_or(line.text.as_str())
 }
 
+// Layout inputs for one paired diff row; they vary per call site, so a
+// struct would be built and torn down for every row.
+#[allow(clippy::too_many_arguments)]
 fn side_by_side_rows(
     left_number: Option<usize>,
     right_number: Option<usize>,
@@ -2075,7 +2080,10 @@ fn wrap_gutter_line(
             Span::styled(" ", Style::default().bg(gutter_bg)),
             Span::styled(new_label, Style::default().fg(number_fg).bg(gutter_bg)),
             Span::styled(" ", Style::default().bg(gutter_bg)),
-            Span::styled(sep_text.to_string(), Style::default().fg(sep_fg).bg(gutter_bg)),
+            Span::styled(
+                sep_text.to_string(),
+                Style::default().fg(sep_fg).bg(gutter_bg),
+            ),
         ];
         if annotation.cursor {
             // Bold the content of the cursor row for extra emphasis without

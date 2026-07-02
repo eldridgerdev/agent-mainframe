@@ -826,6 +826,10 @@ integration, and hook flows.
 
 The project uses Rust 2024 edition (rustc 1.85+).
 
+## License
+
+AMF is released under the [MIT License](LICENSE).
+
 ---
 
-*Last updated: 2026-06-16*
+*Last updated: 2026-07-02*

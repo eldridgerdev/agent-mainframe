@@ -24,11 +24,10 @@ This doc is the prioritized punch list. Check items off as they land
 
 Legal/metadata basics. Nobody can adopt or contribute without these.
 
-- [ ] Add a `LICENSE` file at the repo root (decide MIT, Apache-2.0, or
-      dual MIT/Apache-2.0 — the Rust ecosystem default).
-- [ ] Add package metadata to `Cargo.toml`: `description`, `license`,
+- [x] Add a `LICENSE` file at the repo root (decided: MIT).
+- [x] Add package metadata to `Cargo.toml`: `description`, `license`,
       `repository`, `readme`, `keywords`, `categories`.
-- [ ] Mention the license at the bottom of `README.md`.
+- [x] Mention the license at the bottom of `README.md`.
 
 ## Phase 2 — Fix the headline-feature bug
 

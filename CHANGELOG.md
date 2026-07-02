@@ -10,6 +10,12 @@ are tagged.
 
 ## [Unreleased]
 
+### Added
+
+- **AMF is now licensed under the MIT License.** The repository ships a
+  `LICENSE` file, so you can use, modify, and redistribute AMF under
+  standard MIT terms. No migration is required.
+
 ### Changed
 
 - **Next / previous feature navigation is now opt-in.** The leader `n` / `p`

@@ -372,6 +372,10 @@ impl TmuxManager {
             }
         }
 
+        if cfg!(target_os = "macos") {
+            return TmuxInputTransportMode::Direct;
+        }
+
         if TmuxRuntime::env_flag_enabled("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT") {
             return TmuxInputTransportMode::ControlPty;
         }
@@ -2216,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn tmux_input_transport_defaults_to_control_mode() {
+    fn tmux_input_transport_uses_expected_platform_default() {
         let _lock = env_lock().lock().unwrap();
         let _env = EnvGuard::new(&[
             "AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT",
@@ -2226,10 +2230,12 @@ mod tests {
             std::env::remove_var("AMF_TMUX_INPUT_TRANSPORT");
             std::env::remove_var("AMF_EXPERIMENTAL_PERSISTENT_TMUX_INPUT");
         }
-        assert_eq!(
-            TmuxManager::input_transport_mode(),
+        let expected = if cfg!(target_os = "macos") {
+            TmuxInputTransportMode::Direct
+        } else {
             TmuxInputTransportMode::ControlPty
-        );
+        };
+        assert_eq!(TmuxManager::input_transport_mode(), expected);
     }
 
     #[test]

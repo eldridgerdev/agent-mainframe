@@ -73,6 +73,9 @@ are tagged.
   AMF tells you it was "possibly addressed" instead of silently discarding it,
   keeps it in the feedback file, and won't post it to a pull request where it
   would land on the wrong line.
+- **Markdown tables show their header rows again.** The in-app Markdown viewer
+  now renders table headers and the header/body divider, so plan and review
+  docs with tables are readable instead of starting at the first body row.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
@@ -87,6 +90,7 @@ are tagged.
 - No action required for comment re-anchoring. A review you paused before
   upgrading still resumes; its comments simply can't follow moved code until you
   re-add them, and any that no longer match are flagged rather than dropped.
+- No action required for the Markdown table header fix.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
 - If you relied on `n` / `p` to move between features in a session, add

@@ -75,6 +75,11 @@ doc always says exactly what remains.
 - [Bug backlog](bug-backlog-plan.md) — _Backlog._ Running list of known
   bugs not yet scheduled for a fix, one section per bug. Currently
   tracks recently fixed dashboard, sidebar, and composer-pane regressions.
+- [Markdown viewer completeness](markdown-viewer-completeness-plan.md) —
+  _Backlog._ Fix the Markdown viewer's missing table headers first, then
+  tighten coverage for table alignment, uneven rows, prefixed tables,
+  inline styling inside table cells, long cells, footnotes, math, links,
+  and image fallbacks.
 - [Prompt library](prompt-library-plan.md) — _In progress._ Save
   reusable prompts and inject them into a session (compose box when on,
   paste without sending when off). Phases 1–2 have shipped: SQLite-backed

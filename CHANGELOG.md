@@ -20,6 +20,10 @@ are tagged.
 - **AMF is now licensed under the MIT License.** The repository ships a
   `LICENSE` file, so you can use, modify, and redistribute AMF under
   standard MIT terms. No migration is required.
+- **TODOs keybindings in the help overlay.** The `?` help now has an "In the
+  TODOs view" section documenting every key in a TODO list — navigate, add,
+  edit title/notes/scratchpad, toggle done, cycle priority, reorder, delete,
+  and spawn an agent — so they're discoverable without leaving the app.
 
 ### Changed
 

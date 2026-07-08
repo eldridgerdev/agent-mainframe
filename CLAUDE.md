@@ -76,6 +76,8 @@ app/
 ├── commands.rs      # command picker
 ├── rename.rs        # session renaming
 ├── review.rs        # trigger_final_review()
+├── todos.rs         # native TODOs overlay (open/close, add,
+│                    # edit, toggle, reorder, spawn agent)
 ├── setup.rs         # ensure_notification_hooks(),
 │                    # ensure_notify_scripts(), load_config()
 ├── util.rs          # shorten_path(), slugify(),
@@ -178,6 +180,8 @@ Key dispatch per mode:
    - `search.rs` - search dialog
    - `hooks.rs` - change reason, running hook, hook
      prompt dialogs
+   - `todos.rs` - native TODOs list view, delete confirm,
+     and quick-capture overlay
 - `centered_rect(percent_x, percent_y, area) -> Rect`
 - `ansi_to_ratatui_text(raw, cols, rows) -> Vec<Line>`
 
@@ -198,7 +202,46 @@ Key dispatch is split across focused modules:
   opencode pickers
 - `handlers/search.rs` - search mode
 - `handlers/change_reason.rs` - diff review prompt
+- `handlers/todos.rs` - native TODOs overlay + quick-capture
+  key dispatch
 - `handlers/mouse.rs` - mouse event handling
+
+### Feature TODOs
+
+A per-project to-do list surfaced as a session kind and a
+native (non-tmux) overlay:
+
+- **Session kind:** `SessionKind::Todos` (`src/project.rs`).
+  `is_agent_harness()` and `is_tmux_backed()` are both `false`,
+  so no tmux window is created and it is filtered out of
+  window-cycling / the switcher. Offered in the `s` picker only
+  when the project has no TODOs session yet
+  (`Project::has_todos_session()`); at most one list per project,
+  hosted by the feature it was created under (the **host
+  feature**).
+- **Persistence:** SQLite tables `todo_lists` (one per project,
+  `project_id` UNIQUE) and `todos`, created by `MIGRATION_010`
+  and accessed via `src/db/todos.rs` (`AmfDb` methods:
+  load/upsert list, list/upsert/delete/reorder todos). Kept out
+  of the `ProjectStore` JSON so the list isn't rewritten on every
+  save. Todos survive without a DB (in-memory), which is what the
+  tests exercise; the in-memory list is the overlay's source of
+  truth and persists when a DB is present.
+- **Native view:** `AppMode::Todos(TodoViewState)` (opened from
+  the session via `enter_view` → `open_todos_view`) with an
+  inline `TextEditor` for title/notes/scratchpad edits. A
+  list-level free-form **scratchpad** banner sits at the top (its
+  DB column is still the legacy name `carry_over`).
+- **Spawn from a TODO:** `g`/`Enter` creates an agent-harness
+  session in the host feature (inheriting its agent + mode) and
+  seeds the composer via `open_compose_seeded` — editable, not
+  auto-submitted. The new session id is stored in
+  `todos.spawned_session_id`; pressing `g` again jumps back to
+  the linked live session instead of spawning a second.
+- **Quick-capture:** `AppMode::TodoQuickCapture`, reached from an
+  embedded session view via leader → `N`, appends a one-line TODO
+  to the project's list, auto-creating the list + session under
+  the current feature if none exists.
 
 ### Debug Logging
 

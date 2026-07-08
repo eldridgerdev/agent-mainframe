@@ -131,6 +131,41 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
+        "  In the TODOs view:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let todos_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k / \u{2191}/\u{2193}", "Navigate TODOs"),
+        ("a / n", "Add a TODO"),
+        ("e", "Edit title"),
+        ("o", "Edit notes"),
+        ("b", "Edit scratchpad banner"),
+        ("Space / x", "Toggle done"),
+        ("p", "Cycle priority (High/Med/Low)"),
+        ("J / K", "Reorder up/down"),
+        ("d", "Delete TODO (y/n confirm)"),
+        ("g / Enter", "Spawn agent (or jump to linked session)"),
+        ("q / Esc / Ctrl+Q", "Exit TODOs view"),
+    ];
+
+    for (key, desc) in &todos_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
         "  While reviewing PR comments:",
         Style::default()
             .fg(theme.primary.to_color())

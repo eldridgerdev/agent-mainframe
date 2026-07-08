@@ -91,6 +91,10 @@ are tagged.
   padded to the table's declared column count and empty cells still occupy
   visible grid space, so later cells no longer appear to shift left in the
   in-app Markdown viewer.
+- **Markdown tables keep their quote and list indentation.** Tables rendered
+  inside blockquotes or list items now preserve the surrounding prefix on every
+  border and row, and narrow prefixed tables still clamp to the available
+  viewer width.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux

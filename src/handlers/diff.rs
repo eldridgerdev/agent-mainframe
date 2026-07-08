@@ -1781,6 +1781,9 @@ index 1111111..2222222 100644
                     draft: true,
                     suggestion: None,
                     severity: crate::app::Severity::default(),
+                    anchor_context: None,
+                    start_anchor_context: None,
+                    anchor_lost: false,
                 }],
             );
         }

@@ -103,6 +103,10 @@ impl App {
         self.mode = AppMode::DiffViewer(state);
         if was_review {
             self.restore_review_progress();
+            // The diff may have moved underneath existing comments (a refresh
+            // after the agent edited code, or a base-ref change) — re-locate
+            // them before anything else reads their anchors.
+            self.reanchor_line_comments();
             self.apply_review_snapshot_diff();
             self.load_prior_agent_responses();
         }

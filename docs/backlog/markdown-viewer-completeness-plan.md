@@ -36,9 +36,10 @@ GitHub rendering.
 2. [x] Cover table alignment.
    - Added tests for left, center, and right alignment markers.
    - Preserved existing width clamping and truncation behavior.
-3. [ ] Cover uneven tables and empty cells.
+3. [x] Cover uneven tables and empty cells.
    - Pad short rows to the detected column count.
    - Ensure empty cells remain visible rather than shifting columns.
+   - Include parser alignment metadata when detecting table column count.
 4. [ ] Cover tables inside blockquotes and list items.
    - Verify quote/list prefixes are retained on borders and rows.
    - Check that prefixed tables still respect available width.
@@ -73,6 +74,71 @@ GitHub rendering.
       footnotes, code blocks, blockquotes, rules, and long lines.
     - Assert important text is present and raw Markdown syntax is not
       leaked where AMF claims to render it.
+
+## Table testing fixture
+
+Use this section as a manual smoke-test file in AMF's Markdown viewer.
+The fixture tables are intentionally not fenced as code blocks, so the
+viewer should render them as box-drawn grids instead of raw pipe syntax.
+
+### Headers and divider
+
+| Name | Status |
+| --- | --- |
+| AMF | Ready |
+
+Expected:
+- Header cells `Name` and `Status` are visible.
+- A divider row appears between the header and body.
+- Body row `AMF` / `Ready` remains visible.
+
+### Alignment and narrow truncation
+
+| Left | Center | Right |
+| :--- | :----: | ---: |
+| A | B | C |
+| alphabet | bravo | charlie |
+
+Expected:
+- `A` is left-aligned, `B` is centered, and `C` is right-aligned.
+- At narrow widths, long cells truncate with `…`.
+- Truncation preserves table borders and column positions.
+
+### Uneven rows
+
+| One | Two | Three |
+| --- | --- | --- |
+| A | B | C |
+| D | E |
+| F |
+
+Expected:
+- The `D` / `E` row still has a blank third cell.
+- The `F` row still has blank second and third cells.
+- Later cells do not shift left when a row is short.
+
+### Empty cells
+
+| One | Two | Three |
+| --- | --- | --- |
+| A | | C |
+| | B | |
+
+Expected:
+- The middle blank cell in `A | | C` remains visible.
+- The first and third blank cells in `| B |` remain visible.
+- Empty cells occupy grid space instead of collapsing.
+
+### Alignment-only column count
+
+| One | Two | Three |
+| --- | --- | --- |
+| A |
+
+Expected:
+- The rendered table still has three columns because the Markdown
+  alignment row declares three columns.
+- The missing second and third body cells render as empty cells.
 
 ## Open questions
 

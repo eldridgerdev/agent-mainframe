@@ -1336,6 +1336,11 @@ pub struct PrReviewState {
     /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
     /// shifting the visible rows. Cleared once the batch is queued.
     pub marked: std::collections::HashSet<u64>,
+    /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
+    /// after the user picks the review harness, the continuation opens the
+    /// combined-batch confirm dialog instead of the single-comment one. Cleared
+    /// when the picker is confirmed or cancelled.
+    pub pending_batch: bool,
 }
 
 /// Single-select harness picker shown before the dedicated PR-review session is
@@ -1385,6 +1390,12 @@ pub struct FixConfirmState {
     /// edits / cursor moves and cleared once applied; an explicit scroll key
     /// clears it so the user can scroll away from the cursor.
     pub sync_to_cursor: bool,
+    /// When `Some`, this dialog holds a **combined** batch prompt built from
+    /// several marked comments (the `B` flow) rather than a single comment's
+    /// fix. The vector is the ids of every comment included in the batch;
+    /// injecting marks all of them `Fixing` and clears the marked set. `None`
+    /// for an ordinary single-comment fix (only the selected comment is marked).
+    pub batch: Option<Vec<u64>>,
 }
 
 impl PrReviewState {

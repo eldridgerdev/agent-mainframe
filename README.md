@@ -5,18 +5,20 @@ each in its own terminal — without losing track of any of them.
 
 `amf` is a terminal dashboard for managing concurrent
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
-[Codex](https://github.com/openai/codex), and
-[Opencode](https://opencode.ai) agent sessions. Each feature gets its
-own tmux session and git worktree so agents work simultaneously without
-conflicts. You watch them all from one place, jump into whichever needs
-attention, and get notified the moment one is waiting for input.
+[Codex](https://github.com/openai/codex),
+[Opencode](https://opencode.ai), and Pi agent sessions. Each feature
+gets its own tmux session and git worktree so agents work
+simultaneously without conflicts. You watch them all from one place,
+jump into whichever needs attention, and get notified the moment one
+is waiting for input.
 
 <img width="1896" height="1030" alt="image" src="https://github.com/user-attachments/assets/d8160bc6-49ea-4b2b-839a-7ec056897ffc" />
 
 ## Features
 
-- **Multi-agent workspace manager** — run Claude Code, Codex, and
-  Opencode features side by side.
+- **Multi-agent workspace manager** — run Claude Code, Codex,
+  Opencode, and Pi features side by side; a first-run wizard picks
+  which harnesses are enabled.
 - **Project / feature tree** — organize work by repo, branch,
   nickname, ready state, timestamps, and one-line summaries.
 - **Flexible session model** — each feature can host agent sessions,
@@ -26,6 +28,18 @@ attention, and get notified the moment one is waiting for input.
 - **Worktree automation** — first feature can reuse the repo, later
   features get worktrees automatically; batch-create and fork features
   when you need parallel branches quickly.
+- **Final review workflow** — review a feature's diff file by file
+  with line and multi-line comments and concrete suggested changes;
+  optionally let Claude draft a first pass of comments, and post the
+  result to the branch's GitHub PR.
+- **PR comment review** — triage GitHub PR review comments in a
+  dedicated pane: reply, resolve threads, and inject scoped fix
+  prompts into an agent session one at a time or in batches.
+- **Per-project TODO lists** — a native full-screen checklist per
+  project with a scratchpad note; spawn an agent for a TODO straight
+  from the list.
+- **Usage and cost meters** — live token usage and dollar cost per
+  agent session, with feature-level totals on the dashboard.
 - **Local hooks and notifications** — input requests are pushed over
   IPC when possible, with file-based fallback, and hooks stay local to
   the worktree.
@@ -65,6 +79,8 @@ attention, and get notified the moment one is waiting for input.
   ([Codex repo](https://github.com/openai/codex))
 - **Opencode** — optional alternative agent
   ([opencode.ai](https://opencode.ai))
+- **Pi** — optional; required only for Pi sessions (the `pi` CLI must
+  be available in `PATH`)
 
 ### Git (optional)
 
@@ -184,13 +200,9 @@ amf upgrade   # fetch and install the latest release over HTTPS
 amf -V        # print the installed version
 ```
 
-> The upgrade command fetches the latest release over HTTPS. If you
-> previously saw TLS errors on upgrade, this is fixed in v0.10.1.
->
-> If you are upgrading from a version older than v0.11.1 and see a
-> `404` during download, reinstall once from the latest release bundle.
-> Older AMF versions expected standalone release binaries, but releases
-> now publish `.tar.gz` bundles.
+> Troubleshooting: if `amf upgrade` fails on a very old install
+> (pre-v0.12 TLS or `404` errors), reinstall once from the latest
+> release bundle; upgrades work normally from then on.
 
 User-facing release notes and migration guidance live in
 [`CHANGELOG.md`](CHANGELOG.md).
@@ -225,11 +237,18 @@ Create-project and batch-feature templates, examples, and the JSON response form
    AMF can be started directly from a normal shell. Running inside an
    existing tmux client is still supported, but no longer required.
 
+   On first run, AMF opens the **harness setup wizard** — a checklist
+   of the supported agent harnesses (Claude, Codex, Opencode, Pi).
+   Toggle the ones you use with `Enter`/`Space` (AMF verifies each CLI
+   is actually installed) and press `c` to confirm. Only enabled
+   harnesses appear in feature creation and the session picker; press
+   `A` on the dashboard at any time to change the selection.
+
 2. Press `N` to create a new project. Enter a name and the path to a
    git repository (or press `Ctrl+B` to browse for a directory).
 
 3. Press `n` to add a feature. Enter a branch name, choose your agent
-   (Claude, Codex, or Opencode), and pick a vibe mode. A git worktree
+   (Claude, Codex, Opencode, or Pi), and pick a vibe mode. A git worktree
    is created automatically when needed, and features auto-start on
    creation. Codex supports `Vibe` and `SuperVibe`; `Vibeless` is only
    available for agents with diff-review hook support.
@@ -262,15 +281,18 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `n` | Create new feature |
 | `B` | Batch-create features for a workspace |
 | `O` | Open the `~/.config/amf` settings project |
+| `A` | Manage agent harnesses (the first-run wizard) |
+| `G` | Review PR comments |
 | `s` | Open session picker / add a session |
 | `S` | Resume a Claude or Opencode session |
 | `r` | Rename selected feature or session |
 | `d` | Delete selected project, feature, or session |
 | `c` | Start selected feature |
 | `x` | Stop selected feature or remove selected session |
+| `u` | Configure preferred harness (project) or session settings (feature/session) |
+| `V` | Check pending diff review |
 | `F` | Fork the selected feature into a new worktree |
 | `f` | Filter by session type |
-| `m` | Create or open `.claude/notes.md` as a Memo session |
 | `y` | Toggle ready state for the selected feature |
 | `Z` | Generate a one-line summary for the selected feature |
 | `T` | Open the theme picker |
@@ -280,6 +302,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `/` | Search and jump |
 | `D` | Open the debug log overlay |
 | `R` | Refresh statuses |
+| `Ctrl+Space` `c` | Open the config wizard |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
 
@@ -291,6 +314,7 @@ All keys are forwarded to the tmux session except:
 | --- | --- |
 | `Ctrl+Q` | Exit view, return to dashboard |
 | `Ctrl+Space` | Activate leader key (default 5s window, configurable) |
+| any text key | Open the compose box (agent sessions, when compose input is on) |
 
 ### Leader Commands (after Ctrl+Space)
 
@@ -303,12 +327,23 @@ All keys are forwarded to the tmux session except:
 | `/` | Command palette |
 | `a` | Command palette focused on AMF local actions |
 | `i` | Input requests picker |
+| `e` | Toggle compose/direct input (agent sessions) |
+| `s` | Steering coach (experimental) |
+| `d` | Open the diff viewer |
+| `m` | Markdown file picker/viewer |
+| `b` | Show/hide the sidebar |
+| `v` | Expand/collapse todos in the sidebar |
+| `N` | Quick-capture a TODO for this project |
+| `g` | Generate a session summary |
 | `r` | Refresh statuses |
+| `R` | Refresh pane sizing |
+| `V` | Check pending diff review |
 | `x` | Stop session and exit view |
 | `f` | Trigger final review |
 | `l` | Show the latest saved prompt |
 | `p` | Open the prompt library (inject a saved prompt) — same as `Ctrl+P` in the compose box |
 | `o` / `S` | Toggle pane scroll mode |
+| `A` | Manage agent harnesses |
 | `D` | Open debug log |
 | `H` / `M` | Bookmark / unbookmark current session |
 | `1`-`9` | Jump to bookmark slot |
@@ -340,13 +375,13 @@ From the debug log overlay, press `/` to jump straight into that local-actions v
 ### Data Model
 
 ```text
-ProjectStore (version: 4, session_bookmarks)
+ProjectStore (version: 5, session_bookmarks)
   └─ Project (name, repo path, is_git)
        └─ Feature (branch, nickname?, workdir, tmux session,
                    status, ready, mode, review, agent,
                    summary?)
-            └─ FeatureSession (kind: Claude|Opencode|Codex|
-                               Terminal|Nvim|VSCode|Custom,
+            └─ FeatureSession (kind: Claude|Opencode|Codex|Pi|
+                               Terminal|Nvim|VSCode|Custom|Todos,
                                label, tmux window)
 ```
 
@@ -357,17 +392,17 @@ the directory you launch it from.
 ### Tmux Sessions
 
 Each feature gets a tmux session named `amf-<branch>`. Features start
-with an agent session plus a terminal session. If notes are enabled, a
-Memo nvim session can be added automatically too.
+with an agent session plus a terminal session.
 
 Use `s` to open the session picker and add more sessions at any time:
 
 | Picker entry | Session type |
 | --- | --- |
-| `Claude` / `Opencode` / `Codex` | Another agent session in the same feature |
+| `Claude` / `Opencode` / `Codex` / `Pi` | Another agent session in the same feature |
 | `Terminal` | Plain shell terminal |
 | `Nvim` | Neovim in the feature's working directory |
 | `VSCode` | Open the feature workdir in VSCode via `code` |
+| `TODOs` | The project's TODO list (native view, no tmux pane) |
 | Custom entries | Commands defined in `extension.custom_sessions` |
 
 Sessions can be renamed with `r` when a feature or session item is
@@ -446,6 +481,81 @@ worktree's `.codex/config.toml`, and Opencode plugins are refreshed
 into `.opencode/plugins/` automatically. Diff review is only available
 through the hook-based Claude and Opencode paths.
 
+### Final Review
+
+Press `Ctrl+Space` then `f` while viewing a session to start a final
+review — a file-by-file pass over the feature's diff before you ship
+it:
+
+- Approve, reject, or skip each file. With the line cursor active
+  (`c`) you can attach a comment to a line or to a `v`-selected range,
+  and `]` / `[` jump between hunks.
+- Press `S` on a line to write a **suggested change** — a concrete
+  replacement, recorded as a fenced `suggestion` block the agent can
+  apply verbatim (and posted as a one-click GitHub suggestion when PR
+  posting is on).
+- Press `A` to have Claude draft a first pass of line comments for the
+  current file; accept (`a`), dismiss (`d`), or edit (`Enter`) each
+  draft. Dismissed drafts never reach the feedback.
+- Finishing writes `.claude/final-review-feedback.md` and hands the
+  feedback to the feature's agent. Press `t` to send fixes to a
+  dedicated review session (you pick its harness) instead of the live
+  one.
+- With `final_review_post_to_pr` enabled, finishing also posts the
+  feedback to the branch's GitHub PR as a review (needs an
+  authenticated `gh` CLI).
+- Re-reviewing the same feature marks files changed since your last
+  pass with `Δ` and narrows the file list to just those files.
+
+### PR Comment Review
+
+Press `G` on a feature to review its GitHub pull-request comments
+inside AMF (requires an authenticated `gh` CLI). If the branch has no
+detectable PR, a picker lists the repo's pull requests.
+
+In the review pane:
+
+- `j`/`k` navigate comments; bodies render as Markdown and diff hunks
+  are colored and syntax-highlighted (press `i` to install a missing
+  language parser without leaving the pane).
+- `f` injects a scoped fix prompt for the selected comment into an
+  agent session — the first fix asks which harness the dedicated
+  review session should run. Mark several comments with `Space`, then
+  `F` queues an individual fix per mark, or `B` sends one combined
+  prompt for all of them.
+- `R` replies "Done in `<sha>`" from your latest commit, `n` replies
+  why a fix isn't needed, and `x` resolves or reopens the GitHub
+  thread.
+- `m` / `s` mark a comment done / skipped locally. Triage state is
+  stored in SQLite and survives restarts, re-opens, and new pushes.
+
+### Per-Project TODO Lists
+
+Add a `TODOs` session from the session picker (`s`) to keep one
+running checklist per project, shared across all its features. It
+opens as a native full-screen list (no tmux pane) with a free-form
+scratchpad note at the top.
+
+- `a` add, `e` edit the title, `o` edit longer notes, `Space` toggle
+  done, `p` cycle priority, `J`/`K` reorder, `d` delete, `b` edit the
+  scratchpad note.
+- Press `g` (or `Enter`) on an item to spawn an agent for it: AMF
+  opens a session in the list's feature and pre-fills the composer
+  from the item's title and notes. Pressing `g` again on a launched
+  item jumps back to the same session.
+- Quick-capture from anywhere: while viewing any session,
+  `Ctrl+Space` then `N` appends a TODO to the project's list.
+
+### Usage and Cost Meters
+
+Agent sessions show live token usage and estimated dollar cost on the
+dashboard — on each agent session row and its sidebar, plus a
+feature-level total on the feature row. Costs are computed from the
+`token_pricing` section of `~/.config/amf/config.json` (defaults to
+Claude Sonnet pricing); set `"show_cost": false` there to hide the
+dollar column. Terminal, editor, custom, and Pi sessions are excluded
+from feature totals.
+
 ### Agent Support
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
@@ -458,6 +568,10 @@ through the hook-based Claude and Opencode paths.
 - [Opencode](https://opencode.ai) is supported as a first-class
   alternative agent, including injected AMF-friendly themes and local
   plugins.
+- Pi is supported as a fourth harness for dedicated agent sessions,
+  with the same embedded view and composer. Pi sessions launch the
+  plain `pi` CLI: vibe-mode permission flags, diff-review hooks, and
+  usage meters do not apply to Pi.
 
 ## Configuration
 
@@ -474,6 +588,10 @@ automatically with defaults on first run.
 | `tmux_control_mode` | bool | `true` | Use tmux control mode with AMF's dedicated managed tmux socket for responsive embedded input/rendering. Set to `false` to use the legacy ambient tmux socket and direct `tmux send-keys` fallback path. |
 | `diff_review_viewer` | string | `"amf"` | Vibeless Claude diff-review UI. Only the in-app reviewer is supported; the value is retained for compatibility (the legacy `"nvim"`/`"legacy"`/`"custom"` values are accepted and map to the in-app reviewer). |
 | `final_review_submit_prompt` | bool | `true` | When finishing a final review with feedback, auto-submit the "address the feedback" prompt to the feature's agent (paste + Enter). Set to `false` to paste the prompt without sending Enter, so you can eyeball or edit it before submitting. |
+| `final_review_post_to_pr` | bool | `false` | When finishing a final review, also post the feedback to the branch's GitHub PR as a review (line comments inline, rejections and general feedback in the summary). Best-effort; requires an authenticated `gh` CLI. |
+| `view_auto_refresh` | bool | `false` | Periodically repair embedded tmux views while idle. Can hide agent rendering glitches, but costs extra refresh work; manual refresh and event-driven updates always work. |
+| `token_pricing` | object | Claude Sonnet pricing | Per-million-token prices used by the usage/cost meters (`input_per_mtok`, `output_per_mtok`, `reasoning_per_mtok`, `cache_read_per_mtok`, `cache_write_per_mtok`), plus `show_cost` (default `true`) to show or hide the dollar column. |
+| `remote_control_default` | bool | `false` | Default state of the Remote Control toggle for new Claude features (still subject to provider availability). |
 | `theme` | string | `"default"` | AMF UI theme: `default`, `amf`, `dracula`, `nord`, Gruvbox, Gruvbox Material, or Catppuccin variants. |
 | `transparent_background` | bool | `false` | Render the AMF background with terminal transparency. |
 | `opencode_theme` | string? | `"catppuccin-frappe"` | Theme name written to global Opencode config. |
@@ -605,7 +723,12 @@ value is the replacement character.
 
 Available actions: `quit`, `create_project`, `create_feature`,
 `start_session`, `stop_session`, `delete`, `sessions`, `help`,
-`search`, `refresh`, `filter`, `fork_feature`, `mark_ready`.
+`search`, `refresh`, `filter`, `syntax_picker`, `pr_review`,
+`session_config`, `fork_feature`, `mark_ready`.
+
+Two more actions have no default key and are active only once you
+bind them: `next_feature` and `prev_feature` (leader-mode next /
+previous feature navigation).
 
 #### `feature_presets`
 
@@ -617,11 +740,12 @@ pre-filling the vibe mode, agent, and other settings.
   {
     "name": "Quick fix",
     "branch_prefix": "fix/",
-    "mode": "Vibe",
-    "agent": "Claude",
+    "mode": "vibe",
+    "agent": "claude",
     "review": false,
+    "plan_mode": false,
     "enable_chrome": false,
-    "enable_notes": false
+    "remote_control": false
   }
 ]
 ```
@@ -630,11 +754,12 @@ pre-filling the vibe mode, agent, and other settings.
 | --- | --- | --- |
 | `name` | string | Preset label shown during feature creation. |
 | `branch_prefix` | string? | Prepended to the branch name automatically. |
-| `mode` | string | Vibe mode: `"Vibeless"`, `"Vibe"`, or `"SuperVibe"`. |
-| `agent` | string | Agent to use: `"Claude"`, `"Codex"`, or `"Opencode"`. |
+| `mode` | string | Vibe mode: `"vibeless"`, `"vibe"`, or `"supervibe"`. |
+| `agent` | string | Agent to use: `"claude"`, `"codex"`, `"opencode"`, or `"pi"`. |
 | `review` | bool | Whether to enable the diff-review hook. |
+| `plan_mode` | bool | Start the agent in plan mode. |
 | `enable_chrome` | bool | Enable browser/Chrome integration. |
-| `enable_notes` | bool | Enable session notes. |
+| `remote_control` | bool | Enable Remote Control for the feature (Claude only, subject to availability). |
 
 #### `allowed_agents`
 
@@ -642,8 +767,11 @@ Restrict which agents may be used in a workspace. This can be set
 globally or in a repo-local `.amf/config.json`.
 
 ```json
-"allowed_agents": ["Claude", "Codex"]
+"allowed_agents": ["claude", "codex"]
 ```
+
+Valid values are `"claude"`, `"codex"`, `"opencode"`, and `"pi"`
+(lowercase).
 
 An empty array means "allow all agents".
 
@@ -714,7 +842,7 @@ Installed parsers are stored under `~/.config/amf/tree-sitter/`.
 Save reusable prompts once and inject them into a session on demand
 instead of retyping them.
 
-1. Open the library with `leader+P` while viewing a session, or press
+1. Open the library with `leader+p` while viewing a session, or press
    `L` from the dashboard to manage entries.
 2. Press `Enter` to inject the selected prompt. When compose is on it
    seeds the compose box so you can review and edit before sending; when
@@ -727,12 +855,14 @@ instead of retyping them.
    are version-controllable and shareable; an entry with the same name
    is replaced in place.
 5. While composing, press `Ctrl+P` to open the library and inject a
-   saved prompt into the box (mirrors `leader+P`), or `Ctrl+S` to save
+   saved prompt into the box (mirrors `leader+p`), or `Ctrl+S` to save
    the current compose buffer as a new template.
 
 Templates are stored in the AMF SQLite database
-(`~/.config/amf/amf.db`). Fill-in `{{placeholder}}` slots and
-declarative/team templates are planned for later phases.
+(`~/.config/amf/amf.db`). Templates can carry fill-in
+`{{placeholder}}` slots — AMF prompts for the values on injection —
+and exported declarative templates can be version-controlled and
+shared with a team.
 
 ### Bundled Opencode Themes
 
@@ -812,15 +942,18 @@ Contributions are welcome. The main verification loop is:
 ```bash
 cargo test
 cargo check
-cargo clippy -- -W clippy::all
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 ```
 
-Manual TUI testing is still important for pane rendering, tmux
-integration, and hook flows.
+CI enforces a warning-free `clippy` and clean formatting, so run both
+before pushing. Manual TUI testing is still important for pane
+rendering, tmux integration, and hook flows.
 
 1. Fork the repo and create a feature branch.
-2. Make your changes. Run `cargo test`, `cargo check`, and
-   `cargo clippy -- -W clippy::all` before submitting.
+2. Make your changes. Run `cargo test`, `cargo check`,
+   `cargo clippy --all-targets -- -D warnings`, and
+   `cargo fmt --check` before submitting.
 3. Open a pull request with a short description of what changed and
    why.
 
@@ -832,4 +965,4 @@ AMF is released under the [MIT License](LICENSE).
 
 ---
 
-*Last updated: 2026-07-02*
+*Last updated: 2026-07-08*

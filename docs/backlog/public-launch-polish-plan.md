@@ -67,22 +67,35 @@ get judged on `cargo clippy`.
 Biggest single item. The README footer says "Last updated 2026-06-16"
 and it has drifted from the app.
 
-- [ ] Document the **Pi** agent harness (it appears in the first-run
-      wizard and session picker but is absent from the README).
-- [ ] Document the first-run **harness setup wizard**.
-- [ ] Add missing dashboard keybindings to the table: `A` (manage
-      harnesses), `G` (PR comment review), `V` (check pending diff
-      review), `u` (preferred harness / worktree config), and the
-      `Ctrl+Space c` config wizard; add leader `N` (TODO quick-capture)
-      to the leader table.
-- [ ] Add sections for the v0.28–0.29 flagship features currently
-      missing entirely: per-project TODO lists, PR comment review, AI
-      co-reviewer in final review, suggested changes, and the
-      per-session usage/cost meters shown on the dashboard.
-- [ ] Prune stale upgrade caveats (v0.10.1 TLS note, v0.11.1 404 note)
-      into a short troubleshooting note or drop them.
-- [ ] Sweep the rest of the README against the actual app (help
-      overlay is the source of truth) and bump the "Last updated" date.
+- [x] Document the **Pi** agent harness: intro, features list,
+      prerequisites, quick start, session picker table, data model,
+      and an Agent Support bullet (plain `pi` CLI; no vibe-mode flags,
+      diff review, or usage meters).
+- [x] Document the first-run **harness setup wizard** (Quick Start
+      step 1 + `A` keybinding).
+- [x] Add missing dashboard keybindings: `A`, `G`, `V`, `u`,
+      `Ctrl+Space c`; leader table gained `N` (TODO quick-capture)
+      plus the other help-overlay leader keys (`e`, `s`, `d`, `m`,
+      `b`, `v`, `g`, `R`, `V`, `A`). Removed the stale `m` Memo row —
+      the Memo feature no longer exists in the code.
+- [x] Add sections for the v0.28–0.29 flagship features: Final
+      Review (incl. AI co-reviewer and suggested changes), PR Comment
+      Review, Per-Project TODO Lists, and Usage and Cost Meters; each
+      also got a features-list bullet.
+- [x] Prune stale upgrade caveats into a one-line troubleshooting
+      note.
+- [x] Sweep against the app. Also fixed beyond the audit list: config
+      examples used capitalized `"Claude"`/`"Vibe"` agent/mode values
+      that would fail to deserialize (serde expects lowercase);
+      `feature_presets` docs dropped the removed `enable_notes` and
+      gained `plan_mode`/`remote_control`; keybinding action list
+      gained `syntax_picker`/`pr_review`/`session_config` and the
+      unbound `next_feature`/`prev_feature`; config table gained
+      `final_review_post_to_pr`, `view_auto_refresh`, `token_pricing`,
+      `remote_control_default`; prompt library `leader+P` → `leader+p`
+      and the "planned" placeholder note replaced (fill-in flow
+      shipped); store version 4 → 5; contributing commands now match
+      the CI gate; "Last updated" bumped.
 
 ## Phase 5 — First-run and dialog UX nits
 

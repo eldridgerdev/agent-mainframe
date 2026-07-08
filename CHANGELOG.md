@@ -42,9 +42,9 @@ are tagged.
   loading screen until the harness is ready instead of flashing the long tmux
   launch command and environment setup. Existing running sessions open normally.
 - **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
-  ignores duplicate Enter-repeat events and raw carriage-return/newline
-  characters in embedded terminal input, so pressing Enter submits once instead
-  of making the pane jump down by several lines.
+  uses the direct tmux input path on macOS, so typing in an embedded terminal
+  inserts the intended characters instead of turning each keypress into a
+  newline.
 
 ### Migration
 

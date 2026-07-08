@@ -337,11 +337,7 @@ fn draw_batch_feature_settings(frame: &mut Frame, state: &CreateBatchFeaturesSta
         .constraints(constraints)
         .split(chunks[1]);
 
-    let review_value = if state.review {
-        "On (experimental)"
-    } else {
-        "Off"
-    };
+    let review_value = if state.review { "On" } else { "Off" };
     let chrome_value = if state.enable_chrome { "On" } else { "Off" };
 
     let fields: Vec<(String, String)> = if state.agent == AgentKind::Claude {

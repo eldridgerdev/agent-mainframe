@@ -1487,10 +1487,31 @@ pub struct TodoQuickCaptureState {
     pub input: String,
 }
 
+/// Prompt shown when the feature that hosts a project's TODO list is deleted
+/// while the project survives (see `docs/backlog/feature-todos-plan.md`, Epic 1).
+/// The user chooses which surviving feature re-homes the list, or deletes it.
+pub struct TodosHostReassignState {
+    /// Project whose list is being re-homed.
+    pub project_name: String,
+    /// Name of the just-deleted host feature (shown in the prompt).
+    pub deleted_feature_name: String,
+    /// `todo_lists.id` of the orphaned list.
+    pub list_id: String,
+    /// Surviving features the list can be re-homed onto: `(name, feature_id)`.
+    pub candidates: Vec<(String, String)>,
+    /// Selected option index: `0..candidates.len()` re-homes onto that feature;
+    /// `== candidates.len()` deletes the list.
+    pub selected: usize,
+    /// Number of TODOs in the list (shown so the user knows what's at stake).
+    pub todo_count: usize,
+}
+
 pub enum AppMode {
     Normal,
     Todos(TodoViewState),
     TodoQuickCapture(TodoQuickCaptureState),
+    /// Re-home or delete a project's TODO list after its host feature is deleted.
+    TodosHostReassign(TodosHostReassignState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     DeletingProject(String),

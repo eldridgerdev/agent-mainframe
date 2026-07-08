@@ -1,11 +1,10 @@
 # Feature TODOs
 
-- **Status:** Epics 2–6 shipped (session kind, native view, editing,
-  spawn agent from a TODO, quick-capture + scratchpad, help-overlay
-  wiring, docs). Only one item outstanding: Epic 1's host-feature
-  deletion re-home/delete prompt, **deferred** pending the
-  feature-delete UI prompt (the `set_host_feature` / `delete_list`
-  persistence is already in place).
+- **Status:** All epics shipped. Epics 2–6 (session kind, native view,
+  editing, spawn agent from a TODO, quick-capture + scratchpad,
+  help-overlay wiring, docs) plus Epic 1's final item — the host-feature
+  deletion re-home/delete prompt (`AppMode::TodosHostReassign`) — are now
+  complete.
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -159,11 +158,20 @@ project/feature is deleted (extend the existing delete paths).
 - [x] Cascade-delete todos & list when a project is deleted
       (explicit cleanup in `app/project_ops.rs::delete_project`, since
       there is no FK cascade from `projects`).
-- [ ] On host-feature deletion (project survives), prompt **Re-home**
+- [x] On host-feature deletion (project survives), prompt **Re-home**
       (reassign `feature_id` to a chosen surviving feature) or
       **Delete** the list; Delete-only when no features remain.
-      _(Deferred: needs the feature-delete UI prompt; `set_host_feature` /
-      `delete_list` persistence is in place.)_
+      Implemented as `AppMode::TodosHostReassign`: after
+      `complete_deleting_feature` removes the host feature,
+      `handle_todos_host_feature_deleted` either silently drops the
+      orphaned list (no survivors) or opens the re-home/delete prompt
+      (`handlers/todos.rs::handle_todos_host_reassign_key`,
+      `ui/dialogs/todos.rs::draw_todos_host_reassign_dialog`). `Esc`
+      keeps the list by re-homing onto the first surviving feature.
+      Tests: `host_feature_delete_prompts_rehome_onto_surviving_feature`,
+      `host_feature_delete_can_delete_the_list`,
+      `host_feature_delete_drops_list_when_no_features_remain`,
+      `deleting_non_host_feature_leaves_todo_list_untouched`.
 - [x] Unit tests for migration + round-trip CRUD + one-list-per-project
       constraint.
 

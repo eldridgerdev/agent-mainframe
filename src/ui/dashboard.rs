@@ -1271,6 +1271,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_pr_number_prompt(frame, state, &app.theme);
     }
 
+    if let AppMode::TodosHostReassign(state) = &app.mode {
+        super::dialogs::draw_todos_host_reassign_dialog(frame, state, &app.theme);
+    }
+
     if let AppMode::RenamingSession(state) = &app.mode {
         super::dialogs::draw_rename_session_dialog(frame, state, &app.theme);
     }

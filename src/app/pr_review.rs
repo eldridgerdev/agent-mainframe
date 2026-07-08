@@ -185,6 +185,15 @@ pub struct PrComment {
     pub line: Option<u32>,
     /// True when the comment's anchor line no longer exists in the diff.
     pub outdated: bool,
+    /// True when the comment is on the *file* rather than a line (GitHub
+    /// `subject_type: "file"`), or when its `diff_hunk` is so large it's
+    /// effectively the whole file. Either way the hunk is suppressed in favor of
+    /// a bare `File:` reference — see [`PrComment::prompt_hunk`].
+    ///
+    /// `#[serde(default)]`: cached `pr_review_cache` rows written before this
+    /// field existed still deserialize (as `false`, i.e. line-anchored).
+    #[serde(default)]
+    pub file_level: bool,
     pub diff_hunk: Option<String>,
     /// Original comment body as returned by GitHub.
     pub body: String,
@@ -199,7 +208,37 @@ pub struct PrComment {
     pub local_note: Option<String>,
 }
 
+/// A `diff_hunk` longer than this is treated as "effectively the whole file"
+/// even when GitHub didn't label the comment file-level — a backstop for hunks
+/// that are a large, low-value token cost to inject (plan token principle #3)
+/// when the agent could just open the file.
+///
+/// Deliberately well clear of ordinary line comments: sampling real PRs, a
+/// line-anchored comment's hunk runs to ~90 lines at the tail (most are under
+/// 30), so a tighter cap would strip the context the reviewer pointed at. Only
+/// `subject_type == "file"` reliably identifies a file-level comment; this is
+/// the safety net for the pathological case, not the classifier.
+const WHOLE_FILE_HUNK_LINES: usize = 150;
+
 impl PrComment {
+    /// The diff hunk worth showing and injecting, or `None` when it should be
+    /// replaced by a bare `File:` reference — for a file-level comment (whose
+    /// hunk is the entire file diff) or an oversized hunk.
+    ///
+    /// The suppressed case compounds in the combined batch (`B`), where several
+    /// whole-file hunks would otherwise land in one prompt.
+    pub fn prompt_hunk(&self) -> Option<&str> {
+        let hunk = self.diff_hunk.as_deref()?;
+        let whole_file = self.file_level || hunk.lines().count() > WHOLE_FILE_HUNK_LINES;
+        (!whole_file).then_some(hunk)
+    }
+
+    /// Whether a hunk exists but is being withheld as whole-file-sized. Drives
+    /// the "comment on file" note in both the prompt and the detail pane.
+    pub fn hunk_suppressed(&self) -> bool {
+        self.diff_hunk.is_some() && self.prompt_hunk().is_none()
+    }
+
     /// Text to send to the agent: boilerplate-stripped for bots, verbatim for
     /// humans. Keeps token-heavy bot scaffolding out of prompts.
     pub fn agent_text(&self) -> String {
@@ -237,10 +276,12 @@ impl PrComment {
 
         if let Some(path) = &self.path {
             match self.line {
-                Some(line) => out.push_str(&format!("File: {path}:{line}")),
-                None => out.push_str(&format!("File: {path}")),
+                Some(line) if !self.file_level => out.push_str(&format!("File: {path}:{line}")),
+                _ => out.push_str(&format!("File: {path}")),
             }
-            if self.outdated {
+            if self.file_level {
+                out.push_str("  (comment on the whole file)");
+            } else if self.outdated {
                 out.push_str("  (comment is on a line that has since changed)");
             }
             out.push('\n');
@@ -252,10 +293,22 @@ impl PrComment {
             self.agent_text().trim()
         ));
 
-        if let Some(hunk) = &self.diff_hunk {
-            out.push_str("Diff hunk:\n");
-            out.push_str(hunk.trim_end());
-            out.push('\n');
+        match self.prompt_hunk() {
+            Some(hunk) => {
+                out.push_str("Diff hunk:\n");
+                out.push_str(hunk.trim_end());
+                out.push('\n');
+            }
+            // A whole-file-sized hunk is withheld rather than injected: say so,
+            // so the agent knows to open the file instead of assuming there was
+            // no context to give.
+            None if self.hunk_suppressed() => {
+                out.push_str(
+                    "Diff hunk omitted (it covers effectively the whole file) — \
+                     open the file for context.\n",
+                );
+            }
+            None => {}
         }
 
         out.trim_end().to_string()
@@ -432,6 +485,9 @@ pub fn normalize(
             None => (None, false),
         };
         let snippet = make_snippet(&c.body, is_bot);
+        // A file-level comment has no line by definition — that's not the same
+        // thing as an outdated line comment, so don't badge it as one.
+        let file_level = c.subject_type.as_deref() == Some("file");
         comments.push(PrComment {
             id: c.id,
             kind: CommentKind::Inline,
@@ -439,7 +495,8 @@ pub fn normalize(
             is_bot,
             path: c.path,
             line: c.line.or(c.original_line),
-            outdated: c.line.is_none(),
+            outdated: c.line.is_none() && !file_level,
+            file_level,
             diff_hunk: c.diff_hunk,
             body: c.body,
             snippet,
@@ -467,6 +524,7 @@ pub fn normalize(
             path: None,
             line: None,
             outdated: false,
+            file_level: false,
             diff_hunk: None,
             body: r.body,
             snippet,
@@ -489,6 +547,7 @@ pub fn normalize(
             path: None,
             line: None,
             outdated: false,
+            file_level: false,
             diff_hunk: None,
             body: c.body,
             snippet,
@@ -2008,6 +2067,7 @@ mod tests {
                 line: None, // outdated
                 original_line: Some(7),
                 diff_hunk: Some("@@".into()),
+                subject_type: None,
                 body: "race condition".into(),
                 user: user("alice", "User"),
                 in_reply_to_id: None,
@@ -2019,6 +2079,7 @@ mod tests {
                 line: Some(3),
                 original_line: Some(3),
                 diff_hunk: None,
+                subject_type: None,
                 body: "nit".into(),
                 user: user("coderabbitai", "Bot"),
                 in_reply_to_id: None,
@@ -2047,6 +2108,30 @@ mod tests {
         assert!(c12.is_bot);
 
         assert_eq!(review.open_count(), 1); // only c12 is unresolved
+    }
+
+    #[test]
+    fn normalize_marks_file_level_comments_and_not_as_outdated() {
+        // A file-level comment has no `line` by definition — that must not be
+        // mistaken for an outdated line comment.
+        let comments = vec![ReviewComment {
+            id: 21,
+            path: Some("src/big.rs".into()),
+            line: None,
+            original_line: None,
+            diff_hunk: Some("@@ -1,400 +1,420 @@\n+ enormous".into()),
+            subject_type: Some("file".into()),
+            body: "This module does too much.".into(),
+            user: user("alice", "User"),
+            in_reply_to_id: None,
+            pull_request_review_id: Some(99),
+        }];
+
+        let review = normalize(pr(), comments, vec![], vec![], vec![]);
+        let c = &review.comments[0];
+        assert!(c.file_level);
+        assert!(!c.outdated);
+        assert_eq!(c.prompt_hunk(), None);
     }
 
     #[test]
@@ -2084,6 +2169,7 @@ mod tests {
             path: Some("src/app/sync.rs".into()),
             line: Some(42),
             outdated: false,
+            file_level: false,
             diff_hunk: Some("@@ -38,4 +38,5 @@\n  poll = 250;\n+ self.sync();".into()),
             body: body.into(),
             snippet: String::new(),
@@ -2106,6 +2192,73 @@ mod tests {
         assert!(prompt.contains("+ self.sync();"));
         // No file contents are ever injected — only the comment + hunk.
         assert!(!prompt.contains("fn "));
+    }
+
+    #[test]
+    fn fix_prompt_omits_hunk_for_file_level_comment() {
+        let mut c = inline_comment("Split this module up.", false);
+        c.file_level = true;
+        c.line = None;
+        // GitHub hands a file-level comment the entire file diff as its hunk.
+        c.diff_hunk = Some("@@ -1,400 +1,420 @@\n+ a\n+ b".into());
+
+        assert_eq!(c.prompt_hunk(), None);
+        assert!(c.hunk_suppressed());
+
+        let prompt = c.fix_prompt();
+        assert!(prompt.contains("File: src/app/sync.rs  (comment on the whole file)"));
+        assert!(!prompt.contains("Diff hunk:"));
+        assert!(!prompt.contains("+ a"));
+        // The agent is told the hunk was withheld, not that there was none.
+        assert!(prompt.contains("Diff hunk omitted"));
+    }
+
+    #[test]
+    fn whole_file_sized_hunk_is_dropped_but_ordinary_ones_are_kept() {
+        let hunk_of = |n: usize| {
+            Some(
+                std::iter::repeat_n("+ line", n)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        };
+
+        // Real line comments run to ~90 hunk lines; those keep their context.
+        let mut c = inline_comment("This block is wrong.", false);
+        c.diff_hunk = hunk_of(93);
+        assert!(c.prompt_hunk().is_some());
+        assert!(!c.hunk_suppressed());
+        assert!(c.fix_prompt().contains("Diff hunk:"));
+
+        // Only a pathological, whole-file-sized hunk trips the backstop.
+        c.diff_hunk = hunk_of(WHOLE_FILE_HUNK_LINES + 1);
+        assert_eq!(c.prompt_hunk(), None);
+        let prompt = c.fix_prompt();
+        // Still line-anchored, so the pointer keeps its line — only the wall of
+        // diff is dropped, and not as a "whole file" comment.
+        assert!(prompt.contains("File: src/app/sync.rs:42"));
+        assert!(!prompt.contains("(comment on the whole file)"));
+        assert!(!prompt.contains("Diff hunk:"));
+        assert!(prompt.contains("Diff hunk omitted"));
+    }
+
+    #[test]
+    fn combined_fix_prompt_drops_whole_file_hunks() {
+        let ordinary = inline_comment("Guard this behind the lock.", false);
+        let mut file_level = inline_comment("Split this module up.", false);
+        file_level.path = Some("src/big.rs".into());
+        file_level.file_level = true;
+        file_level.line = None;
+        file_level.diff_hunk = Some("@@ -1,400 +1,420 @@\n+ enormous".into());
+
+        let prompt = combined_fix_prompt(&[&ordinary, &file_level]);
+
+        // The line-anchored comment keeps its (small) hunk...
+        assert!(prompt.contains("+ self.sync();"));
+        // ...while the whole-file hunk never lands in the shared prompt, where
+        // several of them would otherwise compound.
+        assert!(!prompt.contains("+ enormous"));
+        assert!(prompt.contains("File: src/big.rs  (comment on the whole file)"));
     }
 
     #[test]
@@ -2324,6 +2477,7 @@ mod tests {
             path: None,
             line: None,
             outdated: false,
+            file_level: false,
             diff_hunk: None,
             body: "<details>keep?</details>plain".into(),
             snippet: String::new(),

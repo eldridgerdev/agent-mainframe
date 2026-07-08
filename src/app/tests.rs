@@ -7460,6 +7460,7 @@ fn pr_review_with_comments(n: u64) -> crate::app::pr_review::PrReview {
             path: Some(format!("src/file{id}.rs")),
             line: Some(id as u32),
             original_line: Some(id as u32),
+            subject_type: None,
             diff_hunk: Some("@@".to_string()),
             body: format!("comment {id}"),
             user: crate::github::GhUser {
@@ -7984,6 +7985,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
             path: Some(format!("src/file{id}.rs")),
             line: Some(id as u32),
             original_line: Some(id as u32),
+            subject_type: None,
             diff_hunk: Some("@@".to_string()),
             body: format!("comment {id}"),
             user: crate::github::GhUser {

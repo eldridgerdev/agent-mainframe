@@ -119,6 +119,11 @@ pub struct ReviewComment {
     pub original_line: Option<u32>,
     #[serde(default)]
     pub diff_hunk: Option<String>,
+    /// What the comment is anchored to: `"line"` (the default) or `"file"` for a
+    /// comment left on the whole file. File-level comments carry the entire file
+    /// diff as their `diff_hunk`, so this drives hunk suppression.
+    #[serde(default)]
+    pub subject_type: Option<String>,
     #[serde(default)]
     pub body: String,
     pub user: GhUser,

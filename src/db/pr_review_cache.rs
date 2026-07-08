@@ -71,6 +71,7 @@ mod tests {
                 path: Some("src/lib.rs".into()),
                 line: Some(42),
                 outdated: false,
+                file_level: false,
                 diff_hunk: Some("@@ -1 +1 @@".into()),
                 body: "guard this behind the lock".into(),
                 snippet: snippet.into(),

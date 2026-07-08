@@ -99,6 +99,11 @@ pub fn draw_create_project_dialog(
     }
     frame.render_widget(Paragraph::new(agent_lines), chunks[2]);
 
+    let enter_label = if matches!(state.step, CreateProjectStep::Agent) {
+        " confirm  "
+    } else {
+        " next  "
+    };
     let hints = Paragraph::new(Line::from(vec![
         Span::styled(" Tab", Style::default().fg(theme.warning.to_color())),
         Span::raw(" switch field  "),
@@ -107,7 +112,7 @@ pub fn draw_create_project_dialog(
         Span::styled("j/k", Style::default().fg(theme.warning.to_color())),
         Span::raw(" choose agent  "),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
-        Span::raw(" confirm  "),
+        Span::raw(enter_label),
         Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
         Span::raw(" cancel"),
     ]));

@@ -38,7 +38,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("c", "Copy Remote Control URL"),
     ("C", "Toggle Remote Control (/rc)"),
     ("O", "Open Remote Control URL"),
-    ("f", "Final review (experimental)"),
+    ("f", "Final review"),
     ("D", "Debug log"),
     ("?", "Help"),
 ];
@@ -245,7 +245,7 @@ pub(crate) fn draw_with_lines(
         };
         if view.review {
             header_spans.push(Span::styled(
-                "[review experimental] ",
+                "[review] ",
                 Style::default().fg(theme.mode_review.to_color()),
             ));
         }

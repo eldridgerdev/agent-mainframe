@@ -127,41 +127,35 @@ pub fn draw_harness_setup_dialog(
     frame.render_widget(list, chunks[1]);
 
     // Hints
-    let hints = Line::from(vec![
-        Span::styled(
-            "  Enter/Space",
-            Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" toggle  "),
-        Span::styled(
-            "c",
-            Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" confirm  "),
-        Span::styled(
-            "Esc",
-            Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(if state.is_startup {
-            " confirm"
-        } else {
-            " cancel"
-        }),
-        Span::raw("  "),
-        Span::styled(
-            "q",
-            Style::default()
-                .fg(theme.warning.to_color())
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(if state.is_startup { " quit" } else { " exit" }),
-    ]);
+    let key_style = Style::default()
+        .fg(theme.warning.to_color())
+        .add_modifier(Modifier::BOLD);
+    let hints = if state.is_startup {
+        // c and Esc both confirm here (there's nothing to cancel back
+        // to on first run), so label them together instead of both
+        // claiming "confirm" separately.
+        Line::from(vec![
+            Span::styled("  Enter/Space", key_style),
+            Span::raw(" toggle  "),
+            Span::styled("c", key_style),
+            Span::raw("/"),
+            Span::styled("Esc", key_style),
+            Span::raw(" done  "),
+            Span::styled("q", key_style),
+            Span::raw(" quit"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  Enter/Space", key_style),
+            Span::raw(" toggle  "),
+            Span::styled("c", key_style),
+            Span::raw(" confirm  "),
+            Span::styled("Esc", key_style),
+            Span::raw(" cancel  "),
+            Span::styled("q", key_style),
+            Span::raw(" exit"),
+        ])
+    };
     let hints_widget = Paragraph::new(hints);
     frame.render_widget(hints_widget, chunks[2]);
 }

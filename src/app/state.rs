@@ -338,6 +338,99 @@ pub enum ReviewDecision {
     },
 }
 
+/// How many addressable lines of context are captured on each side of a
+/// comment's anchor for re-location. Small enough to stay cheap and to tolerate
+/// nearby edits, large enough to disambiguate repeated lines.
+pub const ANCHOR_CONTEXT_RADIUS: usize = 2;
+
+/// A snapshot of a commented line's text plus a few neighbours, captured when
+/// the comment was anchored. Lets the re-anchor pass re-locate a comment when
+/// the exact `DiffLineLocation` no longer exists after the diff is refreshed
+/// (the agent edited the code, or the reviewer changed the base ref). Lines are
+/// the diff-prefix-stripped `addressable_line_texts()`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentAnchorContext {
+    /// Text of the anchored line itself.
+    pub line: String,
+    /// Up to `ANCHOR_CONTEXT_RADIUS` addressable-line texts immediately before,
+    /// in ascending order (closest neighbour last).
+    pub before: Vec<String>,
+    /// Up to `ANCHOR_CONTEXT_RADIUS` addressable-line texts immediately after,
+    /// in ascending order (closest neighbour first).
+    pub after: Vec<String>,
+}
+
+impl CommentAnchorContext {
+    /// Capture the context around `idx` in a file's `addressable_line_texts()`.
+    /// Returns `None` if `idx` is out of range.
+    pub fn capture(texts: &[String], idx: usize) -> Option<Self> {
+        let line = texts.get(idx)?.clone();
+        let before = texts[idx.saturating_sub(ANCHOR_CONTEXT_RADIUS)..idx].to_vec();
+        let after = texts
+            .get(idx + 1..(idx + 1 + ANCHOR_CONTEXT_RADIUS).min(texts.len()))
+            .unwrap_or(&[])
+            .to_vec();
+        Some(Self {
+            line,
+            before,
+            after,
+        })
+    }
+
+    /// Best-effort re-location of this context within `texts`. Considers every
+    /// index whose (trimmed) line text matches the anchor line, scoring each by
+    /// how many trimmed neighbours also agree, and returns the single best
+    /// candidate. A blank anchor line, no line match, or an ambiguous tie for
+    /// the top score all yield `None` (the comment is then treated as lost —
+    /// the conservative direction, never a silently wrong re-anchor).
+    pub fn best_match(&self, texts: &[String]) -> Option<usize> {
+        let target = self.line.trim();
+        if target.is_empty() {
+            return None;
+        }
+        let mut best: Option<(usize, usize)> = None; // (score, idx)
+        let mut tied = false;
+        for (idx, text) in texts.iter().enumerate() {
+            if text.trim() != target {
+                continue;
+            }
+            let score = self.neighbour_score(texts, idx);
+            match best {
+                Some((best_score, _)) if score < best_score => {}
+                Some((best_score, _)) if score == best_score => tied = true,
+                _ => {
+                    best = Some((score, idx));
+                    tied = false;
+                }
+            }
+        }
+        match best {
+            Some((_, idx)) if !tied => Some(idx),
+            _ => None,
+        }
+    }
+
+    /// How many of the captured neighbours (trimmed) still surround `idx`.
+    fn neighbour_score(&self, texts: &[String], idx: usize) -> usize {
+        let mut score = 0;
+        // `before` is ascending, so its last entry is the immediate predecessor.
+        for (offset, want) in self.before.iter().rev().enumerate() {
+            let Some(pos) = idx.checked_sub(offset + 1) else {
+                break;
+            };
+            if texts.get(pos).map(|t| t.trim()) == Some(want.trim()) {
+                score += 1;
+            }
+        }
+        for (offset, want) in self.after.iter().enumerate() {
+            if texts.get(idx + offset + 1).map(|t| t.trim()) == Some(want.trim()) {
+                score += 1;
+            }
+        }
+        score
+    }
+}
+
 /// A reviewer comment anchored to a diff line (or a span of lines) during a
 /// final review. `location` is the end anchor (GitHub's `line`); `start`, when
 /// set, is the first line of a multi-line span (GitHub's `start_line`). A `None`
@@ -367,6 +460,20 @@ pub struct LineComment {
     /// files load unchanged.
     #[serde(default)]
     pub severity: Severity,
+    /// Context snapshot around `location`, captured for re-anchoring after a
+    /// diff refresh. `None` until the next progress persist captures it (and for
+    /// older progress files, which simply can't be re-anchored).
+    #[serde(default)]
+    pub anchor_context: Option<CommentAnchorContext>,
+    /// Context snapshot around `start` (range comments only). `None` for a
+    /// single-line comment.
+    #[serde(default)]
+    pub start_anchor_context: Option<CommentAnchorContext>,
+    /// Set by the re-anchor pass when the comment could not be re-located in a
+    /// refreshed diff. Such a comment is surfaced as "anchor lost — possibly
+    /// addressed" rather than silently dropped. Cleared whenever it resolves.
+    #[serde(default)]
+    pub anchor_lost: bool,
 }
 
 impl LineComment {
@@ -1487,10 +1594,31 @@ pub struct TodoQuickCaptureState {
     pub input: String,
 }
 
+/// Prompt shown when the feature that hosts a project's TODO list is deleted
+/// while the project survives (see `docs/backlog/feature-todos-plan.md`, Epic 1).
+/// The user chooses which surviving feature re-homes the list, or deletes it.
+pub struct TodosHostReassignState {
+    /// Project whose list is being re-homed.
+    pub project_name: String,
+    /// Name of the just-deleted host feature (shown in the prompt).
+    pub deleted_feature_name: String,
+    /// `todo_lists.id` of the orphaned list.
+    pub list_id: String,
+    /// Surviving features the list can be re-homed onto: `(name, feature_id)`.
+    pub candidates: Vec<(String, String)>,
+    /// Selected option index: `0..candidates.len()` re-homes onto that feature;
+    /// `== candidates.len()` deletes the list.
+    pub selected: usize,
+    /// Number of TODOs in the list (shown so the user knows what's at stake).
+    pub todo_count: usize,
+}
+
 pub enum AppMode {
     Normal,
     Todos(TodoViewState),
     TodoQuickCapture(TodoQuickCaptureState),
+    /// Re-home or delete a project's TODO list after its host feature is deleted.
+    TodosHostReassign(TodosHostReassignState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
     DeletingProject(String),

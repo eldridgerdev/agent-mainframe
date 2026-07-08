@@ -888,7 +888,7 @@ fn draw_context_bar(
     }
     if review {
         spans.push(Span::styled(
-            " [review experimental]",
+            " [review]",
             Style::default().fg(theme.mode_review.to_color()),
         ));
     }
@@ -1269,6 +1269,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if let AppMode::PrNumberPrompt(state) = &app.mode {
         super::dialogs::draw_pr_number_prompt(frame, state, &app.theme);
+    }
+
+    if let AppMode::TodosHostReassign(state) = &app.mode {
+        super::dialogs::draw_todos_host_reassign_dialog(frame, state, &app.theme);
     }
 
     if let AppMode::RenamingSession(state) = &app.mode {

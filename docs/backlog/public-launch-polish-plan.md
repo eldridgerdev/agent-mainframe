@@ -67,43 +67,63 @@ get judged on `cargo clippy`.
 Biggest single item. The README footer says "Last updated 2026-06-16"
 and it has drifted from the app.
 
-- [ ] Document the **Pi** agent harness (it appears in the first-run
-      wizard and session picker but is absent from the README).
-- [ ] Document the first-run **harness setup wizard**.
-- [ ] Add missing dashboard keybindings to the table: `A` (manage
-      harnesses), `G` (PR comment review), `V` (check pending diff
-      review), `u` (preferred harness / worktree config), and the
-      `Ctrl+Space c` config wizard; add leader `N` (TODO quick-capture)
-      to the leader table.
-- [ ] Add sections for the v0.28–0.29 flagship features currently
-      missing entirely: per-project TODO lists, PR comment review, AI
-      co-reviewer in final review, suggested changes, and the
-      per-session usage/cost meters shown on the dashboard.
-- [ ] Prune stale upgrade caveats (v0.10.1 TLS note, v0.11.1 404 note)
-      into a short troubleshooting note or drop them.
-- [ ] Sweep the rest of the README against the actual app (help
-      overlay is the source of truth) and bump the "Last updated" date.
+- [x] Document the **Pi** agent harness: intro, features list,
+      prerequisites, quick start, session picker table, data model,
+      and an Agent Support bullet (plain `pi` CLI; no vibe-mode flags,
+      diff review, or usage meters).
+- [x] Document the first-run **harness setup wizard** (Quick Start
+      step 1 + `A` keybinding).
+- [x] Add missing dashboard keybindings: `A`, `G`, `V`, `u`,
+      `Ctrl+Space c`; leader table gained `N` (TODO quick-capture)
+      plus the other help-overlay leader keys (`e`, `s`, `d`, `m`,
+      `b`, `v`, `g`, `R`, `V`, `A`). Removed the stale `m` Memo row —
+      the Memo feature no longer exists in the code.
+- [x] Add sections for the v0.28–0.29 flagship features: Final
+      Review (incl. AI co-reviewer and suggested changes), PR Comment
+      Review, Per-Project TODO Lists, and Usage and Cost Meters; each
+      also got a features-list bullet.
+- [x] Prune stale upgrade caveats into a one-line troubleshooting
+      note.
+- [x] Sweep against the app. Also fixed beyond the audit list: config
+      examples used capitalized `"Claude"`/`"Vibe"` agent/mode values
+      that would fail to deserialize (serde expects lowercase);
+      `feature_presets` docs dropped the removed `enable_notes` and
+      gained `plan_mode`/`remote_control`; keybinding action list
+      gained `syntax_picker`/`pr_review`/`session_config` and the
+      unbound `next_feature`/`prev_feature`; config table gained
+      `final_review_post_to_pr`, `view_auto_refresh`, `token_pricing`,
+      `remote_control_default`; prompt library `leader+P` → `leader+p`
+      and the "planned" placeholder note replaced (fill-in flow
+      shipped); store version 4 → 5; contributing commands now match
+      the CI gate; "Last updated" bumped.
 
 ## Phase 5 — First-run and dialog UX nits
 
 All found by driving the TUI with a fresh HOME.
 
-- [ ] Harness wizard footer says `c confirm  Esc confirm` — two keys
-      labeled confirm, and Esc conventionally cancels. Relabel (e.g.
-      `c/Esc done  q quit`) or make Esc actually cancel.
-- [ ] New Project dialog footer says `Enter confirm`, but Enter
+- [x] Harness wizard footer said `c confirm  Esc confirm` — two keys
+      labeled confirm, and Esc conventionally cancels. Relabeled to
+      `c/Esc done  q quit` for the first-run case (both keys really do
+      the same thing there, since there's nothing to cancel back to);
+      the non-startup "manage harnesses" case keeps the already-correct
+      `c confirm  Esc cancel`.
+- [x] New Project dialog footer said `Enter confirm`, but Enter
       advances Name → Path → Harness and only confirms on the last
-      field. Relabel to `Enter next` (matching the feature wizard) or
-      make Enter confirm from any field.
-- [ ] Empty-state line `No projects yet. Press N to create one.` is
-      flush against the left border — add the leading pad space every
-      other row has.
-- [ ] `amf --help`: add a description for `-V, --version` and flesh out
-      the top-level about text.
-- [ ] Review the three `(experimental)` toggles in the feature wizard
-      (Review, Plan, Steering): graduate the ones that are stable, or
-      hide the ones that aren't ready — a wall of "experimental"
-      undercuts the polish impression.
+      field. Relabeled to `Enter next` on the first two fields,
+      `Enter confirm` on the last, matching the feature wizard
+      convention.
+- [x] Empty-state line `No projects yet. Press N to create one.` is
+      flush against the left border — added the leading pad space
+      every other row has.
+- [x] `amf --help`: added a description for `-V, --version` and
+      fleshed out the top-level about text.
+- [x] Reviewed the three `(experimental)` toggles in the feature
+      wizard (Review, Plan, Steering). Graduated Review and Plan —
+      dropped the label there and from every other place it echoed
+      (batch creation, feature-list badges, view-mode header badge,
+      leader-key help, preset summaries). Left Steering flagged; it's
+      still marked experimental in its own leader-key help entry and
+      has ongoing feature churn.
 
 ## Phase 6 — Nice-to-have before/shortly after launch
 

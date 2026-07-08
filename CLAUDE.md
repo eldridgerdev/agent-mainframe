@@ -242,6 +242,13 @@ native (non-tmux) overlay:
   embedded session view via leader → `N`, appends a one-line TODO
   to the project's list, auto-creating the list + session under
   the current feature if none exists.
+- **Host-feature deletion:** when the feature hosting the list is
+  deleted but the project survives, `complete_deleting_feature` calls
+  `handle_todos_host_feature_deleted`, which either silently drops the
+  orphaned list (no features remain) or opens
+  `AppMode::TodosHostReassign` — a prompt to **re-home** the list onto
+  a surviving feature (`set_todo_list_host_feature`) or **delete** it.
+  `Esc` keeps the list by re-homing onto the first surviving feature.
 
 ### Debug Logging
 

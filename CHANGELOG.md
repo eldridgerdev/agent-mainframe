@@ -37,6 +37,12 @@ are tagged.
   TODOs view" section documenting every key in a TODO list — navigate, add,
   edit title/notes/scratchpad, toggle done, cycle priority, reorder, delete,
   and spawn an agent — so they're discoverable without leaving the app.
+- **Deleting a TODO list's host feature no longer loses your TODOs.** A
+  project's TODO list lives under whichever feature you created it in. When you
+  delete that host feature but the project still has other features, AMF now
+  prompts you to **re-home** the list onto a surviving feature or **delete** it
+  outright — `Esc` keeps the list by moving it to the first surviving feature.
+  If no features remain, the now-orphaned list is cleaned up automatically.
 
 ### Changed
 
@@ -56,6 +62,22 @@ are tagged.
   source no longer scrolls lint noise past you. CI now enforces this
   (`clippy -D warnings` plus a formatting check), so it stays that way.
   Nothing about AMF's behavior changes.
+- **The README caught up with the app.** It now covers the Pi harness, the
+  first-run harness setup wizard, the final-review workflow (including the AI
+  co-reviewer and suggested changes), PR comment review, per-project TODO
+  lists, and the usage/cost meters — and the keybinding tables match the
+  in-app help overlay again. Config examples were corrected too: agent and
+  mode values in `config.json` must be lowercase (`"claude"`, `"vibe"`), and
+  the `feature_presets` docs now list the real field set. Nothing about AMF's
+  behavior changes.
+- **Review and Plan are no longer labeled "(experimental)".** Both features
+  are stable and fully documented in the README, so the feature-wizard
+  toggles, the batch-creation dialog, feature-list and view-mode badges, and
+  the leader-key help all drop the caveat. Steering keeps its experimental
+  label for now.
+- **`amf --help` explains itself.** The top-level help text now describes
+  what AMF is, and `-V, --version` has a one-line description instead of
+  showing up blank.
 
 ### Fixed
 
@@ -66,19 +88,57 @@ are tagged.
   `File: path` instead and omits the hunk, with the same backstop for any
   line-anchored comment whose hunk is pathologically large (over 150 lines,
   well clear of the ~90-line hunks ordinary line comments run to).
+- **Final-review line comments no longer disappear when the diff changes.**
+  Refreshing the diff — or switching the base ref — used to drop your line
+  comments out of the gutter, because each one was pinned to an exact line
+  number. Comments now follow their code when it moves, including multi-line
+  ones. If a comment's line is genuinely gone (the agent already fixed it, say),
+  AMF tells you it was "possibly addressed" instead of silently discarding it,
+  keeps it in the feedback file, and won't post it to a pull request where it
+  would land on the wrong line.
+- **Markdown tables show their header rows again.** The in-app Markdown viewer
+  now renders table headers and the header/body divider, so plan and review
+  docs with tables are readable instead of starting at the first body row.
+- **Markdown table alignment is now guarded against regressions.** The in-app
+  Markdown viewer keeps left, centered, and right-aligned columns stable,
+  including when narrow panes force table cells to truncate.
+- **Markdown tables keep uneven and empty cells in place.** Short rows are
+  padded to the table's declared column count and empty cells still occupy
+  visible grid space, so later cells no longer appear to shift left in the
+  in-app Markdown viewer.
+- **Markdown tables keep their quote and list indentation.** Tables rendered
+  inside blockquotes or list items now preserve the surrounding prefix on every
+  border and row, and narrow prefixed tables still clamp to the available
+  viewer width.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
   launch command and environment setup. Existing running sessions open normally.
 - **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
-  ignores duplicate Enter-repeat events and raw carriage-return/newline
-  characters in embedded terminal input, so pressing Enter submits once instead
-  of making the pane jump down by several lines.
+  uses the direct tmux input path on macOS, so typing in an embedded terminal
+  inserts the intended characters instead of turning each keypress into a
+  newline.
+- **Dialog footers no longer promise the wrong key.** The first-run harness
+  wizard said `c confirm  Esc confirm` — Esc actually confirmed, not
+  canceled — so it now reads `c/Esc done`. The New Project dialog said
+  `Enter confirm` on every field, but Enter only confirms after the last
+  one; it now reads `Enter next` on the Name and Repo path fields and
+  `Enter confirm` only once you're on the harness field.
+- **Empty project list is no longer flush against the left border.** The
+  "No projects yet." message now has the same left padding as every other
+  row.
 
 ### Migration
 
+- No action required for comment re-anchoring. A review you paused before
+  upgrading still resumes; its comments simply can't follow moved code until you
+  re-add them, and any that no longer match are flagged rather than dropped.
+- No action required for the Markdown table alignment coverage.
+- No action required for the Markdown table header fix.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
+- No action required for the Review/Plan experimental-label graduation,
+  the `--help` text, or the dialog footer and empty-state fixes.
 - If you relied on `n` / `p` to move between features in a session, add
   `"next_feature"` / `"prev_feature"` keybindings to your config to restore
   them.

@@ -59,6 +59,13 @@ are tagged.
 
 ### Fixed
 
+- **File-level PR review comments no longer inject the whole file as a diff
+  hunk.** A comment left on the file as a whole (GitHub's `subject_type:
+  "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to
+  paste that whole diff into the fix prompt. The fix prompt now references
+  `File: path` instead and omits the hunk, with the same backstop for any
+  line-anchored comment whose hunk is pathologically large (over 150 lines,
+  well clear of the ~90-line hunks ordinary line comments run to).
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux

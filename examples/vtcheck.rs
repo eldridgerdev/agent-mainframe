@@ -29,9 +29,9 @@ fn strip_ansi(line: &str) -> String {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let target = args.next().unwrap_or_else(|| {
-        "amf-agent-mainframe-cc-screen-bug:claude".to_string()
-    });
+    let target = args
+        .next()
+        .unwrap_or_else(|| "amf-agent-mainframe-cc-screen-bug:claude".to_string());
     let cols: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(157);
     let rows: u16 = args.next().and_then(|s| s.parse().ok()).unwrap_or(43);
 

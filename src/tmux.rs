@@ -772,16 +772,15 @@ impl TmuxManager {
             return Ok(());
         }
 
-        if Self::should_retry_after_private_socket_cleanup(args, &output) {
-            if let Some(socket) = Self::runtime().socket.as_ref() {
-                if Self::remove_stale_socket_file(socket) {
-                    let retry_output = Self::output(args, context)?;
-                    if retry_output.status.success() {
-                        return Ok(());
-                    }
-                    bail!("{}", Self::command_error(&retry_output, failure));
-                }
+        if Self::should_retry_after_private_socket_cleanup(args, &output)
+            && let Some(socket) = Self::runtime().socket.as_ref()
+            && Self::remove_stale_socket_file(socket)
+        {
+            let retry_output = Self::output(args, context)?;
+            if retry_output.status.success() {
+                return Ok(());
             }
+            bail!("{}", Self::command_error(&retry_output, failure));
         }
 
         bail!("{}", Self::command_error(&output, failure));
@@ -794,10 +793,7 @@ impl TmuxManager {
                 let mut buf = [0u8; 8192];
                 let mut line = Vec::with_capacity(8192);
 
-                loop {
-                    let Ok(n) = reader.read(&mut buf) else {
-                        break;
-                    };
+                while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
@@ -993,7 +989,7 @@ impl TmuxManager {
     fn open_pty(cols: u16, rows: u16) -> Result<(File, File)> {
         let mut master = -1;
         let mut slave = -1;
-        let mut winsize = libc::winsize {
+        let winsize = libc::winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
@@ -1014,8 +1010,8 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &mut termios,
-                &mut winsize,
+                &termios,
+                &winsize,
             )
         };
         if result != 0 {
@@ -1061,7 +1057,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1156,7 +1152,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())

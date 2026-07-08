@@ -444,11 +444,11 @@ fn draw_create_feature_branch_mode(
             Constraint::Length(0),                                  // [11] spacer
             Constraint::Length(if has_chrome_row { 1 } else { 0 }), // [12] chrome checkbox
             Constraint::Length(0),                                  // [13] spacer
-            Constraint::Length(if has_rc_row { 1 } else { 0 }),    // [14] remote_control
+            Constraint::Length(if has_rc_row { 1 } else { 0 }),     // [14] remote_control
             Constraint::Length(0),                                  // [15] spacer
             Constraint::Length(1),                                  // [16] steering coach checkbox
-            Constraint::Length(1),                                  // [17] spacer before focused help
-            Constraint::Min(0),                                     // [18] focused option help
+            Constraint::Length(1), // [17] spacer before focused help
+            Constraint::Min(0),    // [18] focused option help
             Constraint::Length(1), // [19] hints
         ])
         .split(inner);
@@ -686,9 +686,8 @@ fn draw_create_feature_branch_mode(
         // Requires claude.ai OAuth; unavailable for z.ai / third-party
         // provider sessions, in which case it renders disabled with a reason.
         let rc_available = state.remote_control_available;
-        let rc_active = rc_available
-            && state.step == CreateFeatureStep::Mode
-            && state.mode_focus == 5;
+        let rc_active =
+            rc_available && state.step == CreateFeatureStep::Mode && state.mode_focus == 5;
         let rc_check = if state.remote_control && rc_available {
             "[x]"
         } else {
@@ -757,10 +756,7 @@ fn draw_create_feature_branch_mode(
         let help_area = if chunks[18].height > 3 {
             Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                ])
+                .constraints([Constraint::Length(3), Constraint::Min(0)])
                 .split(chunks[18])[0]
         } else {
             chunks[18]
@@ -1219,13 +1215,7 @@ pub fn draw_steering_prompt_dialog(
             },
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::raw(
-            if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
-                " edit  "
-            } else {
-                " edit  "
-            },
-        ),
+        Span::raw(" edit  "),
         Span::styled(
             if matches!(state.editor.vim_mode(), Some(VimMode::Normal)) {
                 "h/j/k/l"

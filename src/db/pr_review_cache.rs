@@ -106,7 +106,8 @@ mod tests {
     #[test]
     fn miss_on_different_head_sha() {
         let (_tmp, db) = open_temp_db();
-        db.save_pr_review_cache(&review(321, "abc123", "x")).unwrap();
+        db.save_pr_review_cache(&review(321, "abc123", "x"))
+            .unwrap();
         // Same PR number, new head commit → cache miss (must re-fetch).
         assert!(db.load_pr_review_cache(321, "def456").unwrap().is_none());
     }
@@ -115,7 +116,8 @@ mod tests {
     fn resave_overwrites_same_key() {
         let (_tmp, db) = open_temp_db();
         db.save_pr_review_cache(&review(7, "sha", "first")).unwrap();
-        db.save_pr_review_cache(&review(7, "sha", "second")).unwrap();
+        db.save_pr_review_cache(&review(7, "sha", "second"))
+            .unwrap();
 
         let loaded = db.load_pr_review_cache(7, "sha").unwrap().unwrap();
         assert_eq!(loaded.comments[0].snippet, "second");

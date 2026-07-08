@@ -119,7 +119,9 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme) {
             )
             .highlight_symbol("> ");
         let mut list_state = ListState::default();
-        list_state.select(Some(state.selected.min(state.entries.len().saturating_sub(1))));
+        list_state.select(Some(
+            state.selected.min(state.entries.len().saturating_sub(1)),
+        ));
         frame.render_stateful_widget(list, layout[1], &mut list_state);
     }
 
@@ -273,10 +275,11 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     } else {
         "h hide-resolved"
     };
-    // The batch hint shows the marked count so the user knows `F` has a set.
+    // The batch hint shows the marked count so the user knows `F`/`B` have a set.
+    // `F` queues each marked comment as its own prompt; `B` combines them into one.
     let batch_hint = match state.marked.len() {
         0 => "space mark".to_string(),
-        n => format!("space mark · F fix-marked({n})"),
+        n => format!("space mark · F fix-each({n}) · B combine({n})"),
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
@@ -381,8 +384,15 @@ fn draw_fix_confirm(
         Some(VimMode::Normal) => " · vim normal",
         None => "",
     };
+    let title = match &confirm.batch {
+        Some(ids) => format!(
+            " Inject combined fix for {} comments{mode_label} ",
+            ids.len()
+        ),
+        None => format!(" Inject fix into agent session{mode_label} "),
+    };
     let block = Block::default()
-        .title(format!(" Inject fix into agent session{mode_label} "))
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -488,11 +498,7 @@ fn draw_fix_confirm(
 /// Single-select harness picker for the dedicated review session, shown on the
 /// first fix of a PR. The chosen harness is remembered for the rest of the PR
 /// (the session is created once and reused).
-fn draw_harness_pick(
-    frame: &mut Frame,
-    pick: &crate::app::HarnessPickState,
-    theme: &Theme,
-) {
+fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, theme: &Theme) {
     let area = super::super::dashboard::centered_rect(50, 40, frame.area());
     crate::ui::draw_modal_overlay(frame, area, theme);
 
@@ -978,8 +984,14 @@ fn marker_legend(theme: &Theme) -> Line<'static> {
     let muted = Style::default().fg(theme.text_muted.to_color());
     Line::from(vec![
         Span::styled(" ● marked", Style::default().fg(theme.warning.to_color())),
-        Span::styled("   ✓ resolved", Style::default().fg(theme.success.to_color())),
-        Span::styled("   [outdated] line moved", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            "   ✓ resolved",
+            Style::default().fg(theme.success.to_color()),
+        ),
+        Span::styled(
+            "   [outdated] line moved",
+            Style::default().fg(theme.warning.to_color()),
+        ),
         Span::styled("   bot/human", muted),
         Span::styled("   triage: ", muted),
         Span::styled("[ ] untriaged ", muted),
@@ -1023,6 +1035,13 @@ fn kind_label(kind: &CommentKind) -> &'static str {
     }
 }
 
+fn pane_block(theme: &Theme) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,11 +1076,4 @@ mod tests {
         assert_eq!(line_text(&lines[0]), "-old line");
         assert_eq!(line_text(&lines[1]), "+new line");
     }
-}
-
-fn pane_block(theme: &Theme) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(theme.effective_bg()))
-        .border_style(Style::default().fg(theme.primary.to_color()))
 }

@@ -58,13 +58,11 @@ impl App {
 
     pub fn start_create_batch_features(&mut self) {
         let workspace_path = match &self.selection {
-            Selection::Project(pi) => {
-                if let Some(p) = self.store.projects.get(*pi) {
-                    Some(p.repo.to_string_lossy().into_owned())
-                } else {
-                    None
-                }
-            }
+            Selection::Project(pi) => self
+                .store
+                .projects
+                .get(*pi)
+                .map(|p| p.repo.to_string_lossy().into_owned()),
             Selection::Feature(pi, fi) => {
                 if let Some(p) = self.store.projects.get(*pi) {
                     if p.features.get(*fi).is_some() {

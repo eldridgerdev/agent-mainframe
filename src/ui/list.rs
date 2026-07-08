@@ -229,29 +229,27 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         let mut span = throbber.to_symbol_span(&app.throbber_state);
                         span.content = format!(" {} ", span.content).into();
                         span
+                    } else if feature.ready {
+                        Span::styled(
+                            " ✓ ",
+                            Style::default()
+                                .fg(theme.success.to_color())
+                                .add_modifier(Modifier::BOLD),
+                        )
                     } else {
-                        if feature.ready {
-                            Span::styled(
-                                " ✓ ",
-                                Style::default()
-                                    .fg(theme.success.to_color())
-                                    .add_modifier(Modifier::BOLD),
-                            )
-                        } else {
-                            match feature.status {
-                                ProjectStatus::Active => Span::styled(
-                                    " ● ",
-                                    Style::default().fg(theme.status_active.to_color()),
-                                ),
-                                ProjectStatus::Idle => Span::styled(
-                                    " ○ ",
-                                    Style::default().fg(theme.status_idle.to_color()),
-                                ),
-                                ProjectStatus::Stopped => Span::styled(
-                                    " ■ ",
-                                    Style::default().fg(theme.status_stopped.to_color()),
-                                ),
-                            }
+                        match feature.status {
+                            ProjectStatus::Active => Span::styled(
+                                " ● ",
+                                Style::default().fg(theme.status_active.to_color()),
+                            ),
+                            ProjectStatus::Idle => Span::styled(
+                                " ○ ",
+                                Style::default().fg(theme.status_idle.to_color()),
+                            ),
+                            ProjectStatus::Stopped => Span::styled(
+                                " ■ ",
+                                Style::default().fg(theme.status_stopped.to_color()),
+                            ),
                         }
                     };
 

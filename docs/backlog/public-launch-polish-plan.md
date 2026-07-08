@@ -31,31 +31,36 @@ Legal/metadata basics. Nobody can adopt or contribute without these.
 
 ## Phase 2 — Fix the headline-feature bug
 
-- [ ] PR review: triage / reply state is lost on return from a fix
-      session. Repro and leads are in
-      [bug-backlog-plan.md](bug-backlog-plan.md). This is the one item
-      needing real investigation; it makes a flagship feature feel like
-      it loses user data. Strike it through in the bug backlog when
-      fixed.
+- [x] PR review: triage / reply state is lost on return from a fix
+      session. Fixed in PR #373 (`c41f465`, 2026-06-30): triage was
+      keyed by `PR# + comment id + head_sha`, so the fix session's push
+      moved the head and orphaned every mark; migration 010 re-keys on
+      `PR# + comment id`. Struck through in
+      [bug-backlog-plan.md](bug-backlog-plan.md).
 
 ## Phase 3 — Lint and build hygiene
 
 Anyone installing from source sees build output; public Rust projects
 get judged on `cargo clippy`.
 
-- [ ] Fix the `dead_code` warning for `discover_source`
-      (`src/token_tracking.rs:163`) — wire it up or remove it. This one
-      prints on every plain `cargo build`.
-- [ ] Clean up the ~80 clippy warnings (snapshot at audit time: 36
-      collapsible `if`s, 6 unit let-bindings, 6 "items after test
-      module", 2 identical `if` blocks, clamp patterns, useless
-      conversions, etc.). Mechanical pass; `cargo clippy --fix` covers
-      much of it.
-- [ ] Decide on the `too_many_arguments` warnings (worst offender:
-      15 args): refactor into param structs or add targeted `#[allow]`s
-      with a comment.
-- [ ] Add a CI gate (or at minimum a documented pre-release step) that
-      runs `cargo clippy -- -D warnings` so the noise never comes back.
+- [x] Fix the `dead_code` warning for `discover_source`
+      (`src/token_tracking.rs:163`) — it is exercised only by unit
+      tests, so it got the same `#[allow(dead_code)]` annotation the
+      file already uses for `new()`.
+- [x] Clean up the ~80 clippy warnings. `cargo clippy --fix` handled
+      the mechanical 65; the rest by hand (let-chain collapses,
+      `clamp`, `map_while` on `lines()`, boxed the large
+      `NewSessionTarget::Custom` variant, type aliases for the
+      4-tuple/19-tuple signatures, moved 6 mid-file test modules to
+      EOF). `cargo clippy --all-targets` is now warning-free.
+- [x] Decide on the `too_many_arguments` warnings: added targeted
+      `#[allow]`s with a one-line rationale at each of the 9 sites.
+      The three `src/app/hooks.rs` worktree-hook functions share the
+      feature-wizard field set and are the real param-struct candidates
+      if this ever gets revisited.
+- [x] Add a CI gate: the Lint job now runs
+      `cargo clippy --all-targets -- -D warnings` and
+      `cargo fmt --check` (was `-W clippy::all`, which never failed).
 
 ## Phase 4 — README refresh
 

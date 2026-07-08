@@ -34,7 +34,7 @@ jobs:
 
       - name: cargo test
         run: |
-          rustc --version && cargo --version |  # Print version info for debugging
+          rustc --version && cargo --version  # Print version info for debugging
           cargo test --workspace --verbose
 
 
@@ -47,7 +47,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@v4
@@ -61,4 +61,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: cargo clippy
-        run: cargo clippy -- -W clippy::all
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo fmt
+        run: cargo fmt --check

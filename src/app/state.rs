@@ -87,6 +87,8 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    // Constructor args map 1:1 onto the identity fields of ViewState.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project_name: String,
         feature_name: String,
@@ -182,7 +184,8 @@ pub struct RenameSessionState {
 #[derive(Clone)]
 pub enum NewSessionTarget {
     Builtin(SessionKind),
-    Custom(CustomSessionConfig),
+    // Boxed: CustomSessionConfig is ~10 fields and would dominate the enum size.
+    Custom(Box<CustomSessionConfig>),
 }
 
 #[derive(Clone)]
@@ -1333,6 +1336,11 @@ pub struct PrReviewState {
     /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
     /// shifting the visible rows. Cleared once the batch is queued.
     pub marked: std::collections::HashSet<u64>,
+    /// Set while the combined-batch flow (`B`) is waiting on the harness picker:
+    /// after the user picks the review harness, the continuation opens the
+    /// combined-batch confirm dialog instead of the single-comment one. Cleared
+    /// when the picker is confirmed or cancelled.
+    pub pending_batch: bool,
 }
 
 /// Single-select harness picker shown before the dedicated PR-review session is
@@ -1382,6 +1390,12 @@ pub struct FixConfirmState {
     /// edits / cursor moves and cleared once applied; an explicit scroll key
     /// clears it so the user can scroll away from the cursor.
     pub sync_to_cursor: bool,
+    /// When `Some`, this dialog holds a **combined** batch prompt built from
+    /// several marked comments (the `B` flow) rather than a single comment's
+    /// fix. The vector is the ids of every comment included in the batch;
+    /// injecting marks all of them `Fixing` and clears the marked set. `None`
+    /// for an ordinary single-comment fix (only the selected comment is marked).
+    pub batch: Option<Vec<u64>>,
 }
 
 impl PrReviewState {
@@ -2180,13 +2194,19 @@ impl CreateFeatureState {
         match self.mode_focus {
             0 | 1 => None,
             2 => Some(
-                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+                "Write developer notes with every code change for a detailed code review (may use more tokens).",
             ),
             3 => Some("Start in planning mode so the agent discusses the approach before editing."),
-            4 if self.agent == AgentKind::Claude => Some("Enable browser automation for features that need Chrome."),
+            4 if self.agent == AgentKind::Claude => {
+                Some("Enable browser automation for features that need Chrome.")
+            }
             4 => Some("Use the prompt coach to sharpen the feature request before launch."),
-            5 if self.agent == AgentKind::Claude && self.remote_control_available => Some("Enable claude.ai and mobile sync for this Claude session."),
-            5 if self.agent == AgentKind::Claude => Some("Remote Control is unavailable for the selected Claude auth provider."),
+            5 if self.agent == AgentKind::Claude && self.remote_control_available => {
+                Some("Enable claude.ai and mobile sync for this Claude session.")
+            }
+            5 if self.agent == AgentKind::Claude => {
+                Some("Remote Control is unavailable for the selected Claude auth provider.")
+            }
             _ => Some("Use the prompt coach to sharpen the feature request before launch."),
         }
     }

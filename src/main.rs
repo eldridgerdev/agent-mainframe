@@ -97,6 +97,9 @@ enum Commands {
 }
 
 #[derive(Subcommand, Debug)]
+// The shared `Create` prefix is load-bearing: clap derives the public CLI
+// subcommand names (`create-project`, `create-feature`, …) from the variants.
+#[allow(clippy::enum_variant_names)]
 enum AutomationCommands {
     /// Create a single AMF project from JSON input
     CreateProject {
@@ -988,10 +991,10 @@ fn run_loop<B: Backend>(
             return Ok(());
         }
 
-        if app.has_pending_view_input() {
-            if let Err(e) = app.flush_view_input_batch() {
-                app.show_error(e);
-            }
+        if app.has_pending_view_input()
+            && let Err(e) = app.flush_view_input_batch()
+        {
+            app.show_error(e);
         }
 
         if pane_live

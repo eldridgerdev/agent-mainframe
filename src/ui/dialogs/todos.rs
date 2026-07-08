@@ -34,7 +34,11 @@ pub fn draw_todo_quick_capture_dialog(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     let input = Paragraph::new(Line::from(vec![
@@ -134,19 +138,16 @@ fn draw_scratchpad(frame: &mut Frame, area: Rect, note: &str, theme: &Theme) {
         .title(" Scratchpad ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.warning.to_color()));
-    let paragraph = Paragraph::new(Span::styled(note, Style::default().fg(theme.text.to_color())))
-        .block(block)
-        .wrap(Wrap { trim: true });
+    let paragraph = Paragraph::new(Span::styled(
+        note,
+        Style::default().fg(theme.text.to_color()),
+    ))
+    .block(block)
+    .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
 }
 
-fn draw_list(
-    frame: &mut Frame,
-    area: Rect,
-    state: &TodoViewState,
-    theme: &Theme,
-    nerd_font: bool,
-) {
+fn draw_list(frame: &mut Frame, area: Rect, state: &TodoViewState, theme: &Theme, nerd_font: bool) {
     if state.todos.is_empty() {
         let empty = Paragraph::new(Span::styled(
             "  No TODOs yet.",
@@ -189,12 +190,7 @@ fn draw_list(
     }
 }
 
-fn todo_line<'a>(
-    todo: &'a Todo,
-    selected: bool,
-    theme: &Theme,
-    nerd_font: bool,
-) -> Line<'a> {
+fn todo_line<'a>(todo: &'a Todo, selected: bool, theme: &Theme, nerd_font: bool) -> Line<'a> {
     let (prio_marker, prio_color) = match todo.priority {
         TodoPriority::High => ("!", theme.danger.to_color()),
         TodoPriority::Med => ("·", theme.warning.to_color()),
@@ -218,7 +214,11 @@ fn todo_line<'a>(
 
     let notes_indicator = match &todo.body {
         Some(body) if !body.trim().is_empty() => {
-            if nerd_font { "  \u{f036}" } else { "  ≡" }
+            if nerd_font {
+                "  \u{f036}"
+            } else {
+                "  ≡"
+            }
         }
         _ => "",
     };
@@ -231,15 +231,10 @@ fn todo_line<'a>(
     };
 
     let mut spans = vec![
-        Span::styled(
-            cursor,
-            Style::default().fg(theme.primary.to_color()),
-        ),
+        Span::styled(cursor, Style::default().fg(theme.primary.to_color())),
         Span::styled(
             format!("{prio_marker} "),
-            Style::default()
-                .fg(prio_color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(prio_color).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{checkbox} "),
@@ -325,12 +320,14 @@ fn draw_editor(frame: &mut Frame, editor: &TodoEditor, theme: &Theme) {
     shown.push_str(&text[cursor..]);
     let body: Vec<Line> = shown
         .split('\n')
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(theme.text.to_color()))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(theme.text.to_color()),
+            ))
+        })
         .collect();
-    frame.render_widget(
-        Paragraph::new(body).wrap(Wrap { trim: false }),
-        chunks[0],
-    );
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), chunks[0]);
 
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -368,8 +365,5 @@ fn draw_delete_confirm(frame: &mut Frame, state: &TodoViewState, theme: &Theme) 
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ];
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: true }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }

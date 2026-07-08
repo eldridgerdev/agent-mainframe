@@ -160,6 +160,7 @@ impl SessionTokenTracker {
             .collect()
     }
 
+    #[allow(dead_code)] // exercised only by unit tests
     pub fn discover_source(
         &mut self,
         session_kind: &SessionKind,

@@ -414,8 +414,7 @@ impl App {
             return;
         };
 
-        let dest_path =
-            self.template_source_path(crate::prompt_library::PromptSource::User, None);
+        let dest_path = self.template_source_path(crate::prompt_library::PromptSource::User, None);
         self.mode = AppMode::PromptEditor(crate::app::PromptEditorState {
             editing_id: None,
             editing_source: crate::prompt_library::PromptSource::User,
@@ -531,18 +530,19 @@ impl App {
     }
 
     pub fn latest_prompt_select_next(&mut self) {
-        if let AppMode::LatestPrompt(state) = &mut self.mode {
-            if !state.prompts.is_empty() && state.selected + 1 < state.prompts.len() {
-                state.selected += 1;
-            }
+        if let AppMode::LatestPrompt(state) = &mut self.mode
+            && !state.prompts.is_empty()
+            && state.selected + 1 < state.prompts.len()
+        {
+            state.selected += 1;
         }
     }
 
     pub fn latest_prompt_select_prev(&mut self) {
-        if let AppMode::LatestPrompt(state) = &mut self.mode {
-            if state.selected > 0 {
-                state.selected -= 1;
-            }
+        if let AppMode::LatestPrompt(state) = &mut self.mode
+            && state.selected > 0
+        {
+            state.selected -= 1;
         }
     }
 

@@ -40,9 +40,10 @@ GitHub rendering.
    - Pad short rows to the detected column count.
    - Ensure empty cells remain visible rather than shifting columns.
    - Include parser alignment metadata when detecting table column count.
-4. [ ] Cover tables inside blockquotes and list items.
+4. [x] Cover tables inside blockquotes and list items.
    - Verify quote/list prefixes are retained on borders and rows.
    - Check that prefixed tables still respect available width.
+   - Added regression coverage for blockquote and list-item table prefixes.
 5. [ ] Preserve inline styling inside table cells.
    - Keep inline code, emphasis, strong text, strike-through, and links
      styled instead of flattening each cell to a plain `String`.
@@ -139,6 +140,32 @@ Expected:
 - The rendered table still has three columns because the Markdown
   alignment row declares three columns.
 - The missing second and third body cells render as empty cells.
+
+### Blockquote table
+
+> | Name | Status |
+> | --- | --- |
+> | AMF | Ready |
+
+Expected:
+- Every border and row keeps the blockquote gutter.
+- The table still renders as a grid inside the quote.
+- The grid respects the viewer width after accounting for the quote
+  prefix.
+
+### List item table
+
+- Table:
+  | Name | Status |
+  | --- | --- |
+  | AMF | Ready |
+
+Expected:
+- Every border and row aligns under the list item's continuation
+  indentation.
+- The table still renders as a grid inside the list item.
+- The grid respects the viewer width after accounting for the list
+  prefix.
 
 ## Open questions
 

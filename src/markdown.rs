@@ -1709,6 +1709,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_markdown_preserves_blockquote_table_prefixes() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "> | Name | Status |\n> | --- | --- |\n> | AMF | Ready |",
+            &theme,
+            40,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().any(|line| line == "│ ┌──────┬────────┐"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "│ │ Name │ Status │"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "│ │ AMF  │ Ready  │"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "│ └──────┴────────┘"),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_preserves_list_item_table_prefixes() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "- Table:\n  | Name | Status |\n  | --- | --- |\n  | AMF | Ready |",
+            &theme,
+            40,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().any(|line| line == "  ┌──────┬────────┐"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "  │ Name │ Status │"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "  │ AMF  │ Ready  │"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "  └──────┴────────┘"),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_prefixed_tables_respect_available_width() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "> | Left | Center | Right |\n> | :--- | :----: | ---: |\n> | alphabet | bravo | charlie |",
+            &theme,
+            24,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings
+                .iter()
+                .filter(|line| line.starts_with("│ "))
+                .all(|line| display_width(line) <= 24),
+            "{strings:#?}"
+        );
+        assert!(
+            strings
+                .iter()
+                .any(|line| line == "│ │ alp… │ bra… │ cha… │"),
+            "{strings:#?}"
+        );
+    }
+
     fn rendered_line_text(line: &Line<'static>) -> String {
         line.spans
             .iter()

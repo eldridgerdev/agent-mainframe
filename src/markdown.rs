@@ -542,6 +542,9 @@ impl<'a> MarkdownRenderer<'a> {
             }
             Tag::TableHead => {
                 self.in_table_head = true;
+                if let Some(table) = &mut self.current_table {
+                    table.start_row();
+                }
             }
             Tag::TableRow => {
                 if let Some(table) = &mut self.current_table {
@@ -583,6 +586,9 @@ impl<'a> MarkdownRenderer<'a> {
             TagEnd::Table => self.finish_table(),
             TagEnd::TableHead => {
                 if let Some(table) = &mut self.current_table {
+                    if !table.current_row.is_empty() || !table.current_cell.is_empty() {
+                        table.finish_row();
+                    }
                     table.header_rows = table.rows.len();
                 }
                 self.in_table_head = false;
@@ -1598,6 +1604,9 @@ mod tests {
             .join("\n");
 
         assert!(text.contains("┌"), "{text}");
+        assert!(text.contains("│ Name "), "{text}");
+        assert!(text.contains("│ Status "), "{text}");
+        assert!(text.contains("├"), "{text}");
         assert!(text.contains("│ AMF "), "{text}");
         assert!(text.contains("└"), "{text}");
     }

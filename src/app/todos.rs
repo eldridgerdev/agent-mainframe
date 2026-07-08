@@ -8,7 +8,7 @@
 use anyhow::Result;
 use uuid::Uuid;
 
-use crate::app::{App, AppMode, Selection, TodoViewState};
+use crate::app::{App, AppMode, Selection, TodoViewState, TodosHostReassignState};
 use crate::db::todos::{Todo, TodoPriority};
 
 impl App {
@@ -712,5 +712,125 @@ impl App {
     /// Sort items into display order: open first, then by manual `sort_order`.
     fn resort_todos(todos: &mut [Todo]) {
         todos.sort_by(|a, b| a.done.cmp(&b.done).then(a.sort_order.cmp(&b.sort_order)));
+    }
+
+    /// Called after a feature is removed from a surviving project. If the
+    /// deleted feature hosted the project's TODO list, decide the list's fate:
+    ///
+    /// - No features remain → silently delete the now-orphaned list.
+    /// - Surviving features exist → open [`AppMode::TodosHostReassign`] so the
+    ///   user re-homes the list onto another feature or deletes it.
+    ///
+    /// Returns `true` if it opened the re-home prompt (so the caller leaves the
+    /// mode alone). A no-op without a DB, since todo lists only persist there.
+    pub fn handle_todos_host_feature_deleted(
+        &mut self,
+        project_name: &str,
+        deleted_feature_name: &str,
+        deleted_feature_id: Option<&str>,
+    ) -> bool {
+        let Some(deleted_feature_id) = deleted_feature_id else {
+            return false;
+        };
+        let Some(db) = self.db.as_ref() else {
+            return false;
+        };
+        let Some(project) = self.store.find_project(project_name) else {
+            return false;
+        };
+        let project_id = project.id.clone();
+        let list = match db.todo_list(&project_id) {
+            Ok(Some(list)) => list,
+            _ => return false,
+        };
+        if list.feature_id != deleted_feature_id {
+            // The deleted feature did not host the list; nothing to do.
+            return false;
+        }
+
+        // Surviving features (the deleted one is already gone from the store).
+        let candidates: Vec<(String, String)> = project
+            .features
+            .iter()
+            .map(|f| (f.name.clone(), f.id.clone()))
+            .collect();
+
+        if candidates.is_empty() {
+            // Nothing left to host the list — drop it and its items.
+            if let Err(e) = db.delete_todo_list(&list.id) {
+                self.log_error(
+                    "todos",
+                    format!("failed to delete orphaned todo list {}: {e}", list.id),
+                );
+            } else {
+                self.log_info(
+                    "todos",
+                    format!("deleted orphaned todo list for project '{project_name}'"),
+                );
+            }
+            return false;
+        }
+
+        let todo_count = db.todos(&list.id).map(|t| t.len()).unwrap_or(0);
+        self.mode = AppMode::TodosHostReassign(TodosHostReassignState {
+            project_name: project_name.to_string(),
+            deleted_feature_name: deleted_feature_name.to_string(),
+            list_id: list.id,
+            candidates,
+            selected: 0,
+            todo_count,
+        });
+        true
+    }
+
+    /// Move the re-home prompt selection by `delta`, clamped over the
+    /// candidates plus the trailing "Delete the list" option.
+    pub fn todos_host_reassign_move(&mut self, delta: isize) {
+        if let AppMode::TodosHostReassign(state) = &mut self.mode {
+            let option_count = state.candidates.len() + 1; // +1 for "Delete"
+            if option_count == 0 {
+                return;
+            }
+            let cur = state.selected as isize;
+            let next = (cur + delta).rem_euclid(option_count as isize);
+            state.selected = next as usize;
+        }
+    }
+
+    /// Apply the re-home prompt choice: re-home the list onto the selected
+    /// surviving feature, or delete the list when "Delete" is chosen.
+    pub fn confirm_todos_host_reassign(&mut self) -> Result<()> {
+        let (list_id, choice) = match &self.mode {
+            AppMode::TodosHostReassign(state) => {
+                let choice = state.candidates.get(state.selected).cloned();
+                (state.list_id.clone(), choice)
+            }
+            _ => return Ok(()),
+        };
+
+        let message = if let Some((feature_name, feature_id)) = choice {
+            if let Some(db) = self.db.as_ref() {
+                db.set_todo_list_host_feature(&list_id, &feature_id)?;
+            }
+            format!("TODO list re-homed to '{feature_name}'")
+        } else {
+            if let Some(db) = self.db.as_ref() {
+                db.delete_todo_list(&list_id)?;
+            }
+            "TODO list deleted".to_string()
+        };
+
+        self.mode = AppMode::Normal;
+        self.message = Some(message);
+        Ok(())
+    }
+
+    /// Cancel the re-home prompt without dropping the list: keep the TODOs by
+    /// re-homing onto the first surviving feature (the safe default).
+    pub fn cancel_todos_host_reassign(&mut self) -> Result<()> {
+        if let AppMode::TodosHostReassign(state) = &mut self.mode {
+            state.selected = 0; // first candidate = re-home, never "Delete"
+        }
+        self.confirm_todos_host_reassign()
     }
 }

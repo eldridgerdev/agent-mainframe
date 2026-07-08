@@ -37,6 +37,12 @@ are tagged.
   TODOs view" section documenting every key in a TODO list — navigate, add,
   edit title/notes/scratchpad, toggle done, cycle priority, reorder, delete,
   and spawn an agent — so they're discoverable without leaving the app.
+- **Deleting a TODO list's host feature no longer loses your TODOs.** A
+  project's TODO list lives under whichever feature you created it in. When you
+  delete that host feature but the project still has other features, AMF now
+  prompts you to **re-home** the list onto a surviving feature or **delete** it
+  outright — `Esc` keeps the list by moving it to the first surviving feature.
+  If no features remain, the now-orphaned list is cleaned up automatically.
 
 ### Changed
 

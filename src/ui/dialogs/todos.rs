@@ -7,7 +7,9 @@ use ratatui::{
 };
 
 use super::super::dashboard::centered_rect;
-use crate::app::{TodoEditTarget, TodoEditor, TodoQuickCaptureState, TodoViewState};
+use crate::app::{
+    TodoEditTarget, TodoEditor, TodoQuickCaptureState, TodoViewState, TodosHostReassignState,
+};
 use crate::db::todos::{Todo, TodoPriority};
 use crate::theme::Theme;
 
@@ -55,6 +57,120 @@ pub fn draw_todo_quick_capture_dialog(
         Span::styled(" cancel", Style::default().fg(theme.text.to_color())),
     ]));
     frame.render_widget(hint, chunks[2]);
+}
+
+/// Prompt shown when the feature hosting a project's TODO list is deleted while
+/// the project survives: pick a surviving feature to re-home the list onto, or
+/// delete the list. The trailing option (index == `candidates.len()`) deletes.
+pub fn draw_todos_host_reassign_dialog(
+    frame: &mut Frame,
+    state: &TodosHostReassignState,
+    theme: &Theme,
+) {
+    // Size to the option list, within sensible bounds.
+    let option_count = state.candidates.len() + 1;
+    let rows = (option_count as u16).min(8);
+    let height_pct = (40 + rows * 4).min(80);
+    let area = centered_rect(60, height_pct, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(format!(" TODO list needs a home · {} ", state.project_name))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.warning.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let items = if state.todo_count == 1 {
+        "item"
+    } else {
+        "items"
+    };
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(" Feature "),
+            Span::styled(
+                state.deleted_feature_name.as_str(),
+                Style::default()
+                    .fg(theme.danger.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" hosted this project's TODO list"),
+        ]),
+        Line::from(vec![
+            Span::raw(" ("),
+            Span::styled(
+                format!("{} {}", state.todo_count, items),
+                Style::default().fg(theme.text.to_color()),
+            ),
+            Span::raw("). Re-home it onto another feature, or delete it:"),
+        ]),
+        Line::from(""),
+    ];
+
+    for (i, (name, _id)) in state.candidates.iter().enumerate() {
+        let selected = i == state.selected;
+        lines.push(option_line(
+            format!("Re-home to {name}"),
+            selected,
+            theme.primary.to_color(),
+            theme,
+        ));
+    }
+    // Trailing "Delete" option.
+    let delete_selected = state.selected == state.candidates.len();
+    lines.push(option_line(
+        "Delete the list and its TODOs".to_string(),
+        delete_selected,
+        theme.danger.to_color(),
+        theme,
+    ));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " confirm  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+        Span::styled("Esc", Style::default().fg(theme.warning.to_color())),
+        Span::styled(
+            " keep list",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
+    ]));
+
+    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(para, inner);
+}
+
+/// One selectable row in the re-home prompt: a `>` cursor + label, highlighted
+/// when selected.
+fn option_line(
+    label: String,
+    selected: bool,
+    accent: ratatui::style::Color,
+    theme: &Theme,
+) -> Line<'static> {
+    let (marker, style) = if selected {
+        (
+            " > ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        ("   ", Style::default().fg(theme.text.to_color()))
+    };
+    Line::from(vec![
+        Span::styled(marker, style),
+        Span::styled(label, style),
+    ])
 }
 
 /// Full-screen native TODOs overlay: a free-form scratchpad banner on top,

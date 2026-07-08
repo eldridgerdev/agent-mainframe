@@ -71,6 +71,20 @@ pub fn handle_todo_quick_capture_key(app: &mut App, key: KeyEvent) -> Result<()>
     Ok(())
 }
 
+/// Key dispatch for the "re-home or delete the TODO list" prompt shown when a
+/// list's host feature is deleted (`AppMode::TodosHostReassign`).
+pub fn handle_todos_host_reassign_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => app.todos_host_reassign_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.todos_host_reassign_move(-1),
+        KeyCode::Enter => app.confirm_todos_host_reassign()?,
+        // Esc keeps the list by re-homing onto the first surviving feature.
+        KeyCode::Esc => app.cancel_todos_host_reassign()?,
+        _ => {}
+    }
+    Ok(())
+}
+
 fn handle_edit_key(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         // Alt+Enter inserts a newline (notes are multi-line); plain Enter

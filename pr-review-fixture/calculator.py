@@ -6,11 +6,14 @@ def add(a, b):
 
 
 def divide(a, b):
-    # No guard against division by zero yet.
+    if b == 0:
+        raise ValueError("cannot divide by zero")
     return a / b
 
 
 def average(numbers):
+    if not numbers:
+        raise ValueError("average() requires at least one number")
     total = 0
     for n in numbers:
         total = total + n

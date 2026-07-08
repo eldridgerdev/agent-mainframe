@@ -8894,6 +8894,134 @@ fn todos_session_does_not_create_a_tmux_window() {
     assert_eq!(session.label, "TODOs");
 }
 
+/// Build a DB-backed app whose project `proj-1` has two features (`feat-1`,
+/// `feat-2`) and a TODO list hosted by `feat-1` with one item. Returns the app
+/// with `feat-1` already removed from the store (as after a delete).
+fn app_with_todo_host_deleted(remove_all_features: bool) -> App {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    if !remove_all_features {
+        let mut second = store.projects[0].features[0].clone();
+        second.id = "feat-2".to_string();
+        second.name = "other-feat".to_string();
+        store.projects[0].features.push(second);
+    }
+
+    let db_dir = TempDir::new().unwrap();
+    // Keep the tempdir alive for the app's lifetime by leaking it; tests are
+    // short-lived processes.
+    let db_path = db_dir.keep().join("amf.db");
+    let db = crate::db::AmfDb::open(&db_path).unwrap();
+    db.save_store(&store).unwrap();
+    let list = db.create_todo_list("proj-1", "feat-1").unwrap();
+    db.add_todo(
+        &list.id,
+        "do a thing",
+        None,
+        crate::db::todos::TodoPriority::Med,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.db = Some(db);
+    // Simulate the host feature already having been removed from the store.
+    app.store.projects[0].features.retain(|f| f.id != "feat-1");
+    app
+}
+
+#[test]
+fn host_feature_delete_prompts_rehome_onto_surviving_feature() {
+    let mut app = app_with_todo_host_deleted(false);
+
+    let opened = app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1"));
+    assert!(
+        opened,
+        "deleting the host feature should open the re-home prompt"
+    );
+    match &app.mode {
+        AppMode::TodosHostReassign(state) => {
+            assert_eq!(
+                state.candidates,
+                vec![("other-feat".to_string(), "feat-2".to_string())]
+            );
+            assert_eq!(state.todo_count, 1);
+            assert_eq!(state.selected, 0);
+        }
+        _ => panic!("expected TodosHostReassign mode"),
+    }
+
+    // Confirm the (default) re-home onto the surviving feature.
+    app.confirm_todos_host_reassign().unwrap();
+    let reloaded = app
+        .db
+        .as_ref()
+        .unwrap()
+        .todo_list("proj-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.feature_id, "feat-2");
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn host_feature_delete_can_delete_the_list() {
+    let mut app = app_with_todo_host_deleted(false);
+    app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1"));
+
+    // Move selection onto the trailing "Delete" option and confirm.
+    if let AppMode::TodosHostReassign(state) = &mut app.mode {
+        state.selected = state.candidates.len();
+    }
+    app.confirm_todos_host_reassign().unwrap();
+
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .todo_list("proj-1")
+            .unwrap()
+            .is_none()
+    );
+    assert!(matches!(app.mode, AppMode::Normal));
+}
+
+#[test]
+fn host_feature_delete_drops_list_when_no_features_remain() {
+    let mut app = app_with_todo_host_deleted(true);
+
+    let opened = app.handle_todos_host_feature_deleted("my-project", "my-feat", Some("feat-1"));
+    assert!(!opened, "no surviving features → no prompt");
+    // The orphaned list is dropped, not left dangling.
+    assert!(
+        app.db
+            .as_ref()
+            .unwrap()
+            .todo_list("proj-1")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn deleting_non_host_feature_leaves_todo_list_untouched() {
+    let mut app = app_with_todo_host_deleted(false);
+
+    // A different (non-host) feature id is passed in.
+    let opened = app.handle_todos_host_feature_deleted("my-project", "other-feat", Some("feat-2"));
+    assert!(!opened);
+    let list = app
+        .db
+        .as_ref()
+        .unwrap()
+        .todo_list("proj-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(list.feature_id, "feat-1", "list host should be unchanged");
+}
+
 fn sample_todo(title: &str, done: bool) -> crate::db::todos::Todo {
     crate::db::todos::Todo {
         id: format!("todo-{title}"),

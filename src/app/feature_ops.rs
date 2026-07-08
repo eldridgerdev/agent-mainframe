@@ -1219,6 +1219,17 @@ impl App {
             self.selection = Selection::Project(pi);
         }
 
+        // If this feature hosted the project's TODO list, decide the list's
+        // fate: silently drop it when no features remain, or open a re-home /
+        // delete prompt when siblings survive.
+        if self.handle_todos_host_feature_deleted(
+            &project_name,
+            &feature_name,
+            feature_id.as_deref(),
+        ) {
+            return Ok(());
+        }
+
         self.mode = AppMode::Normal;
         self.message = Some(format!("Deleted feature '{}'", feature_name));
         Ok(())

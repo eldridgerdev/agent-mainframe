@@ -3,11 +3,13 @@
 - **Status:** Core shipped; Rounds 2–3 in backlog — every item under
   **Progress → Round 1** is implemented and merged, and Round 2's AI
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
-  comment-implied rejections, severity tags, agent replies-back and
-  in-diff search have shipped. The remaining Round 2 items (thread
-  state, re-anchoring, changeset overview, build gate, file-level PR
-  comments) and a third round of review-loop / viewer upgrades
-  (**Round 3**, captured 2026-07-01) are not yet started.
+  comment-implied rejections, severity tags, agent replies-back,
+  in-diff search and comment re-anchoring have shipped. The remaining
+  Round 2 items (thread state, changeset overview, build gate,
+  file-level PR comments) and a third round of review-loop / viewer
+  upgrades (**Round 3**, captured 2026-07-01) are not yet started.
+  With re-anchoring landed, **thread state** is now unblocked: it is the
+  one remaining piece needed to carry comments across rounds.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -456,8 +458,37 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       the thread-state / re-anchor machinery; per-comment threaded rendering
       beside each individual line comment still pairs with the two items below.
 - [ ] Resolve / unresolve thread state across rounds
-- [ ] Re-anchor comments across edits (context snippet + fuzzy
-      re-locate; answers the first open question)
+- [x] Re-anchor comments across edits — a line comment anchors to an exact
+      `DiffLineLocation`, so when the diff reloads underneath it and the line has
+      moved, the anchor no longer resolves and the comment silently vanishes from
+      the gutter. Each comment now carries a context snippet (the commented line
+      plus up to `ANCHOR_CONTEXT_RADIUS` = 2 neighbours on each side, from
+      `addressable_line_texts()`): `CommentAnchorContext` in `src/app/state.rs`,
+      with `anchor_context` / `start_anchor_context` / `anchor_lost` on
+      `LineComment` (all serde-defaulted, so existing progress files load — and a
+      snippet-less legacy comment simply reads as anchor-lost rather than being
+      dropped). Snippets are captured centrally in `recapture_anchor_contexts`,
+      called from `persist_review_progress` — the choke point every review
+      mutation already funnels through — so no creation site has to remember.
+      On every diff reload `reanchor_line_comments` (wired into
+      `complete_diff_viewer_loading`) re-locates each comment whose anchor went
+      stale: `CommentAnchorContext::best_match` matches the anchor line on
+      trimmed text (tolerating reindentation) and disambiguates repeated lines by
+      neighbour agreement, refusing to guess on a tie or a blank anchor line. A
+      range whose `start` can't be re-found degrades to a single-line comment
+      rather than inverting the span; a comment that can't be located at all is
+      flagged `anchor_lost` and surfaced — "N comment(s) lost their anchor —
+      possibly addressed" — instead of disappearing. A lost comment's heading in
+      the feedback file drops its (now stale) line number
+      (`src/foo.rs (anchor lost — possibly addressed)`, still resolved back to
+      its file by `anchor_file_path`), and `build_pr_review` skips it for inline
+      PR posting rather than pinning it to a wrong line. Policy lives in the pure
+      `reanchor_file_comments` (`src/app/review.rs`). **Scope:** comments are
+      still cleared when a review finishes, so today this fires on the in-session
+      reload paths — an `r` refresh after the agent edits code, and a base-ref
+      change. It becomes the cross-round mechanism the plan describes as soon as
+      thread state (above) carries comments between rounds; this item is that
+      item's stated prerequisite.
 - [ ] Changeset overview + diff stats — manual / reviewer-triggered only
 - [ ] Build / test gate before approve — per-project configurable check
       command
@@ -543,10 +574,15 @@ Workflow:
 
 ## Open questions
 
-- Line comments: how to anchor a comment to a line that later moves
+- ~~Line comments: how to anchor a comment to a line that later moves
   (store file + line + a snippet of context, and best-effort re-locate
-  on re-review)? — proposed answer captured as the **Round 2 →
-  re-anchor comments** item above.
+  on re-review)?~~ Resolved and shipped (**Round 2 → re-anchor
+  comments**): each comment stores the commented line plus two
+  neighbours on each side; on reload a stale anchor is re-located by
+  matching that snippet on trimmed text, disambiguated by neighbour
+  agreement, refusing to guess on a tie. What can't be re-located is
+  flagged "anchor lost — possibly addressed" rather than dropped, and is
+  withheld from inline PR posting so a stale line is never annotated.
 - Should multi-line feedback and the agent prompt move to a single
   composed "review summary" the reviewer edits before it's sent, rather
   than assembling the file from per-file inputs? — proposed answer

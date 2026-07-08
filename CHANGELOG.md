@@ -37,6 +37,12 @@ are tagged.
   TODOs view" section documenting every key in a TODO list — navigate, add,
   edit title/notes/scratchpad, toggle done, cycle priority, reorder, delete,
   and spawn an agent — so they're discoverable without leaving the app.
+- **Deleting a TODO list's host feature no longer loses your TODOs.** A
+  project's TODO list lives under whichever feature you created it in. When you
+  delete that host feature but the project still has other features, AMF now
+  prompts you to **re-home** the list onto a surviving feature or **delete** it
+  outright — `Esc` keeps the list by moving it to the first surviving feature.
+  If no features remain, the now-orphaned list is cleaned up automatically.
 
 ### Changed
 
@@ -67,6 +73,17 @@ are tagged.
 
 ### Fixed
 
+- **Final-review line comments no longer disappear when the diff changes.**
+  Refreshing the diff — or switching the base ref — used to drop your line
+  comments out of the gutter, because each one was pinned to an exact line
+  number. Comments now follow their code when it moves, including multi-line
+  ones. If a comment's line is genuinely gone (the agent already fixed it, say),
+  AMF tells you it was "possibly addressed" instead of silently discarding it,
+  keeps it in the feedback file, and won't post it to a pull request where it
+  would land on the wrong line.
+- **Markdown tables show their header rows again.** The in-app Markdown viewer
+  now renders table headers and the header/body divider, so plan and review
+  docs with tables are readable instead of starting at the first body row.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
@@ -78,6 +95,10 @@ are tagged.
 
 ### Migration
 
+- No action required for comment re-anchoring. A review you paused before
+  upgrading still resumes; its comments simply can't follow moved code until you
+  re-add them, and any that no longer match are flagged rather than dropped.
+- No action required for the Markdown table header fix.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
 - If you relied on `n` / `p` to move between features in a session, add

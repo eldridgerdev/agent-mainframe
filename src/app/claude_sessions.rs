@@ -66,7 +66,7 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
         });
     }
 
-    sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
 
     Ok(sessions)
 }

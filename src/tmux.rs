@@ -793,10 +793,7 @@ impl TmuxManager {
                 let mut buf = [0u8; 8192];
                 let mut line = Vec::with_capacity(8192);
 
-                loop {
-                    let Ok(n) = reader.read(&mut buf) else {
-                        break;
-                    };
+                while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
                     }

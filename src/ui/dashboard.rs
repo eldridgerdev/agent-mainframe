@@ -369,11 +369,7 @@ fn claude_sidebar_todos_text(task_state: &ClaudeTaskState) -> Option<String> {
 
     // Progress bar: 8 filled/empty blocks + " X/Y"
     let bar_width = 8usize;
-    let filled = if total > 0 {
-        (completed * bar_width) / total
-    } else {
-        0
-    };
+    let filled = (completed * bar_width).checked_div(total).unwrap_or(0);
     let empty = bar_width - filled;
     let mut lines = vec![format!(
         "{}{} {completed}/{total}",

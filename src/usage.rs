@@ -1010,13 +1010,12 @@ fn apply_codex_rate_limits(stats: &mut CodexUsageData, limits: &CodexRateLimits)
                 stats.weekly_usage_pct = window.used_percent;
                 stats.weekly_resets = window.resets_at.and_then(format_unix_reset);
             }
-            None => {
+            None
                 // Some plans only return one unnamed window; treat it as 5h.
-                if stats.five_hour_usage_pct.is_none() {
+                if stats.five_hour_usage_pct.is_none() => {
                     stats.five_hour_usage_pct = window.used_percent;
                     stats.five_hour_resets = window.resets_at.and_then(format_unix_reset);
                 }
-            }
             _ => {}
         }
     }

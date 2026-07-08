@@ -72,7 +72,7 @@ impl App {
                     })
                     .collect();
                 // Highest score first; ties keep name order (already sorted).
-                scored.sort_by(|a, b| b.0.cmp(&a.0));
+                scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
                 state.filtered = scored.into_iter().map(|(_, idx)| idx).collect();
             }
             state.selected = 0;

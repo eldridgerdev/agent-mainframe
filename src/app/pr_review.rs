@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::editor::TextEditor;
-use crate::github::{GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread};
+use crate::github::{
+    GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
+};
 
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
@@ -351,7 +353,13 @@ pub fn fetch_and_normalize(workdir: &Path, pr: PrRef) -> Result<PrReview> {
     let reviews = GhCli::pr_reviews(workdir, pr.number)?;
     let issue_comments = GhCli::issue_comments(workdir, pr.number)?;
     let threads = GhCli::review_threads(workdir, &pr.owner, &pr.repo, pr.number)?;
-    Ok(normalize(pr, review_comments, reviews, issue_comments, threads))
+    Ok(normalize(
+        pr,
+        review_comments,
+        reviews,
+        issue_comments,
+        threads,
+    ))
 }
 
 /// Merge the raw `gh` payloads into a single triage-ready [`PrReview`].
@@ -1267,10 +1275,7 @@ impl App {
             state.review_harness = chosen.clone();
         }
         if let Some(agent) = &chosen {
-            self.push_toast_success(format!(
-                "Review session will run {}",
-                agent.display_name()
-            ));
+            self.push_toast_success(format!("Review session will run {}", agent.display_name()));
         }
         // Continue into the fix confirm dialog for the selected comment.
         self.pr_review_open_fix_confirm();
@@ -1389,9 +1394,13 @@ impl App {
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
         let (prompt, triage_key) = match &self.mode {
             AppMode::PrReview(state) => {
-                let key = state
-                    .selected_comment()
-                    .map(|c| (state.review.pr.number, state.review.pr.head_sha.clone(), c.id));
+                let key = state.selected_comment().map(|c| {
+                    (
+                        state.review.pr.number,
+                        state.review.pr.head_sha.clone(),
+                        c.id,
+                    )
+                });
                 let prompt = match &state.fix_confirm {
                     // Confirming the open dialog uses its edited buffer.
                     Some(confirm) => confirm.editor.text().trim().to_string(),
@@ -1426,7 +1435,11 @@ impl App {
         // leave the pane, so re-opening the review (cache hit) shows the state.
         if let Some((pr_number, head_sha, comment_id)) = triage_key {
             if let AppMode::PrReview(state) = &mut self.mode
-                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id)
+                && let Some(c) = state
+                    .review
+                    .comments
+                    .iter_mut()
+                    .find(|c| c.id == comment_id)
             {
                 c.triage = TriageState::Fixing;
             }
@@ -1603,7 +1616,12 @@ impl App {
             ReplyKind::NotNeeded => (TriageState::Skipped, Some(body.clone())),
         };
         if let AppMode::PrReview(state) = &mut self.mode {
-            if let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id) {
+            if let Some(c) = state
+                .review
+                .comments
+                .iter_mut()
+                .find(|c| c.id == comment_id)
+            {
                 c.triage = triage;
                 c.local_note = note.clone();
             }
@@ -2041,13 +2059,25 @@ mod tests {
 
         // Nothing running yet: both strategies report "must create / nothing to
         // reuse".
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), None);
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            None
+        );
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            None
+        );
 
         // A regular live agent session satisfies existing-live but not dedicated.
         feature.add_session_named(SessionKind::Claude, "Claude".into());
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), Some(0));
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            Some(0)
+        );
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            None
+        );
 
         // Once the dedicated review session exists it is reused by label, while
         // existing-live still resolves to the first agent session.
@@ -2056,7 +2086,10 @@ mod tests {
             fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
             Some(1)
         );
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), Some(0));
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            Some(0)
+        );
     }
 
     #[test]
@@ -2076,8 +2109,14 @@ mod tests {
         );
         // A terminal window is not an agent harness, so it is never a fix target.
         feature.add_session_named(SessionKind::Terminal, "Terminal".into());
-        assert_eq!(fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL), None);
-        assert_eq!(fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL), None);
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            None
+        );
+        assert_eq!(
+            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            None
+        );
     }
 
     #[test]

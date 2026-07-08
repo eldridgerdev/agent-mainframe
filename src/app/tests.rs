@@ -463,10 +463,9 @@ fn app_config_view_auto_refresh_can_be_enabled() {
 #[test]
 fn migrate_app_config_flips_pre_v1_defaults() {
     // A config written before versioning: control mode on, old popup hold.
-    let mut config: AppConfig = serde_json::from_str(
-        r#"{"tmux_control_mode":true,"diff_review_popup_hold_secs":3.0}"#,
-    )
-    .unwrap();
+    let mut config: AppConfig =
+        serde_json::from_str(r#"{"tmux_control_mode":true,"diff_review_popup_hold_secs":3.0}"#)
+            .unwrap();
     assert_eq!(config.config_version, 0);
 
     let changed = crate::app::setup::migrate_app_config(&mut config);
@@ -481,10 +480,9 @@ fn migrate_app_config_flips_pre_v1_defaults() {
 fn migrate_app_config_preserves_deliberate_pre_v1_values() {
     // Pre-v1 config that already chose non-default values: only the
     // version is stamped, the user's choices are kept.
-    let mut config: AppConfig = serde_json::from_str(
-        r#"{"tmux_control_mode":false,"diff_review_popup_hold_secs":5.0}"#,
-    )
-    .unwrap();
+    let mut config: AppConfig =
+        serde_json::from_str(r#"{"tmux_control_mode":false,"diff_review_popup_hold_secs":5.0}"#)
+            .unwrap();
 
     let changed = crate::app::setup::migrate_app_config(&mut config);
 
@@ -1840,7 +1838,10 @@ fn create_feature_default_remote_control_blocked_by_zai() {
     match &app.mode {
         AppMode::CreatingFeature(state) => {
             assert!(!state.remote_control_available);
-            assert!(!state.remote_control, "default must not override z.ai guard");
+            assert!(
+                !state.remote_control,
+                "default must not override z.ai guard"
+            );
             assert_eq!(
                 state.remote_control_block_reason.as_deref(),
                 Some("Unavailable with z.ai provider")
@@ -2903,7 +2904,9 @@ fn create_feature_mode_review_focus_describes_review_notes() {
         state.mode_focus = 2;
         assert_eq!(
             state.focused_mode_description(),
-            Some("Write developer notes with every code change for a detailed code review (may use more tokens).")
+            Some(
+                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+            )
         );
     } else {
         panic!("expected CreatingFeature mode");
@@ -7244,10 +7247,7 @@ fn store_with_prompt_templates(names: &[&str]) -> ProjectStore {
     let templates = names
         .iter()
         .map(|name| {
-            crate::prompt_library::PromptTemplate::new(
-                name.to_string(),
-                format!("body of {name}"),
-            )
+            crate::prompt_library::PromptTemplate::new(name.to_string(), format!("body of {name}"))
         })
         .collect();
     ProjectStore {
@@ -7357,11 +7357,10 @@ fn prompt_library_surfaces_global_config_templates_with_badge() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.config.extension.prompt_templates =
-        vec![crate::prompt_library::PromptTemplate::new(
-            "shared".to_string(),
-            "shared body".to_string(),
-        )];
+    app.config.extension.prompt_templates = vec![crate::prompt_library::PromptTemplate::new(
+        "shared".to_string(),
+        "shared body".to_string(),
+    )];
 
     app.open_prompt_library(None);
 
@@ -7432,10 +7431,8 @@ fn bare_uppercase_a_opens_harness_setup_from_dashboard() {
         Box::new(MockWorktreeOps::new()),
     );
     app.mode = AppMode::Normal;
-    let key = crossterm::event::KeyEvent::new(
-        KeyCode::Char('A'),
-        crossterm::event::KeyModifiers::NONE,
-    );
+    let key =
+        crossterm::event::KeyEvent::new(KeyCode::Char('A'), crossterm::event::KeyModifiers::NONE);
     crate::handlers::handle_normal_key(&mut app, key).unwrap();
     assert!(matches!(app.mode, AppMode::HarnessSetup(_)));
 }
@@ -7550,7 +7547,10 @@ fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
                 crate::highlight::HighlightLanguage::Rust
             );
             // The picker returns to the same review pane on close.
-            assert!(matches!(state.return_to.as_deref(), Some(AppMode::PrReview(_))));
+            assert!(matches!(
+                state.return_to.as_deref(),
+                Some(AppMode::PrReview(_))
+            ));
         }
         other => panic!(
             "expected syntax picker, got {:?}",
@@ -7594,7 +7594,10 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
     app.pr_review_open_fix_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert!(state.harness_pick.is_some(), "harness picker should be open");
+            assert!(
+                state.harness_pick.is_some(),
+                "harness picker should be open"
+            );
             assert!(state.fix_confirm.is_none(), "fix confirm should wait");
             assert!(state.review_harness.is_none());
             // Default highlight is the project's preferred agent.
@@ -7610,7 +7613,10 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         AppMode::PrReview(state) => {
             assert!(state.harness_pick.is_none());
             assert_eq!(state.review_harness, Some(AgentKind::default()));
-            assert!(state.fix_confirm.is_some(), "fix confirm should now be open");
+            assert!(
+                state.fix_confirm.is_some(),
+                "fix confirm should now be open"
+            );
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
@@ -7633,7 +7639,10 @@ fn pr_review_second_fix_skips_harness_picker() {
     app.pr_review_open_fix_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert!(state.harness_pick.is_none(), "no picker on subsequent fixes");
+            assert!(
+                state.harness_pick.is_none(),
+                "no picker on subsequent fixes"
+            );
             assert!(state.fix_confirm.is_some());
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
@@ -7687,7 +7696,11 @@ fn pr_review_queue_marked_without_session_hints() {
     // `store_with_feature` has no sessions, so the dedicated review session
     // doesn't exist yet — the batch must refuse rather than cold-start one.
     let store = store_with_feature(ProjectStatus::Active);
-    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.marked.insert(1);
@@ -7695,7 +7708,10 @@ fn pr_review_queue_marked_without_session_hints() {
 
     app.pr_review_queue_marked_fixes().unwrap();
     assert!(
-        app.message.as_deref().unwrap_or("").contains("No review session yet"),
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No review session yet"),
         "expected a hint to start the review session, got {:?}",
         app.message
     );
@@ -7705,8 +7721,7 @@ fn pr_review_queue_marked_without_session_hints() {
 fn pr_review_queue_marked_sends_and_marks_fixing() {
     // A feature with an existing dedicated "PR Review" session to queue into.
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0]
-        .add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
 
     let mut tmux = MockTmuxOps::new();
     // Two marked comments → two submissions, each: clear input, paste, Enter.
@@ -7714,7 +7729,9 @@ fn pr_review_queue_marked_sends_and_marks_fixing() {
         .withf(|_, _, key| key == "C-u")
         .times(2)
         .returning(|_, _, _| Ok(()));
-    tmux.expect_paste_text().times(2).returning(|_, _, _| Ok(()));
+    tmux.expect_paste_text()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
     tmux.expect_send_key_name()
         .withf(|_, _, key| key == "Enter")
         .times(2)
@@ -7733,8 +7750,14 @@ fn pr_review_queue_marked_sends_and_marks_fixing() {
         AppMode::PrReview(state) => {
             // Marks cleared; queued comments now Fixing; unmarked one untouched.
             assert!(state.marked.is_empty(), "marks should clear after queuing");
-            assert_eq!(state.review.comments[0].triage, crate::app::pr_review::TriageState::Fixing);
-            assert_eq!(state.review.comments[1].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(
+                state.review.comments[0].triage,
+                crate::app::pr_review::TriageState::Fixing
+            );
+            assert_eq!(
+                state.review.comments[1].triage,
+                crate::app::pr_review::TriageState::Fixing
+            );
             assert_eq!(
                 state.review.comments[2].triage,
                 crate::app::pr_review::TriageState::Untriaged
@@ -7956,7 +7979,12 @@ fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
         _ => unreachable!(),
     };
     assert_eq!(confirm.editor.text(), expected);
-    assert!(confirm.editor.text().contains("Address this PR review comment."));
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("Address this PR review comment.")
+    );
 }
 
 #[test]
@@ -7974,7 +8002,10 @@ fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
     app.pr_review_fix_edit();
     assert_eq!(app.pr_review_fix_editing(), Some(true));
     assert!(app.pr_review_fix_editor_key(KeyEvent::from(KeyCode::Char('Z'))));
-    assert_eq!(pr_review_fix_confirm(&app).editor.text(), format!("{before}Z"));
+    assert_eq!(
+        pr_review_fix_confirm(&app).editor.text(),
+        format!("{before}Z")
+    );
 
     // Leaving edit mode keeps the edited text; cancel closes the dialog.
     app.pr_review_fix_stop_edit();
@@ -8466,7 +8497,10 @@ fn re_review_flags_changed_files_and_applies_filter() {
         .path()
         .join(".claude")
         .join("final-review-snapshot.json");
-    assert!(snapshot_path.exists(), "snapshot should be written on finish");
+    assert!(
+        snapshot_path.exists(),
+        "snapshot should be written on finish"
+    );
 
     // Re-open with src/b.rs's diff changed (different patch); src/a.rs is
     // untouched.
@@ -8674,7 +8708,11 @@ fn add_builtin_session_blocks_second_todos_per_project() {
     // A second attempt is rejected; still exactly one TODOs session.
     app.selection = Selection::Feature(0, 0);
     app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
-    assert_eq!(todos_count(&app), 1, "a second TODOs session must be blocked");
+    assert_eq!(
+        todos_count(&app),
+        1,
+        "a second TODOs session must be blocked"
+    );
     assert_eq!(
         app.message.as_deref(),
         Some("This project already has a TODOs session")
@@ -9066,7 +9104,8 @@ fn todos_record_spawned_session_updates_in_memory() {
     if let AppMode::Todos(state) = &mut app.mode {
         state.todos = vec![sample_todo("a", false), sample_todo("b", false)];
     }
-    app.todos_record_spawned_session("todo-b", "sess-42").unwrap();
+    app.todos_record_spawned_session("todo-b", "sess-42")
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.todos[0].spawned_session_id.is_none());

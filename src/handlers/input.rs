@@ -95,7 +95,7 @@ pub fn handle_paste(app: &mut App, text: &str) -> Result<()> {
                             PromptEditorFocus::Tags => &mut state.tags,
                             _ => &mut state.name,
                         };
-                        for chunk in text.split(|c| c == '\n' || c == '\r') {
+                        for chunk in text.split(['\n', '\r']) {
                             field.push_str(chunk);
                         }
                     }

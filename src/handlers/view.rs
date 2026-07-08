@@ -1263,7 +1263,8 @@ mod tests {
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
         for c in "ship it".chars() {
-            crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(c))).unwrap();
+            crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(c)))
+                .unwrap();
         }
         crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Enter)).unwrap();
 

@@ -186,18 +186,18 @@ pub(crate) fn read_all_prompts_for_session(
     // Fall back to latest-prompt.txt if no session entries found
     if entries.is_empty() {
         let path = latest_prompt_path(workdir);
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if !text.trim().is_empty() {
-                let ts = std::fs::metadata(&path)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
-                entries.push(PromptEntry {
-                    text,
-                    timestamp: ts,
-                });
-            }
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && !text.trim().is_empty()
+        {
+            let ts = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64);
+            entries.push(PromptEntry {
+                text,
+                timestamp: ts,
+            });
         }
     }
 
@@ -567,11 +567,11 @@ fn read_claude_task_state_from_task_store(
 }
 
 fn read_claude_task_state_from_task_dir(tasks_dir: &Path) -> Option<ClaudeTaskState> {
-    if !is_real_dir(&tasks_dir) {
+    if !is_real_dir(tasks_dir) {
         return None;
     }
 
-    let mut task_entries: Vec<(u64, PathBuf)> = std::fs::read_dir(&tasks_dir)
+    let mut task_entries: Vec<(u64, PathBuf)> = std::fs::read_dir(tasks_dir)
         .ok()?
         .flatten()
         .filter_map(|entry| {
@@ -882,216 +882,6 @@ struct OpencodePart {
     text: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    /// Round-trips an image and text through the real Windows clipboard.
-    /// Only meaningful under WSL; a no-op elsewhere so CI stays green.
-    #[test]
-    fn wsl_clipboard_round_trips_image_and_text() {
-        if !is_wsl() {
-            return;
-        }
-
-        // 1x1 red PNG.
-        const PNG: &[u8] = &[
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
-            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
-            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x37, 0x82,
-            0x9e, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-        ];
-
-        copy_image_to_clipboard(PNG, "image/png").expect("copy image to clipboard");
-        match read_clipboard().expect("read clipboard") {
-            ClipboardContent::Image { data, mime } => {
-                assert!(!data.is_empty());
-                assert_eq!(mime, "image/png");
-                assert_eq!(&data[..8], &PNG[..8], "should read back PNG bytes");
-            }
-            ClipboardContent::Text(t) => panic!("expected image, got text: {t:?}"),
-        }
-
-        copy_to_clipboard("amf-wsl-roundtrip").expect("copy text to clipboard");
-        match read_clipboard().expect("read clipboard") {
-            ClipboardContent::Text(t) => assert_eq!(t, "amf-wsl-roundtrip"),
-            ClipboardContent::Image { .. } => panic!("expected text, got image"),
-        }
-    }
-
-    #[test]
-    fn latest_claude_task_store_fallback_reads_newest_task_directory() {
-        let temp = TempDir::new().unwrap();
-        let tasks_root = Some(temp.path().to_path_buf());
-        let stale_dir = temp.path().join("stale-session");
-        let fresh_dir = temp.path().join("detached-task-store");
-        let empty_dir = temp.path().join("empty-newest-store");
-        std::fs::create_dir_all(&stale_dir).unwrap();
-        std::fs::create_dir_all(&fresh_dir).unwrap();
-        std::fs::create_dir_all(&empty_dir).unwrap();
-        std::fs::write(
-            stale_dir.join("1.json"),
-            r#"{"id":"1","subject":"Old task","status":"pending"}"#,
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        std::fs::write(
-            fresh_dir.join("1.json"),
-            r#"{"id":"1","subject":"Render cursor highlight","activeForm":"Rendering cursor + markers","status":"in_progress"}"#,
-        )
-        .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        std::fs::write(empty_dir.join(".highwatermark"), "1").unwrap();
-
-        let state = read_latest_claude_task_state_from_task_store(&tasks_root).unwrap();
-
-        assert_eq!(state.tasks.len(), 1);
-        assert_eq!(state.tasks[0].subject, "Render cursor highlight");
-        assert_eq!(
-            state.tasks[0].active_form.as_deref(),
-            Some("Rendering cursor + markers")
-        );
-        assert_eq!(state.tasks[0].status, "in_progress");
-    }
-
-    #[test]
-    fn claude_task_store_prefers_exact_session_directory() {
-        let temp = TempDir::new().unwrap();
-        let tasks_root = Some(temp.path().to_path_buf());
-        let exact_dir = temp.path().join("claude-session");
-        let other_dir = temp.path().join("detached-task-store");
-        std::fs::create_dir_all(&exact_dir).unwrap();
-        std::fs::create_dir_all(&other_dir).unwrap();
-        std::fs::write(
-            exact_dir.join("1.json"),
-            r#"{"id":"1","subject":"Exact session task","status":"pending"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            other_dir.join("1.json"),
-            r#"{"id":"1","subject":"Newest detached task","status":"pending"}"#,
-        )
-        .unwrap();
-
-        let state = read_claude_task_state_from_task_store(&tasks_root, "claude-session").unwrap();
-
-        assert_eq!(state.tasks.len(), 1);
-        assert_eq!(state.tasks[0].subject, "Exact session task");
-    }
-
-    #[test]
-    fn reads_opencode_prompts_from_selected_session_storage() {
-        let temp = TempDir::new().unwrap();
-        let workdir = PathBuf::from("/tmp/opencode-prompts");
-        let storage = temp.path();
-
-        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
-        std::fs::create_dir_all(storage.join("message").join("ses-picked")).unwrap();
-        std::fs::create_dir_all(storage.join("part").join("msg-1")).unwrap();
-        std::fs::create_dir_all(storage.join("part").join("msg-2")).unwrap();
-
-        std::fs::write(
-            storage
-                .join("session")
-                .join("project-a")
-                .join("ses-picked.json"),
-            "{\"id\":\"ses-picked\",\"directory\":\"/other\",\"time\":{\"updated\":2}}",
-        )
-        .unwrap();
-        std::fs::write(
-            storage
-                .join("message")
-                .join("ses-picked")
-                .join("msg-1.json"),
-            "{\"id\":\"msg-1\",\"role\":\"user\",\"time\":{\"created\":1000}}",
-        )
-        .unwrap();
-        std::fs::write(
-            storage
-                .join("message")
-                .join("ses-picked")
-                .join("msg-2.json"),
-            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":3000}}",
-        )
-        .unwrap();
-        std::fs::write(
-            storage.join("part").join("msg-1").join("prt-1.json"),
-            "{\"type\":\"text\",\"text\":\"older prompt\"}",
-        )
-        .unwrap();
-        std::fs::write(
-            storage.join("part").join("msg-2").join("prt-1.json"),
-            "{\"type\":\"text\",\"text\":\"latest prompt\"}",
-        )
-        .unwrap();
-
-        let entries =
-            read_prompts_from_opencode_storage_root(storage, &workdir, Some("ses-picked"));
-
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].text, "older prompt");
-        assert_eq!(entries[1].text, "latest prompt");
-    }
-
-    #[test]
-    fn reads_opencode_prompts_by_workdir_and_falls_back_to_summary_title() {
-        let temp = TempDir::new().unwrap();
-        let workdir = PathBuf::from("/tmp/opencode-prompts");
-        let storage = temp.path();
-
-        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
-        std::fs::create_dir_all(storage.join("message").join("ses-1")).unwrap();
-
-        std::fs::write(
-            storage.join("session").join("project-a").join("ses-1.json"),
-            format!(
-                "{{\"id\":\"ses-1\",\"directory\":\"{}\",\"time\":{{\"updated\":5}}}}",
-                workdir.display()
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            storage.join("message").join("ses-1").join("msg-1.json"),
-            "{\"id\":\"msg-1\",\"role\":\"assistant\",\"time\":{\"created\":1000}}",
-        )
-        .unwrap();
-        std::fs::write(
-            storage.join("message").join("ses-1").join("msg-2.json"),
-            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":2000},\"summary\":{\"title\":\"summary prompt\"}}",
-        )
-        .unwrap();
-
-        let entries = read_prompts_from_opencode_storage_root(storage, &workdir, None);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].text, "summary prompt");
-        assert_eq!(entries[0].timestamp, Some(2));
-    }
-
-    #[test]
-    fn latest_prompt_for_session_prefers_newest_timestamp() {
-        let workdir = PathBuf::from("/tmp/unused");
-        let latest = read_latest_prompt_for_session(&workdir, None, None);
-        assert_eq!(latest, None);
-    }
-
-    #[test]
-    fn fuzzy_match_score_matches_subsequence() {
-        assert!(fuzzy_match_score("plan-notes.md", "pn").is_some());
-        assert!(fuzzy_match_score("plan-notes.md", "pln").is_some());
-        assert!(fuzzy_match_score("plan-notes.md", "zn").is_none());
-    }
-
-    #[test]
-    fn markdown_file_picker_score_prefers_basename_hits() {
-        let workdir = PathBuf::from("/tmp/demo");
-        let path = workdir.join("docs").join("plan-notes.md");
-        assert!(markdown_file_picker_score(&path, &workdir, None, "pn").is_some());
-    }
-}
-
 /// Returns true when running under WSL, where the Windows clipboard is
 /// reachable via `powershell.exe`/`clip.exe` rather than `wl-paste`/`xclip`
 /// (which are usually absent and cannot see the Windows clipboard anyway).
@@ -1352,10 +1142,12 @@ fn read_clipboard_wsl() -> Option<ClipboardContent> {
     let result = if output.status.success() {
         let raw = String::from_utf8_lossy(&output.stdout);
         if raw.starts_with("AMFIMAGE") {
-            std::fs::read(&tmp).ok().map(|data| ClipboardContent::Image {
-                data,
-                mime: "image/png".to_string(),
-            })
+            std::fs::read(&tmp)
+                .ok()
+                .map(|data| ClipboardContent::Image {
+                    data,
+                    mime: "image/png".to_string(),
+                })
         } else if let Some(rest) = raw.strip_prefix("AMFTEXT") {
             // Drop the marker line and any single trailing newline that
             // PowerShell appends, then normalise CRLF to LF.
@@ -1419,5 +1211,215 @@ fn copy_image_to_clipboard_wsl(data: &[u8]) -> anyhow::Result<()> {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(anyhow::anyhow!("powershell SetImage exited with {s}")),
         Err(e) => Err(anyhow::anyhow!("failed to launch powershell: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Round-trips an image and text through the real Windows clipboard.
+    /// Only meaningful under WSL; a no-op elsewhere so CI stays green.
+    #[test]
+    fn wsl_clipboard_round_trips_image_and_text() {
+        if !is_wsl() {
+            return;
+        }
+
+        // 1x1 red PNG.
+        const PNG: &[u8] = &[
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x36, 0x37, 0x82,
+            0x9e, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+        ];
+
+        copy_image_to_clipboard(PNG, "image/png").expect("copy image to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Image { data, mime } => {
+                assert!(!data.is_empty());
+                assert_eq!(mime, "image/png");
+                assert_eq!(&data[..8], &PNG[..8], "should read back PNG bytes");
+            }
+            ClipboardContent::Text(t) => panic!("expected image, got text: {t:?}"),
+        }
+
+        copy_to_clipboard("amf-wsl-roundtrip").expect("copy text to clipboard");
+        match read_clipboard().expect("read clipboard") {
+            ClipboardContent::Text(t) => assert_eq!(t, "amf-wsl-roundtrip"),
+            ClipboardContent::Image { .. } => panic!("expected text, got image"),
+        }
+    }
+
+    #[test]
+    fn latest_claude_task_store_fallback_reads_newest_task_directory() {
+        let temp = TempDir::new().unwrap();
+        let tasks_root = Some(temp.path().to_path_buf());
+        let stale_dir = temp.path().join("stale-session");
+        let fresh_dir = temp.path().join("detached-task-store");
+        let empty_dir = temp.path().join("empty-newest-store");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        std::fs::create_dir_all(&fresh_dir).unwrap();
+        std::fs::create_dir_all(&empty_dir).unwrap();
+        std::fs::write(
+            stale_dir.join("1.json"),
+            r#"{"id":"1","subject":"Old task","status":"pending"}"#,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(
+            fresh_dir.join("1.json"),
+            r#"{"id":"1","subject":"Render cursor highlight","activeForm":"Rendering cursor + markers","status":"in_progress"}"#,
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(empty_dir.join(".highwatermark"), "1").unwrap();
+
+        let state = read_latest_claude_task_state_from_task_store(&tasks_root).unwrap();
+
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks[0].subject, "Render cursor highlight");
+        assert_eq!(
+            state.tasks[0].active_form.as_deref(),
+            Some("Rendering cursor + markers")
+        );
+        assert_eq!(state.tasks[0].status, "in_progress");
+    }
+
+    #[test]
+    fn claude_task_store_prefers_exact_session_directory() {
+        let temp = TempDir::new().unwrap();
+        let tasks_root = Some(temp.path().to_path_buf());
+        let exact_dir = temp.path().join("claude-session");
+        let other_dir = temp.path().join("detached-task-store");
+        std::fs::create_dir_all(&exact_dir).unwrap();
+        std::fs::create_dir_all(&other_dir).unwrap();
+        std::fs::write(
+            exact_dir.join("1.json"),
+            r#"{"id":"1","subject":"Exact session task","status":"pending"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            other_dir.join("1.json"),
+            r#"{"id":"1","subject":"Newest detached task","status":"pending"}"#,
+        )
+        .unwrap();
+
+        let state = read_claude_task_state_from_task_store(&tasks_root, "claude-session").unwrap();
+
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.tasks[0].subject, "Exact session task");
+    }
+
+    #[test]
+    fn reads_opencode_prompts_from_selected_session_storage() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-prompts");
+        let storage = temp.path();
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-picked")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-1")).unwrap();
+        std::fs::create_dir_all(storage.join("part").join("msg-2")).unwrap();
+
+        std::fs::write(
+            storage
+                .join("session")
+                .join("project-a")
+                .join("ses-picked.json"),
+            "{\"id\":\"ses-picked\",\"directory\":\"/other\",\"time\":{\"updated\":2}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage
+                .join("message")
+                .join("ses-picked")
+                .join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"user\",\"time\":{\"created\":1000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage
+                .join("message")
+                .join("ses-picked")
+                .join("msg-2.json"),
+            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":3000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-1").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"older prompt\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("part").join("msg-2").join("prt-1.json"),
+            "{\"type\":\"text\",\"text\":\"latest prompt\"}",
+        )
+        .unwrap();
+
+        let entries =
+            read_prompts_from_opencode_storage_root(storage, &workdir, Some("ses-picked"));
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].text, "older prompt");
+        assert_eq!(entries[1].text, "latest prompt");
+    }
+
+    #[test]
+    fn reads_opencode_prompts_by_workdir_and_falls_back_to_summary_title() {
+        let temp = TempDir::new().unwrap();
+        let workdir = PathBuf::from("/tmp/opencode-prompts");
+        let storage = temp.path();
+
+        std::fs::create_dir_all(storage.join("session").join("project-a")).unwrap();
+        std::fs::create_dir_all(storage.join("message").join("ses-1")).unwrap();
+
+        std::fs::write(
+            storage.join("session").join("project-a").join("ses-1.json"),
+            format!(
+                "{{\"id\":\"ses-1\",\"directory\":\"{}\",\"time\":{{\"updated\":5}}}}",
+                workdir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-1.json"),
+            "{\"id\":\"msg-1\",\"role\":\"assistant\",\"time\":{\"created\":1000}}",
+        )
+        .unwrap();
+        std::fs::write(
+            storage.join("message").join("ses-1").join("msg-2.json"),
+            "{\"id\":\"msg-2\",\"role\":\"user\",\"time\":{\"created\":2000},\"summary\":{\"title\":\"summary prompt\"}}",
+        )
+        .unwrap();
+
+        let entries = read_prompts_from_opencode_storage_root(storage, &workdir, None);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].text, "summary prompt");
+        assert_eq!(entries[0].timestamp, Some(2));
+    }
+
+    #[test]
+    fn latest_prompt_for_session_prefers_newest_timestamp() {
+        let workdir = PathBuf::from("/tmp/unused");
+        let latest = read_latest_prompt_for_session(&workdir, None, None);
+        assert_eq!(latest, None);
+    }
+
+    #[test]
+    fn fuzzy_match_score_matches_subsequence() {
+        assert!(fuzzy_match_score("plan-notes.md", "pn").is_some());
+        assert!(fuzzy_match_score("plan-notes.md", "pln").is_some());
+        assert!(fuzzy_match_score("plan-notes.md", "zn").is_none());
+    }
+
+    #[test]
+    fn markdown_file_picker_score_prefers_basename_hits() {
+        let workdir = PathBuf::from("/tmp/demo");
+        let path = workdir.join("docs").join("plan-notes.md");
+        assert!(markdown_file_picker_score(&path, &workdir, None, "pn").is_some());
     }
 }

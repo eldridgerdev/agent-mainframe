@@ -36,10 +36,6 @@ pub use dialog::{
     handle_session_config_key, handle_steering_prompt_key, handle_theme_picker_key,
 };
 pub use diff::{handle_diff_viewer_key, handle_review_harness_pick_key};
-pub use pr_review::{
-    handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
-    handle_pr_review_loading_key,
-};
 pub use diff_review::handle_diff_review_key;
 pub use feature_creation::handle_create_feature_key;
 pub use fork::handle_fork_feature_key;
@@ -58,6 +54,10 @@ pub use picker::{
     handle_new_session_name_key, handle_notification_picker_key,
     handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
     handle_session_picker_key, handle_session_switcher_key, handle_syntax_language_picker_key,
+};
+pub use pr_review::{
+    handle_pr_number_prompt_key, handle_pr_picker_key, handle_pr_review_key,
+    handle_pr_review_loading_key,
 };
 pub use prompt_library::{
     handle_placeholder_fill_key, handle_prompt_editor_key, handle_prompt_library_key,

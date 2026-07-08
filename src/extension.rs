@@ -464,8 +464,18 @@ mod tests {
         assert_eq!(shared.len(), 1);
         assert_eq!(shared[0].body, "project body");
         // Both unique entries should be present.
-        assert!(merged.prompt_templates.iter().any(|t| t.name == "global-only"));
-        assert!(merged.prompt_templates.iter().any(|t| t.name == "project-only"));
+        assert!(
+            merged
+                .prompt_templates
+                .iter()
+                .any(|t| t.name == "global-only")
+        );
+        assert!(
+            merged
+                .prompt_templates
+                .iter()
+                .any(|t| t.name == "project-only")
+        );
         assert_eq!(merged.prompt_templates.len(), 3);
     }
 

@@ -157,22 +157,24 @@ pub fn render_template(body: &str, values: &[(String, String)]) -> String {
     let bytes = body.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            if let Some(close) = body[i + 2..].find("}}") {
-                let raw = &body[i + 2..i + 2 + close];
-                // A token may carry inline options (`{{a|b|c}}` or
-                // `{{label: a|b|c}}`); `parse_placeholder_token` derives the
-                // lookup key.
-                let key = parse_placeholder_token(raw).key;
-                let replacement = values
-                    .iter()
-                    .find(|(k, _)| k == key)
-                    .map(|(_, v)| v.as_str())
-                    .unwrap_or("");
-                out.push_str(replacement);
-                i = i + 2 + close + 2;
-                continue;
-            }
+        if bytes[i] == b'{'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && let Some(close) = body[i + 2..].find("}}")
+        {
+            let raw = &body[i + 2..i + 2 + close];
+            // A token may carry inline options (`{{a|b|c}}` or
+            // `{{label: a|b|c}}`); `parse_placeholder_token` derives the
+            // lookup key.
+            let key = parse_placeholder_token(raw).key;
+            let replacement = values
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            out.push_str(replacement);
+            i = i + 2 + close + 2;
+            continue;
         }
         let ch = body[i..].chars().next().unwrap();
         out.push(ch);
@@ -227,10 +229,7 @@ pub fn parse_placeholder_token(inner: &str) -> ParsedToken<'_> {
         Some(colon) => {
             let label = head[..colon].trim();
             let first = head[colon + 1..].trim();
-            (
-                if label.is_empty() { None } else { Some(label) },
-                first,
-            )
+            (if label.is_empty() { None } else { Some(label) }, first)
         }
         None => (None, head.trim()),
     };
@@ -334,9 +333,15 @@ pub fn prompt_filter_score(name: &str, body: &str, tags: &[String], query: &str)
         if needle.is_empty() {
             return if tags.is_empty() { None } else { Some(0) };
         }
-        return tags.iter().filter_map(|t| fuzzy_match_score(t, needle)).min();
+        return tags
+            .iter()
+            .filter_map(|t| fuzzy_match_score(t, needle))
+            .min();
     }
-    let tag_best = tags.iter().filter_map(|t| fuzzy_match_score(t, query)).min();
+    let tag_best = tags
+        .iter()
+        .filter_map(|t| fuzzy_match_score(t, query))
+        .min();
     [
         fuzzy_match_score(name, query),
         fuzzy_match_score(body, query),
@@ -433,7 +438,10 @@ mod tests {
         assert_eq!(slots.len(), 2);
         assert_eq!(slots[0].key, "env");
         assert_eq!(slots[0].label.as_deref(), Some("env"));
-        assert_eq!(slots[0].options, vec!["dev".to_string(), "prod".to_string()]);
+        assert_eq!(
+            slots[0].options,
+            vec!["dev".to_string(), "prod".to_string()]
+        );
         assert_eq!(slots[1].key, "user");
         assert_eq!(slots[1].label, None);
         assert!(slots[1].options.is_empty());

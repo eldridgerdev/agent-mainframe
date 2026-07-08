@@ -145,6 +145,9 @@ pub fn draw_project_agent_config_dialog(
     );
 }
 
+// Shared renderer for the session/project agent-config dialogs; the args are
+// the union of both dialogs' display fields.
+#[allow(clippy::too_many_arguments)]
 fn draw_agent_config_dialog(
     frame: &mut Frame,
     title: &str,

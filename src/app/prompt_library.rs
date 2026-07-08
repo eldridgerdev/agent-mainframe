@@ -85,9 +85,9 @@ impl App {
 
         let selected = focus
             .and_then(|(name, source)| {
-                filtered
-                    .iter()
-                    .position(|&idx| templates[idx].template.name == name && templates[idx].source == source)
+                filtered.iter().position(|&idx| {
+                    templates[idx].template.name == name && templates[idx].source == source
+                })
             })
             .unwrap_or(0);
 
@@ -267,7 +267,10 @@ impl App {
                     .zip(state.values.iter())
                     .map(|(p, v)| (p.key.clone(), v.clone()))
                     .collect();
-                (render_template(&state.template.body, &pairs), state.from_view.clone())
+                (
+                    render_template(&state.template.body, &pairs),
+                    state.from_view.clone(),
+                )
             }
             _ => return Ok(()),
         };
@@ -305,7 +308,8 @@ impl App {
             self.mode = AppMode::Viewing(view);
             self.open_compose_seeded(rendered)?;
         } else {
-            self.tmux.paste_text(&view.session, &view.window, &rendered)?;
+            self.tmux
+                .paste_text(&view.session, &view.window, &rendered)?;
             self.mode = AppMode::Viewing(view);
             self.push_toast_success("Pasted prompt (not sent)");
         }
@@ -433,11 +437,8 @@ impl App {
             PromptSource::User => {
                 match &state.editing_id {
                     Some(id) => {
-                        if let Some(template) = self
-                            .store
-                            .prompt_templates
-                            .iter_mut()
-                            .find(|t| &t.id == id)
+                        if let Some(template) =
+                            self.store.prompt_templates.iter_mut().find(|t| &t.id == id)
                         {
                             template.name = name;
                             template.body = body;
@@ -454,10 +455,22 @@ impl App {
                 self.save()?;
             }
             PromptSource::Global => {
-                let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
+                let orig = state
+                    .original_template
+                    .as_ref()
+                    .expect("config edit always has original");
+                let updated = PromptTemplate {
+                    name: name.clone(),
+                    body,
+                    tags: tags.clone(),
+                    updated_at: Utc::now(),
+                    ..orig.clone()
+                };
                 if orig.name != name {
-                    self.config.extension.prompt_templates.retain(|t| t.name != orig.name);
+                    self.config
+                        .extension
+                        .prompt_templates
+                        .retain(|t| t.name != orig.name);
                 }
                 upsert_template(&mut self.config.extension.prompt_templates, updated);
                 if let Err(e) = self.try_save_config() {
@@ -467,8 +480,17 @@ impl App {
                 }
             }
             PromptSource::Project => {
-                let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
+                let orig = state
+                    .original_template
+                    .as_ref()
+                    .expect("config edit always has original");
+                let updated = PromptTemplate {
+                    name: name.clone(),
+                    body,
+                    tags: tags.clone(),
+                    updated_at: Utc::now(),
+                    ..orig.clone()
+                };
                 let Some(repo) = self.resolve_export_repo(from_view.as_ref()) else {
                     self.push_toast_warning("No project repo — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -480,8 +502,17 @@ impl App {
                 export_template_to_project_config(&repo, &updated)?;
             }
             PromptSource::Worktree => {
-                let orig = state.original_template.as_ref().expect("config edit always has original");
-                let updated = PromptTemplate { name: name.clone(), body, tags: tags.clone(), updated_at: Utc::now(), ..orig.clone() };
+                let orig = state
+                    .original_template
+                    .as_ref()
+                    .expect("config edit always has original");
+                let updated = PromptTemplate {
+                    name: name.clone(),
+                    body,
+                    tags: tags.clone(),
+                    updated_at: Utc::now(),
+                    ..orig.clone()
+                };
                 let Some(workdir) = self.resolve_worktree_dir(from_view.as_ref()) else {
                     self.push_toast_warning("No worktree — can't save");
                     self.return_from_prompt_editor(*state.return_to);
@@ -500,9 +531,7 @@ impl App {
     }
 
     pub fn cancel_prompt_editor(&mut self) {
-        if let AppMode::PromptEditor(state) =
-            std::mem::replace(&mut self.mode, AppMode::Normal)
-        {
+        if let AppMode::PromptEditor(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
             self.return_from_prompt_editor(*state.return_to);
         }
     }
@@ -534,19 +563,25 @@ impl App {
     /// `confirm_delete` on the first `d`, this runs on the second).
     pub fn delete_selected_template(&mut self) -> Result<()> {
         let (entry, from_view) = match &self.mode {
-            AppMode::PromptLibrary(state) => (state.selected_entry().cloned(), state.from_view.clone()),
+            AppMode::PromptLibrary(state) => {
+                (state.selected_entry().cloned(), state.from_view.clone())
+            }
             _ => return Ok(()),
         };
         let Some(entry) = entry else {
             return Ok(());
         };
         if !entry.source.is_deletable() {
-            self.push_toast_warning("Config template can't be deleted here — remove it from the config file");
+            self.push_toast_warning(
+                "Config template can't be deleted here — remove it from the config file",
+            );
             return Ok(());
         }
 
         let id = entry.template.id.clone();
-        self.store.prompt_templates.retain(|template| template.id != id);
+        self.store
+            .prompt_templates
+            .retain(|template| template.id != id);
         self.save()?;
         self.open_prompt_library(from_view);
         self.push_toast_success("Deleted prompt");
@@ -558,7 +593,9 @@ impl App {
     /// templates; harmless for `User` ones.
     pub fn duplicate_selected_template_to_user(&mut self) -> Result<()> {
         let (entry, from_view) = match &self.mode {
-            AppMode::PromptLibrary(state) => (state.selected_entry().cloned(), state.from_view.clone()),
+            AppMode::PromptLibrary(state) => {
+                (state.selected_entry().cloned(), state.from_view.clone())
+            }
             _ => return Ok(()),
         };
         let Some(entry) = entry else {
@@ -587,9 +624,10 @@ impl App {
     /// entry. Existing config entries with the same name are replaced.
     pub fn export_selected_template(&mut self, target: PromptExportTarget) -> Result<()> {
         let (template, from_view) = match &self.mode {
-            AppMode::PromptLibrary(state) => {
-                (state.selected_entry().map(|e| e.template.clone()), state.from_view.clone())
-            }
+            AppMode::PromptLibrary(state) => (
+                state.selected_entry().map(|e| e.template.clone()),
+                state.from_view.clone(),
+            ),
             _ => return Ok(()),
         };
         if let AppMode::PromptLibrary(state) = &mut self.mode {
@@ -604,10 +642,16 @@ impl App {
         let mut success: Option<(String, PromptSource)> = None;
         match target {
             PromptExportTarget::Global => {
-                upsert_template(&mut self.config.extension.prompt_templates, template.clone());
+                upsert_template(
+                    &mut self.config.extension.prompt_templates,
+                    template.clone(),
+                );
                 match self.try_save_config() {
                     Ok(()) => {
-                        self.log_info("prompt-library", format!("exported \"{}\" to global config", template.name));
+                        self.log_info(
+                            "prompt-library",
+                            format!("exported \"{}\" to global config", template.name),
+                        );
                         success = Some((
                             format!("Exported \"{}\" to global config", template.name),
                             PromptSource::Global,
@@ -615,7 +659,10 @@ impl App {
                     }
                     Err(e) => {
                         // Roll back the in-memory upsert so the list stays consistent.
-                        self.config.extension.prompt_templates.retain(|t| t.name != template.name);
+                        self.config
+                            .extension
+                            .prompt_templates
+                            .retain(|t| t.name != template.name);
                         self.push_toast_warning(format!("Export failed: {e}"));
                         return Ok(());
                     }
@@ -631,7 +678,10 @@ impl App {
                 match export_template_to_project_config(&repo, &template) {
                     Ok(path) => {
                         let short = crate::app::util::shorten_path(&path);
-                        self.log_info("prompt-library", format!("exported \"{}\" to {short}", template.name));
+                        self.log_info(
+                            "prompt-library",
+                            format!("exported \"{}\" to {short}", template.name),
+                        );
                         success = Some((
                             format!("Exported \"{}\" to {short}", template.name),
                             PromptSource::Project,
@@ -650,7 +700,10 @@ impl App {
                 match export_template_to_project_config(&workdir, &template) {
                     Ok(path) => {
                         let short = crate::app::util::shorten_path(&path);
-                        self.log_info("prompt-library", format!("exported \"{}\" to {short}", template.name));
+                        self.log_info(
+                            "prompt-library",
+                            format!("exported \"{}\" to {short}", template.name),
+                        );
                         success = Some((
                             format!("Exported \"{}\" to {short}", template.name),
                             PromptSource::Worktree,
@@ -685,11 +738,14 @@ impl App {
             return Some(project.repo.clone());
         }
         let pi = match &self.selection {
-            Selection::Project(pi)
-            | Selection::Feature(pi, _)
-            | Selection::Session(pi, _, _) => *pi,
+            Selection::Project(pi) | Selection::Feature(pi, _) | Selection::Session(pi, _, _) => {
+                *pi
+            }
         };
-        self.store.projects.get(pi).map(|project| project.repo.clone())
+        self.store
+            .projects
+            .get(pi)
+            .map(|project| project.repo.clone())
     }
 
     /// Resolve the repo to export a project template into. Delegates to
@@ -711,11 +767,10 @@ impl App {
         from_view: Option<&ViewState>,
     ) -> Option<PathBuf> {
         match source {
-            PromptSource::User => (!self.store_path.as_os_str().is_empty())
-                .then(|| self.store_path.clone()),
-            PromptSource::Global => {
-                Some(crate::project::amf_config_dir().join("config.json"))
+            PromptSource::User => {
+                (!self.store_path.as_os_str().is_empty()).then(|| self.store_path.clone())
             }
+            PromptSource::Global => Some(crate::project::amf_config_dir().join("config.json")),
             PromptSource::Project => self
                 .resolve_library_repo(from_view)
                 .map(|repo| repo.join(".amf").join("config.json")),
@@ -728,12 +783,11 @@ impl App {
     /// One-line export menu naming each target's resolved destination path,
     /// so the user confirms exactly where the template lands before writing.
     pub fn build_export_menu_message(&self, from_view: Option<&ViewState>) -> String {
-        let target = |opt: char, source: PromptSource| match self
-            .template_source_path(source, from_view)
-        {
-            Some(path) => format!("({opt}) {}", crate::app::util::shorten_path(&path)),
-            None => format!("({opt}) {} (unavailable)", source.label().to_lowercase()),
-        };
+        let target =
+            |opt: char, source: PromptSource| match self.template_source_path(source, from_view) {
+                Some(path) => format!("({opt}) {}", crate::app::util::shorten_path(&path)),
+                None => format!("({opt}) {} (unavailable)", source.label().to_lowercase()),
+            };
         format!(
             "Export to:  {}   {}   {}   \u{00b7}  Esc cancel",
             target('g', PromptSource::Global),
@@ -796,16 +850,32 @@ fn merge_prompt_library_entries(
     // `source_path` is filled by the caller (`rebuild_prompt_library`), which
     // has the App context needed to resolve each scope's on-disk location.
     for template in user {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::User, source_path: None });
+        entries.push(PromptLibraryEntry {
+            template: template.clone(),
+            source: PromptSource::User,
+            source_path: None,
+        });
     }
     for template in worktree {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Worktree, source_path: None });
+        entries.push(PromptLibraryEntry {
+            template: template.clone(),
+            source: PromptSource::Worktree,
+            source_path: None,
+        });
     }
     for template in project {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Project, source_path: None });
+        entries.push(PromptLibraryEntry {
+            template: template.clone(),
+            source: PromptSource::Project,
+            source_path: None,
+        });
     }
     for template in global {
-        entries.push(PromptLibraryEntry { template: template.clone(), source: PromptSource::Global, source_path: None });
+        entries.push(PromptLibraryEntry {
+            template: template.clone(),
+            source: PromptSource::Global,
+            source_path: None,
+        });
     }
     entries
 }
@@ -899,9 +969,10 @@ fn export_template_to_project_config(repo: &Path, template: &PromptTemplate) -> 
     let arr = arr.as_array_mut().expect("prompt_templates is an array");
 
     let entry = serde_json::to_value(template)?;
-    if let Some(slot) = arr.iter_mut().find(|value| {
-        value.get("name").and_then(|n| n.as_str()) == Some(template.name.as_str())
-    }) {
+    if let Some(slot) = arr
+        .iter_mut()
+        .find(|value| value.get("name").and_then(|n| n.as_str()) == Some(template.name.as_str()))
+    {
         *slot = entry;
     } else {
         arr.push(entry);
@@ -921,7 +992,10 @@ fn remove_template_from_config(repo: &Path, name: &str) -> Result<()> {
     let contents = std::fs::read_to_string(&path)?;
     let mut root: serde_json::Value =
         serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({}));
-    if let Some(arr) = root.get_mut("prompt_templates").and_then(|v| v.as_array_mut()) {
+    if let Some(arr) = root
+        .get_mut("prompt_templates")
+        .and_then(|v| v.as_array_mut())
+    {
         arr.retain(|v| v.get("name").and_then(|n| n.as_str()) != Some(name));
     }
     std::fs::write(&path, serde_json::to_string_pretty(&root)? + "\n")?;
@@ -955,14 +1029,16 @@ mod tests {
         // Distinct keys, first-seen order, no duplicate for the repeated slot.
         assert_eq!(keys, vec!["area", "file"]);
         // Inferred slots are plain Text with no default and not required.
-        assert!(matches!(slots[0].kind, PlaceholderKind::Text { default: None }));
+        assert!(matches!(
+            slots[0].kind,
+            PlaceholderKind::Text { default: None }
+        ));
         assert!(!slots[0].required);
     }
 
     #[test]
     fn resolve_uses_explicit_definition_when_present() {
-        let mut template =
-            PromptTemplate::new("t".to_string(), "Hello {{name}}".to_string());
+        let mut template = PromptTemplate::new("t".to_string(), "Hello {{name}}".to_string());
         template.placeholders = vec![PromptPlaceholder {
             key: "name".to_string(),
             label: Some("Your name".to_string()),
@@ -990,19 +1066,24 @@ mod tests {
         assert_eq!(slots[0].label.as_deref(), Some("env"));
         match &slots[0].kind {
             PlaceholderKind::Select { options } => {
-                assert_eq!(options, &vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]);
+                assert_eq!(
+                    options,
+                    &vec!["dev".to_string(), "staging".to_string(), "prod".to_string()]
+                );
             }
             other => panic!("expected Select, got {other:?}"),
         }
         // Bare slot → Text.
-        assert!(matches!(slots[1].kind, PlaceholderKind::Text { default: None }));
+        assert!(matches!(
+            slots[1].kind,
+            PlaceholderKind::Text { default: None }
+        ));
     }
 
     #[test]
     fn resolve_makes_bare_menu_select_with_every_option() {
         // No label: every `|` segment is selectable (the reported bug fix).
-        let template =
-            PromptTemplate::new("t".to_string(), "Use {{dev|staging|prod}}".to_string());
+        let template = PromptTemplate::new("t".to_string(), "Use {{dev|staging|prod}}".to_string());
         let slots = resolve_placeholders(&template);
         assert_eq!(slots.len(), 1);
         assert_eq!(slots[0].label, None);
@@ -1020,10 +1101,8 @@ mod tests {
     #[test]
     fn resolve_explicit_definition_overrides_inline_options() {
         // A config-authored placeholder wins even when the body has `|options`.
-        let mut template = PromptTemplate::new(
-            "t".to_string(),
-            "Deploy {{env: dev|prod}}".to_string(),
-        );
+        let mut template =
+            PromptTemplate::new("t".to_string(), "Deploy {{env: dev|prod}}".to_string());
         template.placeholders = vec![PromptPlaceholder {
             key: "env".to_string(),
             label: Some("Environment".to_string()),
@@ -1049,10 +1128,7 @@ mod tests {
     fn fill_renders_collected_values_into_body() {
         // End-to-end of the substitution step: resolved slots + values →
         // render_template produces the final prompt.
-        let template = PromptTemplate::new(
-            "t".to_string(),
-            "Fix {{area}} in {{file}}".to_string(),
-        );
+        let template = PromptTemplate::new("t".to_string(), "Fix {{area}} in {{file}}".to_string());
         let slots = resolve_placeholders(&template);
         let values = ["auth", "login.rs"];
         let pairs: Vec<(String, String)> = slots
@@ -1142,10 +1218,19 @@ mod tests {
 
         let entries = merge_prompt_library_entries(&user, &global, &project, &[]);
         // Both Project and Global copies of "dup" are shown — no cross-source dedup.
-        let dup: Vec<_> = entries.iter().filter(|e| e.template.name == "dup").collect();
+        let dup: Vec<_> = entries
+            .iter()
+            .filter(|e| e.template.name == "dup")
+            .collect();
         assert_eq!(dup.len(), 2);
-        assert!(dup.iter().any(|e| e.source == PromptSource::Project && e.template.body == "proj"));
-        assert!(dup.iter().any(|e| e.source == PromptSource::Global && e.template.body == "glob"));
+        assert!(
+            dup.iter()
+                .any(|e| e.source == PromptSource::Project && e.template.body == "proj")
+        );
+        assert!(
+            dup.iter()
+                .any(|e| e.source == PromptSource::Global && e.template.body == "glob")
+        );
         // The global-only entry still shows.
         assert!(
             entries
@@ -1186,11 +1271,17 @@ mod tests {
     #[test]
     fn upsert_replaces_by_name() {
         let mut list = vec![PromptTemplate::new("a".to_string(), "1".to_string())];
-        upsert_template(&mut list, PromptTemplate::new("a".to_string(), "2".to_string()));
+        upsert_template(
+            &mut list,
+            PromptTemplate::new("a".to_string(), "2".to_string()),
+        );
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].body, "2");
 
-        upsert_template(&mut list, PromptTemplate::new("b".to_string(), "3".to_string()));
+        upsert_template(
+            &mut list,
+            PromptTemplate::new("b".to_string(), "3".to_string()),
+        );
         assert_eq!(list.len(), 2);
     }
 
@@ -1241,9 +1332,10 @@ mod tests {
 
         // Seed a user template and open the library from the dashboard
         // (no view context — this is the case that previously broke).
-        app.store
-            .prompt_templates
-            .push(PromptTemplate::new("My prompt".to_string(), "body".to_string()));
+        app.store.prompt_templates.push(PromptTemplate::new(
+            "My prompt".to_string(),
+            "body".to_string(),
+        ));
         app.open_prompt_library(None);
 
         // Export the template to the project config.
@@ -1286,9 +1378,10 @@ mod tests {
             Box::new(MockWorktreeOps::new()),
         );
 
-        app.store
-            .prompt_templates
-            .push(PromptTemplate::new("My prompt".to_string(), "body".to_string()));
+        app.store.prompt_templates.push(PromptTemplate::new(
+            "My prompt".to_string(),
+            "body".to_string(),
+        ));
         app.open_prompt_library(None);
         // Export so there is a Project-source entry to inspect too.
         app.export_selected_template(PromptExportTarget::Project)
@@ -1356,9 +1449,10 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        app.store
-            .prompt_templates
-            .push(PromptTemplate::new("plain".to_string(), "no slots".to_string()));
+        app.store.prompt_templates.push(PromptTemplate::new(
+            "plain".to_string(),
+            "no slots".to_string(),
+        ));
         app.open_prompt_library(None);
 
         // No view context → delivery copies to clipboard and returns to Normal,
@@ -1424,8 +1518,7 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        let mut template =
-            PromptTemplate::new("sel".to_string(), "Use {{lang}}".to_string());
+        let mut template = PromptTemplate::new("sel".to_string(), "Use {{lang}}".to_string());
         template.placeholders = vec![PromptPlaceholder {
             key: "lang".to_string(),
             label: None,
@@ -1532,8 +1625,8 @@ mod tests {
     #[test]
     fn editor_enters_vim_normal_on_escape_and_motions_reach_body() {
         use crate::app::{App, AppMode};
-        use crate::handlers::handle_prompt_editor_key;
         use crate::editor::VimMode;
+        use crate::handlers::handle_prompt_editor_key;
         use crate::traits::{MockTmuxOps, MockWorktreeOps};
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1588,8 +1681,10 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        let mut template =
-            PromptTemplate::new("ml".to_string(), "Note: {{note}}\nThen {{step}}".to_string());
+        let mut template = PromptTemplate::new(
+            "ml".to_string(),
+            "Note: {{note}}\nThen {{step}}".to_string(),
+        );
         template.placeholders = vec![
             PromptPlaceholder {
                 key: "note".to_string(),
@@ -1619,11 +1714,8 @@ mod tests {
 
         // Advancing to the next multi-line slot keeps vim on (the choice is
         // persisted on the state, not the rebuilt editor).
-        handle_placeholder_fill_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-        )
-        .unwrap();
+        handle_placeholder_fill_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
         let AppMode::PlaceholderFill(ref state) = app.mode else {
             panic!("expected PlaceholderFill mode");
         };
@@ -1643,8 +1735,7 @@ mod tests {
             Box::new(MockTmuxOps::new()),
             Box::new(MockWorktreeOps::new()),
         );
-        let mut template =
-            PromptTemplate::new("req".to_string(), "Hello {{name}}".to_string());
+        let mut template = PromptTemplate::new("req".to_string(), "Hello {{name}}".to_string());
         template.placeholders = vec![PromptPlaceholder {
             key: "name".to_string(),
             label: Some("Name".to_string()),
@@ -1667,7 +1758,11 @@ mod tests {
         use std::fs;
 
         let workdir = tempfile::TempDir::new().unwrap();
-        let skill_dir = workdir.path().join(".claude").join("skills").join("my-skill");
+        let skill_dir = workdir
+            .path()
+            .join(".claude")
+            .join("skills")
+            .join("my-skill");
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(
             skill_dir.join("SKILL.md"),

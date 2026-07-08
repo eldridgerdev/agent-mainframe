@@ -66,7 +66,7 @@ pub fn fetch_claude_sessions(workdir: &Path) -> Result<Vec<ClaudeSessionInfo>> {
         });
     }
 
-    sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
 
     Ok(sessions)
 }
@@ -162,20 +162,19 @@ fn extract_session_title(jsonl_path: &Path) -> Option<String> {
         let entry: serde_json::Value = serde_json::from_str(line).ok()?;
 
         if entry["type"] == "user" {
-            if let Some(content) = entry["message"]["content"].as_str() {
-                if let Some(title) = clean_title_from_text(content) {
-                    return Some(title);
-                }
+            if let Some(content) = entry["message"]["content"].as_str()
+                && let Some(title) = clean_title_from_text(content)
+            {
+                return Some(title);
             }
 
             if let Some(blocks) = entry["message"]["content"].as_array() {
                 for block in blocks {
-                    if block["type"] == "text" {
-                        if let Some(text) = block["text"].as_str() {
-                            if let Some(title) = clean_title_from_text(text) {
-                                return Some(title);
-                            }
-                        }
+                    if block["type"] == "text"
+                        && let Some(text) = block["text"].as_str()
+                        && let Some(title) = clean_title_from_text(text)
+                    {
+                        return Some(title);
                     }
                 }
             }
@@ -221,9 +220,7 @@ mod tests {
         let path = tmp.path().join("session.jsonl");
         std::fs::write(
             &path,
-            concat!(
-                "{\"type\":\"user\",\"message\":{\"content\":\"# AGENTS.md instructions for /tmp/repo\\n<INSTRUCTIONS>\\nkeep\\n</INSTRUCTIONS>\\n<environment_context>\\n  <cwd>/tmp/repo</cwd>\\n</environment_context>\\nactual request\"}}\n"
-            ),
+            "{\"type\":\"user\",\"message\":{\"content\":\"# AGENTS.md instructions for /tmp/repo\\n<INSTRUCTIONS>\\nkeep\\n</INSTRUCTIONS>\\n<environment_context>\\n  <cwd>/tmp/repo</cwd>\\n</environment_context>\\nactual request\"}}\n",
         )
         .unwrap();
 

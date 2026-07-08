@@ -71,13 +71,12 @@ fn strip_ansi(input: &str) -> String {
 /// that commonly abuts a URL in prose.
 fn find_claude_url(text: &str) -> Option<String> {
     const MARKERS: [&str; 2] = ["https://claude.ai/", "http://claude.ai/"];
-    let start = MARKERS
-        .iter()
-        .filter_map(|m| text.find(m))
-        .min()?;
+    let start = MARKERS.iter().filter_map(|m| text.find(m)).min()?;
     let rest = &text[start..];
     let end = rest
-        .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == '<' || c == '>')
+        .find(|c: char| {
+            c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == '<' || c == '>'
+        })
         .unwrap_or(rest.len());
     let url = rest[..end].trim_end_matches(['.', ',', ')', ']', '}', ';', ':']);
     if url.len() > "https://claude.ai/".len() {

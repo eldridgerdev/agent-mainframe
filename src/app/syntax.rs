@@ -116,7 +116,7 @@ impl App {
                 .map(|operation| (operation.action, operation.language));
             state.operation = None;
             state.notice = Some(notice);
-            if matches!(result, Ok(_))
+            if result.is_ok()
                 && state.auto_return_on_success
                 && matches!(completed_operation, Some((SyntaxOperationAction::Install, language)) if Some(language) == state.return_language)
             {
@@ -212,7 +212,7 @@ impl App {
     ) {
         let languages = syntax_rows();
         let detected_language = selected_path
-            .and_then(|path| crate::highlight::language_install_state_for_path(path))
+            .and_then(crate::highlight::language_install_state_for_path)
             .map(|(language, _)| language);
         let selected = detected_language
             .and_then(|language| languages.iter().position(|row| row.language == language))

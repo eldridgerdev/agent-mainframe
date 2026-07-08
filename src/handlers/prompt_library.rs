@@ -116,8 +116,7 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
         KeyCode::Char('e') => app.start_edit_selected_template(),
         KeyCode::Char('y') => app.duplicate_selected_template_to_user()?,
         KeyCode::Char('x') => {
-            let has_selection =
-                matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
+            let has_selection = matches!(&app.mode, AppMode::PromptLibrary(state) if state.selected_entry().is_some());
             if has_selection {
                 let from_view = match &app.mode {
                     AppMode::PromptLibrary(state) => state.from_view.clone(),
@@ -137,7 +136,9 @@ pub fn handle_prompt_library_key(app: &mut App, key: KeyCode) -> Result<()> {
             if confirm_delete {
                 app.delete_selected_template()?;
             } else if selected && !deletable {
-                app.push_toast_warning("Config templates can't be deleted here — edit or duplicate (y) instead");
+                app.push_toast_warning(
+                    "Config templates can't be deleted here — edit or duplicate (y) instead",
+                );
             } else if selected {
                 if let AppMode::PromptLibrary(state) = &mut app.mode {
                     state.confirm_delete = true;
@@ -285,7 +286,8 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
-    let multiline = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.current_is_multiline());
+    let multiline =
+        matches!(&app.mode, AppMode::PlaceholderFill(state) if state.current_is_multiline());
     let is_select = matches!(&app.mode, AppMode::PlaceholderFill(state) if state.is_select());
 
     match key.code {
@@ -309,9 +311,7 @@ pub fn handle_placeholder_fill_key(app: &mut App, key: KeyEvent) -> Result<()> {
         // Text / multi-line slots forward to the editor; Select slots ignore
         // any other key (there's nothing to type).
         _ => {
-            if !is_select
-                && let AppMode::PlaceholderFill(state) = &mut app.mode
-            {
+            if !is_select && let AppMode::PlaceholderFill(state) = &mut app.mode {
                 state.input.handle_key(key);
             }
         }

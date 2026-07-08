@@ -34,6 +34,11 @@ are tagged.
 - **Freed-up shortcuts moved to lowercase.** With `n` / `p` no longer taken by
   feature navigation, the prompt library (leader menu) and the syntax parser
   picker (dashboard) both moved from `P` to `p`.
+- **Building from source is now warning-free.** `cargo build` and
+  `cargo clippy` complete without a single warning, so installing AMF from
+  source no longer scrolls lint noise past you. CI now enforces this
+  (`clippy -D warnings` plus a formatting check), so it stays that way.
+  Nothing about AMF's behavior changes.
 
 ### Fixed
 

@@ -87,6 +87,8 @@ pub struct ViewState {
 }
 
 impl ViewState {
+    // Constructor args map 1:1 onto the identity fields of ViewState.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project_name: String,
         feature_name: String,
@@ -182,7 +184,8 @@ pub struct RenameSessionState {
 #[derive(Clone)]
 pub enum NewSessionTarget {
     Builtin(SessionKind),
-    Custom(CustomSessionConfig),
+    // Boxed: CustomSessionConfig is ~10 fields and would dominate the enum size.
+    Custom(Box<CustomSessionConfig>),
 }
 
 #[derive(Clone)]
@@ -2180,13 +2183,19 @@ impl CreateFeatureState {
         match self.mode_focus {
             0 | 1 => None,
             2 => Some(
-                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+                "Write developer notes with every code change for a detailed code review (may use more tokens).",
             ),
             3 => Some("Start in planning mode so the agent discusses the approach before editing."),
-            4 if self.agent == AgentKind::Claude => Some("Enable browser automation for features that need Chrome."),
+            4 if self.agent == AgentKind::Claude => {
+                Some("Enable browser automation for features that need Chrome.")
+            }
             4 => Some("Use the prompt coach to sharpen the feature request before launch."),
-            5 if self.agent == AgentKind::Claude && self.remote_control_available => Some("Enable claude.ai and mobile sync for this Claude session."),
-            5 if self.agent == AgentKind::Claude => Some("Remote Control is unavailable for the selected Claude auth provider."),
+            5 if self.agent == AgentKind::Claude && self.remote_control_available => {
+                Some("Enable claude.ai and mobile sync for this Claude session.")
+            }
+            5 if self.agent == AgentKind::Claude => {
+                Some("Remote Control is unavailable for the selected Claude auth provider.")
+            }
             _ => Some("Use the prompt coach to sharpen the feature request before launch."),
         }
     }

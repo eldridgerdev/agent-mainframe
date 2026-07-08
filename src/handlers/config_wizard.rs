@@ -369,14 +369,12 @@ fn handle_edit_item(app: &mut App, key: KeyEvent) {
                 }
             });
         }
-        KeyCode::Char(c) => {
-            if c == 'i' {
-                with_state(app, |state| {
-                    if field_accepts_text_input(state) {
-                        open_field_editor(state);
-                    }
-                });
-            }
+        KeyCode::Char('i') => {
+            with_state(app, |state| {
+                if field_accepts_text_input(state) {
+                    open_field_editor(state);
+                }
+            });
         }
         _ => {}
     }

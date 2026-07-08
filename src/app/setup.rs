@@ -935,14 +935,12 @@ pub fn ensure_notification_hooks(
             "command": clear_cmd
         }),
     ];
-    if wants_diff_review {
-        if let Some(ref dr_cmd) = diff_review_cmd {
-            pre_tool_hooks.push(serde_json::json!({
-                "type": "command",
-                "command": dr_cmd,
-                "timeout": 600
-            }));
-        }
+    if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
+        pre_tool_hooks.push(serde_json::json!({
+            "type": "command",
+            "command": dr_cmd,
+            "timeout": 600
+        }));
     }
     push_claude_hook_entry(
         &mut settings,

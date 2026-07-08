@@ -450,299 +450,6 @@ pub fn handle_markdown_file_picker_key(app: &mut App, key: KeyEvent) -> Result<(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::app::{CommandEntry, CommandPickerState, MarkdownFilePickerState, ViewState};
-    use crate::project::{
-        AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind,
-        VibeMode,
-    };
-    use crate::traits::{MockTmuxOps, MockWorktreeOps};
-    use chrono::Utc;
-    use crossterm::event::KeyModifiers;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    fn picker_app() -> App {
-        let store = ProjectStore {
-            version: 5,
-            projects: vec![Project::new(
-                "demo".into(),
-                PathBuf::from("/tmp/demo"),
-                true,
-                AgentKind::Claude,
-            )],
-            session_bookmarks: vec![],
-            available_harnesses: vec![],
-            prompt_templates: Vec::new(),
-            extra: HashMap::new(),
-        };
-        App::new_for_test(
-            store,
-            Box::new(MockTmuxOps::new()),
-            Box::new(MockWorktreeOps::new()),
-        )
-    }
-
-    fn picker_view() -> ViewState {
-        ViewState::new(
-            "demo".into(),
-            "feature".into(),
-            "amf-feature".into(),
-            "claude".into(),
-            "Claude 1".into(),
-            crate::project::SessionKind::Claude,
-            VibeMode::Vibeless,
-            false,
-        )
-    }
-
-    fn codex_picker_app() -> App {
-        let now = Utc::now();
-        let feature = Feature {
-            id: "feat-1".into(),
-            name: "feature".into(),
-            branch: "feature".into(),
-            workdir: PathBuf::from("/tmp/demo"),
-            is_worktree: false,
-            tmux_session: "amf-feature".into(),
-            sessions: vec![FeatureSession {
-                id: "codex-1".into(),
-                kind: SessionKind::Codex,
-                label: "Codex".into(),
-                tmux_window: "codex".into(),
-                claude_session_id: None,
-                token_usage_source: None,
-                token_usage_source_match: None,
-                created_at: now,
-                command: None,
-                on_stop: None,
-                pre_check: None,
-                status_text: None,
-                token_usage: None,
-            }],
-            collapsed: false,
-            mode: VibeMode::Vibeless,
-            review: false,
-            plan_mode: false,
-            agent: AgentKind::Codex,
-            enable_chrome: false,
-            remote_control: false,
-            pending_worktree_script: false,
-            ready: false,
-            status: ProjectStatus::Idle,
-            created_at: now,
-            last_accessed: now,
-            summary: None,
-            summary_updated_at: None,
-            nickname: None,
-        };
-        let store = ProjectStore {
-            version: 5,
-            projects: vec![Project {
-                id: "proj-1".into(),
-                name: "demo".into(),
-                repo: PathBuf::from("/tmp/demo"),
-                collapsed: false,
-                features: vec![feature],
-                created_at: now,
-                preferred_agent: AgentKind::Codex,
-                is_git: false,
-            }],
-            session_bookmarks: vec![],
-            available_harnesses: vec![],
-            prompt_templates: Vec::new(),
-            extra: HashMap::new(),
-        };
-
-        let mut app = App::new_for_test(
-            store,
-            Box::new(MockTmuxOps::new()),
-            Box::new(MockWorktreeOps::new()),
-        );
-        app.selection = Selection::Feature(0, 0);
-        app
-    }
-
-    #[test]
-    fn markdown_picker_plan_toggle_keeps_only_plan_matches() {
-        let mut app = picker_app();
-        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
-            files: vec![
-                PathBuf::from("/tmp/demo/docs/guide.md"),
-                PathBuf::from("/tmp/demo/.claude/plan.md"),
-                PathBuf::from("/tmp/demo/PLAN.md"),
-            ],
-            selected: 0,
-            plan_only: true,
-            search_active: false,
-            query: String::new(),
-            workdir: PathBuf::from("/tmp/demo"),
-            repo_root: None,
-            from_view: Some(picker_view()),
-        });
-
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
-        )
-        .unwrap();
-
-        match &app.mode {
-            AppMode::MarkdownFilePicker(state) => {
-                assert!(!state.plan_only);
-                assert_eq!(state.selected, 0);
-            }
-            _ => panic!("expected markdown picker to stay open"),
-        }
-    }
-
-    #[test]
-    fn markdown_picker_navigation_uses_filtered_rows() {
-        let mut app = picker_app();
-        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
-            files: vec![
-                PathBuf::from("/tmp/demo/docs/guide.md"),
-                PathBuf::from("/tmp/demo/.claude/plan.md"),
-                PathBuf::from("/tmp/demo/docs/plan-notes.md"),
-            ],
-            selected: 1,
-            plan_only: true,
-            search_active: false,
-            query: String::new(),
-            workdir: PathBuf::from("/tmp/demo"),
-            repo_root: None,
-            from_view: Some(picker_view()),
-        });
-
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
-        )
-        .unwrap();
-
-        match &app.mode {
-            AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
-            _ => panic!("expected markdown picker to stay open"),
-        }
-    }
-
-    #[test]
-    fn markdown_picker_characters_filter_visible_rows() {
-        let mut app = picker_app();
-        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
-            files: vec![
-                PathBuf::from("/tmp/demo/docs/guide.md"),
-                PathBuf::from("/tmp/demo/.claude/plan.md"),
-                PathBuf::from("/tmp/demo/docs/notes.md"),
-            ],
-            selected: 0,
-            plan_only: false,
-            search_active: false,
-            query: String::new(),
-            workdir: PathBuf::from("/tmp/demo"),
-            repo_root: None,
-            from_view: Some(picker_view()),
-        });
-
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
-        )
-        .unwrap();
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
-        )
-        .unwrap();
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
-        )
-        .unwrap();
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-        )
-        .unwrap();
-        handle_markdown_file_picker_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
-        )
-        .unwrap();
-
-        match &app.mode {
-            AppMode::MarkdownFilePicker(state) => {
-                assert_eq!(state.query, "plan");
-                assert_eq!(state.selected, 1);
-            }
-            _ => panic!("expected markdown picker to stay open"),
-        }
-    }
-
-    #[test]
-    fn command_picker_debug_demo_updates_live_codex_state_locally() {
-        let mut app = codex_picker_app();
-        app.mode = AppMode::CommandPicker(CommandPickerState {
-            commands: vec![CommandEntry {
-                name: "demo-plan".into(),
-                source: "AMF Debug".into(),
-                path: None,
-                action: CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo),
-            }],
-            selected: 0,
-            from_view: None,
-        });
-
-        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
-
-        assert_eq!(
-            app.codex_live_thread("amf-feature")
-                .unwrap()
-                .plan_text
-                .as_deref(),
-            Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
-        );
-        assert_eq!(
-            app.toasts.last().map(|t| t.message.as_str()),
-            Some("Applied 'demo-plan'")
-        );
-        assert!(matches!(app.mode, AppMode::Normal));
-    }
-
-    #[test]
-    fn command_picker_change_reason_demo_updates_live_codex_state_locally() {
-        let mut app = codex_picker_app();
-        app.mode = AppMode::CommandPicker(CommandPickerState {
-            commands: vec![CommandEntry {
-                name: "demo-work-change-reason".into(),
-                source: "AMF Debug".into(),
-                path: None,
-                action: CommandAction::CodexLiveDemo(CodexDebugCommand::WorkChangeReasonDemo),
-            }],
-            selected: 0,
-            from_view: None,
-        });
-
-        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
-
-        assert_eq!(
-            app.codex_live_thread("amf-feature")
-                .and_then(|live| live.sidebar_work_text())
-                .as_deref(),
-            Some(
-                "State: waiting for change reason\nFile: src/app/codex_live.rs\nTool: Edit\nRequest: Explain why this change is needed."
-            )
-        );
-        assert_eq!(
-            app.toasts.last().map(|t| t.message.as_str()),
-            Some("Applied 'demo-work-change-reason'")
-        );
-        assert!(matches!(app.mode, AppMode::Normal));
-    }
-}
-
 pub fn handle_notification_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Esc | KeyCode::Char('q') => {
@@ -1095,7 +802,7 @@ pub fn handle_session_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
                             project_idx: state.pi,
                             feature_idx: state.fi,
                             input: cfg.name.clone(),
-                            target: NewSessionTarget::Custom(cfg),
+                            target: NewSessionTarget::Custom(Box::new(cfg)),
                             return_to: state.clone(),
                         });
                     }
@@ -1280,4 +987,297 @@ pub fn handle_bookmark_picker_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{CommandEntry, CommandPickerState, MarkdownFilePickerState, ViewState};
+    use crate::project::{
+        AgentKind, Feature, FeatureSession, Project, ProjectStatus, ProjectStore, SessionKind,
+        VibeMode,
+    };
+    use crate::traits::{MockTmuxOps, MockWorktreeOps};
+    use chrono::Utc;
+    use crossterm::event::KeyModifiers;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn picker_app() -> App {
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project::new(
+                "demo".into(),
+                PathBuf::from("/tmp/demo"),
+                true,
+                AgentKind::Claude,
+            )],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+        App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        )
+    }
+
+    fn picker_view() -> ViewState {
+        ViewState::new(
+            "demo".into(),
+            "feature".into(),
+            "amf-feature".into(),
+            "claude".into(),
+            "Claude 1".into(),
+            crate::project::SessionKind::Claude,
+            VibeMode::Vibeless,
+            false,
+        )
+    }
+
+    fn codex_picker_app() -> App {
+        let now = Utc::now();
+        let feature = Feature {
+            id: "feat-1".into(),
+            name: "feature".into(),
+            branch: "feature".into(),
+            workdir: PathBuf::from("/tmp/demo"),
+            is_worktree: false,
+            tmux_session: "amf-feature".into(),
+            sessions: vec![FeatureSession {
+                id: "codex-1".into(),
+                kind: SessionKind::Codex,
+                label: "Codex".into(),
+                tmux_window: "codex".into(),
+                claude_session_id: None,
+                token_usage_source: None,
+                token_usage_source_match: None,
+                created_at: now,
+                command: None,
+                on_stop: None,
+                pre_check: None,
+                status_text: None,
+                token_usage: None,
+            }],
+            collapsed: false,
+            mode: VibeMode::Vibeless,
+            review: false,
+            plan_mode: false,
+            agent: AgentKind::Codex,
+            enable_chrome: false,
+            remote_control: false,
+            pending_worktree_script: false,
+            ready: false,
+            status: ProjectStatus::Idle,
+            created_at: now,
+            last_accessed: now,
+            summary: None,
+            summary_updated_at: None,
+            nickname: None,
+        };
+        let store = ProjectStore {
+            version: 5,
+            projects: vec![Project {
+                id: "proj-1".into(),
+                name: "demo".into(),
+                repo: PathBuf::from("/tmp/demo"),
+                collapsed: false,
+                features: vec![feature],
+                created_at: now,
+                preferred_agent: AgentKind::Codex,
+                is_git: false,
+            }],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        };
+
+        let mut app = App::new_for_test(
+            store,
+            Box::new(MockTmuxOps::new()),
+            Box::new(MockWorktreeOps::new()),
+        );
+        app.selection = Selection::Feature(0, 0);
+        app
+    }
+
+    #[test]
+    fn markdown_picker_plan_toggle_keeps_only_plan_matches() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![
+                PathBuf::from("/tmp/demo/docs/guide.md"),
+                PathBuf::from("/tmp/demo/.claude/plan.md"),
+                PathBuf::from("/tmp/demo/PLAN.md"),
+            ],
+            selected: 0,
+            plan_only: true,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => {
+                assert!(!state.plan_only);
+                assert_eq!(state.selected, 0);
+            }
+            _ => panic!("expected markdown picker to stay open"),
+        }
+    }
+
+    #[test]
+    fn markdown_picker_navigation_uses_filtered_rows() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![
+                PathBuf::from("/tmp/demo/docs/guide.md"),
+                PathBuf::from("/tmp/demo/.claude/plan.md"),
+                PathBuf::from("/tmp/demo/docs/plan-notes.md"),
+            ],
+            selected: 1,
+            plan_only: true,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => assert_eq!(state.selected, 2),
+            _ => panic!("expected markdown picker to stay open"),
+        }
+    }
+
+    #[test]
+    fn markdown_picker_characters_filter_visible_rows() {
+        let mut app = picker_app();
+        app.mode = AppMode::MarkdownFilePicker(MarkdownFilePickerState {
+            files: vec![
+                PathBuf::from("/tmp/demo/docs/guide.md"),
+                PathBuf::from("/tmp/demo/.claude/plan.md"),
+                PathBuf::from("/tmp/demo/docs/notes.md"),
+            ],
+            selected: 0,
+            plan_only: false,
+            search_active: false,
+            query: String::new(),
+            workdir: PathBuf::from("/tmp/demo"),
+            repo_root: None,
+            from_view: Some(picker_view()),
+        });
+
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        )
+        .unwrap();
+        handle_markdown_file_picker_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        match &app.mode {
+            AppMode::MarkdownFilePicker(state) => {
+                assert_eq!(state.query, "plan");
+                assert_eq!(state.selected, 1);
+            }
+            _ => panic!("expected markdown picker to stay open"),
+        }
+    }
+
+    #[test]
+    fn command_picker_debug_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![CommandEntry {
+                name: "demo-plan".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::PlanDemo),
+            }],
+            selected: 0,
+            from_view: None,
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .unwrap()
+                .plan_text
+                .as_deref(),
+            Some("1. Inspect reducer\n2. Patch sidebar\n3. Re-run tests")
+        );
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Applied 'demo-plan'")
+        );
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
+
+    #[test]
+    fn command_picker_change_reason_demo_updates_live_codex_state_locally() {
+        let mut app = codex_picker_app();
+        app.mode = AppMode::CommandPicker(CommandPickerState {
+            commands: vec![CommandEntry {
+                name: "demo-work-change-reason".into(),
+                source: "AMF Debug".into(),
+                path: None,
+                action: CommandAction::CodexLiveDemo(CodexDebugCommand::WorkChangeReasonDemo),
+            }],
+            selected: 0,
+            from_view: None,
+        });
+
+        handle_command_picker_key(&mut app, KeyCode::Enter).unwrap();
+
+        assert_eq!(
+            app.codex_live_thread("amf-feature")
+                .and_then(|live| live.sidebar_work_text())
+                .as_deref(),
+            Some(
+                "State: waiting for change reason\nFile: src/app/codex_live.rs\nTool: Edit\nRequest: Explain why this change is needed."
+            )
+        );
+        assert_eq!(
+            app.toasts.last().map(|t| t.message.as_str()),
+            Some("Applied 'demo-work-change-reason'")
+        );
+        assert!(matches!(app.mode, AppMode::Normal));
+    }
 }

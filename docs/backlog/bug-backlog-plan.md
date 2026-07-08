@@ -73,12 +73,22 @@ AMF shows a short loading screen until the agent harness is visible.
 The embedded pane briefly shows the full tmux launch command and exported AMF
 environment before the harness takes over.
 
-## PR review: triage / reply state is lost on return
+## ~~PR review: triage / reply state is lost on return~~ (Fixed)
 
-- **Status:** Open
+- **Status:** Fixed (2026-06-30, PR #373, `c41f465`)
 - **Reported:** 2026-06-29
 - **Relates to:** PR comment review
   ([pr-comment-review-plan.md](pr-comment-review-plan.md), Epic D bug item)
+- **Root cause:** Every mutation path did persist immediately, and
+  `apply_persisted_triage` did run on both load paths — but
+  `pr_comment_triage` was keyed by `PR# + comment id + head_sha`. The fix
+  session's push moved the PR head, so returning via `G` re-resolved to a
+  new SHA and the overlay looked up rows under a SHA that no longer
+  matched, silently dropping every mark.
+- **Fix:** Migration 010 re-keys the table on `PR# + comment id`
+  (collapsing per-SHA duplicates to the newest row); `load()` drops the
+  SHA filter. `head_sha` is kept only as an informational record. DB-layer
+  SHA-change survival and migration tests cover it.
 
 Epic B claims triage is authoritative in the `pr_comment_triage` table and
 that `apply_persisted_triage` overlays it onto every reload — but in real

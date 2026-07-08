@@ -1,4 +1,5 @@
 mod automation;
+mod bookmarks;
 mod claude_session_picker;
 mod claude_sessions;
 mod codex_live;
@@ -9,7 +10,6 @@ mod compose;
 mod config_wizard;
 mod diff;
 mod feature_ops;
-mod bookmarks;
 mod hooks;
 mod navigation;
 mod notifications;
@@ -32,8 +32,8 @@ mod steering;
 mod switcher;
 mod sync;
 mod syntax;
-mod todos;
 pub(crate) mod toast;
+mod todos;
 pub mod util;
 mod view;
 
@@ -243,6 +243,8 @@ fn reseed_control_view_parser(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Every variant is a demo injection; the `Demo` postfix is the point.
+#[allow(clippy::enum_variant_names)]
 pub enum CodexDebugCommand {
     PlanDemo,
     WorkChangeReasonDemo,
@@ -691,20 +693,22 @@ impl SidebarLoadExecutor {
                 let queue = Arc::clone(&queue);
                 std::thread::Builder::new()
                     .name(format!("sidebar-loader-{index}"))
-                    .spawn(move || loop {
-                        let task = {
-                            let (lock, ready) = &*queue;
-                            let mut state = lock.lock().unwrap();
-                            while state.tasks.is_empty() && !state.stopping {
-                                state = ready.wait(state).unwrap();
+                    .spawn(move || {
+                        loop {
+                            let task = {
+                                let (lock, ready) = &*queue;
+                                let mut state = lock.lock().unwrap();
+                                while state.tasks.is_empty() && !state.stopping {
+                                    state = ready.wait(state).unwrap();
+                                }
+                                if state.tasks.is_empty() && state.stopping {
+                                    return;
+                                }
+                                state.tasks.pop_front()
+                            };
+                            if let Some(task) = task {
+                                task();
                             }
-                            if state.tasks.is_empty() && state.stopping {
-                                return;
-                            }
-                            state.tasks.pop_front()
-                        };
-                        if let Some(task) = task {
-                            task();
                         }
                     })
                     .expect("failed to start sidebar loader worker")
@@ -732,54 +736,6 @@ impl Drop for SidebarLoadExecutor {
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
-    }
-}
-
-#[cfg(test)]
-mod sidebar_load_executor_tests {
-    use super::SidebarLoadExecutor;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Condvar, Mutex, mpsc};
-    use std::time::Duration;
-
-    #[test]
-    fn executor_bounds_concurrent_sidebar_loads() {
-        let executor = SidebarLoadExecutor::with_worker_count(2);
-        let active = Arc::new(AtomicUsize::new(0));
-        let max_active = Arc::new(AtomicUsize::new(0));
-        let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let (started_tx, started_rx) = mpsc::channel();
-
-        for _ in 0..6 {
-            let active = Arc::clone(&active);
-            let max_active = Arc::clone(&max_active);
-            let gate = Arc::clone(&gate);
-            let started_tx = started_tx.clone();
-            executor.submit(Box::new(move || {
-                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-                max_active.fetch_max(current, Ordering::SeqCst);
-                started_tx.send(()).unwrap();
-                let (lock, ready) = &*gate;
-                let mut open = lock.lock().unwrap();
-                while !*open {
-                    open = ready.wait(open).unwrap();
-                }
-                active.fetch_sub(1, Ordering::SeqCst);
-            }));
-        }
-        drop(started_tx);
-
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let third_started_while_blocked = started_rx.try_recv().is_ok();
-
-        let (lock, ready) = &*gate;
-        *lock.lock().unwrap() = true;
-        ready.notify_all();
-        while started_rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
-
-        assert!(!third_started_while_blocked);
-        assert_eq!(max_active.load(Ordering::SeqCst), 2);
     }
 }
 
@@ -1133,6 +1089,9 @@ impl App {
     }
 
     /// Fallback worker: polls capture-pane at regular intervals.
+    // Worker wiring: every arg is a distinct channel/flag shared with the
+    // spawning thread.
+    #[allow(clippy::too_many_arguments)]
     fn run_capture_pane_worker(
         session: &str,
         window: &str,
@@ -1210,7 +1169,7 @@ impl App {
                     next_cursor_refresh = Instant::now();
                 }
 
-                let _ = tx.send(ViewSnapshot {
+                tx.send(ViewSnapshot {
                     session: session.to_string(),
                     window: window.to_string(),
                     pane_content,
@@ -1277,7 +1236,7 @@ impl App {
             }
         }
 
-        let _ = tx.send(reseed_control_view_parser(
+        tx.send(reseed_control_view_parser(
             session,
             window,
             cols,
@@ -1302,7 +1261,7 @@ impl App {
             match refresh.swap(VIEW_SNAPSHOT_REFRESH_NONE, Ordering::Relaxed) {
                 VIEW_SNAPSHOT_REFRESH_NORMAL => {
                     // Periodic drift-correction reseed.
-                    let _ = tx.send(reseed_control_view_parser(
+                    tx.send(reseed_control_view_parser(
                         session,
                         window,
                         cols,
@@ -1401,7 +1360,7 @@ impl App {
                 if now < burst_until
                     || now.duration_since(last_snapshot) >= VIEW_CONTROL_SNAPSHOT_MIN_INTERVAL
                 {
-                    let _ = tx.send(reseed_control_view_parser(
+                    tx.send(reseed_control_view_parser(
                         session,
                         window,
                         cols,
@@ -1418,7 +1377,7 @@ impl App {
                 // redraw, so re-capture the full pane on a steady floor to
                 // keep a stale frame from persisting until the 3s drift
                 // reseed. See VIEW_CONTROL_HEAL_INTERVAL.
-                let _ = tx.send(reseed_control_view_parser(
+                tx.send(reseed_control_view_parser(
                     session,
                     window,
                     cols,
@@ -1609,7 +1568,7 @@ impl App {
                     next_cursor_refresh = Instant::now();
                 }
 
-                let _ = tx.send(ViewSnapshot {
+                tx.send(ViewSnapshot {
                     session: session.to_string(),
                     window: window.to_string(),
                     pane_content,
@@ -2665,17 +2624,17 @@ impl App {
 
     pub(crate) fn poll_harness_checks(&mut self) {
         while let Ok(result) = self.harness_check_rx.try_recv() {
-            if let AppMode::HarnessSetup(state) = &mut self.mode {
-                if let Some(harness) = state.harnesses.iter_mut().find(|h| h.kind == result.kind) {
-                    match result.result {
-                        Ok(()) => {
-                            harness.status = HarnessCheckStatus::Installed;
-                            harness.enabled = true;
-                        }
-                        Err(_) => {
-                            let hint = Self::harness_install_hint(&result.kind);
-                            harness.status = HarnessCheckStatus::NotFound(hint.to_string());
-                        }
+            if let AppMode::HarnessSetup(state) = &mut self.mode
+                && let Some(harness) = state.harnesses.iter_mut().find(|h| h.kind == result.kind)
+            {
+                match result.result {
+                    Ok(()) => {
+                        harness.status = HarnessCheckStatus::Installed;
+                        harness.enabled = true;
+                    }
+                    Err(_) => {
+                        let hint = Self::harness_install_hint(&result.kind);
+                        harness.status = HarnessCheckStatus::NotFound(hint.to_string());
                     }
                 }
             }
@@ -3120,5 +3079,53 @@ fn hash_path_metadata(hasher: &mut impl Hasher, path: PathBuf) {
                 .hash(hasher);
         }
         Err(_) => false.hash(hasher),
+    }
+}
+
+#[cfg(test)]
+mod sidebar_load_executor_tests {
+    use super::SidebarLoadExecutor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn executor_bounds_concurrent_sidebar_loads() {
+        let executor = SidebarLoadExecutor::with_worker_count(2);
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, started_rx) = mpsc::channel();
+
+        for _ in 0..6 {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let gate = Arc::clone(&gate);
+            let started_tx = started_tx.clone();
+            executor.submit(Box::new(move || {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current, Ordering::SeqCst);
+                started_tx.send(()).unwrap();
+                let (lock, ready) = &*gate;
+                let mut open = lock.lock().unwrap();
+                while !*open {
+                    open = ready.wait(open).unwrap();
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        drop(started_tx);
+
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let third_started_while_blocked = started_rx.try_recv().is_ok();
+
+        let (lock, ready) = &*gate;
+        *lock.lock().unwrap() = true;
+        ready.notify_all();
+        while started_rx.recv_timeout(Duration::from_secs(1)).is_ok() {}
+
+        assert!(!third_started_while_blocked);
+        assert_eq!(max_active.load(Ordering::SeqCst), 2);
     }
 }

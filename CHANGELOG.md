@@ -56,6 +56,14 @@ are tagged.
   source no longer scrolls lint noise past you. CI now enforces this
   (`clippy -D warnings` plus a formatting check), so it stays that way.
   Nothing about AMF's behavior changes.
+- **The README caught up with the app.** It now covers the Pi harness, the
+  first-run harness setup wizard, the final-review workflow (including the AI
+  co-reviewer and suggested changes), PR comment review, per-project TODO
+  lists, and the usage/cost meters — and the keybinding tables match the
+  in-app help overlay again. Config examples were corrected too: agent and
+  mode values in `config.json` must be lowercase (`"claude"`, `"vibe"`), and
+  the `feature_presets` docs now list the real field set. Nothing about AMF's
+  behavior changes.
 
 ### Fixed
 

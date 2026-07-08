@@ -7479,6 +7479,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_vim_enabled: false,
         reply: None,
         marked: std::collections::HashSet::new(),
+        pending_batch: false,
     });
 }
 
@@ -7557,6 +7558,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_vim_enabled: false,
         reply: None,
         marked: std::collections::HashSet::new(),
+        pending_batch: false,
     });
 }
 
@@ -7647,6 +7649,143 @@ fn pr_review_toggle_mark_adds_and_removes() {
             assert!(!state.marked.contains(&2));
         }
         _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_batch_confirm_with_nothing_marked_hints() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+
+    app.pr_review_open_batch_confirm();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("press space"),
+        "expected a hint to mark comments, got {:?}",
+        app.message
+    );
+    // No dialog opened.
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.fix_confirm.is_none()),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_batch_confirm_opens_combined_dialog_for_marked() {
+    // `pr_review_test_app` has no feature at /tmp/wd, so no harness pick is
+    // needed — `B` builds the combined dialog directly.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 3);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+        state.marked.insert(3);
+    }
+
+    app.pr_review_open_batch_confirm();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            // The dialog carries both marked ids (list order).
+            let mut ids = confirm.batch.clone().expect("dialog is a batch");
+            ids.sort();
+            assert_eq!(ids, vec![1, 3]);
+            // One combined prompt, numbered, covering both files, unmarked one absent.
+            let text = confirm.editor.text();
+            assert!(text.starts_with("Address these PR review comments."));
+            assert!(text.contains("Comment 1:") && text.contains("Comment 2:"));
+            assert!(text.contains("File: src/file1.rs:1"));
+            assert!(text.contains("File: src/file3.rs:3"));
+            assert!(!text.contains("File: src/file2.rs"));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_batch_confirm_excludes_resolved_marks() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        // Mark both, but one is already resolved on GitHub.
+        state.marked.insert(1);
+        state.marked.insert(2);
+        state.review.comments[0].is_resolved = true;
+    }
+
+    app.pr_review_open_batch_confirm();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            // Only the unresolved comment is included (token principle #6).
+            assert_eq!(confirm.batch.clone().unwrap(), vec![2]);
+            assert!(!confirm.editor.text().contains("File: src/file1.rs"));
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_batch_confirm_all_resolved_hints() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+        state.review.comments[0].is_resolved = true;
+    }
+
+    app.pr_review_open_batch_confirm();
+    assert!(
+        app.message.as_deref().unwrap_or("").contains("all resolved"),
+        "expected an all-resolved hint, got {:?}",
+        app.message
+    );
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.fix_confirm.is_none()),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
+    // A dedicated-review PR with no session yet picks the harness before the
+    // first fix — the batch flow must route the picker's continuation back to
+    // the combined dialog (not the single-comment one).
+    let store = store_with_feature(ProjectStatus::Stopped);
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.marked.insert(1);
+        state.marked.insert(2);
+    }
+
+    // `B`: picker opens, no dialog yet, and the pending action is the batch.
+    app.pr_review_open_batch_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.harness_pick.is_some(), "harness picker should be open");
+            assert!(state.fix_confirm.is_none());
+            assert!(state.pending_batch, "pending action should be the batch");
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+
+    // Choosing the harness opens the *combined* dialog and clears the flag.
+    app.pr_review_harness_pick_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(!state.pending_batch);
+            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            let mut ids = confirm.batch.clone().expect("dialog is a batch");
+            ids.sort();
+            assert_eq!(ids, vec![1, 2]);
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
 }
 
@@ -7828,6 +7967,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_vim_enabled: false,
         reply: None,
         marked: std::collections::HashSet::new(),
+        pending_batch: false,
     });
 }
 

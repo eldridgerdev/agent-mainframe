@@ -10,7 +10,21 @@ are tagged.
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Combined batch fix in the interactive PR review — "fix all of these, then
+  I'll come back."** Mark a set of comments with `space`, then press `B` to
+  build **one** numbered prompt covering all of them and inject it into the
+  dedicated review session in a single shot. Where `F` queues each marked
+  comment as its own prompt to watch through one at a time, `B` is
+  send-and-leave: one shared preamble plus a `Comment N:` entry per comment —
+  each with its `file:line` pointer, comment text, and diff hunk, and (as with
+  a single fix) no file contents — so a big set is the cheapest path in tokens
+  and the agent works the whole list while you're away. It reuses the familiar
+  fix dialog, so you still get the `~N tokens` preview, editing, and vim keys
+  before sending. Everything included is marked `Fixing` and the marks clear,
+  so the next refresh reconciles what actually got resolved. Very large batches
+  raise a warning toast but still go through.
 
 ## [v0.29.0] - 2026-07-01
 

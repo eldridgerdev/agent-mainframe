@@ -35,6 +35,13 @@ pub(crate) const REVIEW_SESSION_LABEL: &str = "PR Review";
 /// the next prompt is pasted (otherwise rapid pastes can merge into one turn).
 const BATCH_FIX_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Soft ceilings for the combined-batch prompt (`B`). Past either, the confirm
+/// dialog still opens but a warning toast fires so the user knows a single
+/// prompt this large risks blowing the agent's context window (plan: "keep the
+/// set bounded"). They gate a warning, not the action.
+const BATCH_COMBINED_COMMENT_WARN: usize = 15;
+const BATCH_COMBINED_TOKEN_WARN: usize = 6000;
+
 /// Which agent session a "fix" prompt is injected into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FixTarget {
@@ -211,7 +218,17 @@ impl PrComment {
     /// free: GitHub returns it per inline comment, so including it costs no
     /// extra fetch.
     pub fn fix_prompt(&self) -> String {
-        let mut out = String::from("Address this PR review comment.\n");
+        format!("Address this PR review comment.\n{}", self.fix_prompt_body())
+    }
+
+    /// The per-comment context block shared by the single-comment [`fix_prompt`]
+    /// and the combined-batch prompt ([`combined_fix_prompt`]): the `file:line`
+    /// pointer, the (bot-stripped) comment text, and the GitHub diff hunk — with
+    /// no leading instruction line and no file contents.
+    ///
+    /// [`fix_prompt`]: Self::fix_prompt
+    fn fix_prompt_body(&self) -> String {
+        let mut out = String::new();
 
         if let Some(path) = &self.path {
             match self.line {
@@ -308,10 +325,32 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
 }
 
+/// Assemble **one** combined prompt that addresses every comment in `comments`
+/// — the "fix all of these, then I'll come back" batch. A single shared
+/// preamble is followed by a numbered entry per comment, each carrying the same
+/// minimal context as [`PrComment::fix_prompt`] (`file:line` pointer,
+/// bot-stripped text, diff hunk) and, like it, **no file contents** (token
+/// principle #3): the preamble and any repeated file context are paid once
+/// across the whole set instead of once per comment. Injected once into the
+/// dedicated review session so the agent works the list autonomously.
+pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
+    let mut out = String::from(
+        "Address these PR review comments. Work through each one in order; \
+         open the referenced files yourself as needed.\n",
+    );
+    for (i, comment) in comments.iter().enumerate() {
+        out.push_str(&format!("\nComment {}:\n{}\n", i + 1, comment.fix_prompt_body()));
+    }
+    out.trim_end().to_string()
+}
+
 /// Build a fresh fix-confirm dialog seeded with `prompt`. The editor opens with
 /// the vim keymap when `vim` is set (the pane-level remembered preference) so
 /// reopening the dialog for another comment keeps the user's chosen keymap.
-fn new_fix_confirm(prompt: String, vim: bool) -> FixConfirmState {
+/// Build a fresh fix-confirm dialog. `batch` is `None` for an ordinary
+/// single-comment fix and `Some(ids)` for the combined-batch flow (`B`), where
+/// injecting marks every listed comment `Fixing`.
+fn new_fix_confirm(prompt: String, vim: bool, batch: Option<Vec<u64>>) -> FixConfirmState {
     FixConfirmState {
         editor: if vim {
             TextEditor::with_vim(prompt)
@@ -323,6 +362,7 @@ fn new_fix_confirm(prompt: String, vim: bool) -> FixConfirmState {
         // Seed the view scrolled to the cursor (end of the prompt for plain,
         // start for vim) so a tall prompt opens somewhere sensible.
         sync_to_cursor: true,
+        batch,
     }
 }
 
@@ -572,6 +612,7 @@ impl App {
                 fix_vim_enabled: false,
                 reply: None,
                 marked: std::collections::HashSet::new(),
+                pending_batch: false,
             });
             return;
         }
@@ -1059,6 +1100,7 @@ impl App {
                             fix_vim_enabled: false,
                             reply: None,
                             marked: std::collections::HashSet::new(),
+                pending_batch: false,
                         });
                     }
                     Err(e) => {
@@ -1157,19 +1199,110 @@ impl App {
     /// chosen, or a dedicated session already exists) go straight to the dialog.
     pub fn pr_review_open_fix_confirm(&mut self) {
         if self.pr_review_needs_harness_pick() {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.pending_batch = false;
+            }
             self.pr_review_open_harness_pick();
             return;
         }
+        self.pr_review_show_fix_confirm();
+    }
+
+    /// Build and open the single-comment fix confirm dialog for the selected
+    /// comment. Assumes any harness pick has already happened (callers gate it),
+    /// so it never re-opens the picker.
+    fn pr_review_show_fix_confirm(&mut self) {
         let AppMode::PrReview(state) = &mut self.mode else {
             return;
         };
+        state.pending_batch = false;
         let Some(comment) = state.selected_comment() else {
             self.message = Some("No comment selected".into());
             return;
         };
         let prompt = comment.fix_prompt();
         let vim = state.fix_vim_enabled;
-        state.fix_confirm = Some(new_fix_confirm(prompt, vim));
+        state.fix_confirm = Some(new_fix_confirm(prompt, vim, None));
+    }
+
+    /// Open the **combined-batch** confirm dialog (`B`): assemble one numbered
+    /// prompt from every marked, not-yet-resolved comment and show it (with a
+    /// `~N tokens` preview and editing) before injecting it once into the
+    /// dedicated review session — the "fix all of these, then I'll come back"
+    /// flow. Requires a non-empty marked set (`space` to mark); like a single
+    /// fix, the first fix of a dedicated-review PR picks the harness first.
+    pub fn pr_review_open_batch_confirm(&mut self) {
+        // A marked, not-all-resolved set is required before we touch the harness
+        // picker or build anything.
+        let valid = match &self.mode {
+            AppMode::PrReview(state) => {
+                if state.marked.is_empty() {
+                    self.message = Some("No comments marked — press space to mark".into());
+                    return;
+                }
+                state
+                    .review
+                    .comments
+                    .iter()
+                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
+                    .count()
+            }
+            _ => return,
+        };
+        if valid == 0 {
+            self.message = Some("Marked comments are all resolved — nothing to batch".into());
+            return;
+        }
+        // The dedicated-review target picks a harness before the first fix, same
+        // as a single fix; route the picker's continuation back to the batch.
+        if self.pr_review_needs_harness_pick() {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.pending_batch = true;
+            }
+            self.pr_review_open_harness_pick();
+            return;
+        }
+        self.pr_review_show_batch_confirm();
+    }
+
+    /// Build and open the combined-batch confirm dialog. Assumes the marked set
+    /// was already validated and any harness pick has happened.
+    fn pr_review_show_batch_confirm(&mut self) {
+        let built = match &self.mode {
+            AppMode::PrReview(state) => {
+                let selected: Vec<&PrComment> = state
+                    .review
+                    .comments
+                    .iter()
+                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
+                    .collect();
+                (!selected.is_empty()).then(|| {
+                    let ids: Vec<u64> = selected.iter().map(|c| c.id).collect();
+                    (combined_fix_prompt(&selected), ids)
+                })
+            }
+            _ => return,
+        };
+        let Some((prompt, ids)) = built else {
+            self.message = Some("Marked comments are all resolved — nothing to batch".into());
+            return;
+        };
+
+        // Keep the set bounded: warn (but don't block) past the soft ceilings so
+        // the user knows a single prompt this large may exceed the context window.
+        let count = ids.len();
+        let tokens = estimate_tokens(&prompt);
+        if count > BATCH_COMBINED_COMMENT_WARN || tokens > BATCH_COMBINED_TOKEN_WARN {
+            self.push_toast_warning(format!(
+                "Large batch: {count} comments (~{tokens} tokens) in one prompt — may exceed the agent's context window"
+            ));
+        }
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.pending_batch = false;
+            let vim = state.fix_vim_enabled;
+            state.fix_confirm = Some(new_fix_confirm(prompt, vim, Some(ids)));
+        }
     }
 
     /// Whether the first `f` should pick a harness before injecting: only for
@@ -1218,18 +1351,25 @@ impl App {
         }
     }
 
-    /// Skip harness selection (e.g. no choices available): open the fix confirm
-    /// dialog directly, leaving `review_harness` at its default fallback.
+    /// Skip harness selection (e.g. no choices available): continue straight to
+    /// the confirm dialog, leaving `review_harness` at its default fallback.
     fn pr_review_skip_harness_pick(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
-            let Some(comment) = state.selected_comment() else {
-                self.message = Some("No comment selected".into());
-                return;
-            };
-            let prompt = comment.fix_prompt();
-            let vim = state.fix_vim_enabled;
-            state.fix_confirm = Some(new_fix_confirm(prompt, vim));
+        }
+        self.pr_review_continue_after_harness();
+    }
+
+    /// After the harness is chosen (or skipped), open the dialog the pending
+    /// action wanted: the combined-batch confirm for the `B` flow, otherwise the
+    /// single-comment fix confirm. Neither re-checks the harness pick, so this
+    /// can't loop back into the picker.
+    fn pr_review_continue_after_harness(&mut self) {
+        let batch = matches!(&self.mode, AppMode::PrReview(state) if state.pending_batch);
+        if batch {
+            self.pr_review_show_batch_confirm();
+        } else {
+            self.pr_review_show_fix_confirm();
         }
     }
 
@@ -1272,15 +1412,17 @@ impl App {
                 agent.display_name()
             ));
         }
-        // Continue into the fix confirm dialog for the selected comment.
-        self.pr_review_open_fix_confirm();
+        // Continue into the dialog the pending action wanted (single or batch).
+        self.pr_review_continue_after_harness();
     }
 
     /// Cancel the harness picker without choosing — aborts this fix; the user
-    /// can press `f` again. `review_harness` stays unset so the picker reappears.
+    /// can press `f`/`B` again. `review_harness` stays unset so the picker
+    /// reappears, and any pending batch is discarded.
     pub fn pr_review_harness_pick_cancel(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.harness_pick = None;
+            state.pending_batch = false;
         }
     }
 
@@ -1386,25 +1528,40 @@ impl App {
     /// reused thereafter; the existing-live target reuses the feature's running
     /// agent session. Delivery goes through the shared compose / prompt-library
     /// seam: pasted without sending so the user reviews before it runs.
+    ///
+    /// Handles both a single-comment fix and a **combined batch** (the `B` flow,
+    /// `FixConfirmState::batch`): the batch injects one numbered prompt and marks
+    /// every included comment `Fixing`, then clears the marked set.
     pub fn pr_review_inject_fix(&mut self) -> Result<()> {
-        let (prompt, triage_key) = match &self.mode {
+        let (prompt, pr_number, head_sha, fixing_ids, is_batch) = match &self.mode {
             AppMode::PrReview(state) => {
-                let key = state
-                    .selected_comment()
-                    .map(|c| (state.review.pr.number, state.review.pr.head_sha.clone(), c.id));
-                let prompt = match &state.fix_confirm {
-                    // Confirming the open dialog uses its edited buffer.
-                    Some(confirm) => confirm.editor.text().trim().to_string(),
+                let pr_number = state.review.pr.number;
+                let head_sha = state.review.pr.head_sha.clone();
+                let (prompt, ids, is_batch) = match &state.fix_confirm {
+                    // Confirming the open dialog uses its edited buffer. A batch
+                    // dialog carries every included comment id; a single one
+                    // targets the current selection.
+                    Some(confirm) => {
+                        let prompt = confirm.editor.text().trim().to_string();
+                        match &confirm.batch {
+                            Some(batch_ids) => (prompt, batch_ids.clone(), true),
+                            None => (
+                                prompt,
+                                state.selected_comment().map(|c| c.id).into_iter().collect(),
+                                false,
+                            ),
+                        }
+                    }
                     // No dialog open (e.g. empty pane): fall back to the selection.
                     None => match state.selected_comment() {
-                        Some(c) => c.fix_prompt(),
+                        Some(c) => (c.fix_prompt(), vec![c.id], false),
                         None => {
                             self.message = Some("No comment selected".into());
                             return Ok(());
                         }
                     },
                 };
-                (prompt, key)
+                (prompt, pr_number, head_sha, ids, is_batch)
             }
             _ => return Ok(()),
         };
@@ -1422,15 +1579,26 @@ impl App {
             }
         };
 
-        // The fix is committed: mark the comment `Fixing` and persist before we
-        // leave the pane, so re-opening the review (cache hit) shows the state.
-        if let Some((pr_number, head_sha, comment_id)) = triage_key {
+        // The fix is committed: mark every targeted comment `Fixing` and persist
+        // before we leave the pane, so re-opening the review (cache hit) shows
+        // the state.
+        for id in &fixing_ids {
             if let AppMode::PrReview(state) = &mut self.mode
-                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == comment_id)
+                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == *id)
             {
                 c.triage = TriageState::Fixing;
             }
-            self.persist_triage(pr_number, &head_sha, comment_id, TriageState::Fixing, None);
+            self.persist_triage(pr_number, &head_sha, *id, TriageState::Fixing, None);
+        }
+        // A batch consumes the marked set once it's committed.
+        if is_batch {
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.marked.clear();
+            }
+            self.push_toast_success(format!(
+                "Injected a combined fix for {} comments",
+                fixing_ids.len()
+            ));
         }
 
         // Switch into the target session, then deliver the prompt via the shared
@@ -1929,6 +2097,34 @@ mod tests {
         let prompt = c.fix_prompt();
         assert!(prompt.contains("Comment (@alice): Real point."));
         assert!(!prompt.contains("<details>"));
+    }
+
+    #[test]
+    fn combined_fix_prompt_numbers_comments_under_one_preamble() {
+        let mut a = inline_comment("Guard this behind the lock.", false);
+        a.path = Some("src/a.rs".into());
+        a.line = Some(10);
+        let mut b = inline_comment("Rename this field.", false);
+        b.path = Some("src/b.rs".into());
+        b.line = Some(20);
+
+        let prompt = combined_fix_prompt(&[&a, &b]);
+
+        // One shared preamble, not repeated per comment.
+        assert!(prompt.starts_with("Address these PR review comments."));
+        assert!(!prompt.contains("Address this PR review comment."));
+        assert_eq!(prompt.matches("Address these").count(), 1);
+
+        // Each comment appears as a numbered entry with its own file:line + text.
+        assert!(prompt.contains("Comment 1:"));
+        assert!(prompt.contains("Comment 2:"));
+        assert!(prompt.contains("File: src/a.rs:10"));
+        assert!(prompt.contains("Guard this behind the lock."));
+        assert!(prompt.contains("File: src/b.rs:20"));
+        assert!(prompt.contains("Rename this field."));
+
+        // Still no file contents — only the comment text + diff hunks.
+        assert!(!prompt.contains("fn "));
     }
 
     #[test]

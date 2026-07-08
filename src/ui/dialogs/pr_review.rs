@@ -273,10 +273,11 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     } else {
         "h hide-resolved"
     };
-    // The batch hint shows the marked count so the user knows `F` has a set.
+    // The batch hint shows the marked count so the user knows `F`/`B` have a set.
+    // `F` queues each marked comment as its own prompt; `B` combines them into one.
     let batch_hint = match state.marked.len() {
         0 => "space mark".to_string(),
-        n => format!("space mark · F fix-marked({n})"),
+        n => format!("space mark · F fix-each({n}) · B combine({n})"),
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
@@ -381,8 +382,12 @@ fn draw_fix_confirm(
         Some(VimMode::Normal) => " · vim normal",
         None => "",
     };
+    let title = match &confirm.batch {
+        Some(ids) => format!(" Inject combined fix for {} comments{mode_label} ", ids.len()),
+        None => format!(" Inject fix into agent session{mode_label} "),
+    };
     let block = Block::default()
-        .title(format!(" Inject fix into agent session{mode_label} "))
+        .title(title)
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));

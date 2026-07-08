@@ -644,22 +644,50 @@ from the last *N* PRs) is reached from the PR entry flow:
       both `Fixing`, clears the set, and stays in the pane). →
       `src/app/state.rs`, `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [ ] **Combined-prompt batch: "fix all of these, then I'll come back."**
-      The walk-away workflow. Let the user mark a set of comments to fix
-      (reuse the same multi-select from the sequential item above), then build
-      **one numbered prompt** that lists every selected comment — each with its
-      `file:line` pointer, bot-stripped text, and diff hunk (still no file
-      contents) — and inject it **once** into the dedicated review session so
-      the agent works through the whole list autonomously while the user is
-      away. Differs from the sequential item above in that it's a single
-      combined prompt (shared preamble + file context across all comments → the
-      cheapest token path for a big set), and it's send-and-leave rather than
-      watch-each. Show the same confirm/edit dialog with a `~N tokens` preview
-      for the assembled batch before sending, mark every included comment
-      `Fixing` on send, and on the next refresh reconcile which threads got
-      resolved/answered. Keep the set bounded (warn past some comment/token
-      ceiling) so a single prompt doesn't blow the context window. →
-      `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
+- [x] **Combined-prompt batch: "fix all of these, then I'll come back."**
+      The walk-away workflow. `B` builds **one numbered prompt** from every
+      marked, not-yet-resolved comment (`space` to mark, reusing the sequential
+      item's `marked` set) — a single shared preamble followed by a `Comment N:`
+      entry per comment, each carrying the same minimal context as a single fix
+      (`file:line` pointer, bot-stripped text, diff hunk) and, like it, **no file
+      contents** (`combined_fix_prompt` reuses the new shared `fix_prompt_body`).
+      It reuses the existing fix confirm/edit dialog — same `~N tokens` preview,
+      editing, vim, and scroll — carrying a `FixConfirmState::batch: Option<Vec<u64>>`
+      that flags the combined case (the dialog title becomes "Inject combined fix
+      for N comments"). On inject it delivers the one prompt into the dedicated
+      review session via the shared compose seam and switches the user in to
+      launch-and-leave (send-and-leave, distinct from `F`'s N separate
+      auto-submitted prompts): **every included comment is marked `Fixing` and
+      persisted, and the marked set is cleared**, so the next refresh reconciles
+      what got resolved. First fix of a dedicated-review PR still picks the
+      harness first — the batch flow stashes a `pending_batch` flag so the
+      picker's continuation reopens the *combined* dialog rather than the
+      single-comment one. Bounded by soft ceilings
+      (`BATCH_COMBINED_COMMENT_WARN` / `BATCH_COMBINED_TOKEN_WARN`): past either,
+      a warning toast fires but the action still proceeds. Footer
+      (`B combine(N)`) + keybinding-help entries; unit-tested (combined-prompt
+      numbering/preamble; nothing-marked and all-resolved hints; dialog carries
+      both ids and excludes resolved/unmarked comments; harness-pick routes back
+      to the batch). →
+      `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
+- [ ] **File-level comments reference the file, not the whole hunk
+      (token fix — from real use; prioritized next).** Comments left on a
+      *file* rather than a line (GitHub `subject_type: "file"`, and any comment
+      whose `diff_hunk` is effectively the entire file) currently dump that
+      whole hunk into both the detail pane and the assembled fix prompt — a
+      large, low-value token cost that violates principle #3 (minimal fix-prompt
+      context). This is the biggest remaining per-comment token lever, and it
+      compounds across the combined batch (`B`), where several oversized hunks
+      land in one prompt — so it moves ahead of the filters/UX polish below.
+      Detect file-level / oversized hunks during normalization and, for those,
+      **inject only a `File: <path>` reference** (no hunk body) in
+      `PrComment::fix_prompt` / `fix_prompt_body` (so both the single and
+      combined prompts benefit), letting the agent open the file itself. Render
+      the detail pane the same way (show "comment on file `<path>`" instead
+      of a wall of diff). Capture `subject_type` from the inline-comments
+      API in `GhCli` so the classification is reliable rather than a length
+      heuristic alone. → `src/app/pr_review.rs`, `src/github.rs`,
       `src/ui/dialogs/pr_review.rs`.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).
 - [x] "Done in `<sha>`" reply template auto-filled from latest commit. Shipped
@@ -685,20 +713,6 @@ from the last *N* PRs) is reached from the PR entry flow:
       both footers (e.g. `↹ review ⇆ session`). → `src/app/view.rs`,
       `src/app/switcher.rs`, `src/handlers/view.rs`,
       `src/handlers/pr_review.rs`, `src/app/state.rs`, `src/app/pr_review.rs`.
-- [ ] **File-level comments reference the file, not the whole hunk
-      (token fix — from real use).** Comments left on a *file* rather than a
-      line (GitHub `subject_type: "file"`, and any comment whose `diff_hunk`
-      is effectively the entire file) currently dump that whole hunk into
-      both the detail pane and the assembled fix prompt — a large, low-value
-      token cost that violates principle #3 (minimal fix-prompt context).
-      Detect file-level / oversized hunks during normalization and, for
-      those, **inject only a `File: <path>` reference** (no hunk body) in
-      `PrComment::fix_prompt`, letting the agent open the file itself. Render
-      the detail pane the same way (show "comment on file `<path>`" instead
-      of a wall of diff). Capture `subject_type` from the inline-comments
-      API in `GhCli` so the classification is reliable rather than a length
-      heuristic alone. → `src/app/pr_review.rs`, `src/github.rs`,
-      `src/ui/dialogs/pr_review.rs`.
 - [ ] **Strip quoted diffs / residual bot scaffolding from comment bodies
       (token polish — low priority).** `strip_bot_boilerplate`
       (`src/app/pr_review.rs`) already removes `<details>`, HTML comments,

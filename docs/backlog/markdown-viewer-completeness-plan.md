@@ -33,9 +33,9 @@ GitHub rendering.
    - Asserted the header/body divider is emitted.
    - Push the accumulated header row when `TagEnd::TableHead` closes.
    - Kept body-row rendering unchanged.
-2. [ ] Cover table alignment.
-   - Add tests for left, center, and right alignment markers.
-   - Preserve existing width clamping and truncation behavior.
+2. [x] Cover table alignment.
+   - Added tests for left, center, and right alignment markers.
+   - Preserved existing width clamping and truncation behavior.
 3. [ ] Cover uneven tables and empty cells.
    - Pad short rows to the detected column count.
    - Ensure empty cells remain visible rather than shifting columns.

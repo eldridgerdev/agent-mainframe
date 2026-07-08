@@ -1611,6 +1611,52 @@ mod tests {
         assert!(text.contains("└"), "{text}");
     }
 
+    #[test]
+    fn render_markdown_respects_table_alignment_markers() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| Left | Center | Right |\n| :--- | :----: | ---: |\n| A | B | C |",
+            &theme,
+            48,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings
+                .iter()
+                .any(|line| line == "│ A    │   B    │     C │"),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_truncates_aligned_table_cells_at_narrow_width() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| Left | Center | Right |\n| :--- | :----: | ---: |\n| alphabet | bravo | charlie |",
+            &theme,
+            24,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings
+                .iter()
+                .any(|line| line == "│ alph… │ bravo │ cha… │"),
+            "{strings:#?}"
+        );
+    }
+
     fn rendered_line_text(line: &Line<'static>) -> String {
         line.spans
             .iter()

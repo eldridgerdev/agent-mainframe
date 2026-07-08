@@ -72,10 +72,10 @@ pub fn handle_create_batch_features_key(app: &mut App, key: KeyCode) -> Result<(
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if let AppMode::CreatingBatchFeatures(state) = &mut app.mode {
-                    if state.feature_count > 1 {
-                        state.feature_count -= 1;
-                    }
+                if let AppMode::CreatingBatchFeatures(state) = &mut app.mode
+                    && state.feature_count > 1
+                {
+                    state.feature_count -= 1;
                 }
             }
             KeyCode::Backspace => {

@@ -38,16 +38,16 @@ fn read_custom_session_status(
     // Cheap stat to get the current file mtime before touching the DB.
     let current_mtime = file_mtime_nanos(&status_path);
 
-    if let Some(db) = db {
-        if let Ok(Some((text, cached_mtime))) = db.load_session_status_with_mtime(session_id) {
-            let text = text.trim().to_string();
-            if !text.is_empty() {
-                // Return cached value when:
-                //   - file doesn't exist (current_mtime is None) — use DB as fallback, OR
-                //   - file mtime matches what we last cached — file unchanged.
-                if current_mtime.is_none() || current_mtime == cached_mtime {
-                    return Some(text);
-                }
+    if let Some(db) = db
+        && let Ok(Some((text, cached_mtime))) = db.load_session_status_with_mtime(session_id)
+    {
+        let text = text.trim().to_string();
+        if !text.is_empty() {
+            // Return cached value when:
+            //   - file doesn't exist (current_mtime is None) — use DB as fallback, OR
+            //   - file mtime matches what we last cached — file unchanged.
+            if current_mtime.is_none() || current_mtime == cached_mtime {
+                return Some(text);
             }
         }
     }
@@ -167,16 +167,15 @@ fn run_jobs(
         if source.is_none()
             && matches!(job.kind, SessionKind::Claude)
             && job.claude_session_id.is_some()
+            && let Some(id) = job.claude_session_id.as_ref()
         {
-            if let Some(id) = job.claude_session_id.as_ref() {
-                let new_source = TokenUsageSource {
-                    provider: TokenUsageProvider::Claude,
-                    id: id.clone(),
-                };
-                source = Some(new_source.clone());
-                action = SourceAction::SetExact(new_source);
-                sources_discovered = true;
-            }
+            let new_source = TokenUsageSource {
+                provider: TokenUsageProvider::Claude,
+                id: id.clone(),
+            };
+            source = Some(new_source.clone());
+            action = SourceAction::SetExact(new_source);
+            sources_discovered = true;
         }
 
         // Clear if the cached source belongs to the wrong provider.
@@ -294,13 +293,13 @@ fn apply_bg_result(app: &mut App, result: SessionStatusBgResult) {
         }
     }
 
-    if result.sources_discovered {
-        if let Err(err) = app.save() {
-            app.log_warn(
-                "usage",
-                format!("Failed to persist discovered token tracking sources: {err}"),
-            );
-        }
+    if result.sources_discovered
+        && let Err(err) = app.save()
+    {
+        app.log_warn(
+            "usage",
+            format!("Failed to persist discovered token tracking sources: {err}"),
+        );
     }
 
     if app.has_active_sidebar() {
@@ -373,8 +372,7 @@ impl App {
         let ready = self
             .session_status_bg
             .as_ref()
-            .map(|rx| rx.try_recv().ok())
-            .flatten();
+            .and_then(|rx| rx.try_recv().ok());
 
         match ready {
             Some(result) => {
@@ -460,14 +458,13 @@ impl App {
                     if session.token_usage_source.is_none()
                         && matches!(session.kind, SessionKind::Claude)
                         && session.claude_session_id.is_some()
+                        && let Some(id) = session.claude_session_id.as_ref()
                     {
-                        if let Some(id) = session.claude_session_id.as_ref() {
-                            session.set_token_usage_source_exact(TokenUsageSource {
-                                provider: TokenUsageProvider::Claude,
-                                id: id.clone(),
-                            });
-                            discovered_sources = true;
-                        }
+                        session.set_token_usage_source_exact(TokenUsageSource {
+                            provider: TokenUsageProvider::Claude,
+                            id: id.clone(),
+                        });
+                        discovered_sources = true;
                     }
 
                     if session
@@ -765,14 +762,12 @@ impl App {
         };
 
         for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(elapsed) = modified.elapsed() {
-                        if elapsed > std::time::Duration::from_secs(10) {
-                            let _ = std::fs::remove_file(entry.path());
-                        }
-                    }
-                }
+            if let Ok(metadata) = entry.metadata()
+                && let Ok(modified) = metadata.modified()
+                && let Ok(elapsed) = modified.elapsed()
+                && elapsed > std::time::Duration::from_secs(10)
+            {
+                let _ = std::fs::remove_file(entry.path());
             }
         }
     }

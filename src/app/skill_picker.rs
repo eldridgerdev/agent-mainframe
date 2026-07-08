@@ -5,8 +5,8 @@
 //! the same one the compose `/command` popup draws from (global + project
 //! `.claude/skills`), so what you can invoke in a session you can inject here.
 
-use crate::app::state::{AppMode, SkillPickerState};
 use crate::app::App;
+use crate::app::state::{AppMode, SkillPickerState};
 
 impl App {
     /// Open the skill picker over the current prompt-editing mode. The active
@@ -67,11 +67,12 @@ impl App {
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, skill)| {
-                        crate::app::compose::fuzzy_score(query, &skill.name).map(|score| (score, idx))
+                        crate::app::compose::fuzzy_score(query, &skill.name)
+                            .map(|score| (score, idx))
                     })
                     .collect();
                 // Highest score first; ties keep name order (already sorted).
-                scored.sort_by(|a, b| b.0.cmp(&a.0));
+                scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
                 state.filtered = scored.into_iter().map(|(_, idx)| idx).collect();
             }
             state.selected = 0;
@@ -134,9 +135,7 @@ impl App {
 
     /// Close the picker without inserting, restoring the editing surface.
     pub fn cancel_skill_picker(&mut self) {
-        if let AppMode::SkillPicker(state) =
-            std::mem::replace(&mut self.mode, AppMode::Normal)
-        {
+        if let AppMode::SkillPicker(state) = std::mem::replace(&mut self.mode, AppMode::Normal) {
             self.mode = *state.return_to;
         }
     }

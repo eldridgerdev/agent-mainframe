@@ -41,6 +41,25 @@ fn startup_harness_setup_allows_quit_with_q() {
 }
 
 #[test]
+fn startup_mask_expires_without_snapshot_updates() {
+    let mut view = ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "codex-2".to_string(),
+        "Codex 2".to_string(),
+        SessionKind::Codex,
+        VibeMode::default(),
+        false,
+    );
+    view.show_startup_mask();
+    assert!(view.startup_mask_active());
+
+    view.startup_mask_started_at = Some(Instant::now() - STARTUP_MASK_MAX_DURATION);
+    assert!(!view.startup_mask_active());
+}
+
+#[test]
 fn control_view_parser_cursor_move_keeps_relative_redraws_on_tmux_row() {
     let mut parser = vt100::Parser::new(6, 40, 0);
     parser.process(b"\x1b[2;1Hscreen");
@@ -444,10 +463,9 @@ fn app_config_view_auto_refresh_can_be_enabled() {
 #[test]
 fn migrate_app_config_flips_pre_v1_defaults() {
     // A config written before versioning: control mode on, old popup hold.
-    let mut config: AppConfig = serde_json::from_str(
-        r#"{"tmux_control_mode":true,"diff_review_popup_hold_secs":3.0}"#,
-    )
-    .unwrap();
+    let mut config: AppConfig =
+        serde_json::from_str(r#"{"tmux_control_mode":true,"diff_review_popup_hold_secs":3.0}"#)
+            .unwrap();
     assert_eq!(config.config_version, 0);
 
     let changed = crate::app::setup::migrate_app_config(&mut config);
@@ -462,10 +480,9 @@ fn migrate_app_config_flips_pre_v1_defaults() {
 fn migrate_app_config_preserves_deliberate_pre_v1_values() {
     // Pre-v1 config that already chose non-default values: only the
     // version is stamped, the user's choices are kept.
-    let mut config: AppConfig = serde_json::from_str(
-        r#"{"tmux_control_mode":false,"diff_review_popup_hold_secs":5.0}"#,
-    )
-    .unwrap();
+    let mut config: AppConfig =
+        serde_json::from_str(r#"{"tmux_control_mode":false,"diff_review_popup_hold_secs":5.0}"#)
+            .unwrap();
 
     let changed = crate::app::setup::migrate_app_config(&mut config);
 
@@ -1821,7 +1838,10 @@ fn create_feature_default_remote_control_blocked_by_zai() {
     match &app.mode {
         AppMode::CreatingFeature(state) => {
             assert!(!state.remote_control_available);
-            assert!(!state.remote_control, "default must not override z.ai guard");
+            assert!(
+                !state.remote_control,
+                "default must not override z.ai guard"
+            );
             assert_eq!(
                 state.remote_control_block_reason.as_deref(),
                 Some("Unavailable with z.ai provider")
@@ -2884,7 +2904,9 @@ fn create_feature_mode_review_focus_describes_review_notes() {
         state.mode_focus = 2;
         assert_eq!(
             state.focused_mode_description(),
-            Some("Write developer notes with every code change for a detailed code review (may use more tokens).")
+            Some(
+                "Write developer notes with every code change for a detailed code review (may use more tokens)."
+            )
         );
     } else {
         panic!("expected CreatingFeature mode");
@@ -7225,10 +7247,7 @@ fn store_with_prompt_templates(names: &[&str]) -> ProjectStore {
     let templates = names
         .iter()
         .map(|name| {
-            crate::prompt_library::PromptTemplate::new(
-                name.to_string(),
-                format!("body of {name}"),
-            )
+            crate::prompt_library::PromptTemplate::new(name.to_string(), format!("body of {name}"))
         })
         .collect();
     ProjectStore {
@@ -7338,11 +7357,10 @@ fn prompt_library_surfaces_global_config_templates_with_badge() {
         Box::new(MockTmuxOps::new()),
         Box::new(MockWorktreeOps::new()),
     );
-    app.config.extension.prompt_templates =
-        vec![crate::prompt_library::PromptTemplate::new(
-            "shared".to_string(),
-            "shared body".to_string(),
-        )];
+    app.config.extension.prompt_templates = vec![crate::prompt_library::PromptTemplate::new(
+        "shared".to_string(),
+        "shared body".to_string(),
+    )];
 
     app.open_prompt_library(None);
 
@@ -7413,10 +7431,8 @@ fn bare_uppercase_a_opens_harness_setup_from_dashboard() {
         Box::new(MockWorktreeOps::new()),
     );
     app.mode = AppMode::Normal;
-    let key = crossterm::event::KeyEvent::new(
-        KeyCode::Char('A'),
-        crossterm::event::KeyModifiers::NONE,
-    );
+    let key =
+        crossterm::event::KeyEvent::new(KeyCode::Char('A'), crossterm::event::KeyModifiers::NONE);
     crate::handlers::handle_normal_key(&mut app, key).unwrap();
     assert!(matches!(app.mode, AppMode::HarnessSetup(_)));
 }
@@ -7532,7 +7548,10 @@ fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
                 crate::highlight::HighlightLanguage::Rust
             );
             // The picker returns to the same review pane on close.
-            assert!(matches!(state.return_to.as_deref(), Some(AppMode::PrReview(_))));
+            assert!(matches!(
+                state.return_to.as_deref(),
+                Some(AppMode::PrReview(_))
+            ));
         }
         other => panic!(
             "expected syntax picker, got {:?}",
@@ -7577,7 +7596,10 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
     app.pr_review_open_fix_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert!(state.harness_pick.is_some(), "harness picker should be open");
+            assert!(
+                state.harness_pick.is_some(),
+                "harness picker should be open"
+            );
             assert!(state.fix_confirm.is_none(), "fix confirm should wait");
             assert!(state.review_harness.is_none());
             // Default highlight is the project's preferred agent.
@@ -7593,7 +7615,10 @@ fn pr_review_first_fix_opens_harness_picker_then_confirm() {
         AppMode::PrReview(state) => {
             assert!(state.harness_pick.is_none());
             assert_eq!(state.review_harness, Some(AgentKind::default()));
-            assert!(state.fix_confirm.is_some(), "fix confirm should now be open");
+            assert!(
+                state.fix_confirm.is_some(),
+                "fix confirm should now be open"
+            );
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
     }
@@ -7616,7 +7641,10 @@ fn pr_review_second_fix_skips_harness_picker() {
     app.pr_review_open_fix_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert!(state.harness_pick.is_none(), "no picker on subsequent fixes");
+            assert!(
+                state.harness_pick.is_none(),
+                "no picker on subsequent fixes"
+            );
             assert!(state.fix_confirm.is_some());
         }
         other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
@@ -7807,7 +7835,11 @@ fn pr_review_queue_marked_without_session_hints() {
     // `store_with_feature` has no sessions, so the dedicated review session
     // doesn't exist yet — the batch must refuse rather than cold-start one.
     let store = store_with_feature(ProjectStatus::Active);
-    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(MockWorktreeOps::new()));
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
     enter_pr_review_for_feature(&mut app, 2);
     if let AppMode::PrReview(state) = &mut app.mode {
         state.marked.insert(1);
@@ -7815,7 +7847,10 @@ fn pr_review_queue_marked_without_session_hints() {
 
     app.pr_review_queue_marked_fixes().unwrap();
     assert!(
-        app.message.as_deref().unwrap_or("").contains("No review session yet"),
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No review session yet"),
         "expected a hint to start the review session, got {:?}",
         app.message
     );
@@ -7825,8 +7860,7 @@ fn pr_review_queue_marked_without_session_hints() {
 fn pr_review_queue_marked_sends_and_marks_fixing() {
     // A feature with an existing dedicated "PR Review" session to queue into.
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0]
-        .add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
 
     let mut tmux = MockTmuxOps::new();
     // Two marked comments → two submissions, each: clear input, paste, Enter.
@@ -7834,7 +7868,9 @@ fn pr_review_queue_marked_sends_and_marks_fixing() {
         .withf(|_, _, key| key == "C-u")
         .times(2)
         .returning(|_, _, _| Ok(()));
-    tmux.expect_paste_text().times(2).returning(|_, _, _| Ok(()));
+    tmux.expect_paste_text()
+        .times(2)
+        .returning(|_, _, _| Ok(()));
     tmux.expect_send_key_name()
         .withf(|_, _, key| key == "Enter")
         .times(2)
@@ -7853,8 +7889,14 @@ fn pr_review_queue_marked_sends_and_marks_fixing() {
         AppMode::PrReview(state) => {
             // Marks cleared; queued comments now Fixing; unmarked one untouched.
             assert!(state.marked.is_empty(), "marks should clear after queuing");
-            assert_eq!(state.review.comments[0].triage, crate::app::pr_review::TriageState::Fixing);
-            assert_eq!(state.review.comments[1].triage, crate::app::pr_review::TriageState::Fixing);
+            assert_eq!(
+                state.review.comments[0].triage,
+                crate::app::pr_review::TriageState::Fixing
+            );
+            assert_eq!(
+                state.review.comments[1].triage,
+                crate::app::pr_review::TriageState::Fixing
+            );
             assert_eq!(
                 state.review.comments[2].triage,
                 crate::app::pr_review::TriageState::Untriaged
@@ -8077,7 +8119,12 @@ fn pr_review_open_fix_confirm_seeds_editor_from_selection() {
         _ => unreachable!(),
     };
     assert_eq!(confirm.editor.text(), expected);
-    assert!(confirm.editor.text().contains("Address this PR review comment."));
+    assert!(
+        confirm
+            .editor
+            .text()
+            .contains("Address this PR review comment.")
+    );
 }
 
 #[test]
@@ -8095,7 +8142,10 @@ fn pr_review_fix_edit_mode_forwards_keys_and_cancel_closes() {
     app.pr_review_fix_edit();
     assert_eq!(app.pr_review_fix_editing(), Some(true));
     assert!(app.pr_review_fix_editor_key(KeyEvent::from(KeyCode::Char('Z'))));
-    assert_eq!(pr_review_fix_confirm(&app).editor.text(), format!("{before}Z"));
+    assert_eq!(
+        pr_review_fix_confirm(&app).editor.text(),
+        format!("{before}Z")
+    );
 
     // Leaving edit mode keeps the edited text; cancel closes the dialog.
     app.pr_review_fix_stop_edit();
@@ -8281,6 +8331,84 @@ fn enter_review_with_two_files(app: &mut App, workdir: &std::path::Path) {
 }
 
 #[test]
+fn load_prior_agent_responses_populates_state_for_known_files() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // A prior round's feedback file: replies on a known file (src/a.rs) and on a
+    // file no longer in the diff (src/gone.rs), which must be filtered out.
+    let claude = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("final-review-feedback.md"),
+        "# Final Review Feedback\n\n## Review — 2026-07-02T00:00:00Z\n\n\
+         ### Line Comments\n\n#### src/a.rs:3 — [suggestion]\n\nRename it.\n\n\
+         **Agent:** done, renamed.\n\n#### src/gone.rs:9 — [blocker]\n\nFix it.\n\n\
+         **Agent:** removed the file.\n",
+    )
+    .unwrap();
+
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.load_prior_agent_responses();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert_eq!(
+                state.prior_agent_responses.len(),
+                1,
+                "only files still in the diff are kept"
+            );
+            let a = state.prior_agent_responses.get("src/a.rs").expect("a.rs");
+            assert_eq!(a[0].anchor, "src/a.rs:3");
+            assert!(a[0].response.contains("renamed"));
+            assert!(
+                !state.prior_agent_responses.contains_key("src/gone.rs"),
+                "a file no longer in the diff is dropped"
+            );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn load_prior_agent_responses_no_feedback_file_is_empty() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.load_prior_agent_responses();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.prior_agent_responses.is_empty());
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
 fn final_review_progress_persists_and_resumes() {
     let workdir = TempDir::new().unwrap();
     let mut app = App::new_for_test(
@@ -8332,7 +8460,9 @@ fn final_review_progress_persists_and_resumes() {
             assert_eq!(
                 state.decisions.get("src/b.rs"),
                 Some(&ReviewDecision::Reject {
-                    feedback: "needs work".into()
+                    feedback: "needs work".into(),
+                    // An explicit rejection defaults to Blocker severity.
+                    severity: crate::app::Severity::Blocker,
                 })
             );
             assert_eq!(state.general_feedback, "overall looks ok");
@@ -8346,6 +8476,91 @@ fn final_review_progress_persists_and_resumes() {
         !progress_path.exists(),
         "progress file should be removed after finishing"
     );
+}
+
+#[test]
+fn comment_auto_reject_survives_pause_and_resume() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // One commentable hunk on src/a.rs: a context line and an added line.
+    let hunk = crate::diff::DiffHunk {
+        header: "@@ -1,1 +1,2 @@".into(),
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        lines: vec![
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Context,
+                text: " ctx".into(),
+            },
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Added,
+                text: "+added".into(),
+            },
+        ],
+    };
+
+    // Comment the added line: the file auto-rejects and progress persists.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk.clone()];
+        state.comment_cursor = Some(1);
+        state.editing_line_comment = true;
+        state.feedback_editor = crate::editor::TextEditor::new("bug".into());
+    }
+    app.diff_review_submit_line_comment();
+
+    // Reopen the review fresh and restore: the verdict comes back still marked
+    // as comment-implied, not explicit.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk];
+    }
+    app.restore_review_progress();
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert_eq!(
+                state.decisions.get("src/a.rs"),
+                Some(&ReviewDecision::Reject {
+                    feedback: String::new(),
+                    // An auto-rejection carries the neutral default severity;
+                    // the real severity lives on the line comment.
+                    severity: crate::app::Severity::Suggestion,
+                })
+            );
+            assert!(state.auto_rejected.contains("src/a.rs"));
+        }
+        _ => panic!("expected diff viewer after restore"),
+    }
+
+    // Deleting the restored comment (empty re-submit) still clears the
+    // implicit verdict — the distinction survived the round-trip.
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.comment_cursor = Some(1);
+        state.editing_line_comment = true;
+        state.feedback_editor = crate::editor::TextEditor::new(String::new());
+    }
+    app.diff_review_submit_line_comment();
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.decisions.is_empty());
+            assert!(state.auto_rejected.is_empty());
+        }
+        _ => panic!("expected diff viewer"),
+    }
 }
 
 #[test]
@@ -8422,7 +8637,10 @@ fn re_review_flags_changed_files_and_applies_filter() {
         .path()
         .join(".claude")
         .join("final-review-snapshot.json");
-    assert!(snapshot_path.exists(), "snapshot should be written on finish");
+    assert!(
+        snapshot_path.exists(),
+        "snapshot should be written on finish"
+    );
 
     // Re-open with src/b.rs's diff changed (different patch); src/a.rs is
     // untouched.
@@ -8492,6 +8710,63 @@ fn re_review_no_changes_keeps_all_filter() {
                 FileFilter::All,
                 "an unchanged re-review leaves the filter untouched"
             );
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn re_review_carries_approvals_for_unchanged_files() {
+    use crate::app::FileFilter;
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Round 1: approve src/a.rs, reject src/b.rs, and finish. The snapshot now
+    // records a.rs=Approve and b.rs=Reject.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.diff_review_approve_current();
+    app.diff_review_start_feedback();
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.feedback_editor = crate::editor::TextEditor::new("fix this".into());
+    }
+    app.diff_review_submit_feedback();
+    app.finish_final_review().unwrap();
+
+    // Round 2: the fix landed, so b.rs's diff changed; a.rs is untouched.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[1].patch = "@@ -1 +1 @@\n-old\n+new".into();
+    }
+    app.apply_review_snapshot_diff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            // The unchanged, previously-approved file keeps its verdict — the
+            // reviewer resumes from the saved approved state.
+            assert_eq!(
+                state.decisions.get("src/a.rs"),
+                Some(&ReviewDecision::Approve),
+                "an unchanged approved file carries its approval into the re-review"
+            );
+            // The changed (and previously rejected) file is reset for a fresh
+            // look, and the review narrows onto it.
+            assert!(
+                !state.decisions.contains_key("src/b.rs"),
+                "a changed file does not carry a stale verdict"
+            );
+            assert_eq!(state.file_filter, FileFilter::Changed);
+            assert_eq!(state.selected_file, 1);
         }
         _ => panic!("expected diff viewer"),
     }
@@ -8573,7 +8848,11 @@ fn add_builtin_session_blocks_second_todos_per_project() {
     // A second attempt is rejected; still exactly one TODOs session.
     app.selection = Selection::Feature(0, 0);
     app.add_builtin_session(0, 0, SessionKind::Todos).unwrap();
-    assert_eq!(todos_count(&app), 1, "a second TODOs session must be blocked");
+    assert_eq!(
+        todos_count(&app),
+        1,
+        "a second TODOs session must be blocked"
+    );
     assert_eq!(
         app.message.as_deref(),
         Some("This project already has a TODOs session")
@@ -8965,7 +9244,8 @@ fn todos_record_spawned_session_updates_in_memory() {
     if let AppMode::Todos(state) = &mut app.mode {
         state.todos = vec![sample_todo("a", false), sample_todo("b", false)];
     }
-    app.todos_record_spawned_session("todo-b", "sess-42").unwrap();
+    app.todos_record_spawned_session("todo-b", "sess-42")
+        .unwrap();
     match &app.mode {
         AppMode::Todos(state) => {
             assert!(state.todos[0].spawned_session_id.is_none());

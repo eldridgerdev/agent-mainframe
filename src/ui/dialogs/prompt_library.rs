@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState, SkillPickerState,
+    PlaceholderFillState, PromptEditorFocus, PromptEditorState, PromptLibraryState,
+    SkillPickerState,
 };
 use crate::editor::VimMode;
 use crate::theme::Theme;
@@ -46,10 +47,10 @@ pub fn draw_prompt_library(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),             // search line
-            Constraint::Min(1),                // list + preview
-            Constraint::Length(1),             // footer hints
-            Constraint::Length(msg_height),    // message
+            Constraint::Length(1),          // search line
+            Constraint::Min(1),             // list + preview
+            Constraint::Length(1),          // footer hints
+            Constraint::Length(msg_height), // message
         ])
         .split(inner);
 
@@ -171,16 +172,16 @@ pub fn draw_prompt_library(
 
     if let Some(entry) = state.selected_entry() {
         let mut lines: Vec<Line> = Vec::new();
-        if let Some(desc) = &entry.template.description {
-            if !desc.trim().is_empty() {
-                lines.push(Line::from(Span::styled(
-                    desc.clone(),
-                    Style::default()
-                        .fg(theme.text_muted.to_color())
-                        .add_modifier(Modifier::ITALIC),
-                )));
-                lines.push(Line::from(""));
-            }
+        if let Some(desc) = &entry.template.description
+            && !desc.trim().is_empty()
+        {
+            lines.push(Line::from(Span::styled(
+                desc.clone(),
+                Style::default()
+                    .fg(theme.text_muted.to_color())
+                    .add_modifier(Modifier::ITALIC),
+            )));
+            lines.push(Line::from(""));
         }
         // Tag chips, e.g. `#bug #frontend`, above the body preview.
         if !entry.template.tags.is_empty() {
@@ -213,8 +214,12 @@ pub fn draw_prompt_library(
         );
     }
 
-    let can_edit = state.selected_entry().is_some_and(|e| e.source.is_editable());
-    let can_delete = state.selected_entry().is_some_and(|e| e.source.is_deletable());
+    let can_edit = state
+        .selected_entry()
+        .is_some_and(|e| e.source.is_editable());
+    let can_delete = state
+        .selected_entry()
+        .is_some_and(|e| e.source.is_deletable());
     draw_footer(frame, chunks[2], theme, can_edit, can_delete);
     draw_message(frame, chunks[3], message, theme);
 }
@@ -222,7 +227,10 @@ pub fn draw_prompt_library(
 /// Distinguish template sources at a glance: editable `User` entries are
 /// muted, read-only `Project` ones use the success accent, and `Global`
 /// ones the info accent.
-fn badge_color(source: crate::prompt_library::PromptSource, theme: &Theme) -> ratatui::style::Color {
+fn badge_color(
+    source: crate::prompt_library::PromptSource,
+    theme: &Theme,
+) -> ratatui::style::Color {
     use crate::prompt_library::PromptSource;
     match source {
         PromptSource::User => theme.text_muted.to_color(),
@@ -240,7 +248,8 @@ fn draw_footer(
     can_delete: bool,
 ) {
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
-    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let label =
+        |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
     let mut spans = vec![
         hint("Enter"),
         label(" inject  "),
@@ -295,7 +304,8 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     let body_focused = state.focus == PromptEditorFocus::Body;
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
-    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let label =
+        |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
 
     // ── Outer dialog frame: title above, key hints on the bottom border.
     let title = if state.editing_id.is_some() {
@@ -373,7 +383,10 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
     let single_line_field = |value: &str, focused: bool, placeholder: &'static str| {
         if focused {
             Line::from(vec![
-                Span::styled(value.to_string(), Style::default().fg(theme.text.to_color())),
+                Span::styled(
+                    value.to_string(),
+                    Style::default().fg(theme.text.to_color()),
+                ),
                 Span::styled("█", Style::default().fg(theme.primary.to_color())),
             ])
         } else if value.is_empty() {
@@ -398,11 +411,10 @@ pub fn draw_prompt_editor(frame: &mut Frame, state: &PromptEditorState, theme: &
 
     // Tags field (the hint rides in the box title to keep the value clean).
     frame.render_widget(
-        Paragraph::new(single_line_field(&state.tags, tags_focused, "none"))
-            .block(field_block(
-                "Tags — comma-separated, optional".to_string(),
-                tags_focused,
-            )),
+        Paragraph::new(single_line_field(&state.tags, tags_focused, "none")).block(field_block(
+            "Tags — comma-separated, optional".to_string(),
+            tags_focused,
+        )),
         chunks[2],
     );
 
@@ -544,7 +556,11 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
     }
     // Surface the vim state for multi-line fields (the only slots vim applies
     // to), matching the prompt-body editor's indicator.
-    if let Some(mode) = state.input.vim_mode().filter(|_| state.current_is_multiline()) {
+    if let Some(mode) = state
+        .input
+        .vim_mode()
+        .filter(|_| state.current_is_multiline())
+    {
         let indicator = match mode {
             VimMode::Insert => "  [Vim Insert]",
             VimMode::Normal => "  [Vim Normal]",
@@ -607,7 +623,8 @@ pub fn draw_placeholder_fill(frame: &mut Frame, state: &PlaceholderFillState, th
     }
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
-    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let label =
+        |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
     let last = state.current + 1 >= total;
     let mut footer_spans = Vec::new();
     if state.is_select() {
@@ -667,7 +684,10 @@ pub fn draw_skill_picker(frame: &mut Frame, state: &SkillPickerState, theme: &Th
     // Query line, always editable (typing filters).
     let query_line = Line::from(vec![
         Span::styled("Filter: ", Style::default().fg(theme.warning.to_color())),
-        Span::styled(state.query.clone(), Style::default().fg(theme.text.to_color())),
+        Span::styled(
+            state.query.clone(),
+            Style::default().fg(theme.text.to_color()),
+        ),
         Span::styled("█", Style::default().fg(theme.primary.to_color())),
     ]);
     frame.render_widget(Paragraph::new(query_line), chunks[0]);
@@ -732,7 +752,8 @@ pub fn draw_skill_picker(frame: &mut Frame, state: &SkillPickerState, theme: &Th
     }
 
     let hint = |key: &'static str| Span::styled(key, Style::default().fg(theme.warning.to_color()));
-    let label = |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
+    let label =
+        |text: &'static str| Span::styled(text, Style::default().fg(theme.text_muted.to_color()));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             hint("↑/↓"),
@@ -761,4 +782,3 @@ fn truncate(s: &str, max_chars: usize) -> String {
     out.push('…');
     out
 }
-

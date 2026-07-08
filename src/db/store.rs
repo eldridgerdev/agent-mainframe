@@ -228,6 +228,32 @@ fn load_prompt_templates(conn: &Connection) -> Result<Vec<PromptTemplate>> {
     Ok(templates)
 }
 
+/// One `features` row in SELECT column order (see `load_features`): id, name,
+/// branch, workdir, is_worktree, tmux_session, mode, review, plan_mode, agent,
+/// enable_chrome, status, summary, summary_updated_at, nickname, collapsed,
+/// created_at, last_accessed, ready.
+type FeatureRow = (
+    String,
+    String,
+    String,
+    String,
+    bool,
+    String,
+    String,
+    bool,
+    bool,
+    String,
+    bool,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    bool,
+    String,
+    String,
+    bool,
+);
+
 fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, branch, workdir, is_worktree, tmux_session,
@@ -238,27 +264,7 @@ fn load_features(conn: &Connection, project_id: &str) -> Result<Vec<Feature>> {
          ORDER BY sort_order ASC, rowid ASC",
     )?;
 
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        bool,
-        String,
-        String,
-        bool,
-        bool,
-        String,
-        bool,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        bool,
-        String,
-        String,
-        bool,
-    )> = stmt
+    let rows: Vec<FeatureRow> = stmt
         .query_map(params![project_id], |row| {
             Ok((
                 row.get(0)?,
@@ -575,9 +581,7 @@ mod tests {
 
     #[test]
     fn prompt_templates_roundtrip_preserves_order_and_fields() {
-        use crate::prompt_library::{
-            PlaceholderKind, PromptPlaceholder, PromptTemplate,
-        };
+        use crate::prompt_library::{PlaceholderKind, PromptPlaceholder, PromptTemplate};
 
         let (_tmp, db) = open_temp_db();
         let mut store = empty_store();

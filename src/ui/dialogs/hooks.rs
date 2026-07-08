@@ -628,9 +628,8 @@ pub fn draw_latest_prompt_dialog(
     }
 
     let msg_height = if message.is_some() { 1 } else { 0 };
-    let list_height = ((inner.height as usize).saturating_sub(3 + msg_height) / 3)
-        .max(3)
-        .min(10) as u16;
+    let list_height =
+        ((inner.height as usize).saturating_sub(3 + msg_height) / 3).clamp(3, 10) as u16;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)

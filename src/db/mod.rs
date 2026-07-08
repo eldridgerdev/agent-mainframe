@@ -4,8 +4,8 @@ mod pr_comment_triage;
 mod pr_review_cache;
 mod session_status;
 pub mod store;
-mod token_cache;
 pub mod todos;
+mod token_cache;
 
 use anyhow::Result;
 use rusqlite::Connection;
@@ -195,11 +195,7 @@ impl AmfDb {
     }
 
     /// Create the project's TODO list under `feature_id`; errors if one exists.
-    pub fn create_todo_list(
-        &self,
-        project_id: &str,
-        feature_id: &str,
-    ) -> Result<todos::TodoList> {
+    pub fn create_todo_list(&self, project_id: &str, feature_id: &str) -> Result<todos::TodoList> {
         todos::create_list(&self.conn, project_id, feature_id)
     }
 
@@ -266,10 +262,10 @@ fn seed_from_json(db_path: &Path, extra_candidates: Vec<PathBuf>) {
 
     for json_path in json_candidates {
         if json_path.exists() {
-            if let Ok(store) = crate::project::ProjectStore::load(&json_path) {
-                if let Ok(db) = AmfDb::open(db_path) {
-                    let _ = db.save_store(&store);
-                }
+            if let Ok(store) = crate::project::ProjectStore::load(&json_path)
+                && let Ok(db) = AmfDb::open(db_path)
+            {
+                let _ = db.save_store(&store);
             }
             return;
         }

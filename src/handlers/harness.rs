@@ -12,17 +12,17 @@ pub fn handle_harness_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
 
     match key {
         KeyCode::Char('j') | KeyCode::Down => {
-            if let AppMode::HarnessSetup(s) = &mut app.mode {
-                if s.selected + 1 < s.harnesses.len() {
-                    s.selected += 1;
-                }
+            if let AppMode::HarnessSetup(s) = &mut app.mode
+                && s.selected + 1 < s.harnesses.len()
+            {
+                s.selected += 1;
             }
         }
         KeyCode::Char('k') | KeyCode::Up => {
-            if let AppMode::HarnessSetup(s) = &mut app.mode {
-                if s.selected > 0 {
-                    s.selected -= 1;
-                }
+            if let AppMode::HarnessSetup(s) = &mut app.mode
+                && s.selected > 0
+            {
+                s.selected -= 1;
             }
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
@@ -128,4 +128,3 @@ fn apply_harnesses(app: &mut App, harnesses: Vec<crate::project::AgentKind>) -> 
     ));
     Ok(())
 }
-

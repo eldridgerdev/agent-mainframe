@@ -72,6 +72,13 @@ impl App {
             return Ok(());
         }
 
+        let feature_was_stopped = self
+            .store
+            .projects
+            .get(pi)
+            .and_then(|p| p.features.get(fi))
+            .is_some_and(|feature| feature.status == ProjectStatus::Stopped);
+
         self.ensure_feature_running(pi, fi)?;
 
         let (
@@ -132,7 +139,7 @@ impl App {
 
         let pending_project_name = project_name.clone();
         let pending_feature_name = feature_name.clone();
-        let view = ViewState::new(
+        let mut view = ViewState::new(
             project_name,
             feature_name,
             tmux_session,
@@ -142,6 +149,9 @@ impl App {
             vibe_mode,
             review,
         );
+        if feature_was_stopped && view.session_kind.is_agent_harness() {
+            view.show_startup_mask();
+        }
 
         self.save()?;
         self.pane_content.clear();
@@ -404,8 +414,7 @@ impl App {
             return;
         };
 
-        let dest_path =
-            self.template_source_path(crate::prompt_library::PromptSource::User, None);
+        let dest_path = self.template_source_path(crate::prompt_library::PromptSource::User, None);
         self.mode = AppMode::PromptEditor(crate::app::PromptEditorState {
             editing_id: None,
             editing_source: crate::prompt_library::PromptSource::User,
@@ -521,18 +530,19 @@ impl App {
     }
 
     pub fn latest_prompt_select_next(&mut self) {
-        if let AppMode::LatestPrompt(state) = &mut self.mode {
-            if !state.prompts.is_empty() && state.selected + 1 < state.prompts.len() {
-                state.selected += 1;
-            }
+        if let AppMode::LatestPrompt(state) = &mut self.mode
+            && !state.prompts.is_empty()
+            && state.selected + 1 < state.prompts.len()
+        {
+            state.selected += 1;
         }
     }
 
     pub fn latest_prompt_select_prev(&mut self) {
-        if let AppMode::LatestPrompt(state) = &mut self.mode {
-            if state.selected > 0 {
-                state.selected -= 1;
-            }
+        if let AppMode::LatestPrompt(state) = &mut self.mode
+            && state.selected > 0
+        {
+            state.selected -= 1;
         }
     }
 

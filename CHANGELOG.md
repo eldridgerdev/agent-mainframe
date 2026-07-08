@@ -25,6 +25,56 @@ are tagged.
   before sending. Everything included is marked `Fixing` and the marks clear,
   so the next refresh reconciles what actually got resolved. Very large batches
   raise a warning toast but still go through.
+- **Search within the final-review diff.** Press `/` in the final review to
+  incrementally search the current file's diff (case-insensitive). The line
+  cursor jumps to the first match as you type; after `Enter`, `n` / `N` cycle
+  matches (wrapping) and `Esc` clears the search. Every hit is flagged with a
+  `▷` gutter marker and the footer shows the match count.
+- **AMF is now licensed under the MIT License.** The repository ships a
+  `LICENSE` file, so you can use, modify, and redistribute AMF under
+  standard MIT terms. No migration is required.
+- **TODOs keybindings in the help overlay.** The `?` help now has an "In the
+  TODOs view" section documenting every key in a TODO list — navigate, add,
+  edit title/notes/scratchpad, toggle done, cycle priority, reorder, delete,
+  and spawn an agent — so they're discoverable without leaving the app.
+
+### Changed
+
+- **Codex SuperVibe now skips Codex permission prompts.** Codex-backed
+  SuperVibe sessions launch with full-access, no-approval permissions, so the
+  mode now behaves consistently with its no-prompt warning.
+- **Next / previous feature navigation is now opt-in.** The leader `n` / `p`
+  shortcuts no longer jump between features by default, and they no longer show
+  up in the leader menu unless you bind them. To get them back, bind the
+  `next_feature` and `prev_feature` actions in your config (or via the config
+  wizard) — they'll reappear in the menu using whatever keys you choose.
+- **Freed-up shortcuts moved to lowercase.** With `n` / `p` no longer taken by
+  feature navigation, the prompt library (leader menu) and the syntax parser
+  picker (dashboard) both moved from `P` to `p`.
+- **Building from source is now warning-free.** `cargo build` and
+  `cargo clippy` complete without a single warning, so installing AMF from
+  source no longer scrolls lint noise past you. CI now enforces this
+  (`clippy -D warnings` plus a formatting check), so it stays that way.
+  Nothing about AMF's behavior changes.
+
+### Fixed
+
+- **New agent sessions hide their startup command echo.** When AMF starts a
+  fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
+  loading screen until the harness is ready instead of flashing the long tmux
+  launch command and environment setup. Existing running sessions open normally.
+- **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
+  ignores duplicate Enter-repeat events and raw carriage-return/newline
+  characters in embedded terminal input, so pressing Enter submits once instead
+  of making the pane jump down by several lines.
+
+### Migration
+
+- No action required for the startup loading-screen fix.
+- No action required for the macOS terminal input fix.
+- If you relied on `n` / `p` to move between features in a session, add
+  `"next_feature"` / `"prev_feature"` keybindings to your config to restore
+  them.
 
 ## [v0.29.0] - 2026-07-01
 
@@ -49,6 +99,22 @@ are tagged.
   instead of interpreting prose — and, when you have PR posting on, it's
   appended to the inline PR comment as a GitHub suggestion so it's
   one-click-appliable on the pull request.
+- **Jump between hunks while commenting in a final review.** With the line
+  cursor active (`c`), press `]` / `[` to jump straight to the next / previous
+  hunk instead of holding `j`/`k` through a long file — handy for skimming a big
+  diff change-by-change. If the cursor is off, the first press turns it on (`]`
+  on the first hunk, `[` on the last), and from the middle of a hunk `[` snaps to
+  that hunk's top first. A range you're marking with `v` carries across the jump,
+  so you can still select a span that spans hunks.
+- **A line comment now flags its file as needing work.** Leaving a comment (or a
+  suggested change) on a file in a final review is itself a signal the file
+  isn't done, so AMF now marks that file "needs revision" for you — no separate
+  reject step, and the comments themselves stand in as the reason. Your own call
+  always wins: explicitly approving, skipping, or rejecting a file overrides the
+  automatic mark and sticks, and clearing a file's last comment clears an
+  automatic mark again. Accepting an AI draft comment counts the same as writing
+  one; dismissing a draft doesn't. The distinction is remembered if you pause and
+  resume a review.
 - **Per-project TODO lists.** Add a `TODOs` session from the session picker
   (`s`) to keep a running to-do list for a project — somewhere to jot what's
   left and where you left off instead of holding it in your head. It opens a

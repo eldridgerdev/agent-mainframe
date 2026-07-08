@@ -40,7 +40,10 @@ pub(super) fn run(conn: &Connection) -> Result<()> {
             "Add incremental parse state to token usage cache",
             MIGRATION_006,
         ),
-        ("Add prompt_templates table for the prompt library", MIGRATION_007),
+        (
+            "Add prompt_templates table for the prompt library",
+            MIGRATION_007,
+        ),
         (
             "Cache normalized PR reviews keyed by PR# + head SHA",
             MIGRATION_008,
@@ -332,12 +335,26 @@ mod tests {
         // Same comment marked under two head SHAs: the newer mark should win.
         conn.execute(
             insert,
-            params![7, 1, "old", "fixing", Option::<&str>::None, "2026-01-01 00:00:00"],
+            params![
+                7,
+                1,
+                "old",
+                "fixing",
+                Option::<&str>::None,
+                "2026-01-01 00:00:00"
+            ],
         )
         .unwrap();
         conn.execute(
             insert,
-            params![7, 1, "new", "done", Option::<&str>::None, "2026-02-01 00:00:00"],
+            params![
+                7,
+                1,
+                "new",
+                "done",
+                Option::<&str>::None,
+                "2026-02-01 00:00:00"
+            ],
         )
         .unwrap();
         // A distinct comment is preserved as its own row.
@@ -351,7 +368,9 @@ mod tests {
 
         // Comment 1 collapsed to the newer "done"; comment 2 survived.
         let mut stmt = conn
-            .prepare("SELECT comment_id, state, head_sha FROM pr_comment_triage ORDER BY comment_id")
+            .prepare(
+                "SELECT comment_id, state, head_sha FROM pr_comment_triage ORDER BY comment_id",
+            )
             .unwrap();
         let rows: Vec<(i64, String, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -369,7 +388,14 @@ mod tests {
         // The re-keyed table rejects a second row for an existing comment.
         let dup = conn.execute(
             insert,
-            params![7, 1, "newer", "fixing", Option::<&str>::None, "2026-03-01 00:00:00"],
+            params![
+                7,
+                1,
+                "newer",
+                "fixing",
+                Option::<&str>::None,
+                "2026-03-01 00:00:00"
+            ],
         );
         assert!(dup.is_err(), "PK should now be (pr_number, comment_id)");
     }

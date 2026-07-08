@@ -1,5 +1,5 @@
-use std::path::Path;
 use std::os::fd::AsRawFd;
+use std::path::Path;
 use std::sync::mpsc;
 
 use anyhow::Result;
@@ -14,12 +14,24 @@ const BUILTIN_COMMANDS: &[(&str, &str, bool)] = &[
     ("add-dir", "Add a new working directory", false),
     ("agents", "Manage agent configurations", true),
     ("bashes", "List and manage background tasks", true),
-    ("clear", "Clear conversation history and free up context", false),
-    ("compact", "Summarize the conversation to free up context", false),
+    (
+        "clear",
+        "Clear conversation history and free up context",
+        false,
+    ),
+    (
+        "compact",
+        "Summarize the conversation to free up context",
+        false,
+    ),
     ("config", "Open the settings panel", true),
     ("context", "Show current context usage", false),
     ("cost", "Show token usage and cost for this session", false),
-    ("doctor", "Check the health of the Claude Code installation", false),
+    (
+        "doctor",
+        "Check the health of the Claude Code installation",
+        false,
+    ),
     ("exit", "Exit Claude Code", false),
     ("export", "Export the conversation", false),
     ("help", "Show available commands", false),
@@ -33,7 +45,11 @@ const BUILTIN_COMMANDS: &[(&str, &str, bool)] = &[
     ("model", "Choose the model for this session", true),
     ("output-style", "Choose the output style", true),
     ("permissions", "Manage tool permissions", true),
-    ("pr-comments", "Show comments on the current pull request", false),
+    (
+        "pr-comments",
+        "Show comments on the current pull request",
+        false,
+    ),
     ("resume", "Resume a previous session", true),
     ("review", "Review a pull request", false),
     ("rewind", "Rewind the conversation", true),
@@ -238,13 +254,7 @@ impl App {
                 let result = crate::app::util::read_clipboard().map_err(|err| err.to_string());
                 let _ = tx.send(result);
                 let byte = 1u8;
-                unsafe {
-                    libc::write(
-                        wakeup.as_raw_fd(),
-                        &byte as *const u8 as *const _,
-                        1,
-                    )
-                };
+                unsafe { libc::write(wakeup.as_raw_fd(), &byte as *const u8 as *const _, 1) };
             })
             .expect("failed to start compose clipboard paste worker");
         self.compose_clipboard_paste = Some(ComposeClipboardPaste { id, target, rx });
@@ -441,9 +451,7 @@ impl App {
     /// turns it back on.
     pub fn compose_switch_to_direct(&mut self) {
         let target = match &self.mode {
-            AppMode::Compose(state) => {
-                compose_target_key(&state.view.session, &state.view.window)
-            }
+            AppMode::Compose(state) => compose_target_key(&state.view.session, &state.view.window),
             _ => return,
         };
         self.cancel_compose();
@@ -541,9 +549,10 @@ impl App {
                         // before moving on (next image's clipboard write or
                         // the final Enter); otherwise the image is dropped.
                         if crate::app::util::is_wsl() {
-                            let baseline = crate::tmux::TmuxManager::capture_pane(&session, &window)
-                                .map(|pane| count_image_placeholders(&pane))
-                                .unwrap_or(0);
+                            let baseline =
+                                crate::tmux::TmuxManager::capture_pane(&session, &window)
+                                    .map(|pane| count_image_placeholders(&pane))
+                                    .unwrap_or(0);
                             self.tmux.send_key_name(&session, &window, "C-v")?;
                             wait_for_image_ingested(&session, &window, baseline);
                         } else {

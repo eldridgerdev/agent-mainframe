@@ -17,7 +17,13 @@ pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
 const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes in \
      .claude/final-review-feedback.md. Read that file and address every item in the most recent \
      review round (the first \"## Review\" section); earlier sections are prior rounds kept for \
-     history.";
+     history. Each item is tagged with a severity in brackets: [blocker] must be fixed, \
+     [suggestion] and [nit] are improvements worth making, [question] wants an answer (not \
+     necessarily a code change), and [praise] needs no action. Prioritize the blockers. \
+     After you address an item, append a reply directly under it in that same file on its own \
+     line, starting with \"**Agent:** \" — say what you changed (e.g. \"fixed in src/foo.rs\") or, \
+     if you disagree or are answering a [question], why. Keep each reply to a sentence or two. \
+     These replies are shown to the reviewer beside your changes on the next review round.";
 
 /// The resumable parts of an in-flight final review, persisted to
 /// `.claude/final-review-progress.json` so a long review can be paused
@@ -26,6 +32,11 @@ const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes 
 struct ReviewProgress {
     #[serde(default)]
     decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// Which of `decisions`' rejections were auto-set by a line comment rather
+    /// than explicitly. Defaulted so older progress files load unchanged (their
+    /// rejections simply read as explicit — the conservative direction).
+    #[serde(default)]
+    auto_rejected: std::collections::HashSet<String>,
     #[serde(default)]
     line_comments: std::collections::HashMap<String, Vec<LineComment>>,
     #[serde(default)]
@@ -56,6 +67,12 @@ struct ReviewSnapshot {
     /// file path -> diff fingerprint at the time of the last finished review.
     #[serde(default)]
     files: std::collections::HashMap<String, String>,
+    /// file path -> the verdict that file carried when the round finished, so a
+    /// re-review can restore approvals for files that have not changed since.
+    /// Defaulted so snapshots written before this field load unchanged (no
+    /// carried verdicts, everything simply re-checked).
+    #[serde(default)]
+    decisions: std::collections::HashMap<String, ReviewDecision>,
 }
 
 /// Path of the saved review-snapshot file for a feature workdir.
@@ -131,6 +148,7 @@ impl App {
         }
         let progress = ReviewProgress {
             decisions: state.decisions.clone(),
+            auto_rejected: state.auto_rejected.clone(),
             line_comments: state.line_comments.clone(),
             general_feedback: state.general_feedback.clone(),
             selected_file: state.selected_file,
@@ -166,12 +184,23 @@ impl App {
     /// files changed since (the re-review loop). Best-effort: a write failure is
     /// logged, not surfaced — it only degrades change detection on the next
     /// round. Unlike the progress file, this is *not* cleared on finish.
-    fn save_review_snapshot(&mut self, workdir: &Path, files: &[crate::diff::DiffFile]) {
+    fn save_review_snapshot(
+        &mut self,
+        workdir: &Path,
+        files: &[crate::diff::DiffFile],
+        decisions: &std::collections::HashMap<String, ReviewDecision>,
+    ) {
         let snapshot = ReviewSnapshot {
             reviewed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             files: files
                 .iter()
                 .map(|f| (f.path.clone(), file_fingerprint(f)))
+                .collect(),
+            // Only persist verdicts for files still in the diff, keyed the same
+            // as the fingerprints above.
+            decisions: files
+                .iter()
+                .filter_map(|f| decisions.get(&f.path).map(|d| (f.path.clone(), d.clone())))
                 .collect(),
         };
         let path = review_snapshot_path(workdir);
@@ -216,6 +245,11 @@ impl App {
             .decisions
             .into_iter()
             .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+        state.auto_rejected = progress
+            .auto_rejected
+            .into_iter()
+            .filter(|path| known.contains(path.as_str()))
             .collect();
         state.line_comments = progress
             .line_comments
@@ -268,13 +302,34 @@ impl App {
         let total = state.files.len();
         let changed = state.changed_since_last.len();
         // Only steer a fresh review: leave an in-progress / refreshed review's
-        // filter and selection untouched.
+        // filter and selection untouched. Computed before any carry-over below
+        // so restored approvals don't make the open read as non-pristine.
         let pristine = state.decisions.is_empty()
             && state.line_comments.is_empty()
             && state.general_feedback.is_empty()
             && state.file_filter == FileFilter::All;
         if !pristine {
             return;
+        }
+        // Fresh open of a re-review: carry over approvals for files that have not
+        // changed since the last finished round, so the reviewer resumes from the
+        // saved approved state and only re-checks the changed / rejected files.
+        // Changed files were dropped from `changed_since_last`'s complement, so
+        // their stale approval is deliberately not restored.
+        let carry: Vec<String> = state
+            .files
+            .iter()
+            .filter(|f| !state.changed_since_last.contains(&f.path))
+            .filter(|f| {
+                matches!(
+                    snapshot.decisions.get(&f.path),
+                    Some(ReviewDecision::Approve)
+                )
+            })
+            .map(|f| f.path.clone())
+            .collect();
+        for path in carry {
+            state.decisions.insert(path, ReviewDecision::Approve);
         }
         let when = if snapshot.reviewed_at.is_empty() {
             String::new()
@@ -303,6 +358,34 @@ impl App {
         }
     }
 
+    /// On opening a re-review, load the feature agent's replies from the last
+    /// round of `.claude/final-review-feedback.md` (the `**Agent:**` blocks it
+    /// was prompted to append) so they can be shown beside each file's diff.
+    /// Only files still present in the diff are kept; a first review (no feedback
+    /// file) leaves the map empty.
+    pub fn load_prior_agent_responses(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        state.prior_agent_responses.clear();
+        let path = state
+            .workdir
+            .join(".claude")
+            .join("final-review-feedback.md");
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let known: std::collections::HashSet<&str> =
+            state.files.iter().map(|f| f.path.as_str()).collect();
+        state.prior_agent_responses = parse_agent_responses(&contents)
+            .into_iter()
+            .filter(|(path, _)| known.contains(path.as_str()))
+            .collect();
+    }
+
     /// Approve the file currently selected in the review viewer and advance.
     pub fn diff_review_approve_current(&mut self) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
@@ -313,6 +396,9 @@ impl App {
                 state
                     .decisions
                     .insert(file.path.clone(), ReviewDecision::Approve);
+                // An explicit verdict wins over (and sticks against) a
+                // rejection auto-set by a line comment.
+                state.auto_rejected.remove(&file.path);
             }
         }
         self.diff_review_advance();
@@ -327,6 +413,10 @@ impl App {
             }
             if let Some(file) = state.files.get(state.selected_file) {
                 state.decisions.remove(&file.path);
+                // An explicit skip clears a comment-implied rejection. A later
+                // comment mutation on the file re-defaults it — a fresh signal
+                // on a file with no verdict.
+                state.auto_rejected.remove(&file.path);
             }
         }
         self.diff_review_advance();
@@ -391,6 +481,199 @@ impl App {
         }
     }
 
+    /// Jump the line cursor to the next (`delta > 0`) or previous hunk's first
+    /// line, activating the cursor if it is off (next lands on the first hunk,
+    /// prev on the last). "Previous" picks the largest hunk start strictly below
+    /// the cursor, so from mid-hunk it first snaps back to the current hunk's
+    /// start. The selection anchor is kept, so a `v` range can extend across
+    /// hunks; the patch follows via the cursor sync.
+    pub fn diff_review_jump_hunk(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let Some(file) = state.files.get(state.selected_file) else {
+                return;
+            };
+            let starts = file.hunk_start_indices();
+            let (Some(&first), Some(&last)) = (starts.first(), starts.last()) else {
+                self.message = Some("No hunks to jump between".to_string());
+                return;
+            };
+            let target = match state.comment_cursor {
+                None => {
+                    if delta > 0 {
+                        first
+                    } else {
+                        last
+                    }
+                }
+                Some(cur) if delta > 0 => {
+                    match starts.iter().find(|&&idx| idx > cur) {
+                        Some(&next) => next,
+                        None => return, // already in the last hunk
+                    }
+                }
+                Some(cur) => match starts.iter().rev().find(|&&idx| idx < cur) {
+                    Some(&prev) => prev,
+                    None => return, // already at the first hunk's start
+                },
+            };
+            state.comment_cursor = Some(target);
+            state.cursor_sync_to_view = true;
+        }
+    }
+
+    /// Open the diff search prompt in the review viewer (`/`). Requires the
+    /// current file to have addressable diff lines, and activates the line
+    /// cursor if it is off so matches have a jump target. Keeps any existing
+    /// query as the editable seed so `/`↵ repeats the last search.
+    pub fn diff_review_start_search(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let has_lines = state
+                .files
+                .get(state.selected_file)
+                .is_some_and(|f| !f.addressable_lines().is_empty());
+            if !has_lines {
+                self.message = Some("Nothing to search in this file".to_string());
+                return;
+            }
+            if state.comment_cursor.is_none() {
+                state.comment_cursor = Some(0);
+                state.cursor_sync_to_view = true;
+            }
+            state.editing_search = true;
+        }
+    }
+
+    /// Append a typed character to the search query and re-run the incremental
+    /// jump. Control characters are ignored.
+    pub fn diff_search_input(&mut self, c: char) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_search || c.is_control() {
+                return;
+            }
+            state.search_query.push(c);
+        } else {
+            return;
+        }
+        self.diff_search_recompute_and_jump();
+    }
+
+    /// Delete the last character of the search query and re-run the incremental
+    /// jump.
+    pub fn diff_search_backspace(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.editing_search {
+                return;
+            }
+            state.search_query.pop();
+        } else {
+            return;
+        }
+        self.diff_search_recompute_and_jump();
+    }
+
+    /// Commit the search: close the prompt but keep the query and matches so
+    /// `n`/`N` can cycle them. Reports the hit count (or a miss); a blank query
+    /// just clears the search.
+    pub fn diff_search_submit(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.editing_search = false;
+            if state.search_query.trim().is_empty() {
+                state.clear_search();
+                return;
+            }
+            if state.search_matches.is_empty() {
+                self.message = Some(format!("No matches for \"{}\"", state.search_query));
+            } else {
+                self.message = Some(format!(
+                    "Match {}/{} for \"{}\" — n/N next/prev, Esc clear",
+                    state.search_match_pos.map(|p| p + 1).unwrap_or(0),
+                    state.search_matches.len(),
+                    state.search_query
+                ));
+            }
+        }
+    }
+
+    /// Cancel the search prompt (Esc while typing), discarding the query.
+    pub fn diff_search_cancel(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.clear_search();
+        }
+    }
+
+    /// Clear a committed search (Esc while it is active), restoring `n`/`N` to
+    /// their file-navigation meaning. Leaves the line cursor where it is.
+    pub fn diff_search_clear(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.clear_search();
+        }
+    }
+
+    /// Whether a committed (non-editing) search is active, so match-navigation
+    /// keys should shadow file navigation in the key layer.
+    pub fn diff_search_active(&self) -> bool {
+        matches!(
+            &self.mode,
+            AppMode::DiffViewer(state)
+                if state.review && !state.editing_search && !state.search_query.trim().is_empty()
+        )
+    }
+
+    /// Move to the next (`delta > 0`) / previous (`delta < 0`) match, wrapping,
+    /// and land the line cursor on it. Reports a miss when there are no matches.
+    pub fn diff_search_next(&mut self, delta: isize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if state.search_matches.is_empty() {
+                self.message = Some(format!("No matches for \"{}\"", state.search_query));
+                return;
+            }
+            let len = state.search_matches.len();
+            let cur = state.search_match_pos.unwrap_or(0) as isize;
+            let next = (cur + delta).rem_euclid(len as isize) as usize;
+            state.search_match_pos = Some(next);
+            state.comment_cursor = Some(state.search_matches[next]);
+            state.cursor_sync_to_view = true;
+            self.message = Some(format!(
+                "Match {}/{} for \"{}\"",
+                next + 1,
+                len,
+                state.search_query
+            ));
+        }
+    }
+
+    /// Recompute matches for the current file + query and jump the cursor to the
+    /// first match at or after its current position (wrapping to the first), so
+    /// the view stays anchored as the reviewer types. Leaves the cursor put when
+    /// there is no match.
+    fn diff_search_recompute_and_jump(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let query = state.search_query.clone();
+            let matches = state
+                .files
+                .get(state.selected_file)
+                .map(|f| compute_search_matches(f, &query))
+                .unwrap_or_default();
+            if matches.is_empty() {
+                state.search_matches = matches;
+                state.search_match_pos = None;
+                return;
+            }
+            let from = state.comment_cursor.unwrap_or(0);
+            let pos = matches.iter().position(|&idx| idx >= from).unwrap_or(0);
+            state.comment_cursor = Some(matches[pos]);
+            state.cursor_sync_to_view = true;
+            state.search_matches = matches;
+            state.search_match_pos = Some(pos);
+        }
+    }
+
     /// Toggle the multi-line selection anchor at the current cursor. With the
     /// anchor set, moving the cursor extends a span that the next comment covers;
     /// toggling again drops back to a single-line comment. No-op without an
@@ -438,16 +721,20 @@ impl App {
                 comments.iter().find_map(|c| {
                     c.covered_indices(&locs)
                         .filter(|range| range.contains(&cur))
-                        .map(|range| (c.text.clone(), range))
+                        .map(|range| (c.text.clone(), c.severity, range))
                 })
             });
-            let text = if let Some((text, range)) = existing {
+            let text = if let Some((text, severity, range)) = existing {
                 if state.comment_anchor.is_none() {
                     state.comment_anchor = Some(*range.start());
                     state.comment_cursor = Some(*range.end());
                 }
+                // Editing an existing comment resumes at its severity; a fresh
+                // comment starts at the neutral default.
+                state.comment_severity = severity;
                 text
             } else {
+                state.comment_severity = crate::app::Severity::default();
                 String::new()
             };
             state.feedback_editor = crate::editor::TextEditor::new(text);
@@ -464,6 +751,7 @@ impl App {
     /// comments overlapping the span and clears the selection anchor. Does not
     /// advance the cursor, so a reviewer can keep annotating nearby lines.
     pub fn diff_review_submit_line_comment(&mut self) {
+        let mut commented_path = None;
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.editing_line_comment {
                 return;
@@ -485,6 +773,7 @@ impl App {
                     .get(state.selected_file)
                     .map(|f| f.addressable_lines())
                     .unwrap_or_default();
+                commented_path = Some(path.clone());
                 let comments = state.line_comments.entry(path).or_default();
                 // Carry over a suggested change already attached to the span so
                 // editing the prose doesn't drop it.
@@ -513,6 +802,7 @@ impl App {
                         // draft, even if it replaced an AI draft on this span.
                         draft: false,
                         suggestion,
+                        severity: state.comment_severity,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -524,7 +814,46 @@ impl App {
             state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
         }
+        if let Some(path) = commented_path {
+            self.diff_review_sync_auto_reject(&path);
+        }
         self.persist_review_progress();
+    }
+
+    /// Reconcile a file's implicit "needs revision" verdict with its kept
+    /// (non-draft) line comments: a commented file is a file that needs work, so
+    /// the first kept comment defaults an undecided file to `Reject` with empty
+    /// feedback (the comments carry the specifics), and removing the last kept
+    /// comment clears a rejection that was auto-set this way. An explicit
+    /// verdict — approve/skip/reject, or a carried-over approval — is never
+    /// overridden. Called after every comment mutation, before the progress
+    /// persist, so what's on disk always reflects the synced verdict.
+    fn diff_review_sync_auto_reject(&mut self, path: &str) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            if !state.review {
+                return;
+            }
+            let has_kept = state
+                .line_comments
+                .get(path)
+                .is_some_and(|comments| comments.iter().any(|c| !c.draft));
+            if has_kept {
+                if !state.decisions.contains_key(path) {
+                    state.decisions.insert(
+                        path.to_string(),
+                        ReviewDecision::Reject {
+                            feedback: String::new(),
+                            // The file's real severity lives on its line comments;
+                            // the auto-rejection verdict itself stays neutral.
+                            severity: crate::app::Severity::default(),
+                        },
+                    );
+                    state.auto_rejected.insert(path.to_string());
+                }
+            } else if state.auto_rejected.remove(path) {
+                state.decisions.remove(path);
+            }
+        }
     }
 
     /// Open the suggested-change editor for the cursored line(s). Pre-fills the
@@ -556,20 +885,24 @@ impl App {
                 comments.iter().find_map(|c| {
                     c.covered_indices(&locs)
                         .filter(|range| range.contains(&cur))
-                        .map(|range| (c.suggestion.clone(), range))
+                        .map(|range| (c.suggestion.clone(), c.severity, range))
                 })
             });
             let prefill = match existing {
-                Some((suggestion, range)) => {
+                Some((suggestion, severity, range)) => {
                     if state.comment_anchor.is_none() {
                         state.comment_anchor = Some(*range.start());
                         state.comment_cursor = Some(*range.end());
                     }
+                    // Carry the existing comment's severity onto the (re)written
+                    // suggestion; the suggestion editor doesn't cycle it.
+                    state.comment_severity = severity;
                     // Existing suggestion: edit it. Otherwise seed from the span's
                     // current code.
                     suggestion.unwrap_or_else(|| span_current_text(&texts, &range))
                 }
                 None => {
+                    state.comment_severity = crate::app::Severity::default();
                     let lo = state.comment_anchor.unwrap_or(cur).min(cur);
                     let hi = state.comment_anchor.unwrap_or(cur).max(cur);
                     span_current_text(&texts, &(lo..=hi))
@@ -589,6 +922,7 @@ impl App {
     /// span (creating a comment with empty prose when none exists). An empty
     /// suggestion clears it — deleting the comment when it also has no prose.
     pub fn diff_review_submit_suggestion(&mut self) {
+        let mut commented_path = None;
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.editing_suggestion {
                 return;
@@ -613,18 +947,20 @@ impl App {
                     .get(state.selected_file)
                     .map(|f| f.addressable_lines())
                     .unwrap_or_default();
+                commented_path = Some(path.clone());
                 let comments = state.line_comments.entry(path).or_default();
-                // Preserve the prose of an existing comment on the span; a fresh
-                // suggestion-only comment carries empty prose.
-                let prose = comments
-                    .iter()
-                    .find(|c| {
-                        c.covered_indices(&locs)
-                            .map(|r| !(*r.end() < lo || *r.start() > hi))
-                            .unwrap_or(false)
-                    })
-                    .map(|c| c.text.clone())
-                    .unwrap_or_default();
+                // Preserve the prose (and severity) of an existing comment on the
+                // span; a fresh suggestion-only comment carries empty prose and
+                // the composed default severity.
+                let existing = comments.iter().find(|c| {
+                    c.covered_indices(&locs)
+                        .map(|r| !(*r.end() < lo || *r.start() > hi))
+                        .unwrap_or(false)
+                });
+                let prose = existing.map(|c| c.text.clone()).unwrap_or_default();
+                let severity = existing
+                    .map(|c| c.severity)
+                    .unwrap_or(state.comment_severity);
                 comments.retain(|c| {
                     c.covered_indices(&locs)
                         .map(|r| *r.end() < lo || *r.start() > hi)
@@ -638,6 +974,7 @@ impl App {
                         text: prose,
                         draft: false,
                         suggestion,
+                        severity,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -648,6 +985,9 @@ impl App {
             state.editing_suggestion = false;
             state.comment_anchor = None;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
+        }
+        if let Some(path) = commented_path {
+            self.diff_review_sync_auto_reject(&path);
         }
         self.persist_review_progress();
     }
@@ -670,9 +1010,7 @@ impl App {
             let path = file.path.clone();
             // A developer note or an already-generated walkthrough makes this a
             // no-op.
-            if state.review_notes.contains_key(&path)
-                || state.generated_notes.contains_key(&path)
-            {
+            if state.review_notes.contains_key(&path) || state.generated_notes.contains_key(&path) {
                 return;
             }
             if file.is_binary {
@@ -721,9 +1059,10 @@ impl App {
         };
 
         let (child, path) = match &mut self.mode {
-            AppMode::DiffViewer(state) => {
-                (state.walkthrough_child.take(), state.walkthrough_file.take())
-            }
+            AppMode::DiffViewer(state) => (
+                state.walkthrough_child.take(),
+                state.walkthrough_file.take(),
+            ),
             _ => (None, None),
         };
         let (Some(child), Some(path)) = (child, path) else {
@@ -838,10 +1177,7 @@ impl App {
                 // Don't stack a draft on a line that already carries a comment
                 // (human or a prior draft).
                 let overlaps = existing.iter().any(|c| {
-                    match (
-                        c.covered_indices(&locs),
-                        draft.covered_indices(&locs),
-                    ) {
+                    match (c.covered_indices(&locs), draft.covered_indices(&locs)) {
                         (Some(a), Some(b)) => *a.start() <= *b.end() && *b.start() <= *a.end(),
                         _ => false,
                     }
@@ -881,8 +1217,9 @@ impl App {
             let Some(file) = state.files.get(state.selected_file) else {
                 return false;
             };
+            let path = file.path.clone();
             let locs = file.addressable_lines();
-            match state.line_comments.get_mut(&file.path).and_then(|comments| {
+            match state.line_comments.get_mut(&path).and_then(|comments| {
                 comments.iter_mut().find(|c| {
                     c.draft
                         && c.covered_indices(&locs)
@@ -891,18 +1228,23 @@ impl App {
             }) {
                 Some(comment) => {
                     comment.draft = false;
-                    true
+                    Some(path)
                 }
-                None => false,
+                None => None,
             }
         } else {
-            false
+            None
         };
-        if acted {
+        if let Some(path) = acted {
             self.message = Some("Draft comment accepted".to_string());
+            // An accepted draft is a human-affirmed finding: it counts toward
+            // the file's implicit "needs revision" verdict like a hand-written
+            // comment.
+            self.diff_review_sync_auto_reject(&path);
             self.persist_review_progress();
+            return true;
         }
-        acted
+        false
     }
 
     /// Dismiss (delete) the AI draft comment under the line cursor. Returns
@@ -915,8 +1257,9 @@ impl App {
             let Some(file) = state.files.get(state.selected_file) else {
                 return false;
             };
+            let path = file.path.clone();
             let locs = file.addressable_lines();
-            match state.line_comments.get_mut(&file.path) {
+            match state.line_comments.get_mut(&path) {
                 Some(comments) => {
                     let before = comments.len();
                     comments.retain(|c| {
@@ -924,18 +1267,22 @@ impl App {
                             && c.covered_indices(&locs)
                                 .is_some_and(|range| range.contains(&cur)))
                     });
-                    comments.len() != before
+                    (comments.len() != before).then_some(path)
                 }
-                None => false,
+                None => None,
             }
         } else {
-            false
+            None
         };
-        if acted {
+        if let Some(path) = acted {
             self.message = Some("Draft comment dismissed".to_string());
+            // Dismissing a draft can't add a kept comment, but the sync keeps
+            // every comment-mutation path uniform.
+            self.diff_review_sync_auto_reject(&path);
             self.persist_review_progress();
+            return true;
         }
-        acted
+        false
     }
 
     /// Move the line cursor to the next draft comment in the current file
@@ -988,11 +1335,16 @@ impl App {
                 .get(state.selected_file)
                 .and_then(|f| state.decisions.get(&f.path))
                 .and_then(|d| match d {
-                    ReviewDecision::Reject { feedback } => Some(feedback.clone()),
+                    ReviewDecision::Reject { feedback, severity } => {
+                        Some((feedback.clone(), *severity))
+                    }
                     ReviewDecision::Approve => None,
-                })
-                .unwrap_or_default();
-            state.feedback_editor = crate::editor::TextEditor::new(existing);
+                });
+            // Resume an existing rejection's severity; a fresh rejection defaults
+            // to Blocker — rejecting a file outright is a must-fix signal.
+            let (text, severity) = existing.unwrap_or((String::new(), Severity::Blocker));
+            state.comment_severity = severity;
+            state.feedback_editor = crate::editor::TextEditor::new(text);
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.feedback_editing = true;
@@ -1006,8 +1358,7 @@ impl App {
             if !state.review {
                 return;
             }
-            state.feedback_editor =
-                crate::editor::TextEditor::new(state.general_feedback.clone());
+            state.feedback_editor = crate::editor::TextEditor::new(state.general_feedback.clone());
             state.feedback_scroll = 0;
             state.feedback_sync_to_cursor = true;
             state.editing_general = true;
@@ -1047,10 +1398,15 @@ impl App {
                 return;
             }
             let feedback = state.feedback_editor.text().trim().to_string();
+            let severity = state.comment_severity;
             if let Some(file) = state.files.get(state.selected_file) {
-                state
-                    .decisions
-                    .insert(file.path.clone(), ReviewDecision::Reject { feedback });
+                state.decisions.insert(
+                    file.path.clone(),
+                    ReviewDecision::Reject { feedback, severity },
+                );
+                // The reviewer typed this rejection themselves: it is explicit
+                // now and no longer tracks the file's comments.
+                state.auto_rejected.remove(&file.path);
             }
             state.feedback_editing = false;
             state.feedback_editor = crate::editor::TextEditor::new(String::new());
@@ -1270,22 +1626,24 @@ impl App {
         // …but record a fingerprint of what was reviewed (even an all-approved
         // round) so the next review can flag files that changed since.
         if !files.is_empty() {
-            self.save_review_snapshot(&workdir, &files);
+            self.save_review_snapshot(&workdir, &files, &decisions);
         }
 
         let total = files.len();
         let mut approved = 0usize;
-        let mut rejected: Vec<(String, String)> = Vec::new();
+        let mut rejected: Vec<(String, String, Severity)> = Vec::new();
         for file in &files {
             match decisions.get(&file.path) {
                 Some(ReviewDecision::Approve) => approved += 1,
-                Some(ReviewDecision::Reject { feedback }) => {
-                    rejected.push((file.path.clone(), feedback.clone()));
+                Some(ReviewDecision::Reject { feedback, severity }) => {
+                    rejected.push((file.path.clone(), feedback.clone(), *severity));
                 }
                 None => {}
             }
         }
-        let skipped = total.saturating_sub(approved).saturating_sub(rejected.len());
+        let skipped = total
+            .saturating_sub(approved)
+            .saturating_sub(rejected.len());
         let general_feedback = general_feedback.trim().to_string();
         let post_to_pr = self.config.final_review_post_to_pr;
 
@@ -1351,10 +1709,19 @@ impl App {
 
             if !rejected.is_empty() {
                 round.push_str("### Files Needing Revision\n\n");
-                for (file, feedback) in &rejected {
-                    round.push_str(&format!("#### {file}\n\n"));
+                for (file, feedback, severity) in &rejected {
+                    round.push_str(&format!("#### {file} — [{}]\n\n", severity.label()));
                     if feedback.is_empty() {
-                        round.push_str("(No feedback provided — needs revision)\n\n");
+                        // For a rejection implied by line comments the comments
+                        // are the feedback — send the agent there instead of
+                        // reporting a missing rationale.
+                        if line_comment_sections.iter().any(|(path, _)| path == file) {
+                            round.push_str(
+                                "(Needs revision — see this file's line comments below)\n\n",
+                            );
+                        } else {
+                            round.push_str("(No feedback provided — needs revision)\n\n");
+                        }
                     } else {
                         round.push_str(feedback);
                         round.push_str("\n\n");
@@ -1367,7 +1734,10 @@ impl App {
                 for (file, comments) in &line_comment_sections {
                     for comment in comments {
                         let anchor = comment_anchor_label(file, comment);
-                        round.push_str(&format!("#### {anchor}\n\n"));
+                        round.push_str(&format!(
+                            "#### {anchor} — [{}]\n\n",
+                            comment.severity.label()
+                        ));
                         if !comment.text.is_empty() {
                             round.push_str(&comment.text);
                             round.push_str("\n\n");
@@ -1554,8 +1924,9 @@ impl App {
             Ok(si) => si,
             Err(e) => {
                 self.show_error(e);
-                self.message =
-                    Some(format!("{summary} (feedback saved; couldn't start review session)"));
+                self.message = Some(format!(
+                    "{summary} (feedback saved; couldn't start review session)"
+                ));
                 self.mode = AppMode::Viewing(from_view);
                 return Ok(());
             }
@@ -1594,7 +1965,7 @@ impl App {
     fn post_final_review_to_pr(
         &mut self,
         workdir: &Path,
-        rejected: &[(String, String)],
+        rejected: &[(String, String, Severity)],
         line_comment_sections: &[(String, Vec<LineComment>)],
         general_feedback: &str,
     ) -> String {
@@ -1611,7 +1982,17 @@ impl App {
                 return format!(" — couldn't post to PR: {err}");
             }
         };
-        match GhCli::create_review(workdir, &pr, &body, "COMMENT", &comments) {
+        // Map the review's severities onto a GitHub review event, but only
+        // escalate past COMMENT when we can confirm the reviewer isn't the PR
+        // author (GitHub rejects self approve / request-changes).
+        let event = resolve_review_event(workdir, pr.number, rejected, line_comment_sections);
+        if event != "COMMENT" {
+            self.log_info(
+                "review",
+                format!("PR review event: {event} (PR #{})", pr.number),
+            );
+        }
+        match GhCli::create_review(workdir, &pr, &body, event, &comments) {
             Ok(()) => {
                 let what = if comments.is_empty() {
                     "review summary".to_string()
@@ -1639,13 +2020,33 @@ fn span_current_text(texts: &[String], range: &std::ops::RangeInclusive<usize>) 
         .join("\n")
 }
 
+/// Indices into `file.addressable_lines()` whose text contains `query`
+/// (case-insensitive substring), ascending. Empty for a blank query. Matches
+/// against `addressable_line_texts()` (diff prefix stripped) so a query hits the
+/// same content regardless of whether the line was added, removed or context.
+fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usize> {
+    if query.trim().is_empty() {
+        return Vec::new();
+    }
+    let needle = query.to_lowercase();
+    file.addressable_line_texts()
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.to_lowercase().contains(&needle))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
 /// The `file:line` (or `file:start-end`) heading for a line comment in the
 /// feedback file. A base-side (deletion-only) line is tagged `(base)`.
 fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
     let line_of = |loc: &crate::diff::DiffLineLocation| loc.new_line.or(loc.old_line);
     let base = comment.location.new_line.is_none() && comment.location.old_line.is_some();
     let suffix = if base { " (base)" } else { "" };
-    match (comment.start.as_ref().and_then(line_of), line_of(&comment.location)) {
+    match (
+        comment.start.as_ref().and_then(line_of),
+        line_of(&comment.location),
+    ) {
         (Some(start), Some(end)) if start != end => format!("{file}:{start}-{end}{suffix}"),
         (_, Some(end)) => format!("{file}:{end}{suffix}"),
         (_, None) => file.to_string(),
@@ -1663,13 +2064,59 @@ fn pr_line_side(loc: &crate::diff::DiffLineLocation) -> Option<(usize, &'static 
     }
 }
 
+/// Map a finished review's severities onto a GitHub review event. Any
+/// `Blocker` (rejection or line comment) → `REQUEST_CHANGES`; otherwise, when no
+/// file was rejected, `APPROVE` (an approving review, possibly with non-blocking
+/// notes); else `COMMENT`. Escalating past `COMMENT` requires confirming the
+/// reviewer is **not** the PR author — GitHub 422s a self approve /
+/// request-changes — so a self-review, or an inconclusive author check, stays
+/// `COMMENT` (always valid). Best-effort by design: the local feedback file is
+/// the source of truth regardless.
+fn resolve_review_event(
+    workdir: &Path,
+    pr_number: u32,
+    rejected: &[(String, String, Severity)],
+    line_comment_sections: &[(String, Vec<LineComment>)],
+) -> &'static str {
+    let escalated = severity_review_event(rejected, line_comment_sections);
+    if escalated == "COMMENT" {
+        return "COMMENT";
+    }
+    match crate::github::GhCli::is_self_review(workdir, pr_number) {
+        Ok(false) => escalated,
+        // Self-review, or we couldn't tell → the always-safe COMMENT.
+        _ => "COMMENT",
+    }
+}
+
+/// The GitHub review event a finished review's severities *want*, before the
+/// self-review guard: any `Blocker` → `REQUEST_CHANGES`; else, with no file
+/// rejected, `APPROVE`; else `COMMENT`.
+fn severity_review_event(
+    rejected: &[(String, String, Severity)],
+    line_comment_sections: &[(String, Vec<LineComment>)],
+) -> &'static str {
+    let has_blocker = rejected.iter().any(|(_, _, s)| s.is_blocker())
+        || line_comment_sections
+            .iter()
+            .flat_map(|(_, cs)| cs)
+            .any(|c| c.severity.is_blocker());
+    if has_blocker {
+        "REQUEST_CHANGES"
+    } else if rejected.is_empty() {
+        "APPROVE"
+    } else {
+        "COMMENT"
+    }
+}
+
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
 /// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`); the
 /// general feedback and whole-file rejections (which have no single line to
 /// anchor to) become the review's summary body. Returns `(body, comments)`.
 fn build_pr_review(
-    rejected: &[(String, String)],
+    rejected: &[(String, String, Severity)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
 ) -> (String, Vec<crate::github::PrReviewComment>) {
@@ -1687,14 +2134,17 @@ fn build_pr_review(
                 .and_then(|s| pr_line_side(&s))
                 .map(|(l, sd)| (Some(l), Some(sd)))
                 .unwrap_or((None, None));
+            // Lead with the conventional-comments severity tag so the priority is
+            // visible on the PR (GitHub has no native severity field).
+            let mut body = format!("**[{}]**", comment.severity.label());
+            if !comment.text.is_empty() {
+                body.push(' ');
+                body.push_str(&comment.text);
+            }
             // A suggested change posts as a GitHub fenced ```suggestion block so
             // it's one-click-appliable on the PR. Append it to any prose.
-            let mut body = comment.text.clone();
             if let Some(suggestion) = &comment.suggestion {
-                if !body.is_empty() {
-                    body.push_str("\n\n");
-                }
-                body.push_str(&format!("```suggestion\n{suggestion}\n```"));
+                body.push_str(&format!("\n\n```suggestion\n{suggestion}\n```"));
             }
             comments.push(crate::github::PrReviewComment {
                 path: path.clone(),
@@ -1715,12 +2165,13 @@ fn build_pr_review(
     }
     if !rejected.is_empty() {
         body.push_str("## Files needing revision\n\n");
-        for (file, feedback) in rejected {
+        for (file, feedback, severity) in rejected {
             let feedback = feedback.trim();
+            let tag = severity.label();
             if feedback.is_empty() {
-                body.push_str(&format!("- **{file}** — needs revision\n"));
+                body.push_str(&format!("- **{file}** — needs revision [{tag}]\n"));
             } else {
-                body.push_str(&format!("- **{file}**\n\n{feedback}\n\n"));
+                body.push_str(&format!("- **{file}** [{tag}]\n\n{feedback}\n\n"));
             }
         }
     }
@@ -1751,6 +2202,89 @@ fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
             out.push('\n');
         }
     }
+    out
+}
+
+/// Reduce an item's anchor heading (`src/foo.rs:42`, `src/foo.rs:42-48 (base)`,
+/// or a bare `src/foo.rs`) to the file path it belongs to. A `:` followed by a
+/// digit marks the start of the line suffix; anything before it is the path.
+fn anchor_file_path(anchor: &str) -> &str {
+    match anchor.find(':') {
+        Some(idx) if anchor[idx + 1..].starts_with(|c: char| c.is_ascii_digit()) => &anchor[..idx],
+        _ => anchor,
+    }
+}
+
+/// Parse the latest review round's agent replies from a feedback file, grouped
+/// by file path. Rounds are prepended (see `compose_feedback_log`), so the first
+/// `## Review` section is the most recent. Each `#### {anchor} — [severity]` item
+/// may be followed by a `**Agent:** …` reply the feature agent appended (see
+/// `REVIEW_FEEDBACK_PROMPT`); only items whose agent actually replied are
+/// returned. The reply runs from the `**Agent:**` marker to the next heading.
+fn parse_agent_responses(
+    feedback: &str,
+) -> std::collections::HashMap<String, Vec<crate::app::state::AgentResponse>> {
+    use crate::app::state::AgentResponse;
+    let mut out: std::collections::HashMap<String, Vec<AgentResponse>> =
+        std::collections::HashMap::new();
+
+    let mut lines = feedback.lines();
+    // Advance to the newest round; bail if the file has none.
+    for line in lines.by_ref() {
+        if line.starts_with("## Review") {
+            break;
+        }
+    }
+
+    let mut anchor: Option<String> = None;
+    // The reply text currently being collected for `anchor`, once a `**Agent:**`
+    // marker has been seen. `None` until the marker, so the item's own text is
+    // skipped.
+    let mut reply: Option<Vec<String>> = None;
+
+    // Flush the collected reply (if any) onto the current anchor.
+    let flush = |anchor: &Option<String>,
+                 reply: &mut Option<Vec<String>>,
+                 out: &mut std::collections::HashMap<String, Vec<AgentResponse>>| {
+        if let (Some(anchor), Some(body)) = (anchor.as_ref(), reply.take()) {
+            let response = body.join("\n").trim().to_string();
+            if !response.is_empty() {
+                out.entry(anchor_file_path(anchor).to_string())
+                    .or_default()
+                    .push(AgentResponse {
+                        anchor: anchor.clone(),
+                        response,
+                    });
+            }
+        }
+    };
+
+    for line in lines {
+        // A new round ends the latest one — stop before older history.
+        if line.starts_with("## Review") || line.starts_with("# ") {
+            flush(&anchor, &mut reply, &mut out);
+            break;
+        }
+        if let Some(rest) = line.strip_prefix("#### ") {
+            flush(&anchor, &mut reply, &mut out);
+            // Heading is `{anchor} — [severity]`; keep just the anchor.
+            anchor = Some(rest.split(" — [").next().unwrap_or(rest).trim().to_string());
+            continue;
+        }
+        if line.starts_with("### ") {
+            // A section heading (General Feedback / Files Needing Revision /
+            // Line Comments) ends the current item's reply but stays in-round.
+            flush(&anchor, &mut reply, &mut out);
+            anchor = None;
+            continue;
+        }
+        if let Some(body) = &mut reply {
+            body.push(line.to_string());
+        } else if let Some(rest) = line.trim_start().strip_prefix("**Agent:**") {
+            reply = Some(vec![rest.trim_start().to_string()]);
+        }
+    }
+    flush(&anchor, &mut reply, &mut out);
     out
 }
 
@@ -1843,7 +2377,11 @@ fn parse_co_review_output(
             continue;
         };
         // Tolerate a leading bullet / marker before the number (e.g. "- 42|…").
-        let Ok(new_line) = num.trim().trim_start_matches(['-', '*', '•', ' ']).trim().parse::<usize>()
+        let Ok(new_line) = num
+            .trim()
+            .trim_start_matches(['-', '*', '•', ' '])
+            .trim()
+            .parse::<usize>()
         else {
             continue;
         };
@@ -1851,11 +2389,7 @@ fn parse_co_review_output(
         if text.is_empty() {
             continue;
         }
-        let Some(location) = locs
-            .iter()
-            .find(|l| l.new_line == Some(new_line))
-            .copied()
-        else {
+        let Some(location) = locs.iter().find(|l| l.new_line == Some(new_line)).copied() else {
             continue;
         };
         out.push(LineComment {
@@ -1864,6 +2398,7 @@ fn parse_co_review_output(
             text: text.to_string(),
             draft: true,
             suggestion: None,
+            severity: crate::app::Severity::default(),
         });
     }
     out
@@ -1928,11 +2463,13 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pr_review, build_walkthrough_prompt, compose_feedback_log, parse_co_review_output,
-        parse_review_notes,
+        anchor_file_path, build_pr_review, build_walkthrough_prompt, compose_feedback_log,
+        compute_search_matches, parse_agent_responses, parse_co_review_output, parse_review_notes,
+        severity_review_event,
     };
-    use crate::app::LineComment;
-    use crate::diff::DiffLineLocation;
+    use crate::app::state::DiffViewerState;
+    use crate::app::{LineComment, Severity};
+    use crate::diff::{DiffLineLocation, parse_unified_diff};
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
         LineComment {
@@ -1941,6 +2478,7 @@ mod tests {
             text: text.to_string(),
             draft: false,
             suggestion: None,
+            severity: Severity::default(),
         }
     }
 
@@ -1958,6 +2496,7 @@ mod tests {
             text: text.to_string(),
             draft: false,
             suggestion: None,
+            severity: Severity::default(),
         }
     }
 
@@ -2001,8 +2540,12 @@ mod tests {
     #[test]
     fn pr_review_maps_lines_inline_and_folds_files_into_body() {
         let rejected = vec![
-            ("src/a.rs".to_string(), "tighten this up".to_string()),
-            ("src/b.rs".to_string(), String::new()),
+            (
+                "src/a.rs".to_string(),
+                "tighten this up".to_string(),
+                Severity::Suggestion,
+            ),
+            ("src/b.rs".to_string(), String::new(), Severity::Blocker),
         ];
         let line_comments = vec![(
             "src/c.rs".to_string(),
@@ -2074,9 +2617,10 @@ mod tests {
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
         let (_, comments) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments.len(), 1);
+        // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
             comments[0].body,
-            "use a guard\n\n```suggestion\nlet x = y?;\n```"
+            "**[suggestion]** use a guard\n\n```suggestion\nlet x = y?;\n```"
         );
     }
 
@@ -2086,7 +2630,46 @@ mod tests {
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
         let (_, comments) = build_pr_review(&[], &line_comments, "");
-        assert_eq!(comments[0].body, "```suggestion\nlet x = y?;\n```");
+        // Even a suggestion-only comment carries its severity tag.
+        assert_eq!(
+            comments[0].body,
+            "**[suggestion]**\n\n```suggestion\nlet x = y?;\n```"
+        );
+    }
+
+    fn blocker_comment(new_line: usize, text: &str) -> LineComment {
+        let mut c = line_comment(Some(new_line), None, text);
+        c.severity = Severity::Blocker;
+        c
+    }
+
+    #[test]
+    fn severity_event_requests_changes_on_a_blocker() {
+        // A blocker rejection escalates.
+        let rejected = vec![("a.rs".to_string(), "no".to_string(), Severity::Blocker)];
+        assert_eq!(severity_review_event(&rejected, &[]), "REQUEST_CHANGES");
+        // A blocker line comment escalates even with no rejection.
+        let sections = vec![("a.rs".to_string(), vec![blocker_comment(3, "must fix")])];
+        assert_eq!(severity_review_event(&[], &sections), "REQUEST_CHANGES");
+    }
+
+    #[test]
+    fn severity_event_approves_with_no_rejections_else_comments() {
+        // No rejection, only non-blocking notes → an approving review.
+        let sections = vec![("a.rs".to_string(), vec![line_comment(Some(3), None, "nit")])];
+        assert_eq!(severity_review_event(&[], &sections), "APPROVE");
+        assert_eq!(severity_review_event(&[], &[]), "APPROVE");
+        // A non-blocking rejection is a plain comment review.
+        let rejected = vec![("a.rs".to_string(), "meh".to_string(), Severity::Suggestion)];
+        assert_eq!(severity_review_event(&rejected, &[]), "COMMENT");
+    }
+
+    #[test]
+    fn feedback_body_tags_line_comments_with_severity() {
+        // The PR summary body tags a whole-file rejection with its severity.
+        let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
+        let (body, _) = build_pr_review(&rejected, &[], "");
+        assert!(body.contains("**a.rs** [blocker]"), "body was: {body}");
     }
 
     #[test]
@@ -2110,7 +2693,10 @@ mod tests {
     fn first_round_writes_title_then_round() {
         let round = "## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n";
         let out = compose_feedback_log(None, round);
-        assert_eq!(out, "# Final Review Feedback\n\n## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n");
+        assert_eq!(
+            out,
+            "# Final Review Feedback\n\n## Review — 2026-06-25T00:00:00Z\n\nbody.\n\n"
+        );
     }
 
     #[test]
@@ -2136,6 +2722,123 @@ mod tests {
         assert!(out.contains("old."));
     }
 
+    #[test]
+    fn anchor_file_path_strips_line_suffix() {
+        assert_eq!(anchor_file_path("src/foo.rs"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42-48"), "src/foo.rs");
+        assert_eq!(anchor_file_path("src/foo.rs:42 (base)"), "src/foo.rs");
+        // A colon not followed by a digit is part of the path, not a suffix.
+        assert_eq!(anchor_file_path("weird:name.rs"), "weird:name.rs");
+    }
+
+    #[test]
+    fn parse_agent_responses_groups_replies_by_file() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Files Needing Revision
+
+#### src/foo.rs — [blocker]
+
+Needs error handling.
+
+**Agent:** fixed in src/foo.rs — added a match on the Result.
+
+### Line Comments
+
+#### src/foo.rs:42 — [suggestion]
+
+Rename this variable.
+
+**Agent:** done, renamed to `count`.
+
+#### src/bar.rs:10-12 — [question]
+
+Why the loop?
+
+**Agent:** disagree — the loop is needed for the retry.
+";
+        let out = parse_agent_responses(feedback);
+        let foo = out.get("src/foo.rs").expect("foo replies");
+        assert_eq!(foo.len(), 2);
+        assert_eq!(foo[0].anchor, "src/foo.rs");
+        assert!(foo[0].response.contains("added a match"));
+        assert_eq!(foo[1].anchor, "src/foo.rs:42");
+        assert!(foo[1].response.contains("renamed to"));
+        let bar = out.get("src/bar.rs").expect("bar replies");
+        assert_eq!(bar[0].anchor, "src/bar.rs:10-12");
+        assert!(bar[0].response.contains("disagree"));
+    }
+
+    #[test]
+    fn parse_agent_responses_only_reads_latest_round() {
+        // Older rounds (below the first `## Review`) must not leak in.
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [nit]
+
+New item.
+
+## Review — 2026-07-01T00:00:00Z
+
+### Line Comments
+
+#### src/old.rs:9 — [blocker]
+
+Old item.
+
+**Agent:** addressed last round.
+";
+        let out = parse_agent_responses(feedback);
+        // The newest round's item has no reply; the old round's reply is ignored.
+        assert!(out.is_empty(), "only the latest round is parsed, {out:?}");
+    }
+
+    #[test]
+    fn parse_agent_responses_skips_item_text_without_reply() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [nit]
+
+Just a comment, no agent reply yet.
+";
+        assert!(parse_agent_responses(feedback).is_empty());
+    }
+
+    #[test]
+    fn parse_agent_responses_captures_multiline_reply() {
+        let feedback = "\
+# Final Review Feedback
+
+## Review — 2026-07-02T00:00:00Z
+
+### Line Comments
+
+#### src/foo.rs:5 — [suggestion]
+
+Do the thing.
+
+**Agent:** first line of reply.
+second line of reply.
+";
+        let out = parse_agent_responses(feedback);
+        let reply = &out.get("src/foo.rs").unwrap()[0].response;
+        assert!(reply.contains("first line"));
+        assert!(reply.contains("second line"));
+    }
 
     #[test]
     fn walkthrough_prompt_includes_path_and_patch() {
@@ -2214,5 +2917,67 @@ ignored body
             notes.get("src/main.rs").map(String::as_str),
             Some("Did a thing.")
         );
+    }
+
+    const SEARCH_PATCH: &str = "\
+diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,4 @@
+ fn alpha() {}
+-fn beta() {}
++fn beta_two() {}
++fn gamma_alpha() {}
+ fn delta() {}
+";
+
+    #[test]
+    fn compute_search_matches_finds_case_insensitive_substrings() {
+        let files = parse_unified_diff(SEARCH_PATCH).unwrap();
+        let file = &files[0];
+        // Addressable lines: 0 alpha (ctx), 1 beta (del), 2 beta_two (add),
+        // 3 gamma_alpha (add), 4 delta (ctx).
+        assert_eq!(compute_search_matches(file, "alpha"), vec![0, 3]);
+        assert_eq!(compute_search_matches(file, "beta"), vec![1, 2]);
+        // Case-insensitive.
+        assert_eq!(compute_search_matches(file, "ALPHA"), vec![0, 3]);
+    }
+
+    #[test]
+    fn compute_search_matches_empty_query_or_no_hit_is_empty() {
+        let files = parse_unified_diff(SEARCH_PATCH).unwrap();
+        let file = &files[0];
+        assert!(compute_search_matches(file, "").is_empty());
+        assert!(compute_search_matches(file, "   ").is_empty());
+        assert!(compute_search_matches(file, "nonexistent").is_empty());
+    }
+
+    #[test]
+    fn on_file_changed_clears_active_search() {
+        let mut state = DiffViewerState::new(
+            crate::app::state::ViewState::new(
+                "p".into(),
+                "f".into(),
+                "s".into(),
+                "w".into(),
+                "Claude".into(),
+                crate::project::SessionKind::Claude,
+                crate::project::VibeMode::Vibeless,
+                true,
+            ),
+            std::path::PathBuf::from("/tmp"),
+        );
+        state.search_query = "alpha".into();
+        state.search_matches = vec![0, 3];
+        state.search_match_pos = Some(1);
+        state.editing_search = true;
+
+        state.on_file_changed();
+
+        assert!(state.search_query.is_empty());
+        assert!(state.search_matches.is_empty());
+        assert_eq!(state.search_match_pos, None);
+        assert!(!state.editing_search);
     }
 }

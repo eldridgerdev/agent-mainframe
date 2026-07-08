@@ -549,6 +549,10 @@ impl TmuxManager {
         ])
     }
 
+    fn agent_launch_command(cmd: String) -> String {
+        format!("printf '\\033[2J\\033[H'; {cmd}")
+    }
+
     fn pane_default_terminal() -> Option<String> {
         if let Some(value) = std::env::var_os("AMF_TMUX_DEFAULT_TERMINAL") {
             let value = value.to_string_lossy().trim().to_string();
@@ -768,16 +772,15 @@ impl TmuxManager {
             return Ok(());
         }
 
-        if Self::should_retry_after_private_socket_cleanup(args, &output) {
-            if let Some(socket) = Self::runtime().socket.as_ref() {
-                if Self::remove_stale_socket_file(socket) {
-                    let retry_output = Self::output(args, context)?;
-                    if retry_output.status.success() {
-                        return Ok(());
-                    }
-                    bail!("{}", Self::command_error(&retry_output, failure));
-                }
+        if Self::should_retry_after_private_socket_cleanup(args, &output)
+            && let Some(socket) = Self::runtime().socket.as_ref()
+            && Self::remove_stale_socket_file(socket)
+        {
+            let retry_output = Self::output(args, context)?;
+            if retry_output.status.success() {
+                return Ok(());
             }
+            bail!("{}", Self::command_error(&retry_output, failure));
         }
 
         bail!("{}", Self::command_error(&output, failure));
@@ -790,10 +793,7 @@ impl TmuxManager {
                 let mut buf = [0u8; 8192];
                 let mut line = Vec::with_capacity(8192);
 
-                loop {
-                    let Ok(n) = reader.read(&mut buf) else {
-                        break;
-                    };
+                while let Ok(n) = reader.read(&mut buf) {
                     if n == 0 {
                         break;
                     }
@@ -989,7 +989,7 @@ impl TmuxManager {
     fn open_pty(cols: u16, rows: u16) -> Result<(File, File)> {
         let mut master = -1;
         let mut slave = -1;
-        let mut winsize = libc::winsize {
+        let winsize = libc::winsize {
             ws_row: rows,
             ws_col: cols,
             ws_xpixel: 0,
@@ -1010,8 +1010,8 @@ impl TmuxManager {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                &mut termios,
-                &mut winsize,
+                &termios,
+                &winsize,
             )
         };
         if result != 0 {
@@ -1057,7 +1057,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1152,7 +1152,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY.into(), 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1488,6 +1488,7 @@ impl TmuxManager {
             cmd_str.push_str(&Self::shell_quote(arg));
         }
 
+        let cmd_str = Self::agent_launch_command(cmd_str);
         Self::run(
             &["send-keys", "-t", &target, &cmd_str, "Enter"],
             "Failed to send claude command to tmux",
@@ -1520,6 +1521,7 @@ impl TmuxManager {
             ),
         };
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send opencode command to tmux",
@@ -1548,6 +1550,7 @@ impl TmuxManager {
             cmd.push_str(&format!(" resume {}", Self::shell_quote(id)));
         }
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send codex command to tmux",
@@ -1563,6 +1566,7 @@ impl TmuxManager {
             Self::agent_launch_env(session, window, feature_session_id)
         );
 
+        let cmd = Self::agent_launch_command(cmd);
         Self::run(
             &["send-keys", "-t", &target, &cmd, "Enter"],
             "Failed to send pi command to tmux",
@@ -2337,6 +2341,14 @@ mod tests {
         assert!(prefix.contains("AMF_TMUX_WINDOW='codex'"));
         assert!(prefix.contains("AMF_FEATURE_SESSION_ID='session-123'"));
         assert!(prefix.contains("PATH="));
+    }
+
+    #[test]
+    fn agent_launch_command_clears_shell_echo_before_starting_harness() {
+        let cmd = TmuxManager::agent_launch_command("env AMF_SESSION='amf-test' codex".into());
+
+        assert!(cmd.starts_with("printf '\\033[2J\\033[H'; "));
+        assert!(cmd.ends_with("env AMF_SESSION='amf-test' codex"));
     }
 
     #[test]

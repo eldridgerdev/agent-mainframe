@@ -1,9 +1,11 @@
 # Feature TODOs
 
-- **Status:** Partial — Epics 1–5 shipped (persistence, session kind,
-  native view, editing, spawn agent from a TODO). Epic 6 in progress:
-  quick-capture (with auto-create) and the scratchpad relabel done;
-  keybinding/help wiring and docs remain.
+- **Status:** Epics 2–6 shipped (session kind, native view, editing,
+  spawn agent from a TODO, quick-capture + scratchpad, help-overlay
+  wiring, docs). Only one item outstanding: Epic 1's host-feature
+  deletion re-home/delete prompt, **deferred** pending the
+  feature-delete UI prompt (the `set_host_feature` / `delete_list`
+  persistence is already in place).
 - **Owner:** unassigned
 - **Relates to:** `SessionKind` (`src/project.rs`), session picker
   (`src/app/session_ops.rs`, `src/handlers/picker.rs`), composer seed
@@ -258,9 +260,22 @@ project/feature is deleted (extend the existing delete paths).
         `draw_carry_over` → `draw_scratchpad`; banner/editor titles
         "Left off here" → "Scratchpad". A bridging comment notes the legacy
         column name. Test renamed to `todos_edit_scratchpad_banner`.
-- [ ] Wire keys into `keybindings.json` / config wizard and help
-      overlay (`ui/dialogs/help.rs`).
-- [ ] Update `CLAUDE.md` architecture notes and `CHANGELOG.md`.
+- [x] Wire keys into help overlay (`ui/dialogs/help.rs`): added an
+      "In the TODOs view" section documenting nav/add/edit/notes/
+      scratchpad/toggle/priority/reorder/delete/spawn/exit keys.
+      Config-wizard remap is intentionally **not** wired: the wizard's
+      `DASHBOARD_KEYBINDING_ACTIONS` only covers dashboard normal-mode
+      actions, and the TODOs overlay keys are modal (like the embedded
+      view and PR-review keysets), which follow the same
+      documented-but-not-remappable pattern. Quick-capture `N` is
+      already listed under the embedded-view keybinds.
+- [x] Update `CLAUDE.md` architecture notes and `CHANGELOG.md`.
+      Added a "Feature TODOs" subsection to `CLAUDE.md` (session
+      kind, SQLite `db/todos.rs` + `MIGRATION_010`, `AppMode::Todos`
+      native view, spawn-from-TODO, quick-capture) plus `todos.rs`
+      entries in the app/handlers/ui-dialogs module listings. The
+      `CHANGELOG.md` "Per-project TODO lists" entry under v0.29.0
+      already covers the user-facing surface, so it was left as-is.
 
 ## Resolved decisions
 

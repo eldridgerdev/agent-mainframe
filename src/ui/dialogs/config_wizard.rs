@@ -989,21 +989,6 @@ fn select_field_line(label: &str, value: &str, active: bool, theme: &Theme) -> L
     ])
 }
 
-#[cfg(test)]
-mod tests {
-    use super::truncate_field_preview;
-
-    #[test]
-    fn field_preview_replaces_newlines() {
-        assert_eq!(truncate_field_preview("one\ntwo", 20), "one two");
-    }
-
-    #[test]
-    fn field_preview_uses_ascii_ellipsis_when_truncated() {
-        assert_eq!(truncate_field_preview("abcdefghij", 8), "abcde...");
-    }
-}
-
 fn button_line(label: &str, active: bool, theme: &Theme) -> Line<'static> {
     let style = if active {
         Style::default()
@@ -1070,5 +1055,20 @@ fn hook_summary(hook: Option<&crate::extension::HookConfig>) -> String {
             format!("{script} (prompt)")
         }
         None => "(not set)".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_field_preview;
+
+    #[test]
+    fn field_preview_replaces_newlines() {
+        assert_eq!(truncate_field_preview("one\ntwo", 20), "one two");
+    }
+
+    #[test]
+    fn field_preview_uses_ascii_ellipsis_when_truncated() {
+        assert_eq!(truncate_field_preview("abcdefghij", 8), "abcde...");
     }
 }

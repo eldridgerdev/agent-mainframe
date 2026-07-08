@@ -326,7 +326,12 @@ mod tests {
         let list = db.create_todo_list("proj-1", "feat-1").unwrap();
 
         let mut todo = db
-            .add_todo(&list.id, "Write tests", Some("cover edge cases"), TodoPriority::High)
+            .add_todo(
+                &list.id,
+                "Write tests",
+                Some("cover edge cases"),
+                TodoPriority::High,
+            )
             .unwrap();
         assert_eq!(todo.sort_order, 0);
 

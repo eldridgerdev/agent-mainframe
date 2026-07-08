@@ -31,7 +31,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("A", "Manage agent harnesses"),
         ("d", "Delete project/feature/session"),
         ("D", "View debug log"),
-        ("P", "Open syntax parser picker"),
+        ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
         ("G", "Review PR comments (experimental)"),
         ("T", "Theme picker"),
@@ -110,13 +110,48 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("1-9", "Jump to bookmark slot"),
         ("/", "Command picker (slash + AMF actions)"),
         ("a", "AMF local actions picker"),
-        ("P", "Prompt library (inject saved prompt)"),
+        ("p", "Prompt library (inject saved prompt)"),
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
     ];
 
     for (key, desc) in &view_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  In the TODOs view:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let todos_keybinds: Vec<(&str, &str)> = vec![
+        ("j/k / \u{2191}/\u{2193}", "Navigate TODOs"),
+        ("a / n", "Add a TODO"),
+        ("e", "Edit title"),
+        ("o", "Edit notes"),
+        ("b", "Edit scratchpad banner"),
+        ("Space / x", "Toggle done"),
+        ("p", "Cycle priority (High/Med/Low)"),
+        ("J / K", "Reorder up/down"),
+        ("d", "Delete TODO (y/n confirm)"),
+        ("g / Enter", "Spawn agent (or jump to linked session)"),
+        ("q / Esc / Ctrl+Q", "Exit TODOs view"),
+    ];
+
+    for (key, desc) in &todos_keybinds {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:>14}", key),

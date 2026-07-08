@@ -16,7 +16,6 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("q", "Exit view"),
     ("t / T", "Next / prev session"),
     ("w", "Session switcher"),
-    ("n / p", "Next / prev feature"),
     ("/", "Command picker"),
     ("h", "Bookmark picker"),
     ("H", "Bookmark session"),
@@ -26,7 +25,7 @@ const LEADER_COMMANDS: &[(&str, &str)] = &[
     ("s", "Steering coach (experimental)"),
     ("g", "Generate summary"),
     ("l", "Latest prompt"),
-    ("P", "Prompt library"),
+    ("p", "Prompt library"),
     ("d", "Diff viewer"),
     ("m", "Markdown viewer"),
     ("b", "Show / hide sidebar"),
@@ -88,9 +87,7 @@ fn preferred_sidebar_width(view: &ViewState) -> u16 {
 }
 
 fn sidebar_width(view: &ViewState, total_width: u16) -> Option<u16> {
-    if view.sidebar_session_kind().is_none() {
-        return None;
-    }
+    view.sidebar_session_kind()?;
 
     let sidebar_width = preferred_sidebar_width(view);
     if total_width < SIDEBAR_MIN_MAIN_WIDTH + sidebar_width {
@@ -164,8 +161,10 @@ pub fn draw(
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
     compose_intercept: Option<bool>,
+    next_prev_feature: (Option<char>, Option<char>),
     theme: &Theme,
 ) {
+    let throbber_state = throbber_widgets_tui::ThrobberState::default();
     draw_with_lines(
         frame,
         view,
@@ -176,6 +175,8 @@ pub fn draw(
         pending_count,
         tmux_cursor,
         compose_intercept,
+        next_prev_feature,
+        &throbber_state,
         theme,
     );
 }
@@ -191,6 +192,8 @@ pub(crate) fn draw_with_lines(
     pending_count: usize,
     tmux_cursor: Option<(u16, u16)>,
     compose_intercept: Option<bool>,
+    next_prev_feature: (Option<char>, Option<char>),
+    throbber_state: &throbber_widgets_tui::ThrobberState,
     theme: &Theme,
 ) {
     let area = frame.area();
@@ -330,7 +333,9 @@ pub(crate) fn draw_with_lines(
         );
     }
 
-    if view.scroll_mode && !view.scroll_passthrough {
+    if view.startup_mask_active() {
+        draw_startup_loading(frame, main_content_area, view, throbber_state, theme);
+    } else if view.scroll_mode && !view.scroll_passthrough {
         let scrollbar_width = SCROLLBAR_WIDTH.min(main_content_area.width);
         let content_width = main_content_area.width.saturating_sub(scrollbar_width);
         let content_area = Rect::new(
@@ -423,8 +428,65 @@ pub(crate) fn draw_with_lines(
     }
 
     if leader_active {
-        draw_leader_menu(frame, main_content_area, theme, compose_intercept);
+        draw_leader_menu(
+            frame,
+            main_content_area,
+            theme,
+            compose_intercept,
+            next_prev_feature,
+        );
     }
+}
+
+fn draw_startup_loading(
+    frame: &mut Frame,
+    area: Rect,
+    view: &ViewState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let bg = theme.effective_bg();
+    frame.render_widget(Block::default().style(Style::default().bg(bg)), area);
+
+    if area.width < 20 || area.height < 3 {
+        return;
+    }
+
+    let panel_height = 5.min(area.height);
+    let panel_y = area.y + area.height.saturating_sub(panel_height) / 2;
+    let panel = Rect::new(area.x, panel_y, area.width, panel_height);
+    let harness = match view.session_kind {
+        SessionKind::Claude => "Claude",
+        SessionKind::Codex => "Codex",
+        SessionKind::Opencode => "opencode",
+        SessionKind::Pi => "Pi",
+        _ => "agent",
+    };
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .throbber_style(Style::default().fg(theme.warning.to_color()))
+        .throbber_set(throbber_widgets_tui::BRAILLE_EIGHT_DOUBLE)
+        .use_type(throbber_widgets_tui::WhichUse::Spin);
+    let spinner = throbber.to_symbol_span(throbber_state);
+    let lines = vec![
+        Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Starting {harness}"),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "Preparing the harness...",
+            Style::default().fg(theme.secondary.to_color()),
+        )),
+    ];
+    let paragraph = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(bg))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(paragraph, panel);
 }
 
 fn draw_agent_sidebar(
@@ -733,9 +795,7 @@ fn sidebar_value_style(title: &str, label: &str, value: &str, theme: &Theme) -> 
         theme.info.to_color()
     } else if title == "Todos" {
         theme.success.to_color()
-    } else if title == "Prompt" {
-        theme.text.to_color()
-    } else if title == "Summary" {
+    } else if title == "Prompt" || title == "Summary" {
         theme.text.to_color()
     } else if label == "Usage" {
         theme.status_detail.to_color()
@@ -762,27 +822,54 @@ fn draw_leader_menu(
     content_area: Rect,
     theme: &Theme,
     compose_intercept: Option<bool>,
+    next_prev_feature: (Option<char>, Option<char>),
 ) {
-    let mut commands: Vec<(&str, &str)> = LEADER_COMMANDS.to_vec();
+    let mut commands: Vec<(String, String)> = LEADER_COMMANDS
+        .iter()
+        .map(|(key, desc)| ((*key).to_string(), (*desc).to_string()))
+        .collect();
     if let Some(active) = compose_intercept {
         let entry = if active {
-            ("e", "Direct input (compose off)")
+            ("e".to_string(), "Direct input (compose off)".to_string())
         } else {
-            ("e", "Enable compose input")
+            ("e".to_string(), "Enable compose input".to_string())
         };
         let pos = commands
             .iter()
-            .position(|(key, _)| *key == "s")
+            .position(|(key, _)| key == "s")
             .map(|pos| pos + 1)
             .unwrap_or(commands.len());
         commands.insert(pos, entry);
     }
 
+    // Next/prev feature has no default binding; only advertise it when the
+    // user has configured a key for it.
+    let (next_key, prev_key) = next_prev_feature;
+    let feature_entry = match (next_key, prev_key) {
+        (Some(n), Some(p)) => Some((format!("{n} / {p}"), "Next / prev feature".to_string())),
+        (Some(n), None) => Some((n.to_string(), "Next feature".to_string())),
+        (None, Some(p)) => Some((p.to_string(), "Prev feature".to_string())),
+        (None, None) => None,
+    };
+    if let Some(entry) = feature_entry {
+        let pos = commands
+            .iter()
+            .position(|(key, _)| key == "w")
+            .map(|pos| pos + 1)
+            .unwrap_or(commands.len());
+        commands.insert(pos, entry);
+    }
+
+    let borrowed: Vec<(&str, &str)> = commands
+        .iter()
+        .map(|(key, desc)| (key.as_str(), desc.as_str()))
+        .collect();
+
     draw_command_menu(
         frame,
         content_area,
         " Ctrl+Space commands ",
-        commands.as_slice(),
+        borrowed.as_slice(),
         theme,
     );
 }
@@ -860,11 +947,7 @@ fn scroll_content_to_lines_with_selection(
     for (visible_row, i) in (start..end).enumerate() {
         let content_row = start + visible_row;
         let line_text = all_lines.get(i).unwrap_or(&"");
-        let is_selected_row = has_selection
-            && ((content_row > sel_start_row && content_row < sel_end_row)
-                || (content_row == sel_start_row && content_row == sel_end_row)
-                || (content_row == sel_start_row && content_row < sel_end_row)
-                || (content_row > sel_start_row && content_row == sel_end_row));
+        let is_selected_row = has_selection && (sel_start_row..=sel_end_row).contains(&content_row);
 
         lines.push(render_ansi_line_with_selection(
             line_text,
@@ -884,6 +967,9 @@ fn scroll_content_to_lines_with_selection(
     lines
 }
 
+// Selection geometry travels as scalars from the mouse handler; see
+// TextSelection::normalized().
+#[allow(clippy::too_many_arguments)]
 fn render_ansi_line_with_selection(
     line_text: &str,
     cols: u16,
@@ -1283,6 +1369,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1325,6 +1412,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1365,6 +1453,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1395,6 +1484,7 @@ mod tests {
                     0,
                     None,
                     Some(false),
+                    (None, None),
                     &theme,
                 );
             })
@@ -1411,6 +1501,48 @@ mod tests {
         // compose_intercept is Some(false): the menu offers the way
         // back out of direct mode.
         assert!(rendered.contains("Enable compose input"));
+        // Next/prev feature is unbound by default, so it is hidden.
+        assert!(!rendered.contains("Next / prev feature"));
+        assert!(!rendered.contains("Next feature"));
+    }
+
+    #[test]
+    fn leader_menu_shows_next_prev_feature_only_when_bound() {
+        let theme = Theme::default();
+        let view = sample_view(crate::project::SessionKind::Claude);
+
+        let render = |next_prev: (Option<char>, Option<char>)| {
+            let backend = TestBackend::new(120, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw(
+                        frame, &view, "hello", None, true, 0, None, None, next_prev, &theme,
+                    );
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            buffer
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+
+        // Both bound: a combined row using the configured keys.
+        let both = render((Some('n'), Some('p')));
+        assert!(both.contains("Next / prev feature"));
+        assert!(both.contains("n / p"));
+
+        // Only next bound: single row.
+        let next_only = render((Some('j'), None));
+        assert!(next_only.contains("Next feature"));
+        assert!(!next_only.contains("Next / prev feature"));
+
+        // Neither bound: hidden entirely.
+        let none = render((None, None));
+        assert!(!none.contains("Next feature"));
+        assert!(!none.contains("Next / prev feature"));
     }
 
     #[test]
@@ -1440,6 +1572,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1483,6 +1616,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1530,6 +1664,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1570,6 +1705,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1610,6 +1746,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1650,6 +1787,7 @@ mod tests {
                     0,
                     None,
                     None,
+                    (None, None),
                     &theme,
                 );
             })
@@ -1672,7 +1810,18 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "hello", None, false, 0, None, None, &theme);
+                draw(
+                    frame,
+                    &view,
+                    "hello",
+                    None,
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
             })
             .unwrap();
 
@@ -1689,12 +1838,14 @@ mod tests {
     #[test]
     fn scroll_selection_highlights_visible_slice() {
         let theme = Theme::default();
-        let mut selection = TextSelection::default();
-        selection.start_row = 2;
-        selection.start_col = 1;
-        selection.end_row = 2;
-        selection.end_col = 3;
-        selection.has_selection = true;
+        let selection = TextSelection {
+            start_row: 2,
+            start_col: 1,
+            end_row: 2,
+            end_col: 3,
+            has_selection: true,
+            ..TextSelection::default()
+        };
 
         let lines = scroll_content_to_lines_with_selection(
             "zero\none\ntwo\nthree",
@@ -1733,7 +1884,18 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                draw(frame, &view, "", None, false, 0, None, None, &theme);
+                draw(
+                    frame,
+                    &view,
+                    "",
+                    None,
+                    false,
+                    0,
+                    None,
+                    None,
+                    (None, None),
+                    &theme,
+                );
             })
             .unwrap();
 

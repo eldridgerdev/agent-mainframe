@@ -183,10 +183,9 @@ impl GhCli {
     /// Check that a working `gh` binary is on PATH. Mirrors
     /// `TmuxManager::check_available` / `ClaudeLauncher::check_available`.
     pub fn check_available() -> Result<()> {
-        let output = Command::new("gh")
-            .arg("--version")
-            .output()
-            .context("GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR review.")?;
+        let output = Command::new("gh").arg("--version").output().context(
+            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR review.",
+        )?;
         if !output.status.success() {
             bail!("GitHub CLI (`gh`) is not working correctly. Try `gh --version`.");
         }
@@ -235,6 +234,44 @@ impl GhCli {
                 bail!("`gh pr view` failed: {}", stderr.trim());
             }
         }
+    }
+
+    /// Whether the authenticated `gh` user authored PR `pr_number` — i.e.
+    /// posting an approve / request-changes review would be a *self-review*,
+    /// which GitHub rejects. Two lightweight `gh` calls (the PR's author login
+    /// and the current user's login), compared case-insensitively. Any `gh`
+    /// failure bubbles up so callers fall back to the always-valid `COMMENT`
+    /// event rather than risk a 422 that discards the whole review.
+    pub fn is_self_review(workdir: &Path, pr_number: u32) -> Result<bool> {
+        let author = Self::gh_stdout(
+            workdir,
+            &[
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "author",
+                "-q",
+                ".author.login",
+            ],
+        )?;
+        let me = Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])?;
+        Ok(!author.is_empty() && author.eq_ignore_ascii_case(&me))
+    }
+
+    /// Run `gh <args>` in `workdir` and return trimmed stdout, erroring on a
+    /// non-zero exit.
+    fn gh_stdout(workdir: &Path, args: &[&str]) -> Result<String> {
+        let output = Command::new("gh")
+            .args(args)
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh`.")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`gh {}` failed: {}", args.join(" "), stderr.trim());
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     /// Resolve a PR by explicit number (manual override). Used when the branch
@@ -289,17 +326,26 @@ impl GhCli {
 
     /// Inline review comments for a PR (file/line-anchored), all pages.
     pub fn pr_review_comments(workdir: &Path, number: u32) -> Result<Vec<ReviewComment>> {
-        fetch_paginated(workdir, &format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"))
+        fetch_paginated(
+            workdir,
+            &format!("repos/{{owner}}/{{repo}}/pulls/{number}/comments"),
+        )
     }
 
     /// Top-level review summaries (Approve / Request-changes / Comment), all pages.
     pub fn pr_reviews(workdir: &Path, number: u32) -> Result<Vec<Review>> {
-        fetch_paginated(workdir, &format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"))
+        fetch_paginated(
+            workdir,
+            &format!("repos/{{owner}}/{{repo}}/pulls/{number}/reviews"),
+        )
     }
 
     /// Conversation comments on the PR's issue timeline, all pages.
     pub fn issue_comments(workdir: &Path, number: u32) -> Result<Vec<IssueComment>> {
-        fetch_paginated(workdir, &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"))
+        fetch_paginated(
+            workdir,
+            &format!("repos/{{owner}}/{{repo}}/issues/{number}/comments"),
+        )
     }
 
     /// Review-thread resolution state via GraphQL. REST can't report whether a
@@ -331,7 +377,10 @@ impl GhCli {
             let output = cmd.output().context("Failed to run `gh api graphql`.")?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                bail!("`gh api graphql` (review threads) failed: {}", stderr.trim());
+                bail!(
+                    "`gh api graphql` (review threads) failed: {}",
+                    stderr.trim()
+                );
             }
             let (mut page, next) = parse_review_threads_page(&output.stdout)?;
             threads.append(&mut page);
@@ -457,7 +506,10 @@ impl GhCli {
                     "Resolving a thread needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
                 );
             }
-            bail!("`gh api graphql` (resolve thread) failed: {}", stderr.trim());
+            bail!(
+                "`gh api graphql` (resolve thread) failed: {}",
+                stderr.trim()
+            );
         }
         parse_thread_resolved(&output.stdout, resolved)
     }
@@ -751,7 +803,8 @@ mod tests {
 
     #[test]
     fn parses_pr_json() {
-        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321"}"#;
+        let json =
+            br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321"}"#;
         let pr = parse_pr_json(json).unwrap();
         assert_eq!(pr.number, 321);
         assert_eq!(pr.head_sha, "abc123");

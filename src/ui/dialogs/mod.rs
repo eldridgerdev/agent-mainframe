@@ -25,9 +25,6 @@ pub use compose::draw_compose_dialog;
 pub use config_wizard::draw_config_wizard_dialog;
 pub use debug::draw_debug_log;
 pub use diff::{draw_diff_viewer, draw_diff_viewer_loading};
-pub use pr_review::{
-    draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
-};
 pub use feature::{
     draw_confirm_supervibe_dialog, draw_create_feature_dialog, draw_delete_feature_confirm,
     draw_deleting_feature_dialog, draw_fork_feature_dialog, draw_steering_prompt_dialog,
@@ -39,6 +36,9 @@ pub use hooks::{
     draw_running_hook_dialog,
 };
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
+pub use pr_review::{
+    draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
+};
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{
     draw_placeholder_fill, draw_prompt_editor, draw_prompt_library, draw_skill_picker,

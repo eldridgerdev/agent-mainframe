@@ -16,6 +16,10 @@ enum TmuxKey {
 }
 
 fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
+    if key.code == KeyCode::Enter && key.kind == crossterm::event::KeyEventKind::Repeat {
+        return None;
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && let KeyCode::Char(c) = key.code
     {
@@ -29,6 +33,7 @@ fn crossterm_key_to_tmux(key: &KeyEvent) -> Option<TmuxKey> {
     }
 
     match key.code {
+        KeyCode::Char('\n' | '\r') => None,
         KeyCode::Char(c) => Some(TmuxKey::Literal(c.to_string())),
         KeyCode::Enter => Some(TmuxKey::Named("Enter".into())),
         KeyCode::Backspace => Some(TmuxKey::Named("BSpace".into())),
@@ -258,6 +263,21 @@ fn handle_scroll_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
 fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()> {
     app.deactivate_leader();
 
+    // Next/prev feature navigation has no default binding. Dispatch it only
+    // when the user has configured a key for it. This runs before the static
+    // match so a configured key wins over any static binding on that char.
+    if let KeyCode::Char(c) = key.code {
+        let kb = &app.active_extension.keybindings;
+        if kb.get("next_feature") == Some(&c) {
+            app.view_next_feature()?;
+            return Ok(());
+        }
+        if kb.get("prev_feature") == Some(&c) {
+            app.view_prev_feature()?;
+            return Ok(());
+        }
+    }
+
     match key.code {
         KeyCode::Char('q') => {
             app.exit_view();
@@ -267,12 +287,6 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         }
         KeyCode::Char('T') => {
             app.view_prev_session();
-        }
-        KeyCode::Char('n') => {
-            app.view_next_feature()?;
-        }
-        KeyCode::Char('p') => {
-            app.view_prev_feature()?;
         }
         KeyCode::Char('r') => {
             app.sync_statuses();
@@ -398,7 +412,7 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('l') => {
             app.open_latest_prompt_from_view();
         }
-        KeyCode::Char('P') => {
+        KeyCode::Char('p') => {
             let view_state = match std::mem::replace(&mut app.mode, AppMode::Normal) {
                 AppMode::Viewing(v) => v,
                 other => {
@@ -504,6 +518,22 @@ mod tests {
             crossterm_key_to_tmux(&k),
             Some(TmuxKey::Named(s)) if s == "Enter"
         ));
+    }
+
+    #[test]
+    fn repeated_enter_is_ignored() {
+        let k = KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            crossterm::event::KeyEventKind::Repeat,
+        );
+        assert!(crossterm_key_to_tmux(&k).is_none());
+    }
+
+    #[test]
+    fn raw_newline_chars_are_not_forwarded_as_literals() {
+        assert!(crossterm_key_to_tmux(&key(KeyCode::Char('\n'))).is_none());
+        assert!(crossterm_key_to_tmux(&key(KeyCode::Char('\r'))).is_none());
     }
 
     #[test]
@@ -1233,7 +1263,8 @@ mod tests {
         app.activate_leader();
         handle_view_key(&mut app, key(KeyCode::Char('N')), 20).unwrap();
         for c in "ship it".chars() {
-            crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(c))).unwrap();
+            crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Char(c)))
+                .unwrap();
         }
         crate::handlers::handle_todo_quick_capture_key(&mut app, key(KeyCode::Enter)).unwrap();
 

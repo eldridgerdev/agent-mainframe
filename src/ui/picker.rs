@@ -1246,6 +1246,9 @@ fn draw_session_restore_confirm(frame: &mut Frame, theme: &Theme, agent_name: &s
     frame.render_widget(text, area);
 }
 
+// One picker row's display inputs; kept flat to match the other *_item
+// renderers in this file.
+#[allow(clippy::too_many_arguments)]
 fn session_picker_item(
     theme: &Theme,
     accent: Color,

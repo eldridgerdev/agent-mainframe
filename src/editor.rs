@@ -461,7 +461,9 @@ impl TextEditor {
                 self.apply_operator(Operator::Delete, OpTarget::Char(self.cursor, end))
             }
             KeyCode::Char('p') if key.modifiers.is_empty() => self.paste_after(),
-            KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::SHIFT) => self.paste_before(),
+            KeyCode::Char('P') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.paste_before()
+            }
             KeyCode::Char('u') if key.modifiers.is_empty() => self.undo(),
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => self.redo(),
             KeyCode::Char('o') if key.modifiers.is_empty() => self.open_below(),
@@ -728,7 +730,11 @@ impl TextEditor {
         let digit = (c as u8 - b'0') as usize;
         // Clamp growth so a wild prefix can't trigger an enormous loop on a
         // small buffer; far beyond any realistic prompt edit.
-        let next = self.count.unwrap_or(0).saturating_mul(10).saturating_add(digit);
+        let next = self
+            .count
+            .unwrap_or(0)
+            .saturating_mul(10)
+            .saturating_add(digit);
         self.count = Some(next.min(100_000));
         true
     }
@@ -804,9 +810,13 @@ impl TextEditor {
                 Some((c, self.line_end(c)))
             }
             KeyCode::Char('0') if key.modifiers.is_empty() => Some((self.line_start(c), c)),
-            KeyCode::Char('h') if key.modifiers.is_empty() => Some((step_n(Self::prev_boundary), c)),
+            KeyCode::Char('h') if key.modifiers.is_empty() => {
+                Some((step_n(Self::prev_boundary), c))
+            }
             KeyCode::Left => Some((step_n(Self::prev_boundary), c)),
-            KeyCode::Char('l') if key.modifiers.is_empty() => Some((c, step_n(Self::next_boundary))),
+            KeyCode::Char('l') if key.modifiers.is_empty() => {
+                Some((c, step_n(Self::next_boundary)))
+            }
             KeyCode::Right => Some((c, step_n(Self::next_boundary))),
             _ => None,
         }

@@ -847,7 +847,13 @@ impl<'a> MarkdownRenderer<'a> {
 
         self.begin_block(EmittedBlockKind::Table);
 
-        let cols = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        let cols = table
+            .rows
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(0)
+            .max(table.alignments.len());
         if cols == 0 {
             return;
         }
@@ -1653,6 +1659,52 @@ mod tests {
             strings
                 .iter()
                 .any(|line| line == "│ alph… │ bravo │ cha… │"),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_pads_uneven_table_rows() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| One | Two | Three |\n| --- | --- | --- |\n| A | B | C |\n| D | E |\n| F |",
+            &theme,
+            48,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().any(|line| line == "│ D   │ E   │       │"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line == "│ F   │     │       │"),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_preserves_empty_table_cells() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| One | Two | Three |\n| --- | --- | --- |\n| A | | C |",
+            &theme,
+            48,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().any(|line| line == "│ A   │     │ C     │"),
             "{strings:#?}"
         );
     }

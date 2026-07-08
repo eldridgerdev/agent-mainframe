@@ -79,6 +79,10 @@ are tagged.
 - **Markdown table alignment is now guarded against regressions.** The in-app
   Markdown viewer keeps left, centered, and right-aligned columns stable,
   including when narrow panes force table cells to truncate.
+- **Markdown tables keep uneven and empty cells in place.** Short rows are
+  padded to the table's declared column count and empty cells still occupy
+  visible grid space, so later cells no longer appear to shift left in the
+  in-app Markdown viewer.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux

@@ -82,7 +82,11 @@ pub fn draw_todos_host_reassign_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let items = if state.todo_count == 1 { "item" } else { "items" };
+    let items = if state.todo_count == 1 {
+        "item"
+    } else {
+        "items"
+    };
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
@@ -127,7 +131,10 @@ pub fn draw_todos_host_reassign_dialog(
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(" j/k", Style::default().fg(theme.warning.to_color())),
-        Span::styled(" choose  ", Style::default().fg(theme.text_muted.to_color())),
+        Span::styled(
+            " choose  ",
+            Style::default().fg(theme.text_muted.to_color()),
+        ),
         Span::styled("Enter", Style::default().fg(theme.warning.to_color())),
         Span::styled(
             " confirm  ",
@@ -146,13 +153,24 @@ pub fn draw_todos_host_reassign_dialog(
 
 /// One selectable row in the re-home prompt: a `>` cursor + label, highlighted
 /// when selected.
-fn option_line(label: String, selected: bool, accent: ratatui::style::Color, theme: &Theme) -> Line<'static> {
+fn option_line(
+    label: String,
+    selected: bool,
+    accent: ratatui::style::Color,
+    theme: &Theme,
+) -> Line<'static> {
     let (marker, style) = if selected {
-        (" > ", Style::default().fg(accent).add_modifier(Modifier::BOLD))
+        (
+            " > ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )
     } else {
         ("   ", Style::default().fg(theme.text.to_color()))
     };
-    Line::from(vec![Span::styled(marker, style), Span::styled(label, style)])
+    Line::from(vec![
+        Span::styled(marker, style),
+        Span::styled(label, style),
+    ])
 }
 
 /// Full-screen native TODOs overlay: a free-form scratchpad banner on top,

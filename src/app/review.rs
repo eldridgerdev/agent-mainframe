@@ -140,6 +140,9 @@ impl App {
     /// progress is never lost — the only exit from the review viewer finishes
     /// it, but an AMF quit/crash mid-review would otherwise discard everything.
     pub fn persist_review_progress(&mut self) {
+        // Refresh each comment's re-anchor snippet against the live diff first,
+        // so whatever we persist can be re-located after a later refresh.
+        self.recapture_anchor_contexts();
         let AppMode::DiffViewer(state) = &self.mode else {
             return;
         };
@@ -171,6 +174,81 @@ impl App {
                 format!("failed to serialize review progress: {err}"),
             ),
         }
+    }
+
+    /// Refresh the re-anchor context snippet of every line comment that still
+    /// resolves against the live diff. Called from `persist_review_progress`,
+    /// the choke point every state-changing review action funnels through, so a
+    /// freshly created / edited comment picks up its snippet without each
+    /// creation site having to capture one.
+    ///
+    /// A comment whose anchor is currently lost has no valid index to capture
+    /// from, so its previously-captured snippet is deliberately left intact —
+    /// that snippet is exactly what a later refresh needs to re-find it.
+    fn recapture_anchor_contexts(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review || state.line_comments.is_empty() {
+            return;
+        }
+        for file in &state.files {
+            let Some(comments) = state.line_comments.get_mut(&file.path) else {
+                continue;
+            };
+            let locs = file.addressable_lines();
+            let texts = file.addressable_line_texts();
+            for comment in comments.iter_mut() {
+                if comment.anchor_lost {
+                    continue;
+                }
+                if let Some(idx) = locs.iter().position(|l| *l == comment.location) {
+                    comment.anchor_context = CommentAnchorContext::capture(&texts, idx);
+                }
+                comment.start_anchor_context = comment
+                    .start
+                    .and_then(|start| locs.iter().position(|l| *l == start))
+                    .and_then(|idx| CommentAnchorContext::capture(&texts, idx));
+            }
+        }
+    }
+
+    /// Re-locate line comments after the diff reloaded underneath them (an `r`
+    /// refresh once the agent edited the code, or a base-ref change). A comment
+    /// anchors to an exact `DiffLineLocation`; when the line moves, that anchor
+    /// no longer exists in the fresh `addressable_lines()` and the comment would
+    /// silently vanish from the gutter.
+    ///
+    /// Reports what moved so the reviewer is never silently surprised.
+    pub fn reanchor_line_comments(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review || state.line_comments.is_empty() {
+            return;
+        }
+        let (mut moved, mut lost) = (0usize, 0usize);
+        for file in &state.files {
+            let Some(comments) = state.line_comments.get_mut(&file.path) else {
+                continue;
+            };
+            let (file_moved, file_lost) = reanchor_file_comments(file, comments);
+            moved += file_moved;
+            lost += file_lost;
+        }
+        if moved == 0 && lost == 0 {
+            return;
+        }
+        let mut parts = Vec::new();
+        if moved > 0 {
+            parts.push(format!("re-anchored {moved} comment(s)"));
+        }
+        if lost > 0 {
+            parts.push(format!(
+                "{lost} comment(s) lost their anchor — possibly addressed"
+            ));
+        }
+        self.message = Some(format!("Diff changed: {}", parts.join(", ")));
     }
 
     /// Remove any saved review progress for `workdir`. Called once a review
@@ -798,6 +876,11 @@ impl App {
                         draft: false,
                         suggestion,
                         severity: state.comment_severity,
+                        // Captured by `recapture_anchor_contexts` on the persist
+                        // that immediately follows this mutation.
+                        anchor_context: None,
+                        start_anchor_context: None,
+                        anchor_lost: false,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -968,6 +1051,9 @@ impl App {
                         draft: false,
                         suggestion,
                         severity,
+                        anchor_context: None,
+                        start_anchor_context: None,
+                        anchor_lost: false,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -2028,9 +2114,72 @@ fn compute_search_matches(file: &crate::diff::DiffFile, query: &str) -> Vec<usiz
         .collect()
 }
 
+/// Re-locate one file's line comments against its freshly-loaded diff, in place.
+/// Returns `(moved, lost)`: how many comments were re-anchored to a new line,
+/// and how many newly lost their anchor.
+///
+/// A comment whose anchors still resolve exactly is left alone (and un-flagged).
+/// Otherwise its captured context snippet is fuzzy-matched against the new diff.
+/// A range whose `start` can no longer be found degrades to a single-line comment
+/// on the re-found end rather than inventing a span. A comment with no snippet,
+/// or whose snippet matches nowhere / ambiguously, is flagged `anchor_lost`.
+fn reanchor_file_comments(
+    file: &crate::diff::DiffFile,
+    comments: &mut [LineComment],
+) -> (usize, usize) {
+    let locs = file.addressable_lines();
+    let texts = file.addressable_line_texts();
+    let (mut moved, mut lost) = (0usize, 0usize);
+    for comment in comments.iter_mut() {
+        let end_ok = locs.contains(&comment.location);
+        let start_ok = comment.start.is_none_or(|start| locs.contains(&start));
+        if end_ok && start_ok {
+            comment.anchor_lost = false;
+            continue;
+        }
+        let relocate = |ctx: Option<&CommentAnchorContext>| {
+            ctx.and_then(|ctx| ctx.best_match(&texts))
+                .and_then(|idx| locs.get(idx).copied())
+        };
+        // The end anchor drives the comment; without it there is nothing to
+        // re-attach to. Keep it untouched when it still resolves — only a moved
+        // anchor needs the fuzzy match.
+        let end = if end_ok {
+            Some(comment.location)
+        } else {
+            relocate(comment.anchor_context.as_ref())
+        };
+        let Some(end) = end else {
+            if !comment.anchor_lost {
+                lost += 1;
+            }
+            comment.anchor_lost = true;
+            continue;
+        };
+        // Re-find the span start too; if it's gone, keep the comment as a
+        // single-line note on the re-found end rather than guess a span.
+        let start = match comment.start {
+            None => None,
+            Some(start) if start_ok => Some(start),
+            Some(_) => relocate(comment.start_anchor_context.as_ref()),
+        };
+        comment.start = start.filter(|start| *start != end);
+        comment.location = end;
+        comment.anchor_lost = false;
+        moved += 1;
+    }
+    (moved, lost)
+}
+
 /// The `file:line` (or `file:start-end`) heading for a line comment in the
-/// feedback file. A base-side (deletion-only) line is tagged `(base)`.
+/// feedback file. A base-side (deletion-only) line is tagged `(base)`. A comment
+/// whose anchor could not be re-located after the diff changed carries a stale
+/// line number, so it is labelled by file alone — the reviewer (and the agent)
+/// are told the line is gone rather than pointed at the wrong one.
 fn comment_anchor_label(file: &str, comment: &LineComment) -> String {
+    if comment.anchor_lost {
+        return format!("{file} (anchor lost — possibly addressed)");
+    }
     let line_of = |loc: &crate::diff::DiffLineLocation| loc.new_line.or(loc.old_line);
     let base = comment.location.new_line.is_none() && comment.location.old_line.is_some();
     let suffix = if base { " (base)" } else { "" };
@@ -2111,6 +2260,12 @@ fn build_pr_review(
     let mut comments = Vec::new();
     for (path, file_comments) in line_comment_sections {
         for comment in file_comments {
+            // A comment we couldn't re-anchor holds a stale line number; posting
+            // it inline would pin it to the wrong line. Omit it — the local
+            // feedback file still carries it, flagged "anchor lost".
+            if comment.anchor_lost {
+                continue;
+            }
             let Some((line, side)) = pr_line_side(&comment.location) else {
                 continue;
             };
@@ -2194,9 +2349,16 @@ fn compose_feedback_log(existing: Option<&str>, round: &str) -> String {
 }
 
 /// Reduce an item's anchor heading (`src/foo.rs:42`, `src/foo.rs:42-48 (base)`,
-/// or a bare `src/foo.rs`) to the file path it belongs to. A `:` followed by a
-/// digit marks the start of the line suffix; anything before it is the path.
+/// `src/foo.rs (anchor lost — possibly addressed)`, or a bare `src/foo.rs`) to
+/// the file path it belongs to. A trailing ` (…)` note is stripped first — an
+/// anchor-lost heading carries no line number, so without this the whole heading
+/// would read as the path. Then a `:` followed by a digit marks the start of the
+/// line suffix; anything before it is the path.
 fn anchor_file_path(anchor: &str) -> &str {
+    let anchor = match anchor.find(" (") {
+        Some(idx) => &anchor[..idx],
+        None => anchor,
+    };
     match anchor.find(':') {
         Some(idx) if anchor[idx + 1..].starts_with(|c: char| c.is_ascii_digit()) => &anchor[..idx],
         _ => anchor,
@@ -2386,6 +2548,9 @@ fn parse_co_review_output(
             draft: true,
             suggestion: None,
             severity: crate::app::Severity::default(),
+            anchor_context: None,
+            start_anchor_context: None,
+            anchor_lost: false,
         });
     }
     out
@@ -2450,13 +2615,13 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_file_path, build_pr_review, build_walkthrough_prompt, compose_feedback_log,
-        compute_search_matches, parse_agent_responses, parse_co_review_output, parse_review_notes,
-        severity_review_event,
+        anchor_file_path, build_pr_review, build_walkthrough_prompt, comment_anchor_label,
+        compose_feedback_log, compute_search_matches, parse_agent_responses,
+        parse_co_review_output, parse_review_notes, reanchor_file_comments, severity_review_event,
     };
     use crate::app::state::DiffViewerState;
-    use crate::app::{LineComment, Severity};
-    use crate::diff::{DiffLineLocation, parse_unified_diff};
+    use crate::app::{CommentAnchorContext, LineComment, Severity};
+    use crate::diff::{DiffFile, DiffLineLocation, parse_unified_diff};
 
     fn line_comment(new_line: Option<usize>, old_line: Option<usize>, text: &str) -> LineComment {
         LineComment {
@@ -2466,6 +2631,9 @@ mod tests {
             draft: false,
             suggestion: None,
             severity: Severity::default(),
+            anchor_context: None,
+            start_anchor_context: None,
+            anchor_lost: false,
         }
     }
 
@@ -2484,6 +2652,9 @@ mod tests {
             draft: false,
             suggestion: None,
             severity: Severity::default(),
+            anchor_context: None,
+            start_anchor_context: None,
+            anchor_lost: false,
         }
     }
 
@@ -2964,5 +3135,282 @@ index 1111111..2222222 100644
         assert!(state.search_matches.is_empty());
         assert_eq!(state.search_match_pos, None);
         assert!(!state.editing_search);
+    }
+
+    // ---- re-anchoring line comments across edits -------------------------
+
+    fn texts(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The same file, before and after an edit shifted its line numbers. The
+    /// hunk contents are identical; only the hunk header moves, so every
+    /// comment's exact `DiffLineLocation` goes stale while its context snippet
+    /// still matches uniquely.
+    fn shifted_diff_pair() -> (DiffFile, DiffFile) {
+        let body = "\
+ fn main() {
+-    let x = 1;
++    let x = 2;
++    let y = 3;
+ }
+";
+        let build = |header: &str| {
+            let raw = format!(
+                "diff --git a/a.rs b/a.rs\n\
+                 index 1111111..2222222 100644\n\
+                 --- a/a.rs\n\
+                 +++ b/a.rs\n\
+                 {header}\n{body}"
+            );
+            parse_unified_diff(&raw).unwrap().remove(0)
+        };
+        (build("@@ -1,3 +1,4 @@"), build("@@ -10,3 +20,4 @@"))
+    }
+
+    /// A single-line comment anchored to `idx`, with its context snippet captured
+    /// from `file` exactly as `recapture_anchor_contexts` would.
+    fn anchored_comment(file: &DiffFile, idx: usize, text: &str) -> LineComment {
+        LineComment {
+            location: file.addressable_lines()[idx],
+            start: None,
+            text: text.to_string(),
+            draft: false,
+            suggestion: None,
+            severity: Severity::default(),
+            anchor_context: CommentAnchorContext::capture(&file.addressable_line_texts(), idx),
+            start_anchor_context: None,
+            anchor_lost: false,
+        }
+    }
+
+    #[test]
+    fn anchor_context_capture_bounds_at_file_edges() {
+        let lines = texts(&["l0", "l1", "l2", "l3", "l4"]);
+
+        let mid = CommentAnchorContext::capture(&lines, 2).unwrap();
+        assert_eq!(mid.line, "l2");
+        assert_eq!(mid.before, texts(&["l0", "l1"]));
+        assert_eq!(mid.after, texts(&["l3", "l4"]));
+
+        let first = CommentAnchorContext::capture(&lines, 0).unwrap();
+        assert!(first.before.is_empty());
+        assert_eq!(first.after, texts(&["l1", "l2"]));
+
+        let last = CommentAnchorContext::capture(&lines, 4).unwrap();
+        assert_eq!(last.before, texts(&["l2", "l3"]));
+        assert!(last.after.is_empty());
+
+        assert!(CommentAnchorContext::capture(&lines, 5).is_none());
+    }
+
+    #[test]
+    fn anchor_context_best_match_disambiguates_repeated_lines_by_neighbours() {
+        let ctx = CommentAnchorContext {
+            line: "    x += 1;".to_string(),
+            before: texts(&["fn a() {"]),
+            after: texts(&["}"]),
+        };
+        // "    x += 1;" appears twice; only the second sits between fn a() and }.
+        let haystack = texts(&[
+            "fn b() {",
+            "    x += 1;",
+            "    more();",
+            "fn a() {",
+            "    x += 1;",
+            "}",
+        ]);
+        assert_eq!(ctx.best_match(&haystack), Some(4));
+    }
+
+    #[test]
+    fn anchor_context_best_match_tolerates_reindentation() {
+        let ctx = CommentAnchorContext {
+            line: "let x = 1;".to_string(),
+            before: texts(&["fn a() {"]),
+            after: Vec::new(),
+        };
+        let haystack = texts(&["fn a() {", "        let x = 1;"]);
+        assert_eq!(ctx.best_match(&haystack), Some(1));
+    }
+
+    #[test]
+    fn anchor_context_best_match_gives_up_when_ambiguous_or_absent() {
+        // Two identical candidates with identical neighbours: a tie, so refuse to
+        // guess rather than re-anchor onto the wrong one.
+        let ambiguous = CommentAnchorContext {
+            line: "x".to_string(),
+            before: texts(&["a"]),
+            after: texts(&["b"]),
+        };
+        let tie = texts(&["a", "x", "b", "a", "x", "b"]);
+        assert_eq!(ambiguous.best_match(&tie), None);
+
+        // The line is simply gone.
+        assert_eq!(ambiguous.best_match(&texts(&["p", "q"])), None);
+
+        // A blank anchor line carries no signal.
+        let blank = CommentAnchorContext {
+            line: "   ".to_string(),
+            before: texts(&["a"]),
+            after: texts(&["b"]),
+        };
+        assert_eq!(blank.best_match(&texts(&["a", "", "b"])), None);
+    }
+
+    #[test]
+    fn reanchor_leaves_still_resolving_comments_untouched() {
+        let (before, _) = shifted_diff_pair();
+        let mut comments = vec![anchored_comment(&before, 2, "why 2?")];
+        let original = comments[0].location;
+
+        let (moved, lost) = reanchor_file_comments(&before, &mut comments);
+        assert_eq!((moved, lost), (0, 0));
+        assert_eq!(comments[0].location, original);
+        assert!(!comments[0].anchor_lost);
+    }
+
+    #[test]
+    fn reanchor_relocates_a_comment_whose_line_moved() {
+        let (before, after) = shifted_diff_pair();
+        let mut comments = vec![anchored_comment(&before, 2, "why 2?")];
+        // The added `let x = 2;` was new_line 2; after the shift it is new_line 21.
+        assert_eq!(comments[0].location.new_line, Some(2));
+
+        let (moved, lost) = reanchor_file_comments(&after, &mut comments);
+        assert_eq!((moved, lost), (1, 0));
+        assert_eq!(comments[0].location, after.addressable_lines()[2]);
+        assert_eq!(comments[0].location.new_line, Some(21));
+        assert!(!comments[0].anchor_lost);
+    }
+
+    #[test]
+    fn reanchor_flags_a_comment_whose_line_is_gone() {
+        let (_, after) = shifted_diff_pair();
+        let mut comment = LineComment {
+            location: DiffLineLocation {
+                old_line: None,
+                new_line: Some(2),
+            },
+            start: None,
+            text: "stale".to_string(),
+            draft: false,
+            suggestion: None,
+            severity: Severity::default(),
+            anchor_context: Some(CommentAnchorContext {
+                line: "    let deleted = 9;".to_string(),
+                before: Vec::new(),
+                after: Vec::new(),
+            }),
+            start_anchor_context: None,
+            anchor_lost: false,
+        };
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+        assert_eq!((moved, lost), (0, 1));
+        assert!(comment.anchor_lost);
+
+        // Already-lost comments are not re-counted on a subsequent refresh.
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+        assert_eq!((moved, lost), (0, 0));
+        assert!(comment.anchor_lost);
+    }
+
+    #[test]
+    fn reanchor_degrades_a_range_whose_start_cannot_be_found() {
+        let (before, after) = shifted_diff_pair();
+        let mut comment = anchored_comment(&before, 3, "this pair");
+        // A range starting at idx 2, but with a start snippet that no longer
+        // matches anything in the refreshed diff.
+        comment.start = Some(before.addressable_lines()[2]);
+        comment.start_anchor_context = Some(CommentAnchorContext {
+            line: "    let vanished = 0;".to_string(),
+            before: Vec::new(),
+            after: Vec::new(),
+        });
+
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+        assert_eq!((moved, lost), (1, 0));
+        // End re-anchored; the span collapsed rather than inverting or guessing.
+        assert_eq!(comment.location, after.addressable_lines()[3]);
+        assert_eq!(comment.start, None);
+        assert!(!comment.anchor_lost);
+    }
+
+    #[test]
+    fn reanchor_relocates_both_ends_of_a_range() {
+        let (before, after) = shifted_diff_pair();
+        let mut comment = anchored_comment(&before, 3, "this pair");
+        comment.start = Some(before.addressable_lines()[2]);
+        comment.start_anchor_context =
+            CommentAnchorContext::capture(&before.addressable_line_texts(), 2);
+
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+        assert_eq!((moved, lost), (1, 0));
+        assert_eq!(comment.location, after.addressable_lines()[3]);
+        assert_eq!(comment.start, Some(after.addressable_lines()[2]));
+    }
+
+    #[test]
+    fn reanchor_cannot_relocate_a_comment_with_no_context_snippet() {
+        // Comments loaded from a progress file written before re-anchoring existed.
+        let (_, after) = shifted_diff_pair();
+        let mut comment = LineComment {
+            location: DiffLineLocation {
+                old_line: None,
+                new_line: Some(2),
+            },
+            start: None,
+            text: "legacy".to_string(),
+            draft: false,
+            suggestion: None,
+            severity: Severity::default(),
+            anchor_context: None,
+            start_anchor_context: None,
+            anchor_lost: false,
+        };
+        let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
+        assert_eq!((moved, lost), (0, 1));
+        assert!(comment.anchor_lost);
+    }
+
+    #[test]
+    fn progress_files_written_before_reanchoring_still_load() {
+        // A minimal old-shape progress file: none of the anchor fields, and none
+        // of the other fields added since the first version of the format.
+        let json = r#"{
+            "line_comments": {
+                "a.rs": [{ "location": { "old_line": null, "new_line": 2 }, "text": "old" }]
+            }
+        }"#;
+        let progress: super::ReviewProgress = serde_json::from_str(json).unwrap();
+        let comment = &progress.line_comments["a.rs"][0];
+
+        assert_eq!(comment.text, "old");
+        assert_eq!(comment.location.new_line, Some(2));
+        assert_eq!(comment.anchor_context, None);
+        assert_eq!(comment.start_anchor_context, None);
+        assert!(!comment.anchor_lost);
+    }
+
+    #[test]
+    fn lost_anchor_comment_labels_by_file_and_skips_inline_pr_posting() {
+        let mut comment = line_comment(Some(42), None, "still worth a look");
+        comment.anchor_lost = true;
+
+        assert_eq!(
+            comment_anchor_label("src/foo.rs", &comment),
+            "src/foo.rs (anchor lost — possibly addressed)"
+        );
+        // …and that heading still resolves back to its file for agent replies.
+        assert_eq!(
+            anchor_file_path("src/foo.rs (anchor lost — possibly addressed)"),
+            "src/foo.rs"
+        );
+
+        // A stale line number must never be posted inline on the PR.
+        let sections = vec![("src/foo.rs".to_string(), vec![comment])];
+        let (body, comments) = build_pr_review(&[], &sections, "");
+        assert!(comments.is_empty(), "lost anchor must not post inline");
+        assert!(!body.contains("src/foo.rs:42"));
     }
 }

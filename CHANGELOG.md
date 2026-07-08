@@ -37,6 +37,14 @@ are tagged.
 
 ### Fixed
 
+- **Final-review line comments no longer disappear when the diff changes.**
+  Refreshing the diff — or switching the base ref — used to drop your line
+  comments out of the gutter, because each one was pinned to an exact line
+  number. Comments now follow their code when it moves, including multi-line
+  ones. If a comment's line is genuinely gone (the agent already fixed it, say),
+  AMF tells you it was "possibly addressed" instead of silently discarding it,
+  keeps it in the feedback file, and won't post it to a pull request where it
+  would land on the wrong line.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
@@ -48,6 +56,9 @@ are tagged.
 
 ### Migration
 
+- No action required for comment re-anchoring. A review you paused before
+  upgrading still resumes; its comments simply can't follow moved code until you
+  re-add them, and any that no longer match are flagged rather than dropped.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
 - If you relied on `n` / `p` to move between features in a session, add

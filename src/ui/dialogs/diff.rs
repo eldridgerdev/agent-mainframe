@@ -3027,6 +3027,9 @@ index 0000000..1111111
                 draft: false,
                 suggestion: None,
                 severity: crate::app::Severity::default(),
+                anchor_context: None,
+                start_anchor_context: None,
+                anchor_lost: false,
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
@@ -3051,6 +3054,9 @@ index 0000000..1111111
                 draft: false,
                 suggestion: None,
                 severity: crate::app::Severity::default(),
+                anchor_context: None,
+                start_anchor_context: None,
+                anchor_lost: false,
             }],
         );
         // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.

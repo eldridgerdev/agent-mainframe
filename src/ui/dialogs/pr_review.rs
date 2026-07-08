@@ -385,7 +385,10 @@ fn draw_fix_confirm(
         None => "",
     };
     let title = match &confirm.batch {
-        Some(ids) => format!(" Inject combined fix for {} comments{mode_label} ", ids.len()),
+        Some(ids) => format!(
+            " Inject combined fix for {} comments{mode_label} ",
+            ids.len()
+        ),
         None => format!(" Inject fix into agent session{mode_label} "),
     };
     let block = Block::default()

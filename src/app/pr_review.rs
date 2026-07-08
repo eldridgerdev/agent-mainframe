@@ -220,7 +220,10 @@ impl PrComment {
     /// free: GitHub returns it per inline comment, so including it costs no
     /// extra fetch.
     pub fn fix_prompt(&self) -> String {
-        format!("Address this PR review comment.\n{}", self.fix_prompt_body())
+        format!(
+            "Address this PR review comment.\n{}",
+            self.fix_prompt_body()
+        )
     }
 
     /// The per-comment context block shared by the single-comment [`fix_prompt`]
@@ -341,7 +344,11 @@ pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
          open the referenced files yourself as needed.\n",
     );
     for (i, comment) in comments.iter().enumerate() {
-        out.push_str(&format!("\nComment {}:\n{}\n", i + 1, comment.fix_prompt_body()));
+        out.push_str(&format!(
+            "\nComment {}:\n{}\n",
+            i + 1,
+            comment.fix_prompt_body()
+        ));
     }
     out.trim_end().to_string()
 }
@@ -1108,7 +1115,7 @@ impl App {
                             fix_vim_enabled: false,
                             reply: None,
                             marked: std::collections::HashSet::new(),
-                pending_batch: false,
+                            pending_batch: false,
                         });
                     }
                     Err(e) => {

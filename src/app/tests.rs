@@ -7713,7 +7713,10 @@ fn pr_review_batch_confirm_opens_combined_dialog_for_marked() {
 
     match &app.mode {
         AppMode::PrReview(state) => {
-            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            let confirm = state
+                .fix_confirm
+                .as_ref()
+                .expect("batch dialog should open");
             // The dialog carries both marked ids (list order).
             let mut ids = confirm.batch.clone().expect("dialog is a batch");
             ids.sort();
@@ -7745,7 +7748,10 @@ fn pr_review_batch_confirm_excludes_resolved_marks() {
 
     match &app.mode {
         AppMode::PrReview(state) => {
-            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            let confirm = state
+                .fix_confirm
+                .as_ref()
+                .expect("batch dialog should open");
             // Only the unresolved comment is included (token principle #6).
             assert_eq!(confirm.batch.clone().unwrap(), vec![2]);
             assert!(!confirm.editor.text().contains("File: src/file1.rs"));
@@ -7765,7 +7771,10 @@ fn pr_review_batch_confirm_all_resolved_hints() {
 
     app.pr_review_open_batch_confirm();
     assert!(
-        app.message.as_deref().unwrap_or("").contains("all resolved"),
+        app.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("all resolved"),
         "expected an all-resolved hint, got {:?}",
         app.message
     );
@@ -7796,7 +7805,10 @@ fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
     app.pr_review_open_batch_confirm();
     match &app.mode {
         AppMode::PrReview(state) => {
-            assert!(state.harness_pick.is_some(), "harness picker should be open");
+            assert!(
+                state.harness_pick.is_some(),
+                "harness picker should be open"
+            );
             assert!(state.fix_confirm.is_none());
             assert!(state.pending_batch, "pending action should be the batch");
         }
@@ -7808,7 +7820,10 @@ fn pr_review_batch_routes_through_harness_pick_then_opens_combined() {
     match &app.mode {
         AppMode::PrReview(state) => {
             assert!(!state.pending_batch);
-            let confirm = state.fix_confirm.as_ref().expect("batch dialog should open");
+            let confirm = state
+                .fix_confirm
+                .as_ref()
+                .expect("batch dialog should open");
             let mut ids = confirm.batch.clone().expect("dialog is a batch");
             ids.sort();
             assert_eq!(ids, vec![1, 2]);

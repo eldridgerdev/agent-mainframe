@@ -77,8 +77,8 @@ doc always says exactly what remains.
 - [Markdown viewer completeness](markdown-viewer-completeness-plan.md) —
   _Backlog._ Fix the Markdown viewer's missing table headers first, then
   tighten coverage for table alignment, uneven rows, prefixed tables,
-  inline styling inside table cells, long cells, footnotes, math, links,
-  and image fallbacks.
+  inline styling inside table cells, long cells, footnotes, and math.
+  Links and image fallbacks remain.
 - [Prompt library](prompt-library-plan.md) — _In progress._ Save
   reusable prompts and inject them into a session (compose box when on,
   paste without sending when off). Phases 1–2 have shipped: SQLite-backed

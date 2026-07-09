@@ -422,6 +422,7 @@ pub fn render_markdown(
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
+    options.insert(Options::ENABLE_MATH);
 
     let parser = Parser::new_ext(markdown, options);
     let mut renderer = MarkdownRenderer::new(theme, width.max(24), source_path);
@@ -491,13 +492,8 @@ impl<'a> MarkdownRenderer<'a> {
                     true,
                 );
             }
-            Event::InlineMath(math) | Event::DisplayMath(math) => {
-                self.push_inline_text(
-                    math.into_string(),
-                    Style::default().fg(self.theme.secondary.to_color()),
-                    true,
-                );
-            }
+            Event::InlineMath(math) => self.push_math_text(format!("${}$", math), false),
+            Event::DisplayMath(math) => self.push_math_text(format!("$${}$$", math), true),
         }
     }
 
@@ -716,6 +712,25 @@ impl<'a> MarkdownRenderer<'a> {
         self.push_inline_text(code.to_string(), self.inline_code_style(), true);
     }
 
+    fn push_math_text(&mut self, text: String, display: bool) {
+        let style = Style::default()
+            .fg(self.theme.secondary.to_color())
+            .add_modifier(Modifier::ITALIC);
+        if let Some(table) = &mut self.current_table {
+            table.push_cell_text(text, style, true);
+            return;
+        }
+
+        if display {
+            self.finish_text_block();
+        }
+        self.ensure_text_block();
+        self.push_inline_text(text, style, true);
+        if display {
+            self.finish_text_block();
+        }
+    }
+
     fn push_soft_break(&mut self) {
         if let Some(code) = &mut self.current_code {
             code.code.push('\n');
@@ -766,6 +781,19 @@ impl<'a> MarkdownRenderer<'a> {
                 atomic,
             });
         }
+    }
+
+    fn ensure_text_block(&mut self) {
+        if self.current_text.is_some() {
+            return;
+        }
+        let (first_prefix, rest_prefix, kind) = self.start_text_block_prefixes();
+        self.current_text = Some(TextBlock {
+            kind,
+            nodes: Vec::new(),
+            first_prefix,
+            rest_prefix,
+        });
     }
 
     fn current_style(&self) -> Style {
@@ -1858,6 +1886,69 @@ mod tests {
         assert!(
             strings.iter().all(|line| display_width(line) <= 36),
             "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_shows_inline_math_with_delimiters() {
+        let theme = Theme::default();
+        let rendered = render_markdown("Energy is $E = mc^2$.", &theme, 48, None);
+        let line = rendered
+            .lines
+            .iter()
+            .find(|line| rendered_line_text(line).contains("$E = mc^2$"))
+            .expect("inline math should render");
+        let text = rendered_line_text(line);
+
+        assert!(text.contains("Energy is $E = mc^2$."), "{text}");
+        let math = span_for(line, "$E = mc^2$");
+        assert_eq!(math.style.fg, Some(theme.secondary.to_color()), "{math:?}");
+        assert!(
+            math.style.add_modifier.contains(Modifier::ITALIC),
+            "{math:?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_shows_display_math_as_marked_text_block() {
+        let theme = Theme::default();
+        let rendered = render_markdown("Before\n\n$$x = y + z$$\n\nAfter", &theme, 48, None);
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().any(|line| line == "$$x = y + z$$"),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().all(|line| !line.contains("$$x = y + z$$\n")),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_preserves_math_inside_table_cells() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| Name | Formula |\n| --- | --- |\n| Energy | $E = mc^2$ |",
+            &theme,
+            64,
+            None,
+        );
+        let row = rendered
+            .lines
+            .iter()
+            .find(|line| rendered_line_text(line).contains("$E = mc^2$"))
+            .expect("table math should render");
+
+        let math = span_for(row, "$E = mc^2$");
+        assert_eq!(math.style.fg, Some(theme.secondary.to_color()), "{math:?}");
+        assert!(
+            math.style.add_modifier.contains(Modifier::ITALIC),
+            "{math:?}"
         );
     }
 

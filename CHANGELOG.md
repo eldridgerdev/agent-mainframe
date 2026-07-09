@@ -117,6 +117,10 @@ are tagged.
 - **Markdown footnotes are readable in the in-app viewer.** Footnote
   references now show as compact inline labels, and definitions render as
   labeled footnote blocks instead of exposing raw `[^label]:` syntax.
+- **Markdown math is visible in the in-app viewer.** Inline and display
+  formulas now render as styled `$...$` / `$$...$$` text, including inside
+  table cells, so plans and notes with formulas no longer look like ordinary
+  prose or lose math-specific context.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux

@@ -723,9 +723,31 @@ impl App {
             },
         };
         let extra_args: Vec<String> = feature.mode.cli_flags(launch_opts);
+        let max_agent_autostart_sessions = self.config.max_agent_autostart_sessions;
+        let unlimited_agent_autostart = max_agent_autostart_sessions == 0;
+        let mut launched_agent_sessions = 0usize;
         for session in &feature.sessions {
+            if session.kind.is_agent_harness()
+                && !unlimited_agent_autostart
+                && launched_agent_sessions >= max_agent_autostart_sessions
+            {
+                crate::debug::log_to_file(
+                    crate::debug::LogLevel::Info,
+                    "feature_start",
+                    &format!(
+                        "Skipped auto-launch for saved agent session '{}' ({}) in {}; max_agent_autostart_sessions={}",
+                        session.label,
+                        session.tmux_window,
+                        feature.tmux_session,
+                        max_agent_autostart_sessions
+                    ),
+                );
+                continue;
+            }
+
             match session.kind {
                 SessionKind::Claude => {
+                    launched_agent_sessions += 1;
                     self.tmux.launch_claude(
                         &feature.tmux_session,
                         &session.tmux_window,
@@ -735,6 +757,7 @@ impl App {
                     )?;
                 }
                 SessionKind::Opencode => {
+                    launched_agent_sessions += 1;
                     self.tmux.launch_opencode(
                         &feature.tmux_session,
                         &session.tmux_window,
@@ -742,6 +765,7 @@ impl App {
                     )?;
                 }
                 SessionKind::Codex => {
+                    launched_agent_sessions += 1;
                     let codex_args =
                         crate::codex_config::launch_override_args(&feature.workdir, &feature.mode);
                     // In vibeless mode, launch a diff-review watcher alongside
@@ -773,6 +797,7 @@ impl App {
                     )?;
                 }
                 SessionKind::Pi => {
+                    launched_agent_sessions += 1;
                     self.tmux.launch_pi(
                         &feature.tmux_session,
                         &session.tmux_window,

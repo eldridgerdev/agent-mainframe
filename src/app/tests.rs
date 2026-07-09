@@ -388,6 +388,12 @@ fn app_config_default_view_auto_refresh_is_disabled() {
 }
 
 #[test]
+fn app_config_default_agent_restart_limit_is_one() {
+    let config = AppConfig::default();
+    assert_eq!(config.max_agent_autostart_sessions, 1);
+}
+
+#[test]
 fn app_config_default_diff_review_viewer_is_amf() {
     let config = AppConfig::default();
     assert_eq!(config.diff_review_viewer, DiffReviewViewer::Amf);
@@ -458,6 +464,12 @@ fn app_config_missing_view_auto_refresh_uses_default() {
 fn app_config_view_auto_refresh_can_be_enabled() {
     let config: AppConfig = serde_json::from_str(r#"{"view_auto_refresh":true}"#).unwrap();
     assert!(config.view_auto_refresh);
+}
+
+#[test]
+fn app_config_agent_restart_limit_can_be_configured() {
+    let config: AppConfig = serde_json::from_str(r#"{"max_agent_autostart_sessions":0}"#).unwrap();
+    assert_eq!(config.max_agent_autostart_sessions, 0);
 }
 
 #[test]
@@ -3368,6 +3380,50 @@ fn adding_session_starts_stopped_feature() {
     assert_eq!(feature.status, ProjectStatus::Idle);
     assert_eq!(feature.sessions.len(), 2);
     assert_eq!(feature.sessions[1].label, "Shell");
+}
+
+#[test]
+fn starting_stopped_feature_limits_saved_agent_autostart() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    {
+        let feature = &mut store.projects[0].features[0];
+        feature.add_session_named(SessionKind::Claude, "Primary Claude".into());
+        feature.add_session_named(SessionKind::Claude, "Extra Claude".into());
+        feature.add_session_named(SessionKind::Codex, "Extra Codex".into());
+    }
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().times(1).return_const(false);
+    tmux.expect_create_session_with_window()
+        .withf(|session, window, _| session == "amf-my-feat" && window == "claude")
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .withf(|session, window, _| {
+            session == "amf-my-feat" && matches!(window, "claude-2" | "codex")
+        })
+        .times(2)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_claude()
+        .withf(|session, window, _, _, _| session == "amf-my-feat" && window == "claude")
+        .times(1)
+        .returning(|_, _, _, _, _| Ok(()));
+    tmux.expect_launch_codex().times(0);
+    tmux.expect_select_window()
+        .withf(|session, window| session == "amf-my-feat" && window == "claude")
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+
+    app.do_start_feature(0, 0).unwrap();
+
+    let feature = &app.store.projects[0].features[0];
+    assert_eq!(feature.status, ProjectStatus::Idle);
+    assert_eq!(feature.sessions.len(), 3);
 }
 
 #[test]

@@ -395,6 +395,12 @@ pub struct AppConfig {
     /// is opt-in unless the workaround is needed locally.
     #[serde(default)]
     pub view_auto_refresh: bool,
+    /// Maximum number of saved agent harness panes AMF auto-launches when a
+    /// stopped feature is started. Extra saved agent panes are recreated as
+    /// tmux windows but left at the shell prompt to avoid process stampedes.
+    /// Set to 0 to restore the previous unlimited behavior.
+    #[serde(default = "default_agent_restart_limit")]
+    pub max_agent_autostart_sessions: usize,
     /// When finishing a final review, whether to auto-submit the
     /// "address the feedback" prompt to the feature's agent (paste +
     /// Enter). When false, AMF pastes the prompt but does not send Enter,
@@ -412,6 +418,10 @@ pub struct AppConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_agent_restart_limit() -> usize {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -456,6 +466,7 @@ impl Default for AppConfig {
             token_pricing: TokenPricingConfig::default(),
             remote_control_default: false,
             view_auto_refresh: false,
+            max_agent_autostart_sessions: default_agent_restart_limit(),
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
         }

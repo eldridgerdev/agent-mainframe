@@ -93,6 +93,12 @@ are tagged.
   hardcoded `~/.config/amf`. Existing installs are unaffected: if the old
   `~/.config/amf` already has data and the new location doesn't, AMF keeps
   using the old path, so nothing moves out from under you on upgrade.
+- **Stopped features restart with only one saved agent by default.** When you
+  start a stopped feature that has several saved Claude, Codex, opencode, or Pi
+  panes, AMF now auto-launches only the first agent harness and leaves the rest
+  as tmux windows at the shell prompt. This avoids suddenly reviving a large
+  batch of agent CLIs on memory-constrained environments such as WSL. Set
+  `max_agent_autostart_sessions` to `0` to restore unlimited auto-start.
 
 ### Fixed
 
@@ -178,6 +184,8 @@ are tagged.
 - If you relied on `n` / `p` to move between features in a session, add
   `"next_feature"` / `"prev_feature"` keybindings to your config to restore
   them.
+- If you want stopped features to resume every saved agent pane automatically,
+  set `"max_agent_autostart_sessions": 0` in `~/.config/amf/config.json`.
 
 ## [v0.29.0] - 2026-07-01
 

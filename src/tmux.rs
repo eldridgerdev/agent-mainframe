@@ -1345,6 +1345,40 @@ impl TmuxManager {
         )
     }
 
+    fn write_agent_launch_script(command: &str) -> Result<PathBuf> {
+        let path = std::env::temp_dir().join(format!("amf-agent-launch-{}.sh", Uuid::new_v4()));
+        let script = format!("#!/bin/sh\nrm -f -- \"$0\"\n{command}\n");
+        fs::write(&path, script).with_context(|| {
+            format!(
+                "Failed to write agent launch script at {}",
+                path.to_string_lossy()
+            )
+        })?;
+        Ok(path)
+    }
+
+    pub fn run_shell_command(session: &str, window: &str, command: &str) -> Result<()> {
+        Self::run_shell_command_via_script_direct(
+            session,
+            window,
+            command,
+            "Failed to prepare shell command for tmux",
+            "tmux shell command launch failed",
+        )
+    }
+
+    fn run_shell_command_via_script_direct(
+        session: &str,
+        window: &str,
+        command: &str,
+        context: &'static str,
+        failure: &'static str,
+    ) -> Result<()> {
+        let script = Self::write_agent_launch_script(command).context(context)?;
+        let command = format!("sh {}", Self::shell_quote(&script.to_string_lossy()));
+        Self::send_keys_direct(session, window, &command).with_context(|| failure.to_string())
+    }
+
     /// Check if tmux is available
     pub fn check_available() -> Result<()> {
         let runtime = Self::runtime();
@@ -1490,8 +1524,6 @@ impl TmuxManager {
         resume_session_id: Option<&str>,
         extra_args: &[&str],
     ) -> Result<()> {
-        let target = format!("{}:{}", session, window);
-
         // Use `env` to set AMF_SESSION so PreToolUse/Stop hooks
         // can identify the session. `env VAR=val cmd` works in
         // all shells including fish (unlike `VAR=val cmd`).
@@ -1513,8 +1545,10 @@ impl TmuxManager {
         }
 
         let cmd_str = Self::agent_launch_command(cmd_str);
-        Self::run(
-            &["send-keys", "-t", &target, &cmd_str, "Enter"],
+        Self::run_shell_command_via_script_direct(
+            session,
+            window,
+            &cmd_str,
             "Failed to send claude command to tmux",
             "tmux send-keys failed",
         )
@@ -1532,7 +1566,6 @@ impl TmuxManager {
         feature_session_id: &str,
         resume_session_id: Option<&str>,
     ) -> Result<()> {
-        let target = format!("{}:{}", session, window);
         let cmd = match resume_session_id {
             Some(id) => format!(
                 "{} opencode -s {}",
@@ -1546,8 +1579,10 @@ impl TmuxManager {
         };
 
         let cmd = Self::agent_launch_command(cmd);
-        Self::run(
-            &["send-keys", "-t", &target, &cmd, "Enter"],
+        Self::run_shell_command_via_script_direct(
+            session,
+            window,
+            &cmd,
             "Failed to send opencode command to tmux",
             "tmux send-keys failed",
         )
@@ -1561,7 +1596,6 @@ impl TmuxManager {
         resume_session_id: Option<&str>,
         extra_args: &[&str],
     ) -> Result<()> {
-        let target = format!("{}:{}", session, window);
         let mut cmd = format!(
             "{} codex",
             Self::agent_launch_env(session, window, feature_session_id)
@@ -1575,8 +1609,10 @@ impl TmuxManager {
         }
 
         let cmd = Self::agent_launch_command(cmd);
-        Self::run(
-            &["send-keys", "-t", &target, &cmd, "Enter"],
+        Self::run_shell_command_via_script_direct(
+            session,
+            window,
+            &cmd,
             "Failed to send codex command to tmux",
             "tmux send-keys failed",
         )
@@ -1584,15 +1620,16 @@ impl TmuxManager {
 
     /// Launch pi in a specific window of a session
     pub fn launch_pi(session: &str, window: &str, feature_session_id: &str) -> Result<()> {
-        let target = format!("{}:{}", session, window);
         let cmd = format!(
             "{} pi",
             Self::agent_launch_env(session, window, feature_session_id)
         );
 
         let cmd = Self::agent_launch_command(cmd);
-        Self::run(
-            &["send-keys", "-t", &target, &cmd, "Enter"],
+        Self::run_shell_command_via_script_direct(
+            session,
+            window,
+            &cmd,
             "Failed to send pi command to tmux",
             "tmux send-keys failed",
         )
@@ -2044,6 +2081,10 @@ impl TmuxOps for TmuxManager {
         TmuxManager::launch_pi(session, window, feature_session_id)
     }
 
+    fn run_shell_command(&self, session: &str, window: &str, command: &str) -> Result<()> {
+        TmuxManager::run_shell_command(session, window, command)
+    }
+
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()> {
         TmuxManager::send_keys(session, window, keys)
     }
@@ -2376,6 +2417,18 @@ mod tests {
 
         assert!(cmd.starts_with("printf '\\033[2J\\033[H'; "));
         assert!(cmd.ends_with("env AMF_SESSION='amf-test' codex"));
+    }
+
+    #[test]
+    fn agent_launch_script_contains_full_command_and_self_removes() {
+        let command = "printf '\\033[2J\\033[H'; env AMF_FEATURE_SESSION_ID='session-123' claude";
+        let path = TmuxManager::write_agent_launch_script(command).unwrap();
+        let script = fs::read_to_string(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert!(script.starts_with("#!/bin/sh\nrm -f -- \"$0\"\n"));
+        assert!(script.ends_with("claude\n"));
+        assert!(script.contains(command));
     }
 
     #[test]

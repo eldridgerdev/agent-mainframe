@@ -348,8 +348,8 @@ impl App {
             } else {
                 env_prefix
             };
-            self.tmux.send_literal(&tmux_session, &window, &shell_cmd)?;
-            self.tmux.send_key_name(&tmux_session, &window, "Enter")?;
+            self.tmux
+                .run_shell_command(&tmux_session, &window, &shell_cmd)?;
         }
 
         self.save()?;

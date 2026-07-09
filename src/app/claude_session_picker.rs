@@ -327,12 +327,10 @@ impl App {
                 }
                 SessionKind::Custom => {
                     if let Some(ref cmd) = session.command {
-                        self.tmux
-                            .send_literal(&feature.tmux_session, &session.tmux_window, cmd)?;
-                        self.tmux.send_key_name(
+                        self.tmux.run_shell_command(
                             &feature.tmux_session,
                             &session.tmux_window,
-                            "Enter",
+                            cmd,
                         )?;
                     }
                 }

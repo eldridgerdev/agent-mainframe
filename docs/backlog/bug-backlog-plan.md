@@ -14,6 +14,33 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~Agent launch commands are cut off on macOS~~ (Fixed)
+
+- **Status:** Fixed (2026-07-09)
+- **Reported:** 2026-07-09
+- **Relates to:** agent harness startup (`src/tmux.rs`)
+- **Root cause:** AMF typed the full environment-prefixed launch command into
+  the tmux pane. On macOS that long input could be truncated before
+  `AMF_FEATURE_SESSION_ID` and the agent binary were reached, leaving the pane
+  at a shell prompt with only part of the launch command visible.
+- **Fix:** Write launch commands to a short-lived shell script and send only
+  `sh <script>` through tmux. The same path is used for Claude, Codex,
+  opencode, Pi, custom session commands, and the Codex diff-review watcher.
+
+### Repro
+
+1. On macOS, create or start an agent session in AMF.
+2. Watch the pane while the harness starts.
+
+### Expected
+
+The agent harness starts after AMF creates the tmux window.
+
+### Actual
+
+The shell input stops partway through the environment setup, around
+`AMF_TMUX_WINDOW='claude' AMF_FEAT...`, and Claude never starts.
+
 ## ~~macOS build fails in tmux PTY setup~~ (Fixed)
 
 - **Status:** Fixed (2026-07-09)

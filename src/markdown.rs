@@ -44,6 +44,7 @@ enum ListKind {
 enum EmittedBlockKind {
     Paragraph,
     ListItem,
+    Footnote,
     Heading,
     CodeBlock,
     Table,
@@ -75,6 +76,7 @@ struct TextBlock {
 
 enum TextBlockKind {
     Paragraph { list_item: bool },
+    Footnote,
     Heading { level: u8 },
 }
 
@@ -86,11 +88,21 @@ struct CodeBlockState {
 
 struct TableState {
     alignments: Vec<Alignment>,
-    rows: Vec<Vec<String>>,
-    current_row: Vec<String>,
-    current_cell: String,
+    rows: Vec<Vec<TableCell>>,
+    current_row: Vec<TableCell>,
+    current_cell: TableCell,
     header_rows: usize,
     prefix: Prefix,
+}
+
+struct FootnoteState {
+    label: String,
+    first_block: bool,
+}
+
+#[derive(Clone, Default)]
+struct TableCell {
+    nodes: Vec<InlineNode>,
 }
 
 impl TableState {
@@ -99,23 +111,30 @@ impl TableState {
             alignments,
             rows: Vec::new(),
             current_row: Vec::new(),
-            current_cell: String::new(),
+            current_cell: TableCell::default(),
             header_rows: 0,
             prefix,
         }
     }
 
     fn start_cell(&mut self) {
-        self.current_cell.clear();
+        self.current_cell = TableCell::default();
     }
 
-    fn push_cell_text(&mut self, text: &str) {
-        self.current_cell.push_str(text);
+    fn push_cell_text(&mut self, text: String, style: Style, atomic: bool) {
+        if text.is_empty() {
+            return;
+        }
+        self.current_cell.nodes.push(InlineNode::Text {
+            text,
+            style,
+            atomic,
+        });
     }
 
     fn finish_cell(&mut self) {
-        self.current_row.push(self.current_cell.trim().to_string());
-        self.current_cell.clear();
+        self.current_row
+            .push(std::mem::take(&mut self.current_cell).trimmed());
     }
 
     fn start_row(&mut self) {
@@ -124,6 +143,32 @@ impl TableState {
 
     fn finish_row(&mut self) {
         self.rows.push(std::mem::take(&mut self.current_row));
+    }
+}
+
+impl TableCell {
+    fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    fn trimmed(mut self) -> Self {
+        while matches!(self.nodes.first(), Some(InlineNode::Text { text, .. }) if text.trim().is_empty())
+        {
+            self.nodes.remove(0);
+        }
+        while matches!(self.nodes.last(), Some(InlineNode::Text { text, .. }) if text.trim().is_empty())
+        {
+            self.nodes.pop();
+        }
+
+        if let Some(InlineNode::Text { text, .. }) = self.nodes.first_mut() {
+            *text = text.trim_start().to_string();
+        }
+        if let Some(InlineNode::Text { text, .. }) = self.nodes.last_mut() {
+            *text = text.trim_end().to_string();
+        }
+
+        self
     }
 }
 
@@ -401,6 +446,7 @@ struct MarkdownRenderer<'a> {
     current_code: Option<CodeBlockState>,
     current_table: Option<TableState>,
     current_item_prefix: Option<(Prefix, Prefix)>,
+    current_footnote: Option<FootnoteState>,
     last_block_kind: Option<EmittedBlockKind>,
     in_table_head: bool,
 }
@@ -419,6 +465,7 @@ impl<'a> MarkdownRenderer<'a> {
             current_code: None,
             current_table: None,
             current_item_prefix: None,
+            current_footnote: None,
             last_block_kind: None,
             in_table_head: false,
         }
@@ -458,9 +505,9 @@ impl<'a> MarkdownRenderer<'a> {
         match tag {
             Tag::Paragraph => {
                 self.finish_text_block();
-                let (first_prefix, rest_prefix, list_item) = self.current_block_prefixes();
+                let (first_prefix, rest_prefix, kind) = self.start_text_block_prefixes();
                 self.current_text = Some(TextBlock {
-                    kind: TextBlockKind::Paragraph { list_item },
+                    kind,
                     nodes: Vec::new(),
                     first_prefix,
                     rest_prefix,
@@ -556,6 +603,13 @@ impl<'a> MarkdownRenderer<'a> {
                     table.start_cell();
                 }
             }
+            Tag::FootnoteDefinition(label) => {
+                self.finish_text_block();
+                self.current_footnote = Some(FootnoteState {
+                    label: label.to_string(),
+                    first_block: true,
+                });
+            }
             _ => {}
         }
     }
@@ -603,6 +657,10 @@ impl<'a> MarkdownRenderer<'a> {
                     table.finish_cell();
                 }
             }
+            TagEnd::FootnoteDefinition => {
+                self.finish_text_block();
+                self.current_footnote = None;
+            }
             _ => {}
         }
     }
@@ -629,8 +687,9 @@ impl<'a> MarkdownRenderer<'a> {
             return;
         }
 
+        let style = self.current_style();
         if let Some(table) = &mut self.current_table {
-            table.push_cell_text(text);
+            table.push_cell_text(text.to_string(), style, false);
             return;
         }
 
@@ -648,8 +707,9 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn push_inline_code(&mut self, code: &str) {
+        let style = self.inline_code_style();
         if let Some(table) = &mut self.current_table {
-            table.push_cell_text(code);
+            table.push_cell_text(code.to_string(), style, true);
             return;
         }
 
@@ -660,6 +720,11 @@ impl<'a> MarkdownRenderer<'a> {
         if let Some(code) = &mut self.current_code {
             code.code.push('\n');
         } else {
+            let style = self.current_style();
+            if let Some(table) = &mut self.current_table {
+                table.push_cell_text(" ".to_string(), style, false);
+                return;
+            }
             self.push_inline_text(" ".to_string(), self.current_style(), false);
         }
     }
@@ -667,8 +732,13 @@ impl<'a> MarkdownRenderer<'a> {
     fn push_hard_break(&mut self) {
         if let Some(code) = &mut self.current_code {
             code.code.push('\n');
-        } else if let Some(block) = &mut self.current_text {
-            block.nodes.push(InlineNode::Break);
+        } else {
+            let style = self.current_style();
+            if let Some(table) = &mut self.current_table {
+                table.push_cell_text(" ".to_string(), style, false);
+            } else if let Some(block) = &mut self.current_text {
+                block.nodes.push(InlineNode::Break);
+            }
         }
     }
 
@@ -724,6 +794,16 @@ impl<'a> MarkdownRenderer<'a> {
                 } else {
                     EmittedBlockKind::Paragraph
                 });
+                let rendered = wrap_inline_nodes(
+                    &block.nodes,
+                    self.width,
+                    &block.first_prefix,
+                    &block.rest_prefix,
+                );
+                self.lines.extend(rendered);
+            }
+            TextBlockKind::Footnote => {
+                self.begin_block(EmittedBlockKind::Footnote);
                 let rendered = wrap_inline_nodes(
                     &block.nodes,
                     self.width,
@@ -861,14 +941,14 @@ impl<'a> MarkdownRenderer<'a> {
         let mut rows = table.rows;
         for row in &mut rows {
             while row.len() < cols {
-                row.push(String::new());
+                row.push(TableCell::default());
             }
         }
 
         let mut widths = vec![3usize; cols];
         for row in &rows {
             for (idx, cell) in row.iter().enumerate() {
-                widths[idx] = widths[idx].max(display_width(cell).max(1));
+                widths[idx] = widths[idx].max(table_cell_width(cell).max(1));
             }
         }
 
@@ -906,8 +986,8 @@ impl<'a> MarkdownRenderer<'a> {
             let mut line_spans = table.prefix.spans.clone();
             line_spans.push(Span::styled("│", border_style));
             for (col_idx, cell) in row.iter().enumerate() {
-                let padded = pad_aligned(
-                    &truncate_to_width(cell, widths[col_idx]),
+                let padding = aligned_padding(
+                    table_cell_width(cell).min(widths[col_idx]),
                     widths[col_idx],
                     table
                         .alignments
@@ -920,10 +1000,10 @@ impl<'a> MarkdownRenderer<'a> {
                         .fg(self.theme.primary.to_color())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(self.theme.text.to_color())
+                    Style::default()
                 };
                 line_spans.push(Span::raw(" "));
-                line_spans.push(Span::styled(padded, cell_style));
+                line_spans.extend(table_cell_spans(cell, widths[col_idx], padding, cell_style));
                 line_spans.push(Span::raw(" "));
                 line_spans.push(Span::styled("│", border_style));
             }
@@ -1001,6 +1081,40 @@ impl<'a> MarkdownRenderer<'a> {
         }
         let prefix = self.quote_prefix();
         (prefix.clone(), prefix, false)
+    }
+
+    fn start_text_block_prefixes(&mut self) -> (Prefix, Prefix, TextBlockKind) {
+        if self.current_footnote.is_some() && self.current_item_prefix.is_none() {
+            let (first, rest) = self.footnote_prefixes();
+            return (first, rest, TextBlockKind::Footnote);
+        }
+
+        let (first, rest, list_item) = self.current_block_prefixes();
+        (first, rest, TextBlockKind::Paragraph { list_item })
+    }
+
+    fn footnote_prefixes(&mut self) -> (Prefix, Prefix) {
+        let quote_prefix = self.quote_prefix();
+        let Some(footnote) = &mut self.current_footnote else {
+            return (quote_prefix.clone(), quote_prefix);
+        };
+
+        let label = format!("[{}] ", footnote.label);
+        let label_width = display_width(&label);
+        let label_style = Style::default()
+            .fg(self.theme.info.to_color())
+            .add_modifier(Modifier::BOLD);
+        let rest = combine_prefixes(&quote_prefix, &raw_prefix(" ".repeat(label_width)));
+
+        if footnote.first_block {
+            footnote.first_block = false;
+            (
+                combine_prefixes(&quote_prefix, &styled_prefix(label, label_style)),
+                rest,
+            )
+        } else {
+            (rest.clone(), rest)
+        }
     }
 
     fn next_item_prefixes(&mut self) -> (Prefix, Prefix) {
@@ -1274,32 +1388,94 @@ fn table_border(left: char, mid: char, right: char, widths: &[usize]) -> String 
     out
 }
 
-fn pad_aligned(text: &str, width: usize, alignment: Alignment) -> String {
-    let content_width = display_width(text);
+fn aligned_padding(content_width: usize, width: usize, alignment: Alignment) -> (usize, usize) {
     if content_width >= width {
-        return text.to_string();
+        return (0, 0);
     }
     let padding = width - content_width;
     match alignment {
         Alignment::Center => {
             let left = padding / 2;
             let right = padding - left;
-            format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
+            (left, right)
         }
-        Alignment::Right => format!("{}{}", " ".repeat(padding), text),
-        Alignment::Left | Alignment::None => format!("{}{}", text, " ".repeat(padding)),
+        Alignment::Right => (padding, 0),
+        Alignment::Left | Alignment::None => (0, padding),
     }
 }
 
-fn truncate_to_width(text: &str, width: usize) -> String {
-    if display_width(text) <= width {
-        return text.to_string();
+fn table_cell_width(cell: &TableCell) -> usize {
+    plain_inline_width(&cell.nodes)
+}
+
+fn table_cell_spans(
+    cell: &TableCell,
+    width: usize,
+    padding: (usize, usize),
+    base_style: Style,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if padding.0 > 0 {
+        spans.push(Span::raw(" ".repeat(padding.0)));
     }
-    if width <= 1 {
-        return "…".to_string();
+    spans.extend(truncate_inline_nodes(&cell.nodes, width, base_style));
+    if padding.1 > 0 {
+        spans.push(Span::raw(" ".repeat(padding.1)));
     }
-    let split = split_at_width(text, width - 1);
-    format!("{}…", &text[..split])
+    spans
+}
+
+fn truncate_inline_nodes(
+    nodes: &[InlineNode],
+    width: usize,
+    base_style: Style,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let mut spans = Vec::new();
+    let total_width = plain_inline_width(nodes);
+    let truncated = total_width > width;
+    let content_width = if truncated {
+        width.saturating_sub(1)
+    } else {
+        width
+    };
+    let mut remaining = content_width;
+    let mut last_style = base_style;
+
+    for node in nodes {
+        let InlineNode::Text { text, style, .. } = node else {
+            continue;
+        };
+        let style = style.patch(base_style);
+        if remaining == 0 {
+            last_style = style;
+            break;
+        }
+
+        let text_width = display_width(text);
+        if text_width <= remaining {
+            spans.push(Span::styled(text.clone(), style));
+            remaining -= text_width;
+            last_style = style;
+            continue;
+        }
+
+        let split = split_at_width_strict(text, remaining);
+        if split > 0 {
+            spans.push(Span::styled(text[..split].to_string(), style));
+        }
+        last_style = style;
+        break;
+    }
+
+    if truncated {
+        spans.push(Span::styled("…", last_style));
+    }
+
+    spans
 }
 
 fn split_at_width(text: &str, max_width: usize) -> usize {
@@ -1317,6 +1493,20 @@ fn split_at_width(text: &str, max_width: usize) -> usize {
             } else {
                 split
             };
+        }
+        width += ch_width;
+        split = idx + ch.len_utf8();
+    }
+    text.len()
+}
+
+fn split_at_width_strict(text: &str, max_width: usize) -> usize {
+    let mut width = 0;
+    let mut split = 0;
+    for (idx, ch) in text.char_indices() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > max_width {
+            return split;
         }
         width += ch_width;
         split = idx + ch.len_utf8();
@@ -1594,6 +1784,84 @@ mod tests {
     }
 
     #[test]
+    fn render_markdown_shows_footnote_references_and_definitions() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "AMF has notes[^detail].\n\n[^detail]: Render the definition as a footnote.",
+            &theme,
+            64,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+        let text = strings.join("\n");
+
+        assert!(text.contains("notes[detail]."), "{text}");
+        assert!(
+            strings
+                .iter()
+                .any(|line| line == "[detail] Render the definition as a footnote."),
+            "{strings:#?}"
+        );
+        assert!(!text.contains("[^detail]"), "{text}");
+        assert!(!text.contains("[^detail]:"), "{text}");
+
+        let reference_line = rendered
+            .lines
+            .iter()
+            .find(|line| rendered_line_text(line).contains("notes[detail]."))
+            .expect("footnote reference line should render");
+        let reference = span_for(reference_line, "[detail]");
+        assert!(
+            reference.style.add_modifier.contains(Modifier::ITALIC),
+            "{reference:?}"
+        );
+
+        let definition_line = rendered
+            .lines
+            .iter()
+            .find(|line| rendered_line_text(line).starts_with("[detail] "))
+            .expect("footnote definition line should render");
+        let definition_label = span_for(definition_line, "[detail] ");
+        assert!(
+            definition_label.style.add_modifier.contains(Modifier::BOLD),
+            "{definition_label:?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_wraps_footnote_definitions_under_label() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "[^long]: This footnote definition is long enough to wrap onto another line cleanly.",
+            &theme,
+            36,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(strings[0].starts_with("[long] "), "{strings:#?}");
+        assert!(
+            strings
+                .iter()
+                .skip(1)
+                .any(|line| line.starts_with("       ")),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().all(|line| display_width(line) <= 36),
+            "{strings:#?}"
+        );
+    }
+
+    #[test]
     fn render_markdown_formats_tables_as_grid() {
         let theme = Theme::default();
         let rendered = render_markdown(
@@ -1805,10 +2073,124 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_markdown_preserves_inline_styles_inside_table_cells() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| Em | Strong | Code | Strike | Link |\n| --- | --- | --- | --- | --- |\n| *em* | **strong** | `code` | ~~gone~~ | [link](https://example.com) |",
+            &theme,
+            96,
+            None,
+        );
+        let row = rendered
+            .lines
+            .iter()
+            .find(|line| {
+                let text = rendered_line_text(line);
+                text.contains(" em ")
+                    && text.contains(" strong ")
+                    && text.contains(" code ")
+                    && text.contains(" gone ")
+                    && text.contains(" link ")
+            })
+            .expect("styled table row should render");
+
+        let em = span_for(row, "em");
+        assert!(em.style.add_modifier.contains(Modifier::ITALIC), "{em:?}");
+
+        let strong = span_for(row, "strong");
+        assert!(
+            strong.style.add_modifier.contains(Modifier::BOLD),
+            "{strong:?}"
+        );
+
+        let code = span_for(row, "code");
+        assert_eq!(code.style.bg, Some(theme.effective_header_bg()), "{code:?}");
+        assert_eq!(code.style.fg, Some(theme.warning.to_color()), "{code:?}");
+
+        let strike = span_for(row, "gone");
+        assert!(
+            strike.style.add_modifier.contains(Modifier::CROSSED_OUT),
+            "{strike:?}"
+        );
+
+        let link = span_for(row, "link");
+        assert!(
+            link.style.add_modifier.contains(Modifier::UNDERLINED),
+            "{link:?}"
+        );
+        assert_eq!(link.style.fg, Some(theme.info.to_color()), "{link:?}");
+    }
+
+    #[test]
+    fn render_markdown_truncates_long_styled_table_cells_without_breaking_borders() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| Name | Notes |\n| --- | --- |\n| AMF | **supercalifragilistic** `implementation` |",
+            &theme,
+            26,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+        let row = rendered
+            .lines
+            .iter()
+            .find(|line| rendered_line_text(line).contains("super"))
+            .expect("long styled row should render");
+
+        assert!(
+            strings.iter().all(|line| display_width(line) <= 26),
+            "{strings:#?}"
+        );
+        assert!(rendered_line_text(row).contains('…'), "{strings:#?}");
+
+        let ellipsis = span_for(row, "…");
+        assert!(
+            ellipsis.style.add_modifier.contains(Modifier::BOLD),
+            "{ellipsis:?}"
+        );
+    }
+
+    #[test]
+    fn render_markdown_truncates_wide_table_cells_to_column_width() {
+        let theme = Theme::default();
+        let rendered = render_markdown(
+            "| A | B |\n| --- | --- |\n| 表表表表表表表表表表 | narrow |",
+            &theme,
+            24,
+            None,
+        );
+        let strings = rendered
+            .lines
+            .iter()
+            .map(rendered_line_text)
+            .collect::<Vec<_>>();
+
+        assert!(
+            strings.iter().all(|line| display_width(line) <= 24),
+            "{strings:#?}"
+        );
+        assert!(
+            strings.iter().any(|line| line.contains('…')),
+            "{strings:#?}"
+        );
+    }
+
     fn rendered_line_text(line: &Line<'static>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>()
+    }
+
+    fn span_for<'a>(line: &'a Line<'static>, text: &str) -> &'a Span<'static> {
+        line.spans
+            .iter()
+            .find(|span| span.content.as_ref() == text)
+            .unwrap_or_else(|| panic!("missing span {text:?} in {line:?}"))
     }
 }

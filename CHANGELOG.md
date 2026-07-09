@@ -110,6 +110,13 @@ are tagged.
   inside blockquotes or list items now preserve the surrounding prefix on every
   border and row, and narrow prefixed tables still clamp to the available
   viewer width.
+- **Markdown tables keep cell styling and stay readable when cells are long.**
+  Inline code, emphasis, strong text, strikethrough, and links now keep their
+  styling inside table cells, and oversized cells truncate with an ellipsis
+  without breaking the table borders.
+- **Markdown footnotes are readable in the in-app viewer.** Footnote
+  references now show as compact inline labels, and definitions render as
+  labeled footnote blocks instead of exposing raw `[^label]:` syntax.
 - **New agent sessions hide their startup command echo.** When AMF starts a
   fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
   loading screen until the harness is ready instead of flashing the long tmux
@@ -135,6 +142,8 @@ are tagged.
   re-add them, and any that no longer match are flagged rather than dropped.
 - No action required for the Markdown table alignment coverage.
 - No action required for the Markdown table header fix.
+- No action required for the Markdown table styling, table truncation, or
+  footnote rendering fixes.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
 - No action required for the Review/Plan experimental-label graduation,

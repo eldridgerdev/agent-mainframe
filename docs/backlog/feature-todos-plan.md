@@ -192,8 +192,8 @@ project/feature is deleted (extend the existing delete paths).
 - [x] Block creating a second TODOS session per project (test:
       `add_builtin_session_blocks_second_todos_per_project`, plus picker
       offer/hide tests).
-- Note: opening a TODOs session currently shows a "coming soon" message
-  (`enter_view` guard); the native overlay arrives in Epic 3.
+- Opening a TODOs session now routes straight to the native overlay
+  (Epic 3); the placeholder "coming soon" message is gone.
 
 ### Epic 3 — Native TODO view (read + navigate)
 

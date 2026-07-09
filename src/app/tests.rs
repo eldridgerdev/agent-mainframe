@@ -2122,9 +2122,71 @@ fn restore_claude_session_resizes_window_before_launch_when_viewport_known() {
 
     app.confirm_and_start_claude().unwrap();
 
-    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session_kind, SessionKind::Claude);
+            assert!(view.startup_mask_active());
+        }
+        _ => panic!("expected Viewing mode"),
+    }
     assert_eq!(app.message.as_deref(), Some("Restored claude session"));
     assert!(matches!(app.selection, Selection::Session(0, 0, 0)));
+}
+
+#[test]
+fn enter_view_from_feature_selects_pi_harness_and_shows_startup_mask() {
+    let mut store = store_with_feature(ProjectStatus::Stopped);
+    store.projects[0].features[0].agent = AgentKind::Pi;
+    store.projects[0].preferred_agent = AgentKind::Pi;
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists()
+        .withf(|session| session == "amf-my-feat")
+        .times(1)
+        .return_const(false);
+    tmux.expect_create_session_with_window()
+        .withf(|session, window, workdir| {
+            session == "amf-my-feat"
+                && window == "pi"
+                && workdir == std::path::Path::new("/tmp/test-workdir")
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_set_session_env()
+        .withf(|session, key, value| {
+            session == "amf-my-feat" && key == "AMF_SESSION" && value == "amf-my-feat"
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_create_window()
+        .times(0)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_launch_pi()
+        .withf(|session, window, feature_session_id| {
+            session == "amf-my-feat" && window == "pi" && !feature_session_id.is_empty()
+        })
+        .times(1)
+        .returning(|_, _, _| Ok(()));
+    tmux.expect_select_window()
+        .withf(|session, window| session == "amf-my-feat" && window == "pi")
+        .times(1)
+        .returning(|_, _| Ok(()));
+
+    let tmp = NamedTempFile::new().unwrap();
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    app.store_path = tmp.path().to_path_buf();
+    app.selection = Selection::Feature(0, 0);
+
+    app.enter_view_without_auto_compose().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session_kind, SessionKind::Pi);
+            assert_eq!(view.window, "pi");
+            assert!(view.startup_mask_active());
+        }
+        _ => panic!("expected Viewing mode"),
+    }
 }
 
 #[test]

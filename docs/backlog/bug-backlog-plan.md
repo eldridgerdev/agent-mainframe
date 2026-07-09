@@ -57,7 +57,10 @@ awkward and jumpy.
   for a new agent pane. Brand-new feature sessions and new agent windows from
   the session picker set that mask explicitly. The mask clears when fresh pane
   content no longer looks like AMF's launch echo, with a timeout fallback so a
-  failed launch becomes visible.
+  failed launch becomes visible. Follow-up coverage applies the same mask to
+  resumed Claude/Codex/opencode sessions launched from `S`, and includes Pi in
+  the feature-row default agent lookup so Pi gets the same loading screen when
+  opened from a feature row.
 
 ### Repro
 

@@ -101,7 +101,10 @@ impl App {
                     .position(|s| {
                         matches!(
                             s.kind,
-                            SessionKind::Claude | SessionKind::Opencode | SessionKind::Codex
+                            SessionKind::Claude
+                                | SessionKind::Opencode
+                                | SessionKind::Codex
+                                | SessionKind::Pi
                         )
                     })
                     .unwrap_or(0)

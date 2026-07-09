@@ -179,7 +179,7 @@ impl App {
         feature.touch();
         feature.status = ProjectStatus::Active;
 
-        let view = ViewState::new(
+        let mut view = ViewState::new(
             project_name,
             feature_name,
             tmux_session,
@@ -189,6 +189,7 @@ impl App {
             vibe_mode,
             review,
         );
+        view.show_startup_mask();
 
         self.save()?;
         self.pane_content.clear();

@@ -671,24 +671,35 @@ from the last *N* PRs) is reached from the PR entry flow:
       to the batch). →
       `src/app/pr_review.rs`, `src/app/state.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [ ] **File-level comments reference the file, not the whole hunk
-      (token fix — from real use; prioritized next).** Comments left on a
-      *file* rather than a line (GitHub `subject_type: "file"`, and any comment
-      whose `diff_hunk` is effectively the entire file) currently dump that
-      whole hunk into both the detail pane and the assembled fix prompt — a
-      large, low-value token cost that violates principle #3 (minimal fix-prompt
-      context). This is the biggest remaining per-comment token lever, and it
-      compounds across the combined batch (`B`), where several oversized hunks
-      land in one prompt — so it moves ahead of the filters/UX polish below.
-      Detect file-level / oversized hunks during normalization and, for those,
-      **inject only a `File: <path>` reference** (no hunk body) in
-      `PrComment::fix_prompt` / `fix_prompt_body` (so both the single and
-      combined prompts benefit), letting the agent open the file itself. Render
-      the detail pane the same way (show "comment on file `<path>`" instead
-      of a wall of diff). Capture `subject_type` from the inline-comments
-      API in `GhCli` so the classification is reliable rather than a length
-      heuristic alone. → `src/app/pr_review.rs`, `src/github.rs`,
-      `src/ui/dialogs/pr_review.rs`.
+- [x] **File-level comments reference the file, not the whole hunk
+      (token fix — from real use).** Comments left on a *file* rather than a
+      line dumped that file's entire diff into both the detail pane and the
+      assembled fix prompt — a large, low-value token cost against principle #3,
+      compounding across the combined batch (`B`) where several oversized hunks
+      land in one prompt. `GhCli` now captures **`subject_type`** from the
+      inline-comments API (`ReviewComment::subject_type`), and `normalize` sets a
+      new `PrComment::file_level` from it, so the classification is reliable
+      rather than a length heuristic. A single `PrComment::prompt_hunk()` decides
+      what the hunk is worth: `None` for a file-level comment (or, as a backstop,
+      one whose `diff_hunk` exceeds `WHOLE_FILE_HUNK_LINES`), `Some(hunk)`
+      otherwise. Both `fix_prompt` and `fix_prompt_body` route through it, so the
+      single and combined prompts both **carry only a `File: <path>` reference**
+      (plus a short "diff hunk omitted — open the file for context" note, so the
+      agent knows context was withheld rather than absent) and the agent opens
+      the file itself. The detail pane renders the same way — "comment on file
+      `<path>`" in place of the wall of diff. The backstop is set **well clear of
+      ordinary comments**: sampling real PRs, line-anchored hunks reach ~90 lines
+      at the tail (most under 30), so a tighter cap would have stripped the
+      context the reviewer pointed at; only a pathological whole-file-sized hunk
+      trips it. Also fixes a latent mislabel — a file-level comment has no `line`
+      by definition, which `normalize` had been badging as `[outdated]`.
+      `file_level` is `#[serde(default)]` so pre-existing `pr_review_cache` rows
+      still deserialize. Unit-tested (file-level prompt omits the hunk; a 93-line
+      hunk is kept while an over-cap one is dropped without being called
+      file-level; the combined batch drops whole-file hunks but keeps ordinary
+      ones; normalize sets `file_level` and *not* `outdated`). →
+      `src/app/pr_review.rs`, `src/github.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/db/pr_review_cache.rs`.
 - [ ] Filters/sort (open-only, by file, by author, humans-first).
 - [x] "Done in `<sha>`" reply template auto-filled from latest commit. Shipped
       with the Epic C reply work: `R` seeds a reply with the feature workdir's

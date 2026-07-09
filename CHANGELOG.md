@@ -70,9 +70,24 @@ are tagged.
   mode values in `config.json` must be lowercase (`"claude"`, `"vibe"`), and
   the `feature_presets` docs now list the real field set. Nothing about AMF's
   behavior changes.
+- **Review and Plan are no longer labeled "(experimental)".** Both features
+  are stable and fully documented in the README, so the feature-wizard
+  toggles, the batch-creation dialog, feature-list and view-mode badges, and
+  the leader-key help all drop the caveat. Steering keeps its experimental
+  label for now.
+- **`amf --help` explains itself.** The top-level help text now describes
+  what AMF is, and `-V, --version` has a one-line description instead of
+  showing up blank.
 
 ### Fixed
 
+- **File-level PR review comments no longer inject the whole file as a diff
+  hunk.** A comment left on the file as a whole (GitHub's `subject_type:
+  "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to
+  paste that whole diff into the fix prompt. The fix prompt now references
+  `File: path` instead and omits the hunk, with the same backstop for any
+  line-anchored comment whose hunk is pathologically large (over 150 lines,
+  well clear of the ~90-line hunks ordinary line comments run to).
 - **Final-review line comments no longer disappear when the diff changes.**
   Refreshing the diff — or switching the base ref — used to drop your line
   comments out of the gutter, because each one was pinned to an exact line
@@ -103,6 +118,15 @@ are tagged.
   uses the direct tmux input path on macOS, so typing in an embedded terminal
   inserts the intended characters instead of turning each keypress into a
   newline.
+- **Dialog footers no longer promise the wrong key.** The first-run harness
+  wizard said `c confirm  Esc confirm` — Esc actually confirmed, not
+  canceled — so it now reads `c/Esc done`. The New Project dialog said
+  `Enter confirm` on every field, but Enter only confirms after the last
+  one; it now reads `Enter next` on the Name and Repo path fields and
+  `Enter confirm` only once you're on the harness field.
+- **Empty project list is no longer flush against the left border.** The
+  "No projects yet." message now has the same left padding as every other
+  row.
 
 ### Migration
 
@@ -113,6 +137,8 @@ are tagged.
 - No action required for the Markdown table header fix.
 - No action required for the startup loading-screen fix.
 - No action required for the macOS terminal input fix.
+- No action required for the Review/Plan experimental-label graduation,
+  the `--help` text, or the dialog footer and empty-state fixes.
 - If you relied on `n` / `p` to move between features in a session, add
   `"next_feature"` / `"prev_feature"` keybindings to your config to restore
   them.

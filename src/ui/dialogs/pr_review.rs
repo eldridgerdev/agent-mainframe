@@ -749,8 +749,10 @@ fn draw_comment_detail(
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
     ]));
 
-    // Diff hunk, colored like a diff (add/remove/context/hunk-header).
-    if let Some(hunk) = &c.diff_hunk {
+    // Diff hunk, colored like a diff (add/remove/context/hunk-header) — unless
+    // it's whole-file-sized, in which case show the file reference the prompt
+    // sends instead of a wall of diff.
+    if let Some(hunk) = c.prompt_hunk() {
         lines.push(divider(width, theme));
         lines.push(section_label("Diff hunk", theme));
         // When the hunk's language is recognized but its parser isn't installed,
@@ -763,6 +765,18 @@ fn draw_comment_detail(
             )));
         }
         lines.extend(diff_hunk_lines(hunk, c.path.as_deref(), theme));
+    } else if c.hunk_suppressed() {
+        lines.push(divider(width, theme));
+        lines.push(Line::from(Span::styled(
+            match (c.file_level, &c.path) {
+                (true, Some(path)) => format!("comment on file {path}"),
+                (true, None) => "comment on the whole file".to_string(),
+                // Line-anchored, but its hunk is whole-file-sized: say it was
+                // withheld rather than implying the comment is file-level.
+                (false, _) => "diff hunk omitted (covers the whole file)".to_string(),
+            },
+            Style::default().fg(theme.text_muted.to_color()),
+        )));
     }
 
     // Body, rendered as Markdown (reuses the in-app renderer).

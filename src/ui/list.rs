@@ -68,7 +68,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.store.projects.is_empty() {
         let empty = Paragraph::new(Line::from(vec![
             Span::styled(
-                "No projects yet. Press ",
+                " No projects yet. Press ",
                 Style::default().fg(theme.text_muted.to_color()),
             ),
             Span::styled(
@@ -346,13 +346,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     line_spans.extend(mode_badge_spans);
                     if feature.review {
                         line_spans.push(Span::styled(
-                            " [review experimental]",
+                            " [review]",
                             Style::default().fg(theme.mode_review.to_color()),
                         ));
                     }
                     if feature.plan_mode {
                         line_spans.push(Span::styled(
-                            " [plan experimental]",
+                            " [plan]",
                             Style::default().fg(theme.info.to_color()),
                         ));
                     }

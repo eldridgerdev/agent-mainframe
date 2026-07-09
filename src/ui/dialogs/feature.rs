@@ -211,11 +211,7 @@ fn draw_create_feature_preset_picker(
                     " {} | {}{}",
                     agent_str,
                     mode_str,
-                    if preset.review {
-                        " | review log (experimental)"
-                    } else {
-                        ""
-                    }
+                    if preset.review { " | review log" } else { "" }
                 );
                 let line = Line::from(vec![
                     Span::styled(
@@ -617,10 +613,7 @@ fn draw_create_feature_branch_mode(
                 Style::default().fg(theme.text_muted.to_color())
             },
         ),
-        Span::styled(
-            format!("{} Final review log (experimental)", review_check),
-            review_style,
-        ),
+        Span::styled(format!("{} Final review log", review_check), review_style),
     ])];
     let review_widget = Paragraph::new(review_lines);
     frame.render_widget(review_widget, chunks[8]);
@@ -642,10 +635,7 @@ fn draw_create_feature_branch_mode(
                 Style::default().fg(theme.text_muted.to_color())
             },
         ),
-        Span::styled(
-            format!("{} Collaborative planning (experimental)", plan_check),
-            plan_style,
-        ),
+        Span::styled(format!("{} Collaborative planning", plan_check), plan_style),
     ])];
     let plan_widget = Paragraph::new(plan_lines);
     frame.render_widget(plan_widget, chunks[10]);

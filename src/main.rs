@@ -57,8 +57,15 @@ use tmux::TmuxManager;
 #[derive(Parser, Debug)]
 #[command(name = "amf")]
 #[command(version, disable_version_flag = true)]
-#[command(about = "Run many AI coding agents in parallel", long_about = None)]
+#[command(
+    about = "Run many AI coding agents in parallel",
+    long_about = "\
+Agent Mainframe (amf) is a terminal UI for running and managing multiple \
+concurrent AI coding agent sessions, each in its own tmux session and git \
+worktree. Run `amf` with no arguments to launch the dashboard."
+)]
 struct Cli {
+    /// Print version information
     #[arg(short = 'V', long = "version")]
     version: bool,
 

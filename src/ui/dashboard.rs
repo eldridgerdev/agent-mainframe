@@ -888,7 +888,7 @@ fn draw_context_bar(
     }
     if review {
         spans.push(Span::styled(
-            " [review experimental]",
+            " [review]",
             Style::default().fg(theme.mode_review.to_color()),
         ));
     }

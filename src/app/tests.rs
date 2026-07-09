@@ -7536,6 +7536,198 @@ fn pr_review_close_returns_to_dashboard() {
 }
 
 #[test]
+fn pr_review_toggle_to_session_requires_existing_session() {
+    // `store_with_feature` has no sessions, so there's no dedicated review
+    // session to jump to yet — the toggle must hint rather than create one
+    // as a side effect of a quick peek.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+
+    app.pr_review_toggle_to_session().unwrap();
+
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
+fn pr_review_toggle_to_session_jumps_and_stashes_state() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+        state.detail_scroll = 3;
+    }
+
+    app.pr_review_toggle_to_session().unwrap();
+
+    match &app.mode {
+        AppMode::Viewing(view) => {
+            assert_eq!(view.session, "amf-my-feat");
+            assert_eq!(view.session_label, "PR Review");
+        }
+        other => panic!("expected Viewing, got {:?}", std::mem::discriminant(other)),
+    }
+    let stash = app
+        .pr_review_return
+        .as_ref()
+        .expect("pane state should be stashed");
+    assert_eq!(stash.session, "amf-my-feat");
+    assert_eq!(stash.state.selected, 1);
+    assert_eq!(stash.state.detail_scroll, 3);
+}
+
+#[test]
+fn pr_review_return_to_pane_restores_stashed_state() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+    }
+    app.pr_review_toggle_to_session().unwrap();
+
+    app.pr_review_return_to_pane();
+
+    match &app.mode {
+        AppMode::PrReview(state) => assert_eq!(state.selected, 1),
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.pr_review_return.is_none(),
+        "stash should be consumed on restore"
+    );
+}
+
+#[test]
+fn pr_review_return_to_pane_ignores_mismatched_session() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 1);
+    app.pr_review_toggle_to_session().unwrap();
+
+    // Simulate having navigated away to an unrelated session's view.
+    if let AppMode::Viewing(view) = &mut app.mode {
+        view.session = "amf-other-feat".to_string();
+        view.window = "claude".to_string();
+    }
+
+    app.pr_review_return_to_pane();
+
+    assert!(
+        matches!(&app.mode, AppMode::Viewing(view) if view.session == "amf-other-feat"),
+        "should not have jumped into the stashed pane from an unrelated session"
+    );
+    assert!(
+        app.pr_review_return.is_some(),
+        "the stash should be left alone, not dropped, in case the user navigates back"
+    );
+}
+
+#[test]
+fn pr_review_return_to_pane_without_stash_shows_message() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::Normal;
+
+    app.pr_review_return_to_pane();
+
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
+fn pr_review_inject_fix_also_stashes_return_state() {
+    // Regression: `f` (inject fix) used to drop the pane's state on the floor
+    // when leaving for the fix session, so `leader+P` had nothing to restore
+    // even though `f` is the far more common way into that session (`P` is
+    // just a peek). `f` must stash exactly like `P` does.
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+
+    let mut tmux = MockTmuxOps::new();
+    tmux.expect_session_exists().returning(|_| true);
+
+    let mut app = App::new_for_test(store, Box::new(tmux), Box::new(MockWorktreeOps::new()));
+    enter_pr_review_for_feature(&mut app, 2);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = 1;
+    }
+    // Go through the real confirm-dialog path (`f` opens it, then the user
+    // confirms) rather than the no-dialog fallback — a prior version of this
+    // fix left the confirm dialog attached to the stashed state, so returning
+    // via leader+P reopened the same "inject fix" dialog instead of the plain
+    // comment list.
+    app.pr_review_open_fix_confirm();
+    assert!(
+        matches!(&app.mode, AppMode::PrReview(state) if state.fix_confirm.is_some()),
+        "confirm dialog should be open before injecting"
+    );
+
+    app.pr_review_inject_fix().unwrap();
+
+    // Compose intercept is on by default, so `f` lands in the compose box
+    // (seeded with the fix prompt) rather than bare Viewing — the stash must
+    // still be keyed to the same session/window either way.
+    let compose_view = match &app.mode {
+        AppMode::Compose(state) => state.view.clone(),
+        other => panic!("expected Compose, got {:?}", std::mem::discriminant(other)),
+    };
+    let stash = app
+        .pr_review_return
+        .as_ref()
+        .expect("f should stash the pane state just like the P toggle");
+    assert_eq!(stash.session, compose_view.session);
+    assert_eq!(stash.window, compose_view.window);
+    assert_eq!(stash.state.selected, 1);
+    let stash_session = stash.session.clone();
+
+    // Ctrl+Space from the compose box cancels it back to the underlying
+    // Viewing session (handlers/compose.rs) before handing off to the leader
+    // chord — the real path `leader+P` is reached through after `f`.
+    app.cancel_compose();
+    assert!(matches!(&app.mode, AppMode::Viewing(view) if view.session == stash_session));
+
+    app.pr_review_return_to_pane();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.selected, 1);
+            assert!(
+                state.fix_confirm.is_none(),
+                "the already-actioned confirm dialog must not reappear"
+            );
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
 fn pr_review_i_opens_syntax_picker_for_selected_comment_file() {
     let mut app = pr_review_test_app();
     enter_pr_review(&mut app, 2); // comments have paths src/file{id}.rs (Rust)

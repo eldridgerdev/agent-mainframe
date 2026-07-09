@@ -114,6 +114,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
+        ("P", "Back to PR review pane (if one is stashed)"),
     ];
 
     for (key, desc) in &view_keybinds {
@@ -183,6 +184,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("B", "Inject one combined prompt for all marked"),
         ("t", "Toggle fix target session"),
         ("", "(first fix picks the review harness)"),
+        ("P", "Jump to the linked fix session"),
+        ("", "(Ctrl+Space P there jumps back)"),
         ("R", "Reply 'Done in <sha>'"),
         ("n", "Reply 'not needed' (+ skip)"),
         ("x", "Resolve/reopen GitHub thread"),

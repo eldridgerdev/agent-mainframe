@@ -41,6 +41,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Up | KeyCode::Char('k') => app.pr_review_select_prev(),
         KeyCode::Char('h') => app.pr_review_toggle_resolved(),
         KeyCode::Char('f') => app.pr_review_open_fix_confirm(),
+        KeyCode::Char('P') => app.pr_review_toggle_to_session()?,
         KeyCode::Char(' ') => app.pr_review_toggle_mark(),
         KeyCode::Char('F') => app.pr_review_queue_marked_fixes()?,
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),

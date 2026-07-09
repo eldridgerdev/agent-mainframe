@@ -283,7 +283,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   P session   i syntax   r refresh   g other-PR   esc/q close",
             state.fix_target.tag()
         ),
         Style::default().fg(theme.text_muted.to_color()),

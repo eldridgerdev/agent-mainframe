@@ -591,6 +591,10 @@ pub struct App {
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
+    /// A review pane stashed by `pr_review_toggle_to_session` (`P`) while the
+    /// user watches the linked fix session; `leader+P` pops it back without a
+    /// re-fetch. See [`PrReviewReturn`].
+    pub pr_review_return: Option<PrReviewReturn>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1890,6 +1894,7 @@ impl App {
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
             pr_review_bg: None,
+            pr_review_return: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2075,6 +2080,7 @@ impl App {
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
             pr_review_bg: None,
+            pr_review_return: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

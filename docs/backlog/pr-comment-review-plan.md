@@ -707,23 +707,81 @@ from the last *N* PRs) is reached from the PR entry flow:
       posting; on post the comment is marked `Done`. → `src/app/pr_review.rs`.
 - [ ] Keybinding help entry; status-bar summary (`4 open / 7`).
 - [ ] Token usage surfaced per session (tie into `token_tracking.rs`).
-- [ ] **Quick toggle between the review pane and the dedicated review
+- [x] **Quick toggle between the review pane and the dedicated review
       session (usability — from real use).** Today `f` switches the user
       *into* the dedicated `"PR Review"` session to watch the agent, but
       getting *back* to the pane means exiting to the dashboard and
       re-entering with `G` — losing the scroll/selection and paying a
       re-resolve. In practice the user bounces between "watch the agent
       work" and "triage the next comment" constantly, and that round-trip
-      is the friction. Add a **single hotkey that toggles between the two**:
-      from the review pane, jump to the dedicated session; from that
-      session's view, jump straight back to the pane **at the same comment
-      and scroll offset** (stash `PrReviewState` as a `return_to`, the same
-      pattern the syntax picker already uses, so no re-fetch and no lost
-      state). Only bind the "back to review" side when a review session is
-      live and a pane state is stashed. Consider showing the pairing in
-      both footers (e.g. `↹ review ⇆ session`). → `src/app/view.rs`,
-      `src/app/switcher.rs`, `src/handlers/view.rs`,
-      `src/handlers/pr_review.rs`, `src/app/state.rs`, `src/app/pr_review.rs`.
+      is the friction. `P` **does double duty as the same key on both sides**
+      of the round trip, one press each way: in the review pane
+      (`pr_review_toggle_to_session`) it jumps into whichever session `f`
+      currently targets (dedicated or existing-live, via the same
+      `fix_session_index`/`REVIEW_SESSION_LABEL` lookup `resolve_fix_session`
+      uses) and stashes the pane's exact `PrReviewState` — selection, detail
+      scroll, any open fix/reply/harness dialog — on a new
+      `App::pr_review_return: Option<PrReviewReturn>` field rather than on the
+      target mode itself (the syntax picker's `return_to: Option<Box<AppMode>>`
+      pattern doesn't fit here since the round trip is `PrReview → Viewing →
+      PrReview`, and `ViewState` is rebuilt fresh by `enter_view`/the session
+      switcher on every hop); from the Viewing side, `leader+P`
+      (`pr_review_return_to_pane`) pops the stash back with no re-fetch. Unlike
+      `f`, `P` **never creates** the dedicated session as a side effect of a
+      peek — if none exists yet it hints "press f to start one" rather than
+      spinning one up. The Viewing-side `leader+P` only fires when the
+      *current* Viewing session's tmux session/window still matches the one
+      `P` jumped to (`PrReviewReturn::session`/`window`, captured from the
+      feature's `tmux_session` and the target session's `tmux_window` at jump
+      time); navigating elsewhere first — a different feature, a different
+      session/window — leaves the stash alone rather than popping an unrelated
+      PR's pane into view, and a mismatched or absent stash shows a toast
+      instead of silently no-op'ing. Both footers surface the pairing: the
+      review pane's key-hint line gains `P session`, and a top-right badge
+      (`Ctrl+Space P: back to review`) appears in the Viewing-mode session
+      view — next to the existing remote-control/direct-input badges in
+      `ui/dashboard.rs`'s `draw()` — whenever the current session/window
+      matches a live stash. (`ui/status.rs`'s `AppMode::Viewing` arm looked
+      like the natural spot for this but turned out to be dead code: the real
+      Viewing-mode draw path returns early before ever reaching
+      `status::draw`.) Keybinding-help entries in both the "While viewing" and
+      "While reviewing PR comments" sections; unit-tested (`P` in the pane
+      requires an existing session rather than creating one; jumps and stashes
+      the exact selection/scroll; `leader+P` restores and consumes the stash;
+      a session/window mismatch leaves the stash untouched instead of
+      restoring into the wrong view; `leader+P` with no stash is a no-op with
+      a message). Confirmed live: built the binary, drove it end-to-end in an
+      isolated tmux server against the repo's own `#343` `[TEST] PR-review
+      pane fixture` PR — `P` jumped into the real dedicated session (badge
+      appeared), `leader+P` popped back to the exact selected comment/mark,
+      and a second round trip still held.
+
+      **Two follow-ups from real use, same day.** (1) The peek key was
+      renamed from `v` to `P` — same key both directions, one press each way,
+      more discoverable than two different letters for one round trip. (2)
+      **The bigger gap:** `f` (inject fix) — the far more common way into the
+      fix session, `P` is just a peek — didn't stash anything, so `leader+P`
+      had nothing to restore after the ordinary fix flow. `pr_review_inject_fix`
+      now stashes exactly like `P` does, right after marking the targeted
+      comment(s) `Fixing` and before handing off to `enter_view_without_auto_compose`.
+      Since compose interception is on by default, `f` actually lands in the
+      **compose box** (seeded with the fix prompt), not bare `Viewing` — the
+      real return path is `f` → `Ctrl+Space` (cancels the compose box back to
+      `Viewing`, per `handlers/compose.rs`) → `P`. Caught a second bug during
+      live testing of that exact path: the stashed state still carried the
+      now-already-actioned `fix_confirm` dialog, so `leader+P` reopened the
+      same "inject fix" dialog instead of the plain comment list — fixed by
+      clearing `state.fix_confirm = None` before stashing. Both bugs are
+      unit-tested (`pr_review_inject_fix_also_stashes_return_state` goes
+      through the real confirm-dialog path via `pr_review_open_fix_confirm`,
+      not the no-dialog fallback, so it actually exercises the dialog-leak
+      case) and reconfirmed live end-to-end against PR #343: `f` → confirm →
+      `Ctrl+Space` → `P` now returns cleanly to the comment list with the
+      `[~]`/`[fixing]` triage mark intact. → `src/app/state.rs`
+      (`PrReviewReturn`), `src/app/mod.rs`, `src/app/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/handlers/view.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dashboard.rs`,
+      `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [ ] **Strip quoted diffs / residual bot scaffolding from comment bodies
       (token polish — low priority).** `strip_bot_boilerplate`
       (`src/app/pr_review.rs`) already removes `<details>`, HTML comments,
@@ -877,6 +935,35 @@ first), and the reviewer's output (plus comments triaged in the pane)
   existing status-sync cadence rather than per-frame. Stretch: dim/hide
   the badge once all threads are resolved, and color it by review state
   (changes-requested vs. approved vs. comments-only).
+
+- **Highlight the logged-in user's own PRs in the PR picker.** `GhCli::list_prs`
+  already returns each PR's `author` login (`src/github.rs`,
+  `PrListEntry::author`), and `gh api user`/`gh auth status` can resolve the
+  current account cheaply and cache it for the session (mirrors the existing
+  `gh auth status` caching noted under the preconditions section). Use that to
+  visually distinguish rows authored by the logged-in user in
+  `draw_pr_picker` (`src/ui/dialogs/pr_review.rs`) — e.g. a distinct color,
+  a `(you)` suffix, or sorting/grouping them first — so triaging your own
+  open PRs (the common case: fix review comments left on work you authored)
+  doesn't require reading every `@author` in the list to find them. Cheap and
+  read-only; no new `gh` calls beyond what's already cached.
+
+- **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
+  reads as passive (just reading comments) when the feature actually drives
+  the whole loop — triaging, fixing, replying, resolving. "PR Triage" matches
+  what the pane does and disambiguates from the separate Epic E "AI code
+  review" capability once that ships (a real *review* of the diff, vs.
+  *triaging* what reviewers already said). Touches user-facing strings across
+  the dashboard help entry (`G` — "Review PR comments"), the pane title/header,
+  the manual PR-number/PR-picker prompts, status-bar/loading labels, and the
+  keybindings help sections — plus, more carefully, the internal
+  `REVIEW_SESSION_LABEL = "PR Review"` constant (`src/github.rs`/
+  `src/app/pr_review.rs`) that names the dedicated tmux session:
+  renaming that label changes what `fix_session_index` matches against, so
+  existing dedicated review sessions created under the old label would need a
+  migration note (or the lookup would need to accept both labels for a
+  transition period) rather than silently losing track of already-running
+  sessions. Pure rename — no behavior change otherwise.
 
 ## Open questions
 

@@ -2144,7 +2144,10 @@ mod tests {
     fn strips_quoted_diff_fence() {
         let body = "This can race with the poller.\n\n```diff\n@@ -40,6 +40,7 @@\n-old\n+new\n```\n\nGuard it behind the lock.";
         let out = strip_bot_boilerplate(body);
-        assert_eq!(out, "This can race with the poller.\n\nGuard it behind the lock.");
+        assert_eq!(
+            out,
+            "This can race with the poller.\n\nGuard it behind the lock."
+        );
     }
 
     #[test]

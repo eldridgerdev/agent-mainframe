@@ -1,7 +1,7 @@
 Update the pull request description for the current branch
 to reflect the latest changes.
 
-First, run `scripts/amf/pr-info.sh` to gather the current
+First, run `scripts/dev/amf/pr-info.sh` to gather the current
 branch context (commits, diff stats, changed files).
 
 Then, get the existing PR description with:

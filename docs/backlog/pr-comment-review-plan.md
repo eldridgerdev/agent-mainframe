@@ -7,7 +7,7 @@
   `src/app/view.rs`), compose box / prompt injection
   (`src/app/compose.rs`), prompt library injection seam
   ([prompt-library-plan.md](prompt-library-plan.md)), `gh` usage in
-  PR skills (`scripts/amf/pr-info.sh`, `.claude/commands/amf/pr-*`),
+  PR skills (`scripts/dev/amf/pr-info.sh`, `.claude/commands/amf/pr-*`),
   SQLite store (`src/db/store.rs`), `ClaudeLauncher::run_headless`
   (`src/claude.rs`)
 

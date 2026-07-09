@@ -1,6 +1,6 @@
 Create a pull request for the current branch.
 
-First, run `scripts/amf/pr-info.sh` to gather branch context
+First, run `scripts/dev/amf/pr-info.sh` to gather branch context
 (commits, diff stats, changed files, push status).
 
 Then follow these steps:

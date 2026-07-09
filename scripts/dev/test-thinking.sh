@@ -5,9 +5,9 @@ set -euo pipefail
 # thinking detection can be tested without waiting for real agent activity.
 #
 # Usage:
-#   scripts/test-thinking.sh <tmux_session> [seconds]
+#   scripts/dev/test-thinking.sh <tmux_session> [seconds]
 # Example:
-#   scripts/test-thinking.sh amf-my-feature 8
+#   scripts/dev/test-thinking.sh amf-my-feature 8
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
     echo "Usage: $0 <tmux_session> [seconds]" >&2

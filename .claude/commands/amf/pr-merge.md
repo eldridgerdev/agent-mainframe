@@ -1,6 +1,6 @@
 Merge the pull request for the current branch.
 
-First, run `scripts/amf/pr-checks.sh` to check the current
+First, run `scripts/dev/amf/pr-checks.sh` to check the current
 PR status.
 
 If no PR exists, inform the user and stop.

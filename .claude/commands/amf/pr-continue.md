@@ -1,7 +1,7 @@
 Continue work on the current branch's pull request by
 addressing review feedback.
 
-First, run `scripts/amf/pr-checks.sh` to get the current
+First, run `scripts/dev/amf/pr-checks.sh` to get the current
 PR status.
 
 If no PR exists, inform the user and stop.
@@ -27,6 +27,6 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments \
 Present a summary of all feedback, then address each piece
 of feedback by making the requested code changes.
 
-After making changes, run `scripts/amf/pr-info.sh` to
+After making changes, run `scripts/dev/amf/pr-info.sh` to
 confirm what was changed, then push the updates with
 `git push`.

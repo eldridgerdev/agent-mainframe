@@ -107,7 +107,7 @@ jobs:
           dst="dist/amf-${{ matrix.target }}.tar.gz"
           mkdir -p dist
           strip "$src" 2>/dev/null || true
-          bash scripts/package-release-bundle.sh "${{ matrix.target }}" "$src" "$dst"
+          bash scripts/dev/package-release-bundle.sh "${{ matrix.target }}" "$src" "$dst"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

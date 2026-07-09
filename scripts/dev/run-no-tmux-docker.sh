@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 IMAGE_NAME="${AMF_NO_TMUX_IMAGE:-amf-no-tmux}"
 CONTAINER_NAME="${AMF_NO_TMUX_CONTAINER:-amf-no-tmux}"
 

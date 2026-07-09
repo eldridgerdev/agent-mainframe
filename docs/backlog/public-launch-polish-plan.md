@@ -1,6 +1,6 @@
 # Public launch polish
 
-- **Status:** In progress
+- **Status:** Done — all six phases shipped
 - **Owner:** unassigned
 - **Relates to:** repo metadata (`Cargo.toml`, `LICENSE`), docs
   (`README.md`), lint hygiene (whole crate), first-run and dialog UX
@@ -127,16 +127,30 @@ All found by driving the TUI with a fresh HOME.
 
 ## Phase 6 — Nice-to-have before/shortly after launch
 
-- [ ] Respect `XDG_CONFIG_HOME` in `amf_config_dir()`
+- [x] Respect `XDG_CONFIG_HOME` in `amf_config_dir()`
       (`src/project.rs:1208`) instead of hardcoding
-      `~/.config/amf` — use `dirs::config_dir()` with a migration
-      fallback to the old path. Linux users will file this quickly.
-- [ ] Decide whether `docs/backlog/` (including the bug backlog)
+      `~/.config/amf` — now resolves via `dirs::config_dir()`, but
+      falls back to the legacy `~/.config/amf` path when that already
+      has data and the XDG-resolved directory doesn't, so existing
+      installs (including macOS, where `dirs::config_dir()` differs
+      from `~/.config`) keep working unchanged after an upgrade.
+- [x] Decide whether `docs/backlog/` (including the bug backlog)
       should ship in the public repo as-is; it's honest, but review it
-      for anything you don't want public.
-- [ ] Tidy `scripts/`: separate dev/test helpers (`test-thinking.sh`,
-      `vtcheck`-adjacent tooling) from scripts users are expected to
-      run, or document what each is for.
+      for anything you don't want public. Decided: ship as-is — the
+      backlog's own README already frames it as an honest record of
+      paused/planned work.
+- [x] Tidy `scripts/`: separate dev/test helpers (`test-thinking.sh`,
+      release/packaging tooling) from scripts users are expected to
+      run, or document what each is for. Moved `release.sh`,
+      `package-release-bundle.sh`, `package-no-tmux-test-bundle.sh`,
+      `run-no-tmux-docker.sh`, `generate-amf-themes.{sh,js}`,
+      `test-thinking.sh`, and `scripts/amf/` (PR helper scripts) into
+      `scripts/dev/`; updated the CI release workflow, docker-no-tmux
+      docs, and the `amf:pr-*` skill commands to match. Left the 10
+      `include_str!`-embedded hook scripts (notify, thinking, tool,
+      codex, session-status) at `scripts/` root since they're compiled
+      into the binary, not run by contributors — added a README to
+      each directory explaining the split.
 
 ## Verification
 

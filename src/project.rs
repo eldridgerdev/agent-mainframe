@@ -1205,11 +1205,34 @@ impl ProjectStore {
     }
 }
 
+/// Resolve the AMF config directory, honoring `XDG_CONFIG_HOME` (via
+/// `dirs::config_dir()`) while falling back to the legacy hardcoded
+/// `~/.config/amf` path for installs that already have data there.
+///
+/// Falling back rather than migrating means an existing install keeps
+/// working unchanged after an `amf` upgrade, even on platforms where
+/// `dirs::config_dir()` differs from `~/.config` (e.g. macOS); only
+/// fresh installs (or users who set `XDG_CONFIG_HOME` before ever
+/// running `amf`) land in the XDG-correct location.
 pub fn amf_config_dir() -> PathBuf {
-    dirs::home_dir()
+    amf_config_dir_with(dirs::config_dir(), dirs::home_dir())
+}
+
+fn amf_config_dir_with(xdg_config_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
+    let legacy = home_dir
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".config")
-        .join("amf")
+        .join("amf");
+
+    let Some(xdg_config_dir) = xdg_config_dir else {
+        return legacy;
+    };
+    let xdg = xdg_config_dir.join("amf");
+
+    if xdg != legacy && legacy.exists() && !xdg.exists() {
+        return legacy;
+    }
+    xdg
 }
 
 #[allow(dead_code)] // exercised only by unit tests
@@ -1968,5 +1991,57 @@ mod tests {
 
         assert_eq!(feature.mode, VibeMode::Vibeless);
         assert!(feature.review);
+    }
+
+    #[test]
+    fn config_dir_uses_xdg_dir_when_no_legacy_data_exists() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = tempfile::tempdir().unwrap();
+
+        let resolved = amf_config_dir_with(
+            Some(xdg.path().to_path_buf()),
+            Some(home.path().to_path_buf()),
+        );
+
+        assert_eq!(resolved, xdg.path().join("amf"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_legacy_path_when_only_legacy_exists() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = tempfile::tempdir().unwrap();
+        let legacy = home.path().join(".config").join("amf");
+        fs::create_dir_all(&legacy).unwrap();
+
+        let resolved = amf_config_dir_with(
+            Some(xdg.path().to_path_buf()),
+            Some(home.path().to_path_buf()),
+        );
+
+        assert_eq!(resolved, legacy);
+    }
+
+    #[test]
+    fn config_dir_prefers_xdg_path_when_both_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".config").join("amf")).unwrap();
+        fs::create_dir_all(xdg.path().join("amf")).unwrap();
+
+        let resolved = amf_config_dir_with(
+            Some(xdg.path().to_path_buf()),
+            Some(home.path().to_path_buf()),
+        );
+
+        assert_eq!(resolved, xdg.path().join("amf"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_legacy_home_config_when_no_xdg_dir_available() {
+        let home = tempfile::tempdir().unwrap();
+
+        let resolved = amf_config_dir_with(None, Some(home.path().to_path_buf()));
+
+        assert_eq!(resolved, home.path().join(".config").join("amf"));
     }
 }

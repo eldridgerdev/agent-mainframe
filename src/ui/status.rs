@@ -6,7 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use crate::app::{App, AppMode, ConfigWizardStep, Selection, SessionFilter};
+use crate::app::{
+    App, AppMode, ConfigWizardStep, DASHBOARD_SESSION_FILTER_ENABLED, Selection, SessionFilter,
+};
 use crate::editor::VimMode;
 use crate::project::SessionKind;
 use crate::theme::Theme;
@@ -68,18 +70,19 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     let key_style = || Style::default().fg(theme.warning.to_color());
     let hint_style = || Style::default().fg(theme.text_muted.to_color());
 
-    let filter_spans = if app.session_filter != SessionFilter::All {
-        vec![
-            Span::styled(" [", hint_style()),
-            Span::styled(
-                app.session_filter.display_name(),
-                Style::default().fg(theme.primary.to_color()),
-            ),
-            Span::styled("] ", hint_style()),
-        ]
-    } else {
-        vec![]
-    };
+    let filter_spans =
+        if DASHBOARD_SESSION_FILTER_ENABLED && app.session_filter != SessionFilter::All {
+            vec![
+                Span::styled(" [", hint_style()),
+                Span::styled(
+                    app.session_filter.display_name(),
+                    Style::default().fg(theme.primary.to_color()),
+                ),
+                Span::styled("] ", hint_style()),
+            ]
+        } else {
+            vec![]
+        };
 
     let keybinds = match &app.mode {
         AppMode::Normal => {
@@ -108,8 +111,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" config  "),
                     Span::styled("V", key_style()),
                     Span::raw(" pending review  "),
-                    Span::styled("f", key_style()),
-                    Span::raw(" filter  "),
                     Span::styled("q", key_style()),
                     Span::raw(" quit"),
                 ]);
@@ -144,8 +145,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" stop  "),
                     Span::styled("y", key_style()),
                     Span::raw(" ready  "),
-                    Span::styled("f", key_style()),
-                    Span::raw(" filter  "),
                     Span::styled("s", key_style()),
                     Span::raw(" switch  "),
                     Span::styled("S", key_style()),
@@ -174,8 +173,6 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(" expand  "),
                     Span::styled("u", key_style()),
                     Span::raw(" preferred harness  "),
-                    Span::styled("f", key_style()),
-                    Span::raw(" filter  "),
                     Span::styled("d", key_style()),
                     Span::raw(" delete  "),
                     Span::styled("R", key_style()),

@@ -2452,6 +2452,8 @@ impl CreateBatchFeaturesState {
     }
 }
 
+pub const DASHBOARD_SESSION_FILTER_ENABLED: bool = false;
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum SessionFilter {
     #[default]

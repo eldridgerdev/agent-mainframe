@@ -2,6 +2,10 @@
 # Claude Code PreToolUse hook script: mark active tool execution.
 # Sends IPC event to AMF, falling back to /tmp sentinel.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT=$(cat)
 
 SESSION_ID="${AMF_SESSION:-$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)}"

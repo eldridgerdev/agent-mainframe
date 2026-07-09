@@ -209,6 +209,9 @@ function generateReason(tool, oldSnippet, newSnippet, filePath) {
 }
 
 export const ChangeTracker = async ({ directory }) => {
+  if (process.env.AMF_ACTIVE !== "1") {
+    return {}
+  }
   debug("plugin loaded", { directory })
   return {
     "tool.execute.before": async (input, output) => {

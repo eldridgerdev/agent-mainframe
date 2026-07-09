@@ -9,6 +9,10 @@ set -euo pipefail
 # Codex passes a JSON payload as argv[1]. We also support stdin
 # to be robust across CLI versions.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT="${1:-}"
 if [ -z "$INPUT" ] && ! [ -t 0 ]; then
     INPUT="$(cat || true)"

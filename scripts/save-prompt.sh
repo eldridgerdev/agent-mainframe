@@ -3,6 +3,10 @@
 # Sends prompt metadata over IPC to AMF, falling back to writing
 # .claude/latest-prompt.txt when AMF is unavailable.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT=$(cat)
 
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)

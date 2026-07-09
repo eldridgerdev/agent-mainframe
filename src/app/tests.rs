@@ -2339,7 +2339,8 @@ fn finish_feature_launch_vibeless_copies_opencode_change_tracker_plugin() {
     assert!(
         installed.contains("amf_feature_session_id")
             && installed.contains("provider_session_id")
-            && installed.contains("AMF_FEATURE_SESSION_ID"),
+            && installed.contains("AMF_FEATURE_SESSION_ID")
+            && installed.contains("AMF_ACTIVE"),
         "expected installed change-tracker.js to include session identity metadata, got: {installed}"
     );
 }
@@ -4088,7 +4089,8 @@ fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
     assert!(
         codex_notify.contains("provider_session_id")
             && codex_notify.contains("amf_feature_session_id")
-            && codex_notify.contains("AMF_FEATURE_SESSION_ID"),
+            && codex_notify.contains("AMF_FEATURE_SESSION_ID")
+            && codex_notify.contains("AMF_ACTIVE"),
         "Codex notify hook should preserve AMF and provider session ids, got: {codex_notify}"
     );
     assert!(

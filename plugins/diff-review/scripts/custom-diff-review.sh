@@ -9,6 +9,10 @@
 
 set -euo pipefail
 
+if [[ "${AMF_ACTIVE:-}" != "1" ]]; then
+    exit 0
+fi
+
 HOOK_INPUT=$(cat)
 TOOL_NAME=$(echo "$HOOK_INPUT" | jq -r '.tool_name // empty')
 SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // "unknown"')

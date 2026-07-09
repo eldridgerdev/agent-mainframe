@@ -11,6 +11,10 @@
 
 set -uo pipefail
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 WORKDIR="${1:-$PWD}"
 SESSION_ID="${AMF_SESSION:-}"
 

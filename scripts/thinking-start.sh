@@ -2,6 +2,10 @@
 # Claude Code hook script: mark session as thinking.
 # Sends IPC event to AMF, falling back to /tmp sentinel.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT=$(cat)
 
 # AMF_SESSION is the tmux session name set by AMF when launching Claude.

@@ -7,6 +7,10 @@
 #
 # Usage: set-session-status.sh "status text"
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 STATUS_TEXT="${1:-}"
 SESSION_ID="${AMF_SESSION_ID:-}"
 

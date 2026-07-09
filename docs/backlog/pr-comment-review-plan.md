@@ -782,21 +782,22 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/handlers/pr_review.rs`, `src/handlers/view.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dashboard.rs`,
       `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [ ] **Strip quoted diffs / residual bot scaffolding from comment bodies
+- [x] **Strip quoted diffs / residual bot scaffolding from comment bodies
       (token polish — low priority).** `strip_bot_boilerplate`
-      (`src/app/pr_review.rs`) already removes `<details>`, HTML comments,
-      `<summary>` tags, and images, but it leaves **fenced quoted-diff blocks**
-      (e.g. the ```` ```diff ```` / ```` ```suggestion ```` snippets CodeRabbit
-      and other bots paste back into a comment body). Those repeat context the
-      agent already has — the comment's own `diff_hunk` plus the checked-out
-      repo — so they inflate `fix_prompt()` for no value (principle #5, "strip
-      boilerplate before sending"). Extend the stripper to drop fenced
-      quoted-diff/suggestion blocks (and any leading `> ` quoted-diff lines)
-      from the text that reaches `agent_text` / the fix prompt, while leaving
-      the *displayed* body intact if we want the detail pane to still show
-      them. Low priority: the win is smaller than the file-level-hunk item
-      above and only bites on bots that quote diffs inline. Unit-test the
-      stripper against a CodeRabbit-style body. → `src/app/pr_review.rs`.
+      (`src/app/pr_review.rs`) already removed `<details>`, HTML comments,
+      `<summary>` tags, and images; it now also drops **fenced quoted-diff
+      blocks** (```` ```diff ```` / ```` ```suggestion ````, matched
+      line-anchored so an ordinary fenced code block like ` ```rust ` is left
+      alone) and **leading `> ` blockquote lines** — the two ways CodeRabbit
+      and similar bots re-paste a diff inline. Those repeated context the
+      agent already gets for free from the comment's own `diff_hunk` plus the
+      checked-out repo, inflating `fix_prompt()` for no value (principle #5).
+      Only wired into the two call sites that already gate on `is_bot`
+      (`agent_text()` and the list-snippet builder `make_snippet`), so the
+      *displayed* detail-pane body (`PrComment::body`, unstripped) is
+      untouched — a human's quoted diff still renders. Unit-tested (fence
+      stripped, suggestion-fence stripped, leading `> ` lines stripped, a
+      non-diff fence left byte-for-byte intact). → `src/app/pr_review.rs`.
 - [ ] **AI attribution on AMF-posted comments (honesty — from real use).**
       When AMF posts content the agent harness generated (Epic E AI-review
       findings, and any future AI-drafted reply), append a **subtle, machine

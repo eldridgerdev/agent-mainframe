@@ -50,6 +50,16 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":claude-hook-cleanup-v2");
+const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
+    "notify.sh",
+    "clear-notify.sh",
+    "save-prompt.sh",
+    "thinking-start.sh",
+    "thinking-stop.sh",
+    "tool-start.sh",
+    "tool-stop.sh",
+];
 
 #[derive(Default)]
 struct ClaudeSettingsState {
@@ -133,18 +143,27 @@ fn ensure_gitignore_entry(path: &Path, entry: &str) {
 
 fn claude_managed_commands() -> Vec<String> {
     let config_dir = crate::project::amf_config_dir();
-    [
-        "notify.sh",
-        "clear-notify.sh",
-        "save-prompt.sh",
-        "thinking-start.sh",
-        "thinking-stop.sh",
-        "tool-start.sh",
-        "tool-stop.sh",
-    ]
-    .into_iter()
-    .map(|name| config_dir.join(name).to_string_lossy().into_owned())
-    .collect()
+    CLAUDE_MANAGED_SCRIPT_NAMES
+        .iter()
+        .map(|name| config_dir.join(name).to_string_lossy().into_owned())
+        .collect()
+}
+
+fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
+    if managed_commands.iter().any(|managed| managed == command) {
+        return true;
+    }
+
+    // The XDG-aware config-dir resolver depends on HOME/XDG_CONFIG_HOME.
+    // Older verification runs could install hooks while HOME pointed at a
+    // temporary Claude scratchpad, leaving deleted helper paths such as
+    // /tmp/claude-.../scratchpad/amf_verify_home/.config/amf/tool-stop.sh.
+    // Treat only AMF's known helper names under a .config/amf directory as
+    // managed so unrelated user hooks with the same basename are preserved.
+    let Some((parent, name)) = command.rsplit_once('/') else {
+        return false;
+    };
+    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name) && parent.ends_with("/.config/amf")
 }
 
 fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[String]) -> bool {
@@ -152,7 +171,7 @@ fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[Strin
         hooks.iter().any(|hook| {
             hook["command"]
                 .as_str()
-                .is_some_and(|command| managed_commands.iter().any(|managed| managed == command))
+                .is_some_and(|command| is_amf_claude_hook_command(command, managed_commands))
         })
     })
 }
@@ -430,16 +449,15 @@ fn hook_refresh_stamp_path() -> std::path::PathBuf {
 /// every feature's hooks and plugins were already refreshed by this exact
 /// version of AMF and nothing needs to be rewritten.
 fn hooks_already_current() -> bool {
-    let current = env!("CARGO_PKG_VERSION");
     std::fs::read_to_string(hook_refresh_stamp_path())
         .ok()
         .as_deref()
-        == Some(current)
+        == Some(HOOK_REFRESH_STAMP)
 }
 
 /// Record that hooks have been refreshed for the current binary version.
 fn mark_hooks_current() {
-    let _ = std::fs::write(hook_refresh_stamp_path(), env!("CARGO_PKG_VERSION"));
+    let _ = std::fs::write(hook_refresh_stamp_path(), HOOK_REFRESH_STAMP);
 }
 
 /// Refresh opencode plugin files in all known opencode feature

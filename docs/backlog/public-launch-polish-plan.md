@@ -134,6 +134,11 @@ All found by driving the TUI with a fresh HOME.
       has data and the XDG-resolved directory doesn't, so existing
       installs (including macOS, where `dirs::config_dir()` differs
       from `~/.config`) keep working unchanged after an upgrade.
+      Follow-up: Claude hook cleanup now also recognizes older AMF
+      helper paths under any `.config/amf` root, so hooks written while
+      `HOME` / `XDG_CONFIG_HOME` was temporarily redirected are removed
+      instead of leaving deleted `/tmp/claude-*` scripts in
+      `.claude/settings.local.json`.
 - [x] Decide whether `docs/backlog/` (including the bug backlog)
       should ship in the public repo as-is; it's honest, but review it
       for anything you don't want public. Decided: ship as-is — the

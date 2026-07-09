@@ -86,6 +86,12 @@ are tagged.
 
 ### Fixed
 
+- **Claude hooks recover from stale temporary AMF config paths.** If an AMF
+  verification run or unusual `HOME` / `XDG_CONFIG_HOME` setting left Claude
+  hooks pointing at deleted `/tmp/claude-*` helper scripts, AMF now removes
+  those stale entries and reinstalls the current local hooks on startup. This
+  clears repeated `PostToolUse:Bash hook error` messages without requiring
+  manual edits to `.claude/settings.local.json`.
 - **File-level PR review comments no longer inject the whole file as a diff
   hunk.** A comment left on the file as a whole (GitHub's `subject_type:
   "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to

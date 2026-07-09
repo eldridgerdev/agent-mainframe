@@ -3892,6 +3892,67 @@ fn ensure_hooks_is_idempotent() {
 }
 
 #[test]
+fn ensure_hooks_removes_stale_temp_home_amf_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "PostToolUse": [
+              {
+                "matcher": "",
+                "hooks": [{
+                  "type": "command",
+                  "command": "/tmp/claude-1000/worktree/scratchpad/amf_verify_home/.config/amf/tool-stop.sh"
+                }]
+              },
+              {
+                "matcher": "custom",
+                "hooks": [{
+                  "type": "command",
+                  "command": "/tmp/user/tool-stop.sh"
+                }]
+              }
+            ],
+            "PreToolUse": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/tmp/claude-1000/worktree/scratchpad/amf_verify_home/.config/amf/thinking-start.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let post_cmds = hook_commands_for(&s, "PostToolUse");
+    assert!(
+        post_cmds
+            .iter()
+            .all(|cmd| !cmd.contains("/tmp/claude-1000/")),
+        "stale temp-home AMF hooks should be removed, got: {post_cmds:?}"
+    );
+    assert!(
+        post_cmds.iter().any(|cmd| cmd == "/tmp/user/tool-stop.sh"),
+        "user hook with same basename outside .config/amf should be preserved"
+    );
+    assert_eq!(
+        post_cmds
+            .iter()
+            .filter(|cmd| cmd.ends_with("/.config/amf/tool-stop.sh"))
+            .count(),
+        1,
+        "only the current AMF PostToolUse hook should remain"
+    );
+}
+
+#[test]
 fn codex_hooks_are_injected_for_repo_root_and_worktrees() {
     let workdir = TempDir::new().unwrap();
 

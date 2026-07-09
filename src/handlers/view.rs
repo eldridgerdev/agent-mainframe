@@ -447,6 +447,9 @@ fn handle_leader_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<
         KeyCode::Char('O') => {
             app.open_remote_control_url()?;
         }
+        KeyCode::Char('P') => {
+            app.pr_review_return_to_pane();
+        }
         _ => {}
     }
 

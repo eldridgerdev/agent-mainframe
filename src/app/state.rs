@@ -1450,6 +1450,19 @@ pub struct PrReviewState {
     pub pending_batch: bool,
 }
 
+/// A [`PrReviewState`] stashed while the user is watching the linked fix
+/// session (`P` from the review pane), so `leader+P` can jump straight back
+/// to the exact comment/scroll/dialog state without re-fetching. `session`
+/// and `window` identify the tmux target the stash was jumped *to*, so the
+/// restore only fires from that same session's view — a stash left behind
+/// after navigating elsewhere is not mistaken for a different PR's pane.
+#[derive(Debug, Clone)]
+pub struct PrReviewReturn {
+    pub session: String,
+    pub window: String,
+    pub state: PrReviewState,
+}
+
 /// Single-select harness picker shown before the dedicated PR-review session is
 /// spun up, so the user can run triage fixes on a different harness than the
 /// feature's working session. Highlights the project's preferred agent by

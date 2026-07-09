@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Quick toggle between the PR review pane and the fix session.** Press `P`
+  in the PR comment-review pane to jump into the session your fix went to
+  (or is about to go to), then `Ctrl+Space` then `P` from that session to jump
+  straight back — landing on the exact comment, scroll position, and marks
+  you left, no reopening or re-fetching the PR. Previously the only way back
+  was exiting to the dashboard and reopening the review from scratch, which
+  lost your place. This also kicks in automatically after the ordinary `f`
+  (inject fix) flow, not just the dedicated peek. A footer hint (`P session`)
+  and a status badge (`Ctrl+Space P: back to review`) show up whenever the
+  toggle is available.
 - **Combined batch fix in the interactive PR review — "fix all of these, then
   I'll come back."** Mark a set of comments with `space`, then press `B` to
   build **one** numbered prompt covering all of them and inject it into the

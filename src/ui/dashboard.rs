@@ -949,6 +949,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
+            if let Some(stash) = &app.pr_review_return
+                && stash.session == view.session
+                && stash.window == view.window
+            {
+                badge_spans.push(Span::styled(
+                    " [Ctrl+Space P: back to review] ",
+                    Style::default()
+                        .fg(app.theme.info.to_color())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             if !badge_spans.is_empty() {
                 let total: u16 = badge_spans
                     .iter()

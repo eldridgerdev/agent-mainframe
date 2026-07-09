@@ -1672,10 +1672,29 @@ impl App {
             ));
         }
 
-        // Switch into the target session, then deliver the prompt via the shared
-        // seam (seeds the compose box when interception is on, else pastes
-        // without sending). Leaving the pane is intentional — the user watches
-        // the agent and re-opens the review (cache hit) when done.
+        // Stash the pane's exact state so leader+P can jump straight back to
+        // it without re-fetching — the same mechanism the `P` toggle uses.
+        // Leaving the pane is still intentional (the user watches the agent),
+        // but the round trip back to triage the next comment no longer has to
+        // go through the dashboard and a re-resolve. The confirm dialog has
+        // already served its purpose (the prompt above was read from it), so
+        // clear it before stashing — otherwise returning would reopen the
+        // same "inject fix" dialog instead of the plain comment list.
+        let AppMode::PrReview(mut state) = std::mem::replace(&mut self.mode, AppMode::Normal)
+        else {
+            return Ok(());
+        };
+        state.fix_confirm = None;
+        let feature = &self.store.projects[pi].features[fi];
+        self.pr_review_return = Some(PrReviewReturn {
+            session: feature.tmux_session.clone(),
+            window: feature.sessions[si].tmux_window.clone(),
+            state,
+        });
+
+        // Switch into the target session, then deliver the prompt via the
+        // shared seam (seeds the compose box when interception is on, else
+        // pastes without sending).
         self.selection = Selection::Session(pi, fi, si);
         self.enter_view_without_auto_compose()?;
         let AppMode::Viewing(view) = &self.mode else {
@@ -1683,6 +1702,67 @@ impl App {
         };
         let view = view.clone();
         self.deliver_prompt(prompt, Some(view))
+    }
+
+    /// Jump from the review pane straight into the linked fix session (`P`),
+    /// stashing the pane's exact state (selection, scroll, open dialogs) so
+    /// `pr_review_return_to_pane` can pop back to it without re-fetching.
+    /// Unlike `f`, this never spins up the dedicated session — it only jumps
+    /// to one that already exists, so a quick "peek at the agent" doesn't
+    /// have the side effect of starting a review session on its own.
+    pub fn pr_review_toggle_to_session(&mut self) -> Result<()> {
+        let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
+            AppMode::PrReview(state) => state,
+            other => {
+                self.mode = other;
+                return Ok(());
+            }
+        };
+
+        let Some((pi, fi)) = self.feature_indices_for_workdir(&state.workdir) else {
+            self.mode = AppMode::PrReview(state);
+            self.push_toast_warning("Could not find the feature for this PR");
+            return Ok(());
+        };
+        let feature = &self.store.projects[pi].features[fi];
+        let Some(si) = fix_session_index(feature, state.fix_target, REVIEW_SESSION_LABEL) else {
+            self.mode = AppMode::PrReview(state);
+            self.push_toast_warning("No review session yet — press f to start one");
+            return Ok(());
+        };
+        let session = feature.tmux_session.clone();
+        let window = feature.sessions[si].tmux_window.clone();
+
+        self.selection = Selection::Session(pi, fi, si);
+        self.pr_review_return = Some(PrReviewReturn {
+            session,
+            window,
+            state,
+        });
+        self.enter_view_without_auto_compose()
+    }
+
+    /// Jump back from a Viewing session to the review pane stashed by
+    /// `pr_review_toggle_to_session` (`leader+P`), restoring the exact prior
+    /// state — no re-fetch. Only restores when the current session is the one
+    /// the stash was jumped from; a stash left behind after navigating
+    /// elsewhere is not popped into an unrelated session's view.
+    pub fn pr_review_return_to_pane(&mut self) {
+        let Some(stash) = &self.pr_review_return else {
+            self.push_toast_warning("No review pane to return to");
+            return;
+        };
+        let matches_current = matches!(
+            &self.mode,
+            AppMode::Viewing(view) if view.session == stash.session && view.window == stash.window
+        );
+        if !matches_current {
+            self.push_toast_warning("No review pane linked to this session");
+            return;
+        }
+        if let Some(stash) = self.pr_review_return.take() {
+            self.mode = AppMode::PrReview(stash.state);
+        }
     }
 
     /// Open a **"Done in `<sha>`"** reply for the selected comment, seeded from

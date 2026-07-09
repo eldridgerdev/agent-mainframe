@@ -594,26 +594,41 @@ fn make_snippet(body: &str, is_bot: bool) -> String {
 }
 
 /// Strip the heavy scaffolding bots (CodeRabbit, Copilot, …) wrap around their
-/// actual point: `<details>` blocks, HTML comments, `<summary>` tags, and
-/// markdown image badges. Cheap and lossy-by-design — only the actionable prose
-/// needs to survive for the agent prompt and snippet.
+/// actual point: `<details>` blocks, HTML comments, `<summary>` tags, markdown
+/// image badges, fenced quoted-diff/suggestion blocks, and leading `> `
+/// quoted-diff lines. Cheap and lossy-by-design — only the actionable prose
+/// needs to survive for the agent prompt and snippet. The comment's own
+/// `diff_hunk` (plus the checked-out repo) already gives the agent this
+/// context, so a bot re-quoting the diff inline is pure repetition.
 pub fn strip_bot_boilerplate(body: &str) -> String {
     static DETAILS: OnceLock<Regex> = OnceLock::new();
     static HTML_COMMENT: OnceLock<Regex> = OnceLock::new();
     static SUMMARY: OnceLock<Regex> = OnceLock::new();
     static IMAGE: OnceLock<Regex> = OnceLock::new();
+    static QUOTED_DIFF_FENCE: OnceLock<Regex> = OnceLock::new();
+    static QUOTED_LINES: OnceLock<Regex> = OnceLock::new();
     static BLANKS: OnceLock<Regex> = OnceLock::new();
 
     let details = DETAILS.get_or_init(|| Regex::new(r"(?is)<details>.*?</details>").unwrap());
     let html_comment = HTML_COMMENT.get_or_init(|| Regex::new(r"(?s)<!--.*?-->").unwrap());
     let summary = SUMMARY.get_or_init(|| Regex::new(r"(?is)</?summary>").unwrap());
     let image = IMAGE.get_or_init(|| Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap());
+    // Fenced ```diff / ```suggestion blocks: bots paste the same hunk back as
+    // a code fence, which repeats context the agent already gets for free
+    // from `diff_hunk`.
+    let quoted_diff_fence = QUOTED_DIFF_FENCE
+        .get_or_init(|| Regex::new(r"(?ims)^```(?:diff|suggestion)\s*\n.*?\n```\s*$").unwrap());
+    // Leading `> ` blockquote lines (bots sometimes quote the diff as a
+    // blockquote instead of a fence).
+    let quoted_lines = QUOTED_LINES.get_or_init(|| Regex::new(r"(?m)^>.*$\n?").unwrap());
     let blanks = BLANKS.get_or_init(|| Regex::new(r"\n{3,}").unwrap());
 
     let s = details.replace_all(body, "");
     let s = html_comment.replace_all(&s, "");
     let s = summary.replace_all(&s, "");
     let s = image.replace_all(&s, "");
+    let s = quoted_diff_fence.replace_all(&s, "");
+    let s = quoted_lines.replace_all(&s, "");
     let s = blanks.replace_all(&s, "\n\n");
     s.trim().to_string()
 }
@@ -2123,6 +2138,34 @@ mod tests {
             lots of tokens\n</details>\n<!-- internal note -->\n![badge](http://x/y.png)";
         let out = strip_bot_boilerplate(body);
         assert_eq!(out, "Real point here.");
+    }
+
+    #[test]
+    fn strips_quoted_diff_fence() {
+        let body = "This can race with the poller.\n\n```diff\n@@ -40,6 +40,7 @@\n-old\n+new\n```\n\nGuard it behind the lock.";
+        let out = strip_bot_boilerplate(body);
+        assert_eq!(out, "This can race with the poller.\n\nGuard it behind the lock.");
+    }
+
+    #[test]
+    fn strips_quoted_suggestion_fence() {
+        let body = "Consider this:\n\n```suggestion\nlet x = 1;\n```\n\nSaves a line.";
+        let out = strip_bot_boilerplate(body);
+        assert_eq!(out, "Consider this:\n\nSaves a line.");
+    }
+
+    #[test]
+    fn strips_leading_quoted_diff_lines() {
+        let body = "> -old line\n> +new line\n\nActual comment text.";
+        let out = strip_bot_boilerplate(body);
+        assert_eq!(out, "Actual comment text.");
+    }
+
+    #[test]
+    fn leaves_non_diff_fences_untouched() {
+        let body = "Use this instead:\n\n```rust\nlet x = 1;\n```\n\nCleaner.";
+        let out = strip_bot_boilerplate(body);
+        assert_eq!(out, body);
     }
 
     #[test]

@@ -35,6 +35,12 @@ are tagged.
   before sending. Everything included is marked `Fixing` and the marks clear,
   so the next refresh reconciles what actually got resolved. Very large batches
   raise a warning toast but still go through.
+- **Leaner fix prompts in the interactive PR review.** When a bot comment
+  (CodeRabbit, Copilot, etc.) re-pastes the diff inline as a quoted code
+  block or blockquote, that repeated content is now stripped before it
+  reaches the agent — you already get the diff hunk for free, so this cuts
+  wasted tokens on bot-heavy PRs. The comment still displays in full, as
+  written, in the detail pane.
 - **Search within the final-review diff.** Press `/` in the final review to
   incrementally search the current file's diff (case-insensitive). The line
   cursor jumps to the first match as you type; after `Enter`, `n` / `N` cycle

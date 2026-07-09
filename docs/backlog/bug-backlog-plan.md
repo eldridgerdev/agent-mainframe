@@ -14,6 +14,31 @@ For each bug record: how to reproduce, expected vs. actual behaviour, the
 relevant code, and any leads on the cause. Move a bug out of this doc (or
 strike it through with the fixing commit/PR) once resolved.
 
+## ~~macOS build fails in tmux PTY setup~~ (Fixed)
+
+- **Status:** Fixed (2026-07-09)
+- **Reported:** 2026-07-09
+- **Relates to:** tmux PTY control clients (`src/tmux.rs`)
+- **Root cause:** macOS exposes libc signatures where `openpty` expects
+  mutable `termios` / `winsize` pointers, and `ioctl` expects the
+  controlling-terminal request as `c_ulong`. AMF passed immutable pointers to
+  `openpty` and passed `TIOCSCTTY` without the platform-width cast.
+- **Fix:** Pass mutable `termios` and `winsize` values into `openpty`, and
+  cast each `TIOCSCTTY` request to `libc::c_ulong`.
+
+### Repro
+
+1. Build AMF on macOS with `cargo build`.
+
+### Expected
+
+The project builds successfully.
+
+### Actual
+
+Compilation fails in `src/tmux.rs` with libc type errors around `openpty` and
+`ioctl`.
+
 ## ~~Terminal sessions insert extra blank lines on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-02)

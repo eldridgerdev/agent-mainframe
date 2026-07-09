@@ -994,6 +994,14 @@ impl TmuxManager {
     fn open_pty(cols: u16, rows: u16) -> Result<(File, File)> {
         let mut master = -1;
         let mut slave = -1;
+        #[cfg(target_os = "macos")]
+        let mut winsize = libc::winsize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        #[cfg(not(target_os = "macos"))]
         let winsize = libc::winsize {
             ws_row: rows,
             ws_col: cols,
@@ -1010,6 +1018,17 @@ impl TmuxManager {
             libc::cfmakeraw(&mut termios);
         }
 
+        #[cfg(target_os = "macos")]
+        let result = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                &mut termios,
+                &mut winsize,
+            )
+        };
+        #[cfg(not(target_os = "macos"))]
         let result = unsafe {
             libc::openpty(
                 &mut master,
@@ -1062,7 +1081,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -1157,7 +1176,7 @@ impl TmuxManager {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) == -1 {
+                    if libc::ioctl(slave_fd, libc::TIOCSCTTY as libc::c_ulong, 0) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())

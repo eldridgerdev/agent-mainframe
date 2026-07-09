@@ -108,6 +108,9 @@ are tagged.
 
 ### Fixed
 
+- **macOS source builds work again.** AMF now uses the libc argument types
+  expected by macOS for the tmux PTY setup, so `cargo build` no longer fails
+  with `openpty` / `ioctl` type errors on that platform.
 - **AMF-managed hooks now stay dormant outside AMF.** Running Claude, Codex, or
   Opencode directly from a worktree that AMF has prepared no longer triggers
   AMF's notification, thinking, sidebar, or diff-review hooks. This prevents

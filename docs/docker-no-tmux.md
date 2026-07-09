@@ -9,7 +9,7 @@ Claude Code into the image, then exposes wrapper commands in
 from that release.
 
 For local testing of a checkout, use
-[`scripts/package-no-tmux-test-bundle.sh`](../scripts/package-no-tmux-test-bundle.sh)
+[`scripts/dev/package-no-tmux-test-bundle.sh`](../scripts/dev/package-no-tmux-test-bundle.sh)
 to create a runnable archive from the current `amf` binary plus the
 existing bundled `tmux` installation. That avoids glibc mismatches
 when running the bundle inside the Debian-based no-tmux image.
@@ -23,7 +23,7 @@ docker build -f docker/no-tmux/Dockerfile -t amf-no-tmux .
 ## Run
 
 ```bash
-scripts/run-no-tmux-docker.sh -- bash
+scripts/dev/run-no-tmux-docker.sh -- bash
 ```
 
 The container starts with a shell after installing AMF. Inside it, you
@@ -44,22 +44,22 @@ You can point the installer at a different archive without changing the
 image:
 
 ```bash
-AMF_RELEASE_ARCHIVE="$PWD/amf.tar.gz" scripts/run-no-tmux-docker.sh
+AMF_RELEASE_ARCHIVE="$PWD/amf.tar.gz" scripts/dev/run-no-tmux-docker.sh
 ```
 
 To test the current checkout, build a local bundle first:
 
 ```bash
 cargo build --release
-scripts/package-no-tmux-test-bundle.sh target/release/amf /tmp/amf-no-tmux-test.tar.gz
-AMF_RELEASE_ARCHIVE=/tmp/amf-no-tmux-test.tar.gz scripts/run-no-tmux-docker.sh -- bash
+scripts/dev/package-no-tmux-test-bundle.sh target/release/amf /tmp/amf-no-tmux-test.tar.gz
+AMF_RELEASE_ARCHIVE=/tmp/amf-no-tmux-test.tar.gz scripts/dev/run-no-tmux-docker.sh -- bash
 ```
 
 Or override the download base URL:
 
 ```bash
 AMF_RELEASE_BASE=https://github.com/eldridgerdev/agent-mainframe/releases/latest/download \
-  scripts/run-no-tmux-docker.sh
+  scripts/dev/run-no-tmux-docker.sh
 ```
 
 Set `AMF_SKIP_INSTALL=1` if you want the container to start without

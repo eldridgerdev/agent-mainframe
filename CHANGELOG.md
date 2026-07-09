@@ -142,10 +142,12 @@ are tagged.
   formulas now render as styled `$...$` / `$$...$$` text, including inside
   table cells, so plans and notes with formulas no longer look like ordinary
   prose or lose math-specific context.
-- **New agent sessions hide their startup command echo.** When AMF starts a
-  fresh Claude, Codex, opencode, or Pi session, the embedded pane now shows a
-  loading screen until the harness is ready instead of flashing the long tmux
-  launch command and environment setup. Existing running sessions open normally.
+- **Agent harness launches hide their startup command echo.** When AMF starts a
+  fresh Claude, Codex, opencode, or Pi session — including Pi opened from a
+  feature row, and Claude/Codex/opencode sessions resumed with `S` — the
+  embedded pane now shows a loading screen until the harness is ready instead
+  of flashing the long tmux launch command and environment setup. Existing
+  running sessions open normally.
 - **Terminal sessions no longer add surprise blank lines on macOS.** AMF now
   uses the direct tmux input path on macOS, so typing in an embedded terminal
   inserts the intended characters instead of turning each keypress into a

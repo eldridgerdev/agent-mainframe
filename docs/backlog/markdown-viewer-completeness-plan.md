@@ -64,10 +64,14 @@ GitHub rendering.
      instead of leaking raw `[^label]:` syntax.
    - Added tests for references, definitions, label styling, and wrapped
      definition continuation indentation.
-8. [ ] Enable and render math deliberately.
-   - `Event::InlineMath` and `Event::DisplayMath` are handled, but
-     `Options::ENABLE_MATH` is not enabled.
-   - Decide whether math should be plain styled text or visually marked.
+8. [x] Enable and render math deliberately.
+   - Enabled `Options::ENABLE_MATH` so inline and display math events are
+     emitted by the parser.
+   - Render inline math as styled `$...$` text and display math as a styled
+     `$$...$$` text block so formulas remain visibly distinct from prose.
+   - Preserve math rendering inside table cells.
+   - Added regression coverage for inline math, display math, and table-cell
+     math styling.
 9. [ ] Improve link rendering.
    - Links are styled, but destinations are hidden.
    - Decide whether to show destinations inline, in a suffix, or in a
@@ -172,6 +176,26 @@ Expected:
 - The table still renders as a grid inside the list item.
 - The grid respects the viewer width after accounting for the list
   prefix.
+
+## Math testing fixture
+
+Use this section as a manual smoke-test for math rendering in AMF's
+Markdown viewer.
+
+Inline math should render with visible delimiters: $E = mc^2$.
+
+$$x = y + z$$
+
+| Name | Formula |
+| --- | --- |
+| Energy | $E = mc^2$ |
+| Sum | $x + y = z$ |
+
+Expected:
+- Inline math keeps the `$...$` delimiters and is visually distinct from
+  surrounding prose.
+- Display math renders as a standalone `$$...$$` block.
+- Math inside table cells stays visible and does not break the table grid.
 
 ## Open questions
 

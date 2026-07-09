@@ -546,6 +546,7 @@ impl TmuxManager {
 
     fn agent_launch_env(session: &str, window: &str, feature_session_id: &str) -> String {
         Self::shell_launch_env_with(&[
+            ("AMF_ACTIVE", "1"),
             ("AMF_SESSION", session),
             ("AMF_TMUX_SESSION", session),
             ("AMF_TMUX_WINDOW", window),
@@ -2342,6 +2343,7 @@ mod tests {
         let prefix = TmuxManager::agent_launch_env("amf-test", "codex", "session-123");
 
         assert!(prefix.starts_with("env "));
+        assert!(prefix.contains("AMF_ACTIVE='1'"));
         assert!(prefix.contains("AMF_SESSION='amf-test'"));
         assert!(prefix.contains("AMF_TMUX_SESSION='amf-test'"));
         assert!(prefix.contains("AMF_TMUX_WINDOW='codex'"));

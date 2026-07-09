@@ -3,6 +3,10 @@
 # Sends a notification to the AMF dashboard via IPC socket,
 # falling back to writing a file if amf is not in PATH.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT=$(cat)
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)

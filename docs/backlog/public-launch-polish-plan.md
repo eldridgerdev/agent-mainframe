@@ -139,6 +139,10 @@ All found by driving the TUI with a fresh HOME.
       `HOME` / `XDG_CONFIG_HOME` was temporarily redirected are removed
       instead of leaving deleted `/tmp/claude-*` scripts in
       `.claude/settings.local.json`.
+      Follow-up: AMF-launched agent panes now export `AMF_ACTIVE=1`,
+      and the local Claude/Codex hooks plus Opencode plugins exit when
+      that marker is absent. This keeps AMF-managed hooks from blocking
+      standalone harness runs in an AMF-prepared worktree.
 - [x] Decide whether `docs/backlog/` (including the bug backlog)
       should ship in the public repo as-is; it's honest, but review it
       for anything you don't want public. Decided: ship as-is — the

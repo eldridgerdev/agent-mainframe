@@ -419,6 +419,9 @@ function updateModelState(state, value) {
 }
 
 export const SidebarStatePlugin = async ({ directory }) => {
+  if (process.env.AMF_ACTIVE !== "1") {
+    return {}
+  }
   debug("plugin loaded", { directory })
   return {
     "tool.execute.before": async (input) => {

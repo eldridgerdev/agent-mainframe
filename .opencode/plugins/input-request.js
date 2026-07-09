@@ -115,6 +115,9 @@ function clearNotification(sessionId) {
 }
 
 export const InputRequestPlugin = async ({ directory }) => {
+  if (process.env.AMF_ACTIVE !== "1") {
+    return {}
+  }
   debug("plugin loaded", { directory })
   return {
     "tool.execute.before": async (input) => {

@@ -3,6 +3,10 @@
 # Clears any pending notification for this session from the
 # AMF dashboard, signalling that the agent is working again.
 
+if [ "${AMF_ACTIVE:-}" != "1" ]; then
+    exit 0
+fi
+
 INPUT=$(cat)
 
 PROVIDER_SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null)

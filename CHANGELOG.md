@@ -108,6 +108,11 @@ are tagged.
 
 ### Fixed
 
+- **AMF-managed hooks now stay dormant outside AMF.** Running Claude, Codex, or
+  Opencode directly from a worktree that AMF has prepared no longer triggers
+  AMF's notification, thinking, sidebar, or diff-review hooks. This prevents
+  standalone Claude runs from getting stuck waiting for an AMF diff-review
+  prompt that is not open.
 - **Claude hooks recover from stale temporary AMF config paths.** If an AMF
   verification run or unusual `HOME` / `XDG_CONFIG_HOME` setting left Claude
   hooks pointing at deleted `/tmp/claude-*` helper scripts, AMF now removes

@@ -78,6 +78,11 @@ are tagged.
 - **`amf --help` explains itself.** The top-level help text now describes
   what AMF is, and `-V, --version` has a one-line description instead of
   showing up blank.
+- **AMF now respects `XDG_CONFIG_HOME`.** Config, plugins, notifications, and
+  the project database resolve through `dirs::config_dir()` instead of a
+  hardcoded `~/.config/amf`. Existing installs are unaffected: if the old
+  `~/.config/amf` already has data and the new location doesn't, AMF keeps
+  using the old path, so nothing moves out from under you on upgrade.
 
 ### Fixed
 

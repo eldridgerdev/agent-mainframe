@@ -127,10 +127,13 @@ All found by driving the TUI with a fresh HOME.
 
 ## Phase 6 — Nice-to-have before/shortly after launch
 
-- [ ] Respect `XDG_CONFIG_HOME` in `amf_config_dir()`
+- [x] Respect `XDG_CONFIG_HOME` in `amf_config_dir()`
       (`src/project.rs:1208`) instead of hardcoding
-      `~/.config/amf` — use `dirs::config_dir()` with a migration
-      fallback to the old path. Linux users will file this quickly.
+      `~/.config/amf` — now resolves via `dirs::config_dir()`, but
+      falls back to the legacy `~/.config/amf` path when that already
+      has data and the XDG-resolved directory doesn't, so existing
+      installs (including macOS, where `dirs::config_dir()` differs
+      from `~/.config`) keep working unchanged after an upgrade.
 - [ ] Decide whether `docs/backlog/` (including the bug backlog)
       should ship in the public repo as-is; it's honest, but review it
       for anything you don't want public.

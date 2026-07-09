@@ -42,7 +42,6 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("V", "Check pending diff review"),
         ("u", "Preferred harness / worktree config"),
         ("F", "Fork feature (new branch)"),
-        ("f", "Cycle session filter"),
         ("y", "Toggle mark feature as ready"),
         ("Z", "Generate session summary"),
         ("i", "Input requests picker"),

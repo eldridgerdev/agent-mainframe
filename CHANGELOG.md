@@ -62,6 +62,10 @@ are tagged.
 
 ### Changed
 
+- **The dashboard session filter is temporarily disabled.** Pressing `f` on
+  the dashboard no longer cycles session types, and the filter hint is hidden
+  from the footer and help overlay. All sessions remain visible while the
+  feature is paused. No migration is required.
 - **Codex SuperVibe now skips Codex permission prompts.** Codex-backed
   SuperVibe sessions launch with full-access, no-approval permissions, so the
   mode now behaves consistently with its no-prompt warning.

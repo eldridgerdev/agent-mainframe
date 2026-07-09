@@ -124,6 +124,10 @@ impl App {
     }
 
     fn session_matches_filter(&self, session: &FeatureSession) -> bool {
+        if !DASHBOARD_SESSION_FILTER_ENABLED {
+            return true;
+        }
+
         use crate::project::SessionKind;
         match &self.session_filter {
             SessionFilter::All => true,

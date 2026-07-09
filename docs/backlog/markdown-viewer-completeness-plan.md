@@ -44,20 +44,26 @@ GitHub rendering.
    - Verify quote/list prefixes are retained on borders and rows.
    - Check that prefixed tables still respect available width.
    - Added regression coverage for blockquote and list-item table prefixes.
-5. [ ] Preserve inline styling inside table cells.
+5. [x] Preserve inline styling inside table cells.
    - Keep inline code, emphasis, strong text, strike-through, and links
      styled instead of flattening each cell to a plain `String`.
-   - Decide whether this needs a new table-cell span model or reuse of
-     `InlineNode`.
-6. [ ] Improve long table-cell behavior.
-   - Decide between truncation, wrapped multi-line cells, or horizontal
-     panning.
-   - Prefer a simple terminal-friendly behavior that cannot corrupt table
-     borders at narrow widths.
-7. [ ] Make footnotes visible as footnotes.
-   - Footnote parsing is enabled, but definitions need clearer rendering
-     and labels.
-   - Add tests for references and definitions.
+   - Reused `InlineNode` in table cells so table rendering can preserve
+     styled spans through alignment and truncation.
+   - Added span-level regression coverage for emphasis, strong text,
+     inline code, strike-through, and links inside table cells.
+6. [x] Improve long table-cell behavior.
+   - Chose fixed-width truncation with an ellipsis instead of wrapped
+     multi-line cells or horizontal panning.
+   - Kept one terminal row per Markdown table row so borders stay stable
+     at narrow widths.
+   - Added regression coverage for long styled cells and wide Unicode text
+     to ensure truncation respects the assigned column width.
+7. [x] Make footnotes visible as footnotes.
+   - Footnote references render as styled inline `[label]` markers.
+   - Footnote definitions render as labeled, indented footnote blocks
+     instead of leaking raw `[^label]:` syntax.
+   - Added tests for references, definitions, label styling, and wrapped
+     definition continuation indentation.
 8. [ ] Enable and render math deliberately.
    - `Event::InlineMath` and `Event::DisplayMath` are handled, but
      `Options::ENABLE_MATH` is not enabled.

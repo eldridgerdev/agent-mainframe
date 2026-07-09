@@ -44,6 +44,7 @@ pub trait TmuxOps: Send + Sync {
         extra_args: Vec<String>,
     ) -> Result<()>;
     fn launch_pi(&self, session: &str, window: &str, feature_session_id: &str) -> Result<()>;
+    fn run_shell_command(&self, session: &str, window: &str, command: &str) -> Result<()>;
     fn send_keys(&self, session: &str, window: &str, keys: &str) -> Result<()>;
     fn send_literal(&self, session: &str, window: &str, text: &str) -> Result<()>;
     fn paste_text(&self, session: &str, window: &str, text: &str) -> Result<()>;

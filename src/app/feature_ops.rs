@@ -785,8 +785,11 @@ impl App {
                             watcher_path.display(),
                             feature.workdir.display()
                         );
-                        self.tmux
-                            .send_keys(&feature.tmux_session, &session.tmux_window, &cmd)?;
+                        self.tmux.run_shell_command(
+                            &feature.tmux_session,
+                            &session.tmux_window,
+                            &cmd,
+                        )?;
                     }
                     self.tmux.launch_codex(
                         &feature.tmux_session,
@@ -848,15 +851,10 @@ impl App {
                     } else {
                         env_prefix
                     };
-                    self.tmux.send_literal(
+                    self.tmux.run_shell_command(
                         &feature.tmux_session,
                         &session.tmux_window,
                         &shell_cmd,
-                    )?;
-                    self.tmux.send_key_name(
-                        &feature.tmux_session,
-                        &session.tmux_window,
-                        "Enter",
                     )?;
                 }
                 // Native overlay, no tmux window to launch.

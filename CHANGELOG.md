@@ -108,6 +108,10 @@ are tagged.
 
 ### Fixed
 
+- **Agent sessions start reliably on macOS.** Claude, Codex, opencode, Pi,
+  custom sessions, and related launch helpers no longer paste long environment
+  setup commands directly into tmux panes, so macOS no longer cuts off the
+  command before the agent starts.
 - **macOS source builds work again.** AMF now uses the libc argument types
   expected by macOS for the tmux PTY setup, so `cargo build` no longer fails
   with `openpty` / `ioctl` type errors on that platform.

@@ -189,6 +189,11 @@ are tagged.
 - **Empty project list is no longer flush against the left border.** The
   "No projects yet." message now has the same left padding as every other
   row.
+- **The existing-worktree picker in the new-feature wizard now scrolls.**
+  When a project has more worktrees than fit in the dialog, navigating past
+  the visible rows used to scroll the selection out of view with no way to
+  see it again. The list now auto-scrolls to keep the selected worktree
+  visible, like every other picker in AMF.
 
 ### Migration
 

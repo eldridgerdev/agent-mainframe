@@ -8238,7 +8238,11 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
             body: format!("comment {id}"),
             user: crate::github::GhUser {
                 login: author.to_string(),
-                kind: if is_bot { "Bot".to_string() } else { "User".to_string() },
+                kind: if is_bot {
+                    "Bot".to_string()
+                } else {
+                    "User".to_string()
+                },
             },
             in_reply_to_id: None,
             pull_request_review_id: None,
@@ -8334,7 +8338,7 @@ fn pr_review_sort_by_author_is_stable_within_ties() {
     );
     app.pr_review_cycle_sort(); // FetchOrder -> ByFile
     app.pr_review_cycle_sort(); // ByFile -> ByAuthor
-                                 // alice's two comments keep their fetch-order relative to each other.
+    // alice's two comments keep their fetch-order relative to each other.
     assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 3, 1]);
 }
 
@@ -8372,7 +8376,13 @@ fn pr_review_toggle_resolved_snaps_using_current_sort_order() {
     );
     if let AppMode::PrReview(state) = &mut app.mode {
         // Mark comment 3 resolved directly on the model.
-        state.review.comments.iter_mut().find(|c| c.id == 3).unwrap().is_resolved = true;
+        state
+            .review
+            .comments
+            .iter_mut()
+            .find(|c| c.id == 3)
+            .unwrap()
+            .is_resolved = true;
     }
     app.pr_review_cycle_sort(); // FetchOrder -> ByFile: order is [2, 3, 1]
     if let AppMode::PrReview(state) = &mut app.mode {

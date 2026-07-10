@@ -1569,9 +1569,7 @@ impl PrReviewState {
                     .author
                     .cmp(&self.review.comments[b].author)
             }),
-            PrSortMode::HumansFirst => {
-                indices.sort_by_key(|&i| self.review.comments[i].is_bot)
-            }
+            PrSortMode::HumansFirst => indices.sort_by_key(|&i| self.review.comments[i].is_bot),
         }
         indices
     }

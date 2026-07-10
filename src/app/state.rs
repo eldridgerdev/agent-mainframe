@@ -1414,6 +1414,9 @@ pub struct PrReviewState {
     pub detail_content_lines: usize,
     /// When true, comments already resolved on GitHub are hidden from the list.
     pub hide_resolved: bool,
+    /// Order the comment list is shown in (cycled with `o`), independent of
+    /// `hide_resolved`.
+    pub sort_mode: crate::app::pr_review::PrSortMode,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).
     pub fix_target: crate::app::pr_review::FixTarget,
     /// Harness chosen for the dedicated review session, picked once before the
@@ -1523,16 +1526,52 @@ impl PrReviewState {
         self.review.comments.get(self.selected)
     }
 
-    /// Indices into `review.comments` that pass the current filter, in order.
-    /// With `hide_resolved` on, GitHub-resolved comments are dropped.
+    /// Indices into `review.comments` that pass the current filter, ordered by
+    /// `sort_mode`. With `hide_resolved` on, GitHub-resolved comments are
+    /// dropped.
     pub fn visible_indices(&self) -> Vec<usize> {
-        self.review
+        let indices = self
+            .review
             .comments
             .iter()
             .enumerate()
             .filter(|(_, c)| !self.hide_resolved || !c.is_resolved)
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+        self.sort_indices(indices)
+    }
+
+    /// Every comment index (ignoring `hide_resolved`) in `sort_mode` order.
+    /// Used to find a hidden selection's nearest visible neighbor when a
+    /// filter change hides it — the filter can't change relative order, only
+    /// remove from it, so this is the same order `visible_indices` would use.
+    pub(crate) fn all_sorted_indices(&self) -> Vec<usize> {
+        self.sort_indices((0..self.review.comments.len()).collect())
+    }
+
+    /// Apply `sort_mode` to a set of comment indices. Stable, so ties keep
+    /// their relative (fetch) order.
+    fn sort_indices(&self, mut indices: Vec<usize>) -> Vec<usize> {
+        use crate::app::pr_review::PrSortMode;
+        match self.sort_mode {
+            PrSortMode::FetchOrder => {}
+            PrSortMode::ByFile => indices.sort_by(|&a, &b| {
+                let path = |i: usize| self.review.comments[i].path.as_deref();
+                match (path(a), path(b)) {
+                    (Some(pa), Some(pb)) => pa.cmp(pb),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            }),
+            PrSortMode::ByAuthor => indices.sort_by(|&a, &b| {
+                self.review.comments[a]
+                    .author
+                    .cmp(&self.review.comments[b].author)
+            }),
+            PrSortMode::HumansFirst => indices.sort_by_key(|&i| self.review.comments[i].is_bot),
+        }
+        indices
     }
 
     /// Number of comments hidden by the resolved filter (0 when showing all).

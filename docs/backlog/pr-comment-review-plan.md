@@ -700,7 +700,30 @@ from the last *N* PRs) is reached from the PR entry flow:
       ones; normalize sets `file_level` and *not* `outdated`). →
       `src/app/pr_review.rs`, `src/github.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/db/pr_review_cache.rs`.
-- [ ] Filters/sort (open-only, by file, by author, humans-first).
+- [x] **Filters/sort (open-only, by file, by author, humans-first).**
+      `hide_resolved` (`h`) already covered "open-only"; this adds an
+      independent **sort order**, cycled with `o`: fetch order → by file →
+      by author → humans-first (bots last) → back to fetch order. A new
+      `PrSortMode` (`src/app/pr_review.rs`) is stored on `PrReviewState`
+      (`src/app/state.rs`) and applied by `visible_indices()`, which now
+      filters (unaffected) then stably sorts, so ties keep their original
+      fetch-order relative position (e.g. two comments by the same author, or
+      two on the same file). Comments with no path (conversation/summary)
+      always sort last under `ByFile`. Because a custom sort order is no
+      longer monotonic in the underlying comment index, `j`/`k` navigation
+      (`pr_review_select_next/prev`) was switched from raw index comparisons
+      to walking by **position within the current visible order**, and the
+      `h` snap-off-a-hidden-selection logic now finds the old selection's
+      nearest neighbor via a new `all_sorted_indices()` (the same sort order,
+      ignoring the resolved filter) rather than assuming ascending indices —
+      both keep working under any sort mode, not just the default. Footer
+      (`o sort→<mode>`) and keybinding-help entry. Unit-tested (cycling wraps
+      through all four modes; by-file grouping/ordering; by-author stability
+      within ties; humans-first keeps bots last while preserving relative
+      order within each group; hide-resolved snap uses the active sort
+      order). → `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - [x] "Done in `<sha>`" reply template auto-filled from latest commit. Shipped
       with the Epic C reply work: `R` seeds a reply with the feature workdir's
       short `HEAD` (falling back to "Done." outside a git repo), editable before

@@ -7670,6 +7670,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         detail_scroll: 0,
         detail_content_lines: 0,
         hide_resolved: false,
+        sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
         review_harness: None,
         harness_pick: None,
@@ -7944,6 +7945,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         detail_scroll: 0,
         detail_content_lines: 0,
         hide_resolved: false,
+        sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
         review_harness: None,
         harness_pick: None,
@@ -8341,6 +8343,189 @@ fn pr_review_i_is_noop_for_comment_without_file_path() {
     );
 }
 
+/// Enter the review pane with comments built from `(id, path, author, is_bot)`
+/// tuples, in that fetch order, for exercising `sort_mode`.
+fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool)]) {
+    let comments: Vec<crate::github::ReviewComment> = entries
+        .iter()
+        .map(|&(id, path, author, is_bot)| crate::github::ReviewComment {
+            id,
+            path: Some(path.to_string()),
+            line: Some(id as u32),
+            original_line: Some(id as u32),
+            subject_type: None,
+            diff_hunk: Some("@@".to_string()),
+            body: format!("comment {id}"),
+            user: crate::github::GhUser {
+                login: author.to_string(),
+                kind: if is_bot {
+                    "Bot".to_string()
+                } else {
+                    "User".to_string()
+                },
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        })
+        .collect();
+    let pr = crate::github::PrRef {
+        number: 7,
+        head_sha: "sha".to_string(),
+        url: "https://github.com/o/r/pull/7".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let review = crate::app::pr_review::normalize(pr, comments, vec![], vec![], vec![]);
+    app.mode = AppMode::PrReview(PrReviewState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        review,
+        selected: 0,
+        detail_scroll: 0,
+        detail_content_lines: 0,
+        hide_resolved: false,
+        sort_mode: crate::app::pr_review::PrSortMode::default(),
+        fix_target: crate::app::pr_review::FixTarget::default(),
+        review_harness: None,
+        harness_pick: None,
+        fix_confirm: None,
+        fix_vim_enabled: false,
+        reply: None,
+        marked: std::collections::HashSet::new(),
+        pending_batch: false,
+    });
+}
+
+fn pr_review_ids_in_visible_order(app: &App) -> Vec<u64> {
+    match &app.mode {
+        AppMode::PrReview(state) => state
+            .visible_indices()
+            .iter()
+            .map(|&i| state.review.comments[i].id)
+            .collect(),
+        _ => panic!("not in PrReview mode"),
+    }
+}
+
+#[test]
+fn pr_review_cycle_sort_wraps_through_all_modes() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+
+    use crate::app::pr_review::PrSortMode;
+    let sort_mode = |app: &App| match &app.mode {
+        AppMode::PrReview(state) => state.sort_mode,
+        _ => panic!("not in PrReview mode"),
+    };
+
+    assert_eq!(sort_mode(&app), PrSortMode::FetchOrder);
+    app.pr_review_cycle_sort();
+    assert_eq!(sort_mode(&app), PrSortMode::ByFile);
+    app.pr_review_cycle_sort();
+    assert_eq!(sort_mode(&app), PrSortMode::ByAuthor);
+    app.pr_review_cycle_sort();
+    assert_eq!(sort_mode(&app), PrSortMode::HumansFirst);
+    app.pr_review_cycle_sort();
+    assert_eq!(sort_mode(&app), PrSortMode::FetchOrder);
+}
+
+#[test]
+fn pr_review_sort_by_file_groups_and_orders_paths() {
+    let mut app = pr_review_test_app();
+    // Fetch order: 1 (z.rs), 2 (a.rs), 3 (m.rs).
+    enter_pr_review_with_authors(
+        &mut app,
+        &[
+            (1, "z.rs", "alice", false),
+            (2, "a.rs", "alice", false),
+            (3, "m.rs", "alice", false),
+        ],
+    );
+    app.pr_review_cycle_sort(); // FetchOrder -> ByFile
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 3, 1]);
+}
+
+#[test]
+fn pr_review_sort_by_author_is_stable_within_ties() {
+    let mut app = pr_review_test_app();
+    // Fetch order: 1 (bob), 2 (alice), 3 (alice).
+    enter_pr_review_with_authors(
+        &mut app,
+        &[
+            (1, "a.rs", "bob", false),
+            (2, "b.rs", "alice", false),
+            (3, "c.rs", "alice", false),
+        ],
+    );
+    app.pr_review_cycle_sort(); // FetchOrder -> ByFile
+    app.pr_review_cycle_sort(); // ByFile -> ByAuthor
+    // alice's two comments keep their fetch-order relative to each other.
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 3, 1]);
+}
+
+#[test]
+fn pr_review_sort_humans_first_keeps_bots_last() {
+    let mut app = pr_review_test_app();
+    // Fetch order: 1 (bot), 2 (human), 3 (bot), 4 (human).
+    enter_pr_review_with_authors(
+        &mut app,
+        &[
+            (1, "a.rs", "coderabbit", true),
+            (2, "b.rs", "alice", false),
+            (3, "c.rs", "copilot", true),
+            (4, "d.rs", "bob", false),
+        ],
+    );
+    for _ in 0..3 {
+        app.pr_review_cycle_sort(); // FetchOrder -> ByFile -> ByAuthor -> HumansFirst
+    }
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 4, 1, 3]);
+}
+
+#[test]
+fn pr_review_toggle_resolved_snaps_using_current_sort_order() {
+    let mut app = pr_review_test_app();
+    // Fetch order 1,2,3 by id; sorted by file: 2 (a.rs), 3 (m.rs), 1 (z.rs).
+    // Resolve comment 3 (the middle one in file-sort order).
+    enter_pr_review_with_authors(
+        &mut app,
+        &[
+            (1, "z.rs", "alice", false),
+            (2, "a.rs", "alice", false),
+            (3, "m.rs", "alice", false),
+        ],
+    );
+    if let AppMode::PrReview(state) = &mut app.mode {
+        // Mark comment 3 resolved directly on the model.
+        state
+            .review
+            .comments
+            .iter_mut()
+            .find(|c| c.id == 3)
+            .unwrap()
+            .is_resolved = true;
+    }
+    app.pr_review_cycle_sort(); // FetchOrder -> ByFile: order is [2, 3, 1]
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.selected = state
+            .review
+            .comments
+            .iter()
+            .position(|c| c.id == 3)
+            .unwrap();
+    }
+
+    app.pr_review_toggle_resolved();
+    // Comment 3 is hidden; the visible file-sort order is now [2, 1].
+    assert_eq!(pr_review_ids_in_visible_order(&app), vec![2, 1]);
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let selected_id = state.review.comments[state.selected].id;
+            assert_eq!(selected_id, 1);
+        }
+        _ => panic!("not in PrReview mode"),
+    }
+}
+
 #[test]
 fn pr_review_open_without_selection_shows_message() {
     // No projects/features selected, so opening should not enter a PR mode.
@@ -8392,6 +8577,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         detail_scroll: 0,
         detail_content_lines: 0,
         hide_resolved: false,
+        sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
         review_harness: None,
         harness_pick: None,

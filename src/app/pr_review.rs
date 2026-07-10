@@ -76,6 +76,45 @@ impl FixTarget {
     }
 }
 
+/// Order the comment list is shown in. Cycled with `o`; independent of the
+/// `hide_resolved` filter. Sorting is stable, so comments that tie on the sort
+/// key (e.g. same file, or all-human/all-bot) keep their original fetch order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrSortMode {
+    /// The order `gh` returned them in.
+    #[default]
+    FetchOrder,
+    /// Grouped by file path; comments with no path (conversation/summary) sort
+    /// after every file.
+    ByFile,
+    /// Grouped alphabetically by author login.
+    ByAuthor,
+    /// Human-authored comments first, bot comments after.
+    HumansFirst,
+}
+
+impl PrSortMode {
+    /// Advance to the next mode, wrapping back to `FetchOrder`.
+    pub fn next(self) -> Self {
+        match self {
+            PrSortMode::FetchOrder => PrSortMode::ByFile,
+            PrSortMode::ByFile => PrSortMode::ByAuthor,
+            PrSortMode::ByAuthor => PrSortMode::HumansFirst,
+            PrSortMode::HumansFirst => PrSortMode::FetchOrder,
+        }
+    }
+
+    /// Short label for the footer / toast.
+    pub fn label(self) -> &'static str {
+        match self {
+            PrSortMode::FetchOrder => "fetch order",
+            PrSortMode::ByFile => "by file",
+            PrSortMode::ByAuthor => "by author",
+            PrSortMode::HumansFirst => "humans first",
+        }
+    }
+}
+
 /// Index of the session a fix should target within a feature, given the
 /// strategy. For [`FixTarget::DedicatedReview`], `None` means no session with
 /// `dedicated_label` exists yet and one must be created; for
@@ -694,6 +733,7 @@ impl App {
                 detail_scroll: 0,
                 detail_content_lines: 0,
                 hide_resolved: false,
+                sort_mode: PrSortMode::default(),
                 fix_target: FixTarget::default(),
                 review_harness: None,
                 harness_pick: None,
@@ -1182,6 +1222,7 @@ impl App {
                             detail_scroll: 0,
                             detail_content_lines: 0,
                             hide_resolved: false,
+                            sort_mode: PrSortMode::default(),
                             fix_target: FixTarget::default(),
                             review_harness: None,
                             harness_pick: None,
@@ -1221,8 +1262,12 @@ impl App {
     pub fn pr_review_select_next(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             let visible = state.visible_indices();
-            if let Some(next) = visible.iter().find(|&&i| i > state.selected) {
-                state.selected = *next;
+            let next = match visible.iter().position(|&i| i == state.selected) {
+                Some(pos) => visible.get(pos + 1).copied(),
+                None => visible.first().copied(),
+            };
+            if let Some(next) = next {
+                state.selected = next;
                 state.detail_scroll = 0;
             }
         }
@@ -1231,15 +1276,22 @@ impl App {
     pub fn pr_review_select_prev(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             let visible = state.visible_indices();
-            if let Some(prev) = visible.iter().rev().find(|&&i| i < state.selected) {
-                state.selected = *prev;
+            let prev = match visible.iter().position(|&i| i == state.selected) {
+                Some(0) => None,
+                Some(pos) => visible.get(pos - 1).copied(),
+                None => visible.last().copied(),
+            };
+            if let Some(prev) = prev {
+                state.selected = prev;
                 state.detail_scroll = 0;
             }
         }
     }
 
     /// Toggle hiding GitHub-resolved comments. When the current selection
-    /// becomes hidden, snap to the nearest remaining visible comment.
+    /// becomes hidden, snap to its nearest remaining visible neighbor in sort
+    /// order (falling back to the closest one before it, then the first
+    /// visible comment).
     pub fn pr_review_toggle_resolved(&mut self) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.hide_resolved = !state.hide_resolved;
@@ -1248,17 +1300,33 @@ impl App {
                 return;
             }
             if !visible.contains(&state.selected) {
-                // Prefer the next visible comment after the old selection,
-                // else the last visible one before it.
-                state.selected = visible
-                    .iter()
-                    .find(|&&i| i >= state.selected)
-                    .or_else(|| visible.last())
+                let order = state.all_sorted_indices();
+                let pos = order.iter().position(|&i| i == state.selected);
+                let snapped = pos
+                    .and_then(|p| order[p..].iter().find(|i| visible.contains(i)))
+                    .or_else(|| {
+                        pos.and_then(|p| order[..p].iter().rev().find(|i| visible.contains(i)))
+                    })
                     .copied()
-                    .unwrap_or(0);
+                    .unwrap_or(visible[0]);
+                state.selected = snapped;
                 state.detail_scroll = 0;
             }
         }
+    }
+
+    /// Cycle the comment list's sort order (`o`): fetch order → by file → by
+    /// author → humans-first → back to fetch order. Independent of the
+    /// `hide_resolved` filter.
+    pub fn pr_review_cycle_sort(&mut self) {
+        let label = {
+            let AppMode::PrReview(state) = &mut self.mode else {
+                return;
+            };
+            state.sort_mode = state.sort_mode.next();
+            state.sort_mode.label()
+        };
+        self.push_toast_success(format!("Sort: {label}"));
     }
 
     /// Toggle which agent session "fix" prompts are injected into: the default

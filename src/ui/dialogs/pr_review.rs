@@ -8,6 +8,7 @@ use ratatui::{
         ScrollbarState, Wrap,
     },
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     app::pr_review::{CommentKind, PrComment},
@@ -258,15 +259,24 @@ pub fn draw_pr_review(
     ];
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
+    // The header row is a single unwrapped line, so on a narrow terminal this
+    // span is dropped rather than left to be silently clipped mid-text.
     if let Some(usage) = fix_session_usage {
-        header_spans.push(Span::styled(
-            format!(
-                "  · {} {}",
-                state.fix_target.tag(),
-                format_feature_token_usage(usage, token_pricing)
-            ),
-            Style::default().fg(theme.status_detail.to_color()),
-        ));
+        let usage_text = format!(
+            "  · {} {}",
+            state.fix_target.tag(),
+            format_feature_token_usage(usage, token_pricing)
+        );
+        let used_width: usize = header_spans
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum();
+        if used_width + UnicodeWidthStr::width(usage_text.as_str()) <= outer[0].width as usize {
+            header_spans.push(Span::styled(
+                usage_text,
+                Style::default().fg(theme.status_detail.to_color()),
+            ));
+        }
     }
     let header = Line::from(header_spans);
     frame.render_widget(Paragraph::new(header), outer[0]);

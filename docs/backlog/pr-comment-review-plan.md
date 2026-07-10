@@ -1016,6 +1016,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
   transition period) rather than silently losing track of already-running
   sessions. Pure rename — no behavior change otherwise.
 
+- **Dedicated review-session status badge in the PR review pane.** The
+  Viewing-mode corner badge (`[Ctrl+Space P: back to review]`,
+  `src/ui/dashboard.rs`) tells you when you're *inside* the dedicated
+  review session, but there's no equivalent the other way round: sitting in
+  the review pane while `f` has a fix running in the background, nothing
+  in-pane shows whether that dedicated session even exists yet, or whether
+  it's actively working vs. idle/finished. Add a small header badge —
+  alongside the Epic D "token usage surfaced per session" span already in
+  `draw_pr_review`'s header (`src/ui/dialogs/pr_review.rs`) — that reads
+  something like `[dedicated ● working]` / `[dedicated idle]` once
+  `fix_session_index` resolves a session, reusing the same
+  `thinking_features` tracking `App::is_feature_thinking` already exposes
+  (`src/app/sync.rs`). Gotcha to design around: `is_feature_thinking` is
+  keyed by `tmux_session` at the *feature* level, not per-window, so as-is
+  it can't distinguish "the dedicated review session is thinking" from
+  "some other window in this feature is thinking" when they share a tmux
+  session — likely needs a per-window/per-session variant of the thinking
+  probe, or a pane-content check scoped to the review session's window
+  specifically.
+
 ## Open questions
 
 - **Which agent session runs the fixes? — DECIDED.** Default to spinning

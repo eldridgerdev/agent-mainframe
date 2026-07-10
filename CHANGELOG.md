@@ -12,6 +12,12 @@ are tagged.
 
 ### Added
 
+- **Token usage shown in the PR review pane header.** Once a fix has spun
+  up the dedicated (or existing-live) session, the header shows what
+  triage has spent on it so far — e.g. `dedicated usage 12.3k eff · $0.15`
+  — reusing the same usage tracking and cost formatting as the dashboard's
+  per-feature token badge. The span is only shown when it fits on the
+  header line, so it never clips on a narrow terminal.
 - **Quick toggle between the PR review pane and the fix session.** Press `P`
   in the PR comment-review pane to jump into the session your fix went to
   (or is about to go to), then `Ctrl+Space` then `P` from that session to jump

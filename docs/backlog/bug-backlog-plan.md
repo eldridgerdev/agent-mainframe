@@ -66,6 +66,40 @@ The project builds successfully.
 Compilation fails in `src/tmux.rs` with libc type errors around `openpty` and
 `ioctl`.
 
+## ~~New-feature wizard's existing-worktree picker doesn't scroll~~ (Fixed)
+
+- **Status:** Fixed (2026-07-09)
+- **Reported:** 2026-07-09
+- **Relates to:** feature creation wizard (`src/ui/dialogs/feature.rs`)
+- **Root cause:** `draw_create_feature_worktree_picker` rendered the
+  worktree list with a plain `frame.render_widget(list, chunks[1])`,
+  never handing ratatui a `ListState` with the selection set. Without a
+  stateful render, `List` has no way to know which item is selected and
+  never scrolls the viewport to keep it visible, so once a project had
+  more worktrees than fit in the dialog, navigating past the visible rows
+  just scrolled the selection off-screen with nothing to bring it back.
+- **Fix:** Switched to `ListState` + `render_stateful_widget`, matching
+  the pattern already used by `draw_markdown_file_picker` in
+  `src/ui/picker.rs` — compute the selected item's position within the
+  filtered/visible list and pass it to `list_state.select(...)`, letting
+  ratatui auto-scroll.
+
+### Repro
+
+1. Have a project with enough worktrees that the list overflows the
+   "Select Worktree" dialog.
+2. Start a new feature "from existing worktree" and navigate down past
+   the last visible row.
+
+### Expected
+
+The list scrolls so the selected worktree stays visible.
+
+### Actual
+
+The selection moved off-screen with no way to see it or the remaining
+options.
+
 ## ~~Terminal sessions insert extra blank lines on macOS~~ (Fixed)
 
 - **Status:** Fixed (2026-07-02)

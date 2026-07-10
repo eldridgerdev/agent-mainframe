@@ -12,8 +12,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-        Wrap,
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
     },
 };
 
@@ -360,8 +360,13 @@ fn draw_create_feature_worktree_picker(
                 })
                 .collect();
 
+            let selected_visible = visible_indices
+                .iter()
+                .position(|&i| i == state.worktree_index);
             let list = List::new(items);
-            frame.render_widget(list, chunks[1]);
+            let mut list_state = ListState::default();
+            list_state.select(selected_visible);
+            frame.render_stateful_widget(list, chunks[1], &mut list_state);
         }
     }
 

@@ -907,8 +907,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         super::dialogs::draw_pr_review_loading(frame, state, &app.throbber_state, &app.theme);
         return;
     }
-    if let AppMode::PrReview(state) = &mut app.mode {
-        super::dialogs::draw_pr_review(frame, state, &app.theme);
+    if matches!(app.mode, AppMode::PrReview(_)) {
+        let fix_session_usage = app.pr_review_fix_session_usage();
+        if let AppMode::PrReview(state) = &mut app.mode {
+            super::dialogs::draw_pr_review(
+                frame,
+                state,
+                &app.theme,
+                fix_session_usage.as_ref(),
+                &app.config.token_pricing,
+            );
+        }
         return;
     }
     if let AppMode::PrPicker(state) = &app.mode {

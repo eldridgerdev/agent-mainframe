@@ -728,8 +728,35 @@ from the last *N* PRs) is reached from the PR entry flow:
       with the Epic C reply work: `R` seeds a reply with the feature workdir's
       short `HEAD` (falling back to "Done." outside a git repo), editable before
       posting; on post the comment is marked `Done`. → `src/app/pr_review.rs`.
-- [ ] Keybinding help entry; status-bar summary (`4 open / 7`).
-- [ ] Token usage surfaced per session (tie into `token_tracking.rs`).
+- [x] Keybinding help entry; status-bar summary (`4 open / 7`). Turned out to
+      already be covered, incrementally, by other Epic D items rather than
+      needing its own change: the pane header has shown `N comments (M open)`
+      since Epic A (`draw_pr_review`'s header line), and every key added since
+      (sort, batch fix/combine, `P` toggle, `i` syntax) registered itself in
+      the "While reviewing PR comments" keybindings-help section as it landed.
+      The dashboard's bottom status bar (`src/ui/status.rs`) has a `PrReview`
+      arm too, but it's dead code for this mode — `ui/dashboard.rs::draw`
+      returns early for `AppMode::PrReview` before ever reaching
+      `status::draw` (same shape as the dead `Viewing` arm noted under the `P`
+      toggle item above), so there was nothing to wire up there.
+- [x] **Token usage surfaced per session (tie into `token_tracking.rs`).** The
+      pane header now shows what triage has spent on the fix-target session
+      once it exists — e.g. `· dedicated usage 12.3k eff · $0.15` — reusing
+      the same `format_feature_token_usage`/`aggregate_token_usage` helpers
+      and `Session::token_usage` field the dashboard's per-feature token badge
+      already uses (`src/ui/list.rs`), so it's the existing sync-populated
+      number rather than a new tracking path. A new read-only
+      `App::pr_review_fix_session_usage()` (`src/app/pr_review.rs`) resolves
+      the same session `fix_session_index`/`resolve_fix_session` targets
+      (dedicated or existing-live, by `state.fix_target`) but — unlike
+      `resolve_fix_session` — never creates one, so it's safe to call on every
+      frame just to render a number; it's `None` until the first `f` spins up
+      the target session. `ui/dashboard.rs` resolves it once per frame (before
+      the `&mut app.mode` borrow) and threads it plus `&app.config.token_pricing`
+      into `draw_pr_review`. Unit-tested (`None` before any session exists;
+      reads the target session's `token_usage` once one does). →
+      `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/app/tests.rs`.
 - [x] **Quick toggle between the review pane and the dedicated review
       session (usability — from real use).** Today `f` switches the user
       *into* the dedicated `"PR Review"` session to watch the agent, but

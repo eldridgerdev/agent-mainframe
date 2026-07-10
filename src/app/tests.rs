@@ -746,7 +746,9 @@ use crate::project::{
     AgentKind, Feature, FeatureSession, Project, SessionKind, TokenUsageSourceMatch,
     tmux_session_name, worktree_name,
 };
-use crate::token_tracking::{SessionTokenTracker, TokenUsageProvider, TokenUsageSource};
+use crate::token_tracking::{
+    SessionTokenTracker, SessionTokenUsage, TokenUsageProvider, TokenUsageSource,
+};
 use crate::traits::{MockTmuxOps, MockWorktreeOps};
 use chrono::{Duration, TimeZone, Utc};
 use tempfile::NamedTempFile;
@@ -7955,6 +7957,52 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         marked: std::collections::HashSet::new(),
         pending_batch: false,
     });
+}
+
+#[test]
+fn pr_review_fix_session_usage_reads_the_target_sessions_tokens() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+    );
+    session.token_usage = Some(SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "s1".to_string(),
+        },
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1500,
+    });
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    let usage = app.pr_review_fix_session_usage();
+    assert_eq!(usage.map(|u| u.total_tokens), Some(1500));
+}
+
+#[test]
+fn pr_review_fix_session_usage_none_before_session_exists() {
+    // Before the first `f`, the dedicated review session doesn't exist yet —
+    // the header shouldn't show a stale or fabricated number.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert!(app.pr_review_fix_session_usage().is_none());
 }
 
 #[test]

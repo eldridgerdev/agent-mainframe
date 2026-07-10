@@ -14,6 +14,7 @@ use crate::{
     app::{PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState},
     editor::VimMode,
     theme::Theme,
+    token_tracking::{SessionTokenUsage, TokenPricingConfig, format_feature_token_usage},
 };
 
 /// Modal prompt for a manual PR number, shown when the branch has no
@@ -219,7 +220,13 @@ pub fn draw_pr_review_loading(
 
 /// Full-screen PR comment-review pane: comment list on the left, detail on the
 /// right.
-pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Theme) {
+pub fn draw_pr_review(
+    frame: &mut Frame,
+    state: &mut PrReviewState,
+    theme: &Theme,
+    fix_session_usage: Option<&SessionTokenUsage>,
+    token_pricing: &TokenPricingConfig,
+) {
     let area = frame.area();
     let review = &state.review;
 
@@ -233,7 +240,7 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
         .split(area);
 
     // Header.
-    let header = Line::from(vec![
+    let mut header_spans = vec![
         Span::styled(
             format!(" PR #{} (experimental) ", review.pr.number),
             Style::default()
@@ -248,7 +255,20 @@ pub fn draw_pr_review(frame: &mut Frame, state: &mut PrReviewState, theme: &Them
             ),
             Style::default().fg(theme.text_muted.to_color()),
         ),
-    ]);
+    ];
+    // Once the fix-target session exists, show what triage has spent on it —
+    // the "only pay for what you asked for" constraint made visible in-pane.
+    if let Some(usage) = fix_session_usage {
+        header_spans.push(Span::styled(
+            format!(
+                "  · {} {}",
+                state.fix_target.tag(),
+                format_feature_token_usage(usage, token_pricing)
+            ),
+            Style::default().fg(theme.status_detail.to_color()),
+        ));
+    }
+    let header = Line::from(header_spans);
     frame.render_widget(Paragraph::new(header), outer[0]);
 
     // Body: list | detail.

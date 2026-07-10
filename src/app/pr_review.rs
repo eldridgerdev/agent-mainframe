@@ -2162,6 +2162,22 @@ impl App {
         })
     }
 
+    /// Token usage for the session the pane's current fix target resolves to,
+    /// for a header display. Read-only — unlike [`App::resolve_fix_session`] it
+    /// never creates a session, so this is safe to call on every frame just to
+    /// render a number. `None` before any fix has spun up the target session.
+    pub(crate) fn pr_review_fix_session_usage(
+        &self,
+    ) -> Option<crate::token_tracking::SessionTokenUsage> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let si = fix_session_index(feature, state.fix_target, REVIEW_SESSION_LABEL)?;
+        feature.sessions[si].token_usage.clone()
+    }
+
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {
         if let AppMode::PrReview(state) = &mut self.mode {
             state.detail_scroll = state.detail_scroll.saturating_sub(amount);

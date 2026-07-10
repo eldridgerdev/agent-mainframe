@@ -21,6 +21,7 @@ mod prompt_library;
 pub mod remote_control;
 mod rename;
 pub(crate) mod review;
+pub(crate) mod review_memory;
 mod search;
 mod session_config;
 mod session_ops;
@@ -414,6 +415,11 @@ pub struct AppConfig {
     /// written regardless. Requires an authenticated `gh` CLI.
     #[serde(default)]
     pub final_review_post_to_pr: bool,
+    /// Repo-relative (or absolute) path to the review-findings memory doc
+    /// (Epic E of `pr-comment-review-plan.md`). Defaults to
+    /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_memory_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -469,6 +475,7 @@ impl Default for AppConfig {
             max_agent_autostart_sessions: default_agent_restart_limit(),
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
+            review_memory_path: None,
         }
     }
 }

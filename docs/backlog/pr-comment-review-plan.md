@@ -899,16 +899,31 @@ the AI reviewer as context (so it checks for the team's known issues
 first), and the reviewer's output (plus comments triaged in the pane)
 **feeds back into** the memory.
 
-- [ ] **Review-findings memory doc (committed markdown).** A
+- [x] **Review-findings memory doc (committed markdown).** A
       version-controlled file at a conventional repo path (default
       `.amf/review-memory.md`, configurable) that accumulates the team's
       recurring code-review findings, grouped by category (concurrency,
       error handling, naming, tests, …). It lives in the repo so it's
       shared, diffable, and hand-editable, and so the AI reviewer can read
       it directly as context. AMF owns *appends* (dedup-aware, grouped) but
-      never silently rewrites user prose. Resolve/discover the path in Rust;
-      create it on first write with a header template. → new
-      `src/app/review_memory.rs`, `src/github.rs`/repo-path helpers.
+      never silently rewrites user prose. `review_memory_path(repo,
+      configured)` resolves the doc path — a new `AppConfig::review_memory_path:
+      Option<String>` overrides the default, relative overrides resolve
+      against the repo root, absolute ones are used as-is.
+      `ensure_review_memory_doc` creates the file (and parent dirs) with a
+      header template on first write and is a no-op once it exists.
+      `append_finding(path, category, finding)` creates the `## Category`
+      section if missing (title-cased, blank category → `## General`), else
+      inserts before the next `## ` heading so findings land in their
+      section without bleeding into the next one; it's dedup-aware
+      (case/whitespace-insensitive match against every existing line skips
+      the append) and leaves any hand-written prose in the doc untouched.
+      This is the primitive the next three Epic E items (lookback
+      bootstrap, the pane's "add to memory" key, the AI reviewer's context
+      injection) build on — no UI wiring yet. Unit-tested (path resolution
+      incl. overrides, doc creation/no-op, section creation/reuse, section
+      isolation, dedup, blank input, prose preservation). →
+      `src/app/review_memory.rs`, `src/app/mod.rs`.
 - [ ] **Lookback bootstrap — distill the memory from the last *N* PRs.**
       First-run action (and re-runnable to top up) that seeds the memory
       doc from history. The user picks a depth from a list (**20 / 50 /

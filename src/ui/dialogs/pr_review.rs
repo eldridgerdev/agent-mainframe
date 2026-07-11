@@ -313,7 +313,7 @@ pub fn draw_pr_review(
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -345,6 +345,17 @@ pub fn draw_pr_review(
             .map(|c| c.author.as_str())
             .unwrap_or("reviewer");
         draw_reply_dialog(frame, reply, author, theme);
+    }
+    // "Add to memory" dialog overlays the pane when open.
+    if let Some(memory_add) = &state.memory_add {
+        let author = state
+            .review
+            .comments
+            .iter()
+            .find(|c| c.id == memory_add.comment_id)
+            .map(|c| c.author.as_str())
+            .unwrap_or("reviewer");
+        draw_memory_add_dialog(frame, memory_add, author, theme);
     }
 }
 
@@ -386,6 +397,56 @@ fn draw_reply_dialog(
         "[esc] done editing"
     } else {
         "[⏎] post   [e] edit   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[1],
+    );
+}
+
+/// "Add to memory" dialog: the selected comment's distilled finding, editable,
+/// awaiting approval before it's appended to the review-memory doc. `Tab`
+/// cycles the category in the confirm view.
+fn draw_memory_add_dialog(
+    frame: &mut Frame,
+    memory_add: &crate::app::MemoryAddState,
+    author: &str,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 50, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let category = crate::app::pr_review::MEMORY_CATEGORIES[memory_add.category];
+    let block = Block::default()
+        .title(format!(" Add to memory · {category} · @{author} "))
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // finding text
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let body_lines =
+        super::editor_view::editor_lines(&memory_add.editor, theme, "(describe the finding)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    let hints = if memory_add.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] add   [e] edit   [Tab] category   [esc] cancel"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(

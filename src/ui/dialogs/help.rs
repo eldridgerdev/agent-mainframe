@@ -188,6 +188,8 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("", "(Ctrl+Space P there jumps back)"),
         ("R", "Reply 'Done in <sha>'"),
         ("n", "Reply 'not needed' (+ skip)"),
+        ("M", "Add finding to review-memory doc"),
+        ("", "(e edit · Tab category)"),
         ("x", "Resolve/reopen GitHub thread"),
         ("m", "Mark comment done"),
         ("s", "Skip comment (local)"),

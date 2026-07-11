@@ -7679,6 +7679,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
     });
@@ -7954,6 +7955,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
     });
@@ -8438,6 +8440,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
     });
@@ -8632,6 +8635,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_confirm: None,
         fix_vim_enabled: false,
         reply: None,
+        memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
     });
@@ -8894,6 +8898,150 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
+}
+
+fn memory_add_editor_text(app: &App) -> String {
+    match &app.mode {
+        AppMode::PrReview(state) => state.memory_add.as_ref().unwrap().editor.text().to_string(),
+        _ => unreachable!(),
+    }
+}
+
+fn memory_add_category(app: &App) -> usize {
+    match &app.mode {
+        AppMode::PrReview(state) => state.memory_add.as_ref().unwrap().category,
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn pr_review_open_memory_add_seeds_finding_with_file_hint_and_default_category() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    // Post-ready like the "done" reply template: opens in the confirm view,
+    // not straight into editing.
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+    assert_eq!(memory_add_editor_text(&app), "comment 1 (src/file1.rs:1)");
+    assert_eq!(memory_add_category(&app), 0, "defaults to General");
+}
+
+#[test]
+fn pr_review_open_memory_add_without_comments_shows_message() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 0);
+
+    app.pr_review_open_memory_add();
+    assert_eq!(app.pr_review_memory_add_view(), None);
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn pr_review_memory_add_edit_forwards_keys_and_cancel_closes() {
+    use crossterm::event::{KeyCode, KeyEvent};
+
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    // Keys are ignored until edit mode is entered.
+    let before = memory_add_editor_text(&app);
+    app.pr_review_memory_add_editor_key(KeyEvent::from(KeyCode::Char('Z')));
+    assert_eq!(memory_add_editor_text(&app), before);
+
+    app.pr_review_memory_add_edit();
+    assert_eq!(app.pr_review_memory_add_view(), Some(true));
+    app.pr_review_memory_add_editor_key(KeyEvent::from(KeyCode::Char('!')));
+    assert_eq!(memory_add_editor_text(&app), format!("{before}!"));
+
+    app.pr_review_memory_add_stop_edit();
+    assert_eq!(app.pr_review_memory_add_view(), Some(false));
+    app.pr_review_cancel_memory_add();
+    assert_eq!(app.pr_review_memory_add_view(), None);
+}
+
+#[test]
+fn pr_review_cycle_memory_category_wraps() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+
+    let n = crate::app::pr_review::MEMORY_CATEGORIES.len();
+    for i in 1..=n {
+        app.pr_review_cycle_memory_category();
+        assert_eq!(memory_add_category(&app), i % n);
+    }
+}
+
+#[test]
+fn pr_review_append_empty_finding_is_rejected() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.memory_add.as_mut().unwrap().editor = crate::editor::TextEditor::new(String::new());
+    }
+
+    // No `expect_repo_root()` was set on the mock: the empty check short-
+    // circuits before the doc path is ever resolved.
+    app.pr_review_append_memory().unwrap();
+    assert_eq!(
+        app.pr_review_memory_add_view(),
+        Some(false),
+        "dialog stays open"
+    );
+    assert!(app.message.is_some());
+}
+
+#[test]
+fn pr_review_append_memory_writes_and_dedups() {
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path().to_path_buf();
+
+    let mut worktree = MockWorktreeOps::new();
+    let repo_clone = repo.clone();
+    worktree
+        .expect_repo_root()
+        .times(2)
+        .returning(move |_| Ok(repo_clone.clone()));
+
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(worktree),
+    );
+    enter_pr_review(&mut app, 1);
+
+    app.pr_review_open_memory_add();
+    app.pr_review_append_memory().unwrap();
+    assert_eq!(
+        app.pr_review_memory_add_view(),
+        None,
+        "dialog closes once appended"
+    );
+
+    let doc_path = repo.join(".amf").join("review-memory.md");
+    let contents = std::fs::read_to_string(&doc_path).unwrap();
+    assert!(contents.contains("## General"));
+    assert!(contents.contains("- comment 1 (src/file1.rs:1)"));
+
+    // Re-adding the same finding is a dedup no-op, not a duplicate bullet.
+    app.pr_review_open_memory_add();
+    app.pr_review_append_memory().unwrap();
+    let contents_after = std::fs::read_to_string(&doc_path).unwrap();
+    assert_eq!(
+        contents_after.matches("comment 1 (src/file1.rs:1)").count(),
+        1,
+        "dedup should skip the second append"
+    );
 }
 
 #[test]

@@ -1500,6 +1500,10 @@ pub struct PrReviewState {
     /// When `Some`, the reply dialog is open over the pane: an AI-drafted,
     /// editable reply awaiting the user's approval before it is posted to GitHub.
     pub reply: Option<ReplyState>,
+    /// When `Some`, the "add to memory" dialog is open over the pane: the
+    /// selected comment's finding, editable, awaiting the user's approval
+    /// before it's appended to the review-memory doc.
+    pub memory_add: Option<MemoryAddState>,
     /// Comment ids marked (with `space`) for a batch fix. `F` queues every
     /// marked comment's fix prompt into the dedicated review session in one
     /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
@@ -1551,6 +1555,24 @@ pub struct ReplyState {
     pub editor: TextEditor,
     /// True while keystrokes go to the editor (`e` to enter); false in the
     /// confirm view (`⏎` post / `e` edit / `esc` cancel).
+    pub editing: bool,
+}
+
+/// "Add to memory" dialog (`M`): appends the selected comment's distilled
+/// finding to the review-findings memory doc
+/// (`review_memory::append_finding`). Mirrors [`ReplyState`]'s edit/confirm
+/// split, plus a category cycled with `Tab` in the confirm view.
+#[derive(Debug, Clone)]
+pub struct MemoryAddState {
+    /// GitHub id of the comment the finding is drawn from.
+    pub comment_id: u64,
+    /// Index into `crate::app::pr_review::MEMORY_CATEGORIES`, cycled with `Tab`.
+    pub category: usize,
+    /// The finding text, editable before it's appended.
+    pub editor: TextEditor,
+    /// True while keystrokes go to the editor (`e` to enter); false in the
+    /// confirm view (`⏎` append / `e` edit / `Tab` cycle category / `esc`
+    /// cancel).
     pub editing: bool,
 }
 

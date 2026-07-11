@@ -939,16 +939,29 @@ first), and the reviewer's output (plus comments triaged in the pane)
       AMF (background thread + channel, like the Epic A fetch). → new
       `src/app/review_memory.rs`, `src/github.rs`, `ClaudeLauncher::run_headless`
       (`src/claude.rs`), `src/handlers/pr_review.rs`, `src/app/state.rs`.
-- [ ] **"Add this comment to memory" key in the review pane.** While
-      triaging, a key (e.g. `M`) on the selected comment appends its
-      distilled finding to `review-memory.md` — the actionable sentence
-      (bot-stripped) plus a `file:line`/category hint, deduped against
-      what's already there. Optional quick confirm/edit so the user can
-      phrase it as a *general* rule rather than the one-off wording. This is
-      the incremental, zero-extra-fetch path that grows the doc during
-      normal review (complements the bulk lookback bootstrap). →
-      `src/handlers/pr_review.rs`, `src/app/review_memory.rs`,
-      `src/ui/dialogs/pr_review.rs`.
+- [x] **"Add this comment to memory" key in the review pane.** `M` on the
+      selected comment opens a confirm/edit dialog (mirrors the reply dialog's
+      edit/confirm split) seeded from the new `PrComment::memory_finding_seed`
+      — the bot-stripped `agent_text()` plus a `file:line` (or bare `file` for
+      file-level comments) hint in parens, so a finding phrased as a general
+      rule still carries where it came from. `Tab` in the confirm view cycles
+      a category through a fixed list (`MEMORY_CATEGORIES`: General,
+      Concurrency, Error handling, Naming, Tests, Performance, API design,
+      Style — matching the doc's own header examples); `⏎` appends via
+      `review_memory::append_finding` (whitespace/newlines collapsed to one
+      line first, since the doc stores each finding as a single bullet),
+      dedup-aware and append-only. The doc path resolves through the existing
+      `repo_for_project_path` → `review_memory_path` (config override) chain,
+      zero agent tokens — a local file write only, gated on the user's
+      explicit confirm. This is the incremental, zero-extra-fetch path that
+      grows the doc during normal review (complements the bulk lookback
+      bootstrap, not yet built). Unit-tested (seed format + default category,
+      edit/cancel key forwarding, category cycling wraps, empty-finding
+      rejection with no doc write, append + dedup on re-add). →
+      `src/app/state.rs` (`MemoryAddState`), `src/app/pr_review.rs`
+      (`MEMORY_CATEGORIES`, `memory_finding_seed`), `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
+      `src/app/tests.rs`.
 - [ ] **Perform an AI code review of the PR (local draft → optionally post).**
       A pane action (e.g. `A`) that asks the agent to review the PR **diff**
       (`gh pr diff`, fetched in Rust) and surface findings. **Default:

@@ -56,6 +56,18 @@ are tagged.
   reaches the agent — you already get the diff hunk for free, so this cuts
   wasted tokens on bot-heavy PRs. The comment still displays in full, as
   written, in the detail pane.
+- **Resolve / reopen a comment thread across final-review rounds.** With the
+  line cursor active, press `R` on a line comment to mark it resolved, or
+  again to reopen it. A resolved thread stays visible (and can still be
+  reopened) but is left out of `.claude/final-review-feedback.md` and a
+  posted PR review — settling a conversation actually stops re-sending it —
+  and resolving a file's last open thread clears its comment-implied
+  rejection the same way deleting the comment would. Threads that are still
+  open when a round finishes carry into the next round automatically
+  (tagged "(unresolved from a previous round)" in the feedback file so it's
+  clear they're not new), and a new `Unresolved` step in the `F` file-filter
+  cycle narrows the list to files with an open thread. Opening a re-review
+  now also reports how many unresolved threads carried over.
 - **Search within the final-review diff.** Press `/` in the final review to
   incrementally search the current file's diff (case-insensitive). The line
   cursor jumps to the first match as you type; after `Enter`, `n` / `N` cycle
@@ -215,6 +227,9 @@ are tagged.
 - No action required for comment re-anchoring. A review you paused before
   upgrading still resumes; its comments simply can't follow moved code until you
   re-add them, and any that no longer match are flagged rather than dropped.
+- No action required for thread resolve/unresolve. Existing progress and
+  snapshot files load with every comment treated as open (unresolved, not
+  carried over), which is the same behavior they had before this release.
 - No action required for the Markdown table alignment coverage.
 - No action required for the Markdown table header fix.
 - No action required for the Markdown table styling, table truncation, or

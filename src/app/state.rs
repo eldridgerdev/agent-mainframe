@@ -474,12 +474,33 @@ pub struct LineComment {
     /// addressed" rather than silently dropped. Cleared whenever it resolves.
     #[serde(default)]
     pub anchor_lost: bool,
+    /// Thread state: `true` once the reviewer has marked this conversation
+    /// settled (`R` on the cursored comment). A resolved thread stays visible so
+    /// it can be un-resolved, but is withheld from the feedback file, the PR
+    /// review, the `Unresolved` filter and the auto-reject rule. Defaulted so
+    /// older progress files load as open threads — the conservative direction.
+    #[serde(default)]
+    pub resolved: bool,
+    /// `true` when this comment was carried in from a *previous* finished review
+    /// round rather than authored in this session. Drives the "(unresolved from a
+    /// previous round)" tag in the feedback file and keeps carried threads from
+    /// making a fresh re-review read as work-in-progress. Defaulted so older
+    /// progress files load as freshly-authored.
+    #[serde(default)]
+    pub carried: bool,
 }
 
 impl LineComment {
     /// Whether this comment spans more than one line.
     pub fn is_range(&self) -> bool {
         self.start.is_some()
+    }
+
+    /// An *open thread*: a comment the human kept (not an unadjudicated AI draft)
+    /// and has not yet marked resolved. Open threads are what a review round
+    /// actually sends to the agent, and what a re-review counts and filters on.
+    pub fn is_open_thread(&self) -> bool {
+        !self.draft && !self.resolved
     }
 
     /// The inclusive range of indices into a file's `addressable_lines()` that
@@ -513,6 +534,10 @@ pub enum FileFilter {
     /// Files that carry a `Blocker`-severity rejection or line comment, so a
     /// reviewer can focus on the must-fix items in a large changeset.
     Blockers,
+    /// Files carrying at least one unresolved thread (a kept, non-draft line
+    /// comment the reviewer hasn't settled). Empty when nothing is open, so the
+    /// cycle skips it unless an open thread exists.
+    Unresolved,
     /// Files whose diff changed since the last finished review round (the
     /// re-review loop). Empty on a first review, so the cycle skips it unless a
     /// prior snapshot exists.
@@ -520,15 +545,17 @@ pub enum FileFilter {
 }
 
 impl FileFilter {
-    /// Cycle All → Undecided → Rejected → Blockers → Changed → All. Callers that
-    /// don't have a prior review snapshot skip `Changed` (see
-    /// `diff_review_cycle_file_filter`).
+    /// Cycle All → Undecided → Rejected → Blockers → Unresolved → Changed → All.
+    /// Steps with nothing to show are skipped by the caller (see
+    /// `diff_review_cycle_file_filter`): `Changed` without a prior review
+    /// snapshot, `Unresolved` without an open thread.
     pub fn next(self) -> Self {
         match self {
             FileFilter::All => FileFilter::Undecided,
             FileFilter::Undecided => FileFilter::Rejected,
             FileFilter::Rejected => FileFilter::Blockers,
-            FileFilter::Blockers => FileFilter::Changed,
+            FileFilter::Blockers => FileFilter::Unresolved,
+            FileFilter::Unresolved => FileFilter::Changed,
             FileFilter::Changed => FileFilter::All,
         }
     }
@@ -539,6 +566,7 @@ impl FileFilter {
             FileFilter::Undecided => "undecided",
             FileFilter::Rejected => "rejected",
             FileFilter::Blockers => "blockers",
+            FileFilter::Unresolved => "unresolved",
             FileFilter::Changed => "changed",
         }
     }
@@ -785,11 +813,41 @@ impl DiffViewerState {
             self.decisions.get(path),
             Some(ReviewDecision::Reject { severity, .. }) if severity.is_blocker()
         );
-        let comment_blocks = self
-            .line_comments
-            .get(path)
-            .is_some_and(|cs| cs.iter().any(|c| !c.draft && c.severity.is_blocker()));
+        // A resolved thread is settled: it must not keep its file pinned in the
+        // blockers filter, nor escalate the GitHub review event.
+        let comment_blocks = self.line_comments.get(path).is_some_and(|cs| {
+            cs.iter()
+                .any(|c| c.is_open_thread() && c.severity.is_blocker())
+        });
         reject_blocks || comment_blocks
+    }
+
+    /// Whether the file at `path` carries at least one open thread — a kept,
+    /// unresolved line comment. Backs the `Unresolved` filter and the auto-reject
+    /// rule (an open thread means the file still needs work).
+    pub fn file_has_unresolved_thread(&self, path: &str) -> bool {
+        self.line_comments
+            .get(path)
+            .is_some_and(|cs| cs.iter().any(|c| c.is_open_thread()))
+    }
+
+    /// Total open threads across every file in the diff. Reported on opening a
+    /// re-review and used to decide whether the `Unresolved` filter has anything
+    /// to show.
+    pub fn unresolved_thread_count(&self) -> usize {
+        self.line_comments
+            .values()
+            .flatten()
+            .filter(|c| c.is_open_thread())
+            .count()
+    }
+
+    /// True when no line comment was authored in *this* session — every stored
+    /// comment (if any) was carried in from a previous finished round. Lets a
+    /// fresh re-review still read as "pristine" for the purposes of auto-applying
+    /// the `Changed` filter, even though it opens with threads restored.
+    pub fn has_only_carried_comments(&self) -> bool {
+        self.line_comments.values().flatten().all(|c| c.carried)
     }
 
     /// Whether `file` passes the active file-list filter. Always true outside
@@ -803,6 +861,7 @@ impl DiffViewerState {
                 Some(ReviewDecision::Reject { .. })
             ),
             FileFilter::Blockers => self.file_has_blocker(&file.path),
+            FileFilter::Unresolved => self.file_has_unresolved_thread(&file.path),
             FileFilter::Changed => self.changed_since_last.contains(&file.path),
         }
     }

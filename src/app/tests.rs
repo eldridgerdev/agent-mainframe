@@ -9397,6 +9397,85 @@ fn re_review_carries_approvals_for_unchanged_files() {
 }
 
 #[test]
+fn re_review_carries_an_unresolved_thread_and_reports_its_count() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    let hunk = crate::diff::DiffHunk {
+        header: "@@ -1,1 +1,2 @@".into(),
+        old_start: 1,
+        old_lines: 1,
+        new_start: 1,
+        new_lines: 2,
+        lines: vec![
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Context,
+                text: " ctx".into(),
+            },
+            crate::diff::DiffLine {
+                kind: crate::diff::DiffLineKind::Added,
+                text: "+added".into(),
+            },
+        ],
+    };
+
+    // Round 1: comment on src/a.rs (auto-rejects it), approve src/b.rs, finish.
+    // The snapshot now carries the open thread on src/a.rs.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk.clone()];
+        state.comment_cursor = Some(1);
+        state.editing_line_comment = true;
+        state.feedback_editor = crate::editor::TextEditor::new("still needs work".into());
+    }
+    app.diff_review_submit_line_comment();
+    app.diff_review_approve_current();
+    app.finish_final_review().unwrap();
+
+    // Round 2: reopen against the same (untouched) diff and restore.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].hunks = vec![hunk];
+    }
+    app.restore_review_progress();
+    app.apply_review_snapshot_diff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            let comments = state.line_comments.get("src/a.rs").expect("thread carried");
+            assert_eq!(comments.len(), 1);
+            assert!(comments[0].carried, "restored thread is marked carried");
+            assert!(!comments[0].resolved, "the thread is still open");
+            assert_eq!(comments[0].text, "still needs work");
+            // The open thread means src/a.rs must not inherit any stale
+            // approval, even though nothing about its diff changed.
+            assert!(!state.decisions.contains_key("src/a.rs"));
+        }
+        _ => panic!("expected diff viewer"),
+    }
+    let message = app.message.as_deref().unwrap_or_default();
+    assert!(
+        message.contains("no files changed since the last review"),
+        "{message}"
+    );
+    assert!(
+        message.contains("1 unresolved thread carried over"),
+        "{message}"
+    );
+}
+
+#[test]
 fn session_picker_offers_todos_when_project_has_none() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),

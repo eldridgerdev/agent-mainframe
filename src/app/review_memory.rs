@@ -9,10 +9,6 @@
 //! AMF only ever *appends* here (dedup-aware, grouped by category) — it never
 //! rewrites existing prose, so hand-edits are safe across runs.
 
-// Consumed by the later Epic E items (lookback bootstrap, the pane's "add to
-// memory" key, the AI reviewer) as they land; keep the primitives until then.
-#![allow(dead_code)]
-
 use std::path::{Path, PathBuf};
 
 /// Default location of the review-memory doc, relative to the repo root.
@@ -131,6 +127,31 @@ pub fn append_finding(path: &Path, category: &str, finding: &str) -> std::io::Re
 
     std::fs::write(path, updated)?;
     Ok(true)
+}
+
+/// Parse a distilled-findings response into `(category, finding)` pairs:
+/// `## Heading` sections with `- ` bullets underneath — the same shape
+/// [`append_finding`] itself writes, so the lookback bootstrap (Epic E) can
+/// feed an agent's clustered output straight back through it. Lines before
+/// the first heading fall under `General`; non-bullet lines (stray prose the
+/// model wasn't asked for) are ignored rather than mistaken for a finding.
+pub fn parse_findings_markdown(text: &str) -> Vec<(String, String)> {
+    let mut findings = Vec::new();
+    let mut category = "General".to_string();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            category = heading.trim().to_string();
+            continue;
+        }
+        if let Some(bullet) = trimmed.strip_prefix("- ") {
+            let bullet = bullet.trim();
+            if !bullet.is_empty() {
+                findings.push((category.clone(), bullet.to_string()));
+            }
+        }
+    }
+    findings
 }
 
 #[cfg(test)]
@@ -295,5 +316,51 @@ mod tests {
         assert!(contents.contains("Some hand-written prose explaining context."));
         assert!(contents.contains("- An existing finding"));
         assert!(contents.contains("- A new finding"));
+    }
+
+    #[test]
+    fn parse_findings_markdown_groups_by_heading() {
+        let text = "## Concurrency\n- Guard shared state behind a lock\n- Avoid busy-waiting\n\n## Naming\n- Prefer full words\n";
+        let findings = parse_findings_markdown(text);
+        assert_eq!(
+            findings,
+            vec![
+                (
+                    "Concurrency".to_string(),
+                    "Guard shared state behind a lock".to_string()
+                ),
+                ("Concurrency".to_string(), "Avoid busy-waiting".to_string()),
+                ("Naming".to_string(), "Prefer full words".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_findings_markdown_defaults_to_general_before_first_heading() {
+        let findings = parse_findings_markdown("- A finding with no heading yet\n");
+        assert_eq!(
+            findings,
+            vec![(
+                "General".to_string(),
+                "A finding with no heading yet".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn parse_findings_markdown_ignores_non_bullet_prose() {
+        let text =
+            "## Tests\nSome intro sentence the model added anyway.\n- Cover the error path\n";
+        let findings = parse_findings_markdown(text);
+        assert_eq!(
+            findings,
+            vec![("Tests".to_string(), "Cover the error path".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_findings_markdown_empty_input_yields_no_findings() {
+        assert!(parse_findings_markdown("").is_empty());
+        assert!(parse_findings_markdown("## Tests\n").is_empty());
     }
 }

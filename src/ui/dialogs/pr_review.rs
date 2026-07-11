@@ -10,9 +10,14 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use std::path::Path;
+
 use crate::{
-    app::pr_review::{CommentKind, PrComment},
-    app::{PrNumberPromptState, PrPickerState, PrReviewLoadState, PrReviewState},
+    app::pr_review::{BootstrapDepth, BootstrapStage, CommentKind, PrComment},
+    app::{
+        BootstrapPickState, BootstrapRunState, PrNumberPromptState, PrPickerState,
+        PrReviewLoadState, PrReviewState,
+    },
     editor::VimMode,
     theme::Theme,
     token_tracking::{SessionTokenUsage, TokenPricingConfig, format_feature_token_usage},
@@ -66,8 +71,10 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
 
 /// Full-screen PR picker: a scrollable list of the repo's PRs to open for
 /// review. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
-/// to the manual number prompt.
-pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme) {
+/// to the manual number prompt, `b` opens the review-memory lookback
+/// bootstrap. `memory_path` is the resolved review-memory doc path, shown in
+/// the bootstrap depth picker.
+pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, memory_path: &Path) {
     let area = frame.area();
     let block = pane_block(theme).title(" Pick a PR to review (experimental) ");
     let inner = block.inner(area);
@@ -144,10 +151,152 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme) {
         "a include-closed"
     };
     let footer = Paragraph::new(Line::from(Span::styled(
-        format!(" j/k move   \u{23ce} open   {toggle}   # number   esc close"),
+        format!(" j/k move   \u{23ce} open   {toggle}   # number   b bootstrap memory   esc close"),
         Style::default().fg(theme.text_muted.to_color()),
     )));
     frame.render_widget(footer, layout[3]);
+
+    if let Some(pick) = &state.bootstrap_pick {
+        draw_bootstrap_pick(frame, pick, memory_path, theme);
+    }
+}
+
+/// Depth picker for the review-memory lookback bootstrap (`b` in the PR
+/// picker): a radio list of how far back to look, overlaid on the picker.
+fn draw_bootstrap_pick(
+    frame: &mut Frame,
+    pick: &BootstrapPickState,
+    memory_path: &Path,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(60, 45, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Bootstrap review memory ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // header
+            Constraint::Length(1), // "look back over"
+            Constraint::Min(1),    // depth list
+            Constraint::Length(2), // token/cost note
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(
+                "  Distill common findings from merged/closed PRs into {}.",
+                memory_path.display()
+            ),
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Look back over:",
+            Style::default().fg(theme.text.to_color()),
+        ))),
+        chunks[1],
+    );
+
+    let mut spans: Vec<Span> = vec![Span::raw("  ")];
+    for (i, depth) in BootstrapDepth::ALL.iter().enumerate() {
+        let is_selected = i == pick.selected;
+        let marker = if is_selected { "(\u{2022})" } else { "( )" };
+        let style = if is_selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_muted.to_color())
+        };
+        spans.push(Span::styled(format!("{marker} {}", depth.label()), style));
+        spans.push(Span::raw("    "));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), chunks[2]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "  Comment fetch is free (gh); one agent pass distills the findings.",
+            Style::default().fg(theme.text_muted.to_color()),
+        )))
+        .wrap(Wrap { trim: false }),
+        chunks[3],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[⏎] run   [j/k] move   [esc] cancel",
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[4],
+    );
+}
+
+/// Full-screen progress view for the lookback bootstrap's background fetch +
+/// distill pass.
+pub fn draw_review_memory_bootstrap_running(
+    frame: &mut Frame,
+    state: &BootstrapRunState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(" Bootstrap review memory (experimental) ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let status_line = match state.stage {
+        BootstrapStage::FetchingComments => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Fetching comments from {}...", state.depth.label()),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        BootstrapStage::Distilling {
+            pr_count,
+            token_estimate,
+        } => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Distilling findings from {pr_count} PRs (~{token_estimate} tokens)..."),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    };
+
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        status_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc to return to the PR picker (the run keeps going in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
 }
 
 /// One PR row: `#123  title  · @author · branch` plus a state chip for anything

@@ -1474,6 +1474,28 @@ pub struct PrPickerState {
     pub include_closed: bool,
     /// Last fetch/resolve failure, shown inline.
     pub error: Option<String>,
+    /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
+    /// picker.
+    pub bootstrap_pick: Option<BootstrapPickState>,
+}
+
+/// Depth picker for the review-memory lookback bootstrap (`b` in the PR
+/// picker): pick how many recent merged/closed PRs to learn from before
+/// running the fetch + distill pass.
+#[derive(Debug, Clone)]
+pub struct BootstrapPickState {
+    /// Index into [`crate::app::pr_review::BootstrapDepth::ALL`].
+    pub selected: usize,
+}
+
+/// Full-screen progress view for the lookback bootstrap's background fetch +
+/// distill pass, entered once a depth is confirmed.
+#[derive(Debug, Clone)]
+pub struct BootstrapRunState {
+    /// The PR picker to return to on completion or cancel.
+    pub origin: PrPickerState,
+    pub depth: crate::app::pr_review::BootstrapDepth,
+    pub stage: crate::app::pr_review::BootstrapStage,
 }
 
 /// State for the full-screen PR comment-review pane.
@@ -1817,6 +1839,9 @@ pub enum AppMode {
     PrReviewLoading(PrReviewLoadState),
     /// Triaging a PR's comments in the full-screen review pane.
     PrReview(PrReviewState),
+    /// Running the review-memory lookback bootstrap's fetch + distill pass off
+    /// the UI thread; shows a loading frame with the current stage.
+    ReviewMemoryBootstrapRunning(BootstrapRunState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),

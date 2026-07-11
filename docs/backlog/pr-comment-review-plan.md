@@ -924,21 +924,59 @@ first), and the reviewer's output (plus comments triaged in the pane)
       incl. overrides, doc creation/no-op, section creation/reuse, section
       isolation, dedup, blank input, prose preservation). →
       `src/app/review_memory.rs`, `src/app/mod.rs`.
-- [ ] **Lookback bootstrap — distill the memory from the last *N* PRs.**
-      First-run action (and re-runnable to top up) that seeds the memory
-      doc from history. The user picks a depth from a list (**20 / 50 /
-      100 / all**, whatever the repo can afford); AMF fetches the **review
-      comments + review summaries** from that many recent *merged/closed*
-      PRs via the existing `GhCli` layer (zero agent tokens for the fetch —
-      `gh pr list` + the same comment endpoints Epic A already uses), strips
-      bot boilerplate, then makes **one** agent pass (`run_headless`, big
-      batched prompt, not per-comment) to cluster them into recurring
-      findings and write/merge them into `review-memory.md`. This is the one
-      deliberately token-heavy step; show the PR count and a `~N tokens`
-      estimate and confirm before running. Progress + result land back in
-      AMF (background thread + channel, like the Epic A fetch). → new
-      `src/app/review_memory.rs`, `src/github.rs`, `ClaudeLauncher::run_headless`
-      (`src/claude.rs`), `src/handlers/pr_review.rs`, `src/app/state.rs`.
+- [x] **Lookback bootstrap — distill the memory from the last *N* PRs.**
+      Re-runnable action that seeds the memory doc from history instead of
+      building it up one comment at a time. `b` in the PR picker
+      (`AppMode::PrPicker`) opens a depth picker overlaid on the picker itself
+      (`BootstrapPickState`, mirroring how the fix harness picker overlays the
+      review pane) — **20 / 50 / 100 / all** recent PRs, 50 highlighted by
+      default, with the resolved `review-memory.md` path shown. `⏎` resolves
+      the merged/closed PRs synchronously via the new
+      `GhCli::list_recent_closed_prs` (`--state closed`, which GitHub already
+      folds merged into — confirmed live against this repo's own PRs, no
+      client-side filtering needed) — cheap, so it's fine on the UI thread —
+      then hands the heavy work to a background thread
+      (`run_review_memory_bootstrap`) and switches to a full-screen running
+      view (`AppMode::ReviewMemoryBootstrapRunning`, mirroring
+      `PrReviewLoading`). The thread fetches each PR's review comments +
+      summaries via the existing `GhCli::pr_review_comments`/`pr_reviews`
+      (zero agent tokens; a single PR's fetch failure is skipped, not fatal),
+      strips bot boilerplate the same way as everywhere else in this module,
+      then makes **one** `ClaudeLauncher::run_headless` pass over one big
+      assembled prompt (`bootstrap_prompt`) instructing the agent to cluster
+      recurring findings into the same `## Category` / `- bullet` shape
+      `append_finding` itself writes — so its response round-trips straight
+      through a new `review_memory::parse_findings_markdown` with no further
+      parsing, and reuses `append_finding`'s existing dedup (re-running over
+      overlapping history is a no-op). Progress lands back over a channel
+      (`BootstrapProgress`, polled each tick like the Epic A fetch): the
+      running view shows "Fetching comments from N..." during the free `gh`
+      loop, then "Distilling findings from N PRs (~N tokens)..." for the one
+      paid pass, computed from the actual assembled prompt rather than a
+      pre-run guess (the token count isn't knowable until the free fetch
+      finishes, so the estimate is shown on the running screen rather than a
+      separate pre-run confirm dialog as originally sketched). `esc` returns
+      to the picker without waiting — the background run isn't aborted, and
+      `poll_review_memory_bootstrap_bg` still surfaces its result (toast or
+      error) whenever it lands, even if the user already navigated elsewhere,
+      since it has a real side effect (tokens spent, findings written).
+      Unit-tested (depth default/limits, prompt/text assembly, the pick
+      dialog's open/move/cancel, and the poll function's stage updates +
+      both the success and error return-to-picker paths). Confirmed live in
+      an isolated tmux server against this repo's real merged PRs — caught
+      and fixed two bugs in the process: a doubled "PRs PRs" in the fetching
+      message, and `show_error` unconditionally resetting `self.mode` to
+      `Normal` before the error path's restore-to-picker logic ran, which
+      silently dropped the user onto the bare dashboard instead of the picker
+      (and swallowed the error, since the picker's full-screen render doesn't
+      draw `self.message`/toasts) — the fix captures the origin before any
+      mode-mutating side effect and additionally writes the failure onto the
+      restored picker's own inline `error` field. → `src/github.rs`,
+      `src/app/review_memory.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/app/mod.rs`, `src/handlers/pr_review.rs`, `src/handlers/mod.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/mod.rs`,
+      `src/ui/dashboard.rs`, `src/ui/status.rs`, `src/ui/dialogs/help.rs`,
+      `src/main.rs`, `src/app/tests.rs`.
 - [x] **"Add this comment to memory" key in the review pane.** `M` on the
       selected comment opens a confirm/edit dialog (mirrors the reply dialog's
       edit/confirm split) seeded from the new `PrComment::memory_finding_seed`

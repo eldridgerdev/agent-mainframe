@@ -67,8 +67,14 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Key handling for the PR picker: navigate the list, `⏎` open the highlighted
-/// PR, `a` toggle closed/merged PRs, `#` switch to typing a number, `esc` close.
+/// PR, `a` toggle closed/merged PRs, `#` switch to typing a number, `b` open
+/// the review-memory lookback bootstrap, `esc` close.
 pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // The lookback-bootstrap depth picker, when open, captures all keys.
+    if app.review_memory_bootstrap_picking() {
+        return handle_bootstrap_pick_key(app, key);
+    }
+
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => app.close_pr_review(),
         KeyCode::Down | KeyCode::Char('j') => app.pr_picker_select_next(),
@@ -76,7 +82,31 @@ pub fn handle_pr_picker_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Enter => app.pr_picker_choose(),
         KeyCode::Char('a') => app.pr_picker_toggle_closed(),
         KeyCode::Char('#') | KeyCode::Char('g') => app.pr_picker_to_number_prompt(),
+        KeyCode::Char('b') => app.open_review_memory_bootstrap_pick(),
         _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling for the lookback-bootstrap depth picker: `j/k` move, `⏎` run,
+/// `esc`/`q` cancel back to the PR picker.
+fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.review_memory_bootstrap_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.review_memory_bootstrap_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.review_memory_bootstrap_pick_move(-1),
+        KeyCode::Enter => app.review_memory_bootstrap_pick_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling for the full-screen lookback-bootstrap running view: `esc`/`q`
+/// return to the PR picker (the background thread keeps running to
+/// completion; its result still lands via `poll_review_memory_bootstrap_bg`).
+pub fn handle_review_memory_bootstrap_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.cancel_review_memory_bootstrap();
     }
     Ok(())
 }

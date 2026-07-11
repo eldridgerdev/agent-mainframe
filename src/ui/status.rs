@@ -631,6 +631,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::ReviewMemoryBootstrapRunning(_) => Line::from(vec![
+            Span::raw(" Bootstrapping review memory (experimental)...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PrReview(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" move  "),

@@ -613,6 +613,9 @@ pub struct App {
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
     pub pr_review_return: Option<PrReviewReturn>,
+    /// Receiver for the background review-memory lookback bootstrap (fetch +
+    /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
+    pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1913,6 +1916,7 @@ impl App {
             session_status_bg: None,
             pr_review_bg: None,
             pr_review_return: None,
+            review_memory_bootstrap_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2099,6 +2103,7 @@ impl App {
             session_status_bg: None,
             pr_review_bg: None,
             pr_review_return: None,
+            review_memory_bootstrap_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

@@ -89,6 +89,80 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.editing_search {
         draw_search_prompt(frame, state, theme);
     }
+    if state.changeset_overview_open {
+        draw_changeset_overview_modal(frame, state, theme);
+    }
+}
+
+/// A centered modal showing the on-demand whole-changeset overview / risk
+/// summary (`O` in the final review). Read-only: while open every key is
+/// captured by the modal (`handle_diff_viewer_key`) rather than the diff
+/// underneath. Mirrors `draw_search_prompt`'s overlay and `draw_notes_panel`'s
+/// markdown-render-and-scroll approach.
+fn draw_changeset_overview_modal(frame: &mut Frame, state: &mut DiffViewerState, theme: &Theme) {
+    let area = centered_rect(80, 70, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Changeset Overview ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(inner);
+
+    let generating = state.changeset_overview_child.is_some();
+    let scroll = state.changeset_overview_scroll;
+    let (paragraph, rendered_lines) = if generating {
+        (
+            Paragraph::new("Generating changeset overview…")
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(theme.text_muted.to_color())),
+            0,
+        )
+    } else if let Some(text) = &state.changeset_overview {
+        let rendered =
+            crate::markdown::render_markdown(text, theme, rows[0].width.max(1) as usize, None);
+        let line_count = rendered.lines.len();
+        (
+            Paragraph::new(rendered.lines).scroll((scroll as u16, 0)),
+            line_count,
+        )
+    } else {
+        (
+            Paragraph::new(
+                "No overview generated yet.\n\nPress O to generate an on-demand summary of the \
+                 whole changeset (a headless pass over every file's diff, bounded so it stays \
+                 cheap on large changesets).",
+            )
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(theme.text_muted.to_color())),
+            0,
+        )
+    };
+    state.changeset_overview_rendered_lines = rendered_lines;
+    state.changeset_overview_view_height = rows[0].height as usize;
+    frame.render_widget(paragraph, rows[0]);
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let hint = Line::from(vec![
+        key("j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" scroll  "),
+        key("O"),
+        Span::raw(" regenerate  "),
+        key("q"),
+        Span::raw("/"),
+        key("Esc"),
+        Span::raw(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
 }
 
 /// A small centered input overlay for searching the current file's diff. Matches
@@ -600,8 +674,102 @@ fn body_constraints(area: Rect, state: &DiffViewerState) -> [Constraint; 2] {
     }
 }
 
+/// A changed file whose diff crosses this many total added+removed lines is
+/// flagged `L` (large) in the file list — big enough that a reviewer skimming
+/// the list should expect it to take real time, small enough that it still
+/// fires on plenty of ordinary changes worth flagging.
+const LARGE_FILE_CHANGE_THRESHOLD: usize = 300;
+
+/// True if any file in the changeset looks like a test file. Used as the
+/// changeset-wide signal behind the file list's "no test coverage" marker:
+/// there is no per-file test-mapping convention anywhere in this codebase (a
+/// module's tests usually live in a sibling `tests.rs` or an inline
+/// `#[cfg(test)]` block elsewhere), so this settles for "did the changeset
+/// touch anything test-shaped at all".
+fn changeset_has_test_changes(files: &[DiffFile]) -> bool {
+    files.iter().any(|f| looks_like_test_path(&f.path))
+}
+
+fn looks_like_test_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("/tests/")
+        || lower.starts_with("tests/")
+        || lower.ends_with("tests.rs")
+        || lower.ends_with("_test.rs")
+        || lower.ends_with("_tests.rs")
+        || lower.contains("test_")
+        || lower.contains("_spec.")
+}
+
+/// Non-test source extensions the "no test coverage" marker considers —
+/// config/docs/markdown/lockfiles etc. are excluded since "no tests touched
+/// this README" isn't a useful signal.
+fn looks_like_source_path(path: &str) -> bool {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    matches!(
+        ext,
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "go"
+            | "rb"
+            | "java"
+            | "c"
+            | "cc"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "cs"
+            | "swift"
+            | "kt"
+    )
+}
+
+/// Build the `[L,N,T]`-style risk-marker span for a file's row (empty when no
+/// flag applies): `L` large change, `N` no developer note / walkthrough yet,
+/// `T` changeset has no test-looking file at all. Review mode only, mirroring
+/// the `Δ` changed-since-last marker.
+fn file_risk_marker(
+    file: &DiffFile,
+    state: &DiffViewerState,
+    changeset_has_tests: bool,
+    theme: &Theme,
+) -> Option<Span<'static>> {
+    if !state.review || file.is_binary {
+        return None;
+    }
+    let mut flags = Vec::new();
+    if file.additions + file.deletions >= LARGE_FILE_CHANGE_THRESHOLD {
+        flags.push("L");
+    }
+    if !state.review_notes.contains_key(&file.path)
+        && !state.generated_notes.contains_key(&file.path)
+    {
+        flags.push("N");
+    }
+    if !changeset_has_tests
+        && looks_like_source_path(&file.path)
+        && !looks_like_test_path(&file.path)
+    {
+        flags.push("T");
+    }
+    if flags.is_empty() {
+        return None;
+    }
+    Some(Span::styled(
+        format!(" [{}]", flags.join(",")),
+        Style::default().fg(theme.warning.to_color()),
+    ))
+}
+
 fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme: &Theme) {
     let visible = state.visible_file_indices();
+    let changeset_has_tests = changeset_has_test_changes(&state.files);
     let mut items: Vec<ListItem<'static>> = visible
         .iter()
         .map(|&idx| {
@@ -645,6 +813,9 @@ fn draw_file_list(frame: &mut Frame, area: Rect, state: &DiffViewerState, theme:
                 format!("  +{} -{}", file.additions, file.deletions),
                 Style::default().fg(theme.text_muted.to_color()),
             ));
+            if let Some(marker) = file_risk_marker(file, state, changeset_has_tests, theme) {
+                spans.push(marker);
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -1372,6 +1543,11 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     first_line.push(Span::raw("  "));
     first_line.push(key("A"));
     first_line.push(Span::raw(" AI review"));
+
+    // Reviewer-triggered whole-changeset overview / risk summary.
+    first_line.push(Span::raw("  "));
+    first_line.push(key("O"));
+    first_line.push(Span::raw(" overview"));
 
     // Surface the jump-to-next-undecided affordance only while files still lack
     // a verdict.
@@ -3084,5 +3260,41 @@ index 0000000..1111111
         );
         // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.
         assert_eq!(cursor_comment_preview_rows(&state), 8);
+    }
+
+    #[test]
+    fn file_risk_marker_flags_large_no_note_and_no_tests() {
+        let (mut state, _) = single_added_line_review_state();
+        let theme = Theme::default();
+        // Make the single existing file large and give it no note, so it picks
+        // up all three flags (the changeset also has no test-looking file).
+        state.files[0].additions = 500;
+        let changeset_has_tests = changeset_has_test_changes(&state.files);
+        assert!(!changeset_has_tests);
+        let marker = file_risk_marker(&state.files[0], &state, changeset_has_tests, &theme)
+            .expect("expected a risk marker");
+        assert_eq!(marker.content.as_ref(), " [L,N,T]");
+
+        // A small file with a developer note, in a changeset that now includes
+        // a test file, gets no marker at all.
+        state.files[0].additions = 1;
+        state
+            .review_notes
+            .insert("a.rs".to_string(), "reasoning".to_string());
+        state.files.push(DiffFile {
+            old_path: None,
+            path: "tests/a_test.rs".to_string(),
+            status: DiffFileStatus::Added,
+            additions: 1,
+            deletions: 0,
+            is_binary: false,
+            old_content: None,
+            new_content: None,
+            patch: String::new(),
+            hunks: vec![],
+        });
+        let changeset_has_tests = changeset_has_test_changes(&state.files);
+        assert!(changeset_has_tests);
+        assert!(file_risk_marker(&state.files[0], &state, changeset_has_tests, &theme).is_none());
     }
 }

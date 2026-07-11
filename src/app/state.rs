@@ -676,6 +676,22 @@ pub struct DiffViewerState {
     /// Path the in-flight co-review is being generated for, so draft comments
     /// land on the right file even if the reviewer navigates away.
     pub co_review_file: Option<String>,
+    /// Cached on-demand whole-changeset overview / risk summary (headless,
+    /// reviewer-triggered — see `changeset_overview_open`). Kept until the
+    /// reviewer explicitly regenerates it so reopening the modal is free.
+    pub changeset_overview: Option<String>,
+    /// In-flight headless process generating the changeset overview.
+    pub changeset_overview_child: Option<Child>,
+    /// True while the changeset-overview modal is shown. Independent of
+    /// generation state so a cached overview can be reopened without
+    /// re-running the headless pass.
+    pub changeset_overview_open: bool,
+    pub changeset_overview_scroll: usize,
+    /// Rendered (markdown-wrapped) line count / viewport height of the modal at
+    /// the last draw, mirroring `notes_rendered_lines` / `notes_view_height` so
+    /// scroll clamps to the real visual bottom.
+    pub changeset_overview_rendered_lines: usize,
+    pub changeset_overview_view_height: usize,
     /// When true the developer-notes panel takes the full patch column.
     pub notes_expanded: bool,
     pub notes_scroll: usize,
@@ -762,6 +778,12 @@ impl DiffViewerState {
             walkthrough_file: None,
             co_review_child: None,
             co_review_file: None,
+            changeset_overview: None,
+            changeset_overview_child: None,
+            changeset_overview_open: false,
+            changeset_overview_scroll: 0,
+            changeset_overview_rendered_lines: 0,
+            changeset_overview_view_height: 0,
             notes_expanded: false,
             notes_scroll: 0,
             notes_rendered_lines: 0,

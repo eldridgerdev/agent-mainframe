@@ -68,6 +68,14 @@ are tagged.
   clear they're not new), and a new `Unresolved` step in the `F` file-filter
   cycle narrows the list to files with an open thread. Opening a re-review
   now also reports how many unresolved threads carried over.
+- **On-demand changeset overview and risk markers in the final review.** Press
+  `O` to run a headless Claude pass over every changed file at once (capped
+  and bounded, so it never runs automatically or blows up token cost on a
+  huge changeset) and read a short overview plus a "Risk factors" list in a
+  scrollable modal — `O` again regenerates, `q`/`Esc` closes. The file list
+  also flags each row with `[L,N,T]` markers: `L` for a large diff, `N` for
+  no developer note or walkthrough yet, and `T` when the changeset has no
+  test-looking file at all.
 - **Search within the final-review diff.** Press `/` in the final review to
   incrementally search the current file's diff (case-insensitive). The line
   cursor jumps to the first match as you type; after `Enter`, `n` / `N` cycle

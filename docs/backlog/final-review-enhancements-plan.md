@@ -4,11 +4,11 @@
   **Progress → Round 1** is implemented and merged, and Round 2's AI
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
   comment-implied rejections, severity tags, agent replies-back,
-  in-diff search, comment re-anchoring, and resolve/unresolve thread
-  state have shipped. The remaining Round 2 items (changeset overview,
-  build gate, file-level PR comments) and a third round of review-loop
-  / viewer upgrades (**Round 3**, captured 2026-07-01) are not yet
-  started.
+  in-diff search, comment re-anchoring, resolve/unresolve thread
+  state, and the changeset overview + diff stats have shipped. The
+  remaining Round 2 items (build gate, file-level PR comments) and a
+  third round of review-loop / viewer upgrades (**Round 3**, captured
+  2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -515,7 +515,27 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       change. It becomes the cross-round mechanism the plan describes as soon as
       thread state (above) carries comments between rounds; this item is that
       item's stated prerequisite.
-- [ ] Changeset overview + diff stats — manual / reviewer-triggered only
+- [x] Changeset overview + diff stats — press `O` in the final review to run a
+      headless Claude pass over **every file's diff at once** (reviewer-triggered,
+      capped at 30 files with a per-file patch budget, so a huge changeset can't
+      produce an unbounded request) and show the result — a short overview plus a
+      "Risk factors" list — in a scrollable modal (`j`/`k`/PageUp/PageDown/g/G,
+      `O` again regenerates, `q`/`Esc` closes; the modal takes full key
+      precedence while open, mirroring the search prompt). The result is cached
+      on `DiffViewerState.changeset_overview` so reopening the modal never
+      re-spawns a headless pass on its own — only an explicit regenerate does.
+      Reuses the exact `spawn_headless`/poll pattern as the per-file walkthrough
+      (`generate_changeset_overview` / `poll_changeset_overview` in
+      `src/app/review.rs`) and the notes panel's markdown-render-and-scroll
+      approach for the body. Separately, the file list now carries a
+      `[L,N,T]`-style risk-marker span per row (review mode only): `L` when a
+      file's total added+removed lines cross a "large change" threshold, `N`
+      when it has neither a developer note nor a generated walkthrough, and `T`
+      when it looks like non-test source code and the *whole changeset*
+      contains no test-looking file at all — the closest proxy for "no test
+      coverage" available, since no per-file test-mapping convention exists
+      anywhere in this codebase. `file_risk_marker` in
+      `src/ui/dialogs/diff.rs`.
 - [ ] Build / test gate before approve — per-project configurable check
       command
 - [ ] File-level PR comments instead of body-dumping whole-file

@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- **Review-findings memory doc groundwork (no UI yet).** Added the on-disk
+  primitives for `.amf/review-memory.md` — a version-controlled file that
+  will accumulate the team's recurring code-review findings, grouped by
+  category, for the upcoming AI reviewer to read as context. AMF only ever
+  appends to it (dedup-aware) and never rewrites existing prose; the
+  location is configurable if you'd rather keep it somewhere other than
+  `.amf/review-memory.md`. This is groundwork only — there's no pane key or
+  agent action wired up to it yet; that lands with the PR-review lookback
+  bootstrap and "add to memory" key.
 - **Token usage shown in the PR review pane header.** Once a fix has spun
   up the dedicated (or existing-live) session, the header shows what
   triage has spent on it so far — e.g. `dedicated usage 12.3k eff · $0.15`

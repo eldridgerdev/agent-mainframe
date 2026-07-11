@@ -430,6 +430,8 @@ pub fn draw_pr_review(
     theme: &Theme,
     fix_session_usage: Option<&SessionTokenUsage>,
     token_pricing: &TokenPricingConfig,
+    ai_review_running: bool,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -460,6 +462,21 @@ pub fn draw_pr_review(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    // The AI review (`A`) keeps running in the background after `esc` returns
+    // here — without this, nothing in the pane hints that it's still working,
+    // so the header gets a throbber + label for as long as it's in flight.
+    if ai_review_running {
+        header_spans.push(Span::raw("  "));
+        header_spans.push(
+            throbber_widgets_tui::Throbber::default()
+                .style(Style::default().fg(theme.warning.to_color()))
+                .to_symbol_span(throbber_state),
+        );
+        header_spans.push(Span::styled(
+            " AI review running…",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+    }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
     // The header row is a single unwrapped line, so on a narrow terminal this

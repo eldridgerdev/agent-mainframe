@@ -909,6 +909,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.mode, AppMode::PrReview(_)) {
         let fix_session_usage = app.pr_review_fix_session_usage();
+        let ai_review_running = app.ai_review_bg.is_some();
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
@@ -916,6 +917,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.theme,
                 fix_session_usage.as_ref(),
                 &app.config.token_pricing,
+                ai_review_running,
+                &app.throbber_state,
             );
         }
         return;

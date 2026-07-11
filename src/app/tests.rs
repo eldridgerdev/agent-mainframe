@@ -1094,6 +1094,20 @@ fn visible_animation_is_enabled_for_dashboard_summary_generation() {
 }
 
 #[test]
+fn visible_animation_is_enabled_while_ai_pr_review_runs_in_the_background() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    assert!(!app.has_visible_animation());
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    assert!(app.has_visible_animation());
+
+    app.ai_review_bg = None;
+    assert!(!app.has_visible_animation());
+}
+
+#[test]
 fn visible_items_prioritizes_non_worktree_features() {
     let now = Utc::now();
     let project = Project {

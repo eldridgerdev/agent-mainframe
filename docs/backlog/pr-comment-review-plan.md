@@ -1059,6 +1059,19 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/github.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/main.rs`,
       `src/app/tests.rs`, `CHANGELOG.md`.
+
+      **Follow-up from real use, same day.** `esc`-ing back to the pane while
+      the background pass was still running left no trace that anything was
+      happening — the running screen's throbber disappears with it, and
+      nothing in the ordinary pane hinted a review was in flight. The header
+      now shows a throbber + "AI review running…" for as long as
+      `App::ai_review_bg` is `Some`, and `App::has_visible_animation` gained
+      a `PrReview` arm keyed off the same field so the throbber actually
+      advances frame-to-frame while sitting in the pane (previously
+      `PrReview` fell through to the default `false`, so nothing forced a
+      redraw cadence). Unit-tested (`has_visible_animation` toggles with
+      `ai_review_bg`). → `src/ui/dialogs/pr_review.rs`, `src/ui/dashboard.rs`,
+      `src/app/mod.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

@@ -809,6 +809,10 @@ impl App {
                 .harnesses
                 .iter()
                 .any(|h| h.status == HarnessCheckStatus::Checking),
+            // The AI review keeps running in the background after `esc`
+            // returns here; animate the header's throbber for as long as it
+            // is in flight (see `ui::dialogs::draw_pr_review`).
+            AppMode::PrReview(_) => self.ai_review_bg.is_some(),
             _ => false,
         };
         base || self.has_active_toasts()

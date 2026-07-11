@@ -1072,6 +1072,21 @@ first), and the reviewer's output (plus comments triaged in the pane)
       redraw cadence). Unit-tested (`has_visible_animation` toggles with
       `ai_review_bg`). → `src/ui/dialogs/pr_review.rs`, `src/ui/dashboard.rs`,
       `src/app/mod.rs`, `src/app/tests.rs`.
+
+      **Second follow-up, same day.** The running screen itself (before
+      backing out) had the identical bug: `redraw_signature()` only hashes
+      the mode's *discriminant*, so a stage change within
+      `AppMode::AiPrReviewRunning` doesn't register as "state changed," and
+      the throbber only advanced on the rare frame the background poll
+      itself forced a redraw — otherwise it sat visibly frozen for the whole
+      blocking `gh pr diff` / `claude -p` call, reading as stuck. Same root
+      cause on two sibling screens that share the pattern
+      (`AppMode::PrReviewLoading`, `AppMode::ReviewMemoryBootstrapRunning`),
+      so all three gained an unconditional `has_visible_animation` arm
+      (mirroring how `DiffViewerLoading`/`MarkdownLoading` are already
+      handled) rather than just the one that was reported. Unit-tested
+      (all three modes report `has_visible_animation() == true`). →
+      `src/app/mod.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

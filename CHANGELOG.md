@@ -27,9 +27,11 @@ are tagged.
   background. Once vetted (skip what you disagree with), `W` posts the
   remaining findings to GitHub as a real review — anchored ones as inline
   comments, everything else folded into an editable summary — always as a
-  `COMMENT` event (never auto-approve/request-changes). `esc`-ing back to the
-  pane while it's still running now shows a throbber + "AI review running…"
-  in the header, so backing out doesn't look like nothing is happening.
+  `COMMENT` event (never auto-approve/request-changes). The running screen's
+  throbber now animates properly for the (potentially long) blocking `gh`/
+  `claude` call rather than sitting frozen, and `esc`-ing back to the pane
+  while it's still running shows a throbber + "AI review running…" in the
+  header, so neither screen reads as stuck or stalled.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

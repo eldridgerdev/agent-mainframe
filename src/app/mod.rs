@@ -813,6 +813,16 @@ impl App {
             // returns here; animate the header's throbber for as long as it
             // is in flight (see `ui::dialogs::draw_pr_review`).
             AppMode::PrReview(_) => self.ai_review_bg.is_some(),
+            // Full-screen loading/running views: `redraw_signature()` only
+            // hashes the mode's discriminant, not its stage, so without this
+            // the throbber only advances on the rare frame something else
+            // (a progress message, `Done`) forces a redraw — for the long
+            // stretch in between (the blocking `gh`/`claude` call) it just
+            // sits frozen, reading as "nothing is happening" even though the
+            // background thread is working.
+            AppMode::PrReviewLoading(_)
+            | AppMode::ReviewMemoryBootstrapRunning(_)
+            | AppMode::AiPrReviewRunning(_) => true,
             _ => false,
         };
         base || self.has_active_toasts()

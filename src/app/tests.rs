@@ -1108,6 +1108,52 @@ fn visible_animation_is_enabled_while_ai_pr_review_runs_in_the_background() {
 }
 
 #[test]
+fn visible_animation_is_enabled_for_pr_review_running_screens() {
+    // Regression: `redraw_signature()` only hashes the mode's discriminant,
+    // not its stage, so these full-screen loading/running views need an
+    // unconditional `has_visible_animation` arm — otherwise the throbber only
+    // advances on the rare frame something else forces a redraw, and just
+    // sits frozen for the (potentially long) blocking `gh`/`claude` call in
+    // between, reading as "nothing is happening".
+    let mut app = pr_review_test_app();
+
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    assert!(app.has_visible_animation());
+
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: crate::github::PrRef {
+            number: 1,
+            head_sha: "sha".to_string(),
+            url: "https://github.com/o/r/pull/1".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+    });
+    assert!(app.has_visible_animation());
+
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
+    assert!(app.has_visible_animation());
+}
+
+#[test]
 fn visible_items_prioritizes_non_worktree_features() {
     let now = Utc::now();
     let project = Project {

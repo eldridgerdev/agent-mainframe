@@ -736,6 +736,15 @@ pub struct DiffViewerState {
     /// Position within `search_matches` of the current match (the one the line
     /// cursor sits on). `None` when there are no matches.
     pub search_match_pos: Option<usize>,
+    /// In-flight background process running the project's configured
+    /// `final_review_check_command` (a build/test gate), spawned by
+    /// `finish_final_review` and polled to completion like
+    /// `changeset_overview_child`. `None` when no check is configured or
+    /// none is currently running.
+    pub finish_check_child: Option<Child>,
+    /// The command `finish_check_child` is running, kept so the result can
+    /// be reported once it exits.
+    pub finish_check_command: Option<String>,
 }
 
 impl DiffViewerState {
@@ -797,6 +806,8 @@ impl DiffViewerState {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_match_pos: None,
+            finish_check_child: None,
+            finish_check_command: None,
         }
     }
 

@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Build/test gate before finishing a final review.** Point
+  `final_review_check_command` at your project's build, test, or proof
+  script in `.amf/config.json` (or globally in `~/.config/amf/config.json`;
+  project overrides global, same as lifecycle hooks) and AMF runs it in the
+  background when you finish a review — no config means no change, it's
+  entirely opt-in. The command doesn't block the UI while it runs, and
+  pass/fail shows up in the finish summary and a `Check` section in
+  `.claude/final-review-feedback.md`. A failing check is never silently
+  swallowed by an all-approve: even with zero rejections, a failing check
+  still writes and dispatches the round so the agent sees it.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

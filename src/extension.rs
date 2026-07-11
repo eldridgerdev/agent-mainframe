@@ -157,6 +157,12 @@ pub struct ExtensionConfig {
     /// The library view can export user templates here. Phase 3 surfaces
     /// these in the picker with a `Global` / `Project` source badge.
     pub prompt_templates: Vec<PromptTemplate>,
+    /// Shell command run (via `bash -c` in the feature's workdir) when
+    /// finishing a final review — a build/test gate. `None`/empty skips it
+    /// entirely (the default). Project overrides global, same as
+    /// `lifecycle_hooks`, so each repo can point this at its own proof / CI
+    /// script rather than a hardcoded `cargo build`.
+    pub final_review_check_command: Option<String>,
 }
 
 impl ExtensionConfig {
@@ -276,6 +282,11 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
         keybindings.insert(action.clone(), *key);
     }
 
+    let final_review_check_command = project
+        .final_review_check_command
+        .clone()
+        .or_else(|| base.final_review_check_command.clone());
+
     let mut merged = ExtensionConfig {
         custom_sessions,
         lifecycle_hooks: LifecycleHooks {
@@ -290,6 +301,7 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .clone()
             .or_else(|| base.allowed_agents.clone()),
         prompt_templates,
+        final_review_check_command,
     };
     merged.normalize_legacy_review_modes();
     merged
@@ -375,6 +387,44 @@ mod tests {
         let merged = merge_project_extension_config(&global, tmp.path());
         let on_start = merged.lifecycle_hooks.on_start.unwrap();
         assert_eq!(on_start.script(), "global-start.sh");
+    }
+
+    #[test]
+    fn project_check_command_overrides_global() {
+        let global = ExtensionConfig {
+            final_review_check_command: Some("cargo build".to_string()),
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            final_review_check_command: Some("./proof.sh".to_string()),
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(
+            merged.final_review_check_command.as_deref(),
+            Some("./proof.sh")
+        );
+    }
+
+    #[test]
+    fn global_check_command_used_when_project_does_not_set_it() {
+        let global = ExtensionConfig {
+            final_review_check_command: Some("cargo build".to_string()),
+            ..Default::default()
+        };
+        // Project config present but doesn't set a check command.
+        let project_config = ExtensionConfig::default();
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        assert_eq!(
+            merged.final_review_check_command.as_deref(),
+            Some("cargo build")
+        );
     }
 
     #[test]

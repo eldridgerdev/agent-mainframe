@@ -283,6 +283,11 @@ uppercase-key problem.
   fall back to the newest task-store directory that contains readable task
   JSON. Empty newer task directories are skipped. Added regression tests for
   both the fallback and exact-session precedence.
+- **Follow-up fix (2026-07-11):** Removed the newest global task-store
+  fallback after it proved too broad: a newer checklist from another Claude
+  session could appear in the current session's sidebar. AMF now only reads
+  the exact task-store directory for the selected session, then falls back to
+  that session's transcript.
 
 ### Repro
 

@@ -165,6 +165,11 @@ are tagged.
 
 ### Fixed
 
+- **Claude sidebar TODOs stay tied to the selected session.** When another
+  Claude session has a newer task list, AMF no longer shows that unrelated
+  checklist in the current session's sidebar. The sidebar still uses the
+  selected session's own task store or transcript, so TODO progress remains
+  session-specific.
 - **Agent sessions start reliably on macOS.** Claude, Codex, opencode, Pi,
   custom sessions, and related launch helpers no longer paste long environment
   setup commands directly into tmux panes, so macOS no longer cuts off the

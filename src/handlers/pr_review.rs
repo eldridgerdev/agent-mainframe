@@ -14,8 +14,9 @@ const FIX_PAGE_STEP: isize = 10;
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
 /// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue
 /// all marked fixes as separate prompts / `B` inject one combined prompt for all
-/// marked, `R`/`n` reply, `x` resolve/reopen the thread, `m` mark done, `s` skip,
-/// `i` install syntax highlighting for the selected comment's file.
+/// marked, `R`/`n` reply, `M` add to memory, `x` resolve/reopen the thread,
+/// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
+/// comment's file.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
@@ -28,6 +29,10 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The reply dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_reply_view() {
         return handle_reply_key(app, key, editing);
+    }
+    // The "add to memory" dialog, when open, captures all keys.
+    if let Some(editing) = app.pr_review_memory_add_view() {
+        return handle_memory_add_key(app, key, editing);
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -48,6 +53,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('B') => app.pr_review_open_batch_confirm(),
         KeyCode::Char('R') => app.pr_review_open_reply_done(),
         KeyCode::Char('n') => app.pr_review_open_reply_not_needed(),
+        KeyCode::Char('M') => app.pr_review_open_memory_add(),
         KeyCode::Char('t') => app.pr_review_toggle_fix_target(),
         KeyCode::Char('m') => app.pr_review_mark_done(),
         KeyCode::Char('x') => app.pr_review_toggle_resolve(),
@@ -93,6 +99,30 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
         KeyCode::Enter => app.pr_review_post_reply()?,
         KeyCode::Char('e') => app.pr_review_reply_edit(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the "add to memory" dialog is open.
+///
+/// Confirm view: `⏎` appends, `e` edits, `Tab` cycles the category, `esc`/`q`
+/// cancels. Edit mode: keystrokes flow to the finding editor; `esc` returns to
+/// the confirm view.
+fn handle_memory_add_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
+    if editing {
+        match key.code {
+            KeyCode::Esc => app.pr_review_memory_add_stop_edit(),
+            _ => app.pr_review_memory_add_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter => app.pr_review_append_memory()?,
+        KeyCode::Char('e') => app.pr_review_memory_add_edit(),
+        KeyCode::Tab => app.pr_review_cycle_memory_category(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_memory_add(),
         _ => {}
     }
     Ok(())

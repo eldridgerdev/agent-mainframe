@@ -44,6 +44,21 @@ const BATCH_FIX_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_mi
 const BATCH_COMBINED_COMMENT_WARN: usize = 15;
 const BATCH_COMBINED_TOKEN_WARN: usize = 6000;
 
+/// Categories offered in the "add to memory" dialog (`Tab` cycles), matching
+/// the examples in the review-memory doc's own header template. `General` is
+/// the default and also what a blank category falls back to in
+/// `review_memory::append_finding`.
+pub(crate) const MEMORY_CATEGORIES: &[&str] = &[
+    "General",
+    "Concurrency",
+    "Error handling",
+    "Naming",
+    "Tests",
+    "Performance",
+    "API design",
+    "Style",
+];
+
 /// Which agent session a "fix" prompt is injected into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FixTarget {
@@ -285,6 +300,27 @@ impl PrComment {
             strip_bot_boilerplate(&self.body)
         } else {
             self.body.clone()
+        }
+    }
+
+    /// Seed text for the "add to memory" dialog: the bot-stripped comment text
+    /// with a `file`/`file:line` hint appended, so a finding phrased as a
+    /// general rule still carries where it came from. Edited freely before
+    /// [`review_memory::append_finding`] writes it as a single bullet
+    /// (whitespace/newlines collapsed at that point).
+    pub fn memory_finding_seed(&self) -> String {
+        let text = self.agent_text().trim().to_string();
+        let hint = match &self.path {
+            Some(path) if !self.file_level => match self.line {
+                Some(line) => Some(format!("{path}:{line}")),
+                None => Some(path.clone()),
+            },
+            Some(path) => Some(path.clone()),
+            None => None,
+        };
+        match hint {
+            Some(hint) => format!("{text} ({hint})"),
+            None => text,
         }
     }
 
@@ -740,6 +776,7 @@ impl App {
                 fix_confirm: None,
                 fix_vim_enabled: false,
                 reply: None,
+                memory_add: None,
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
             });
@@ -1229,6 +1266,7 @@ impl App {
                             fix_confirm: None,
                             fix_vim_enabled: false,
                             reply: None,
+                            memory_add: None,
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
                         });
@@ -2026,6 +2064,133 @@ impl App {
             ReplyKind::NotNeeded => "Posted reply · marked skipped",
         };
         self.push_toast_success(toast.to_string());
+        Ok(())
+    }
+
+    /// Open the "add to memory" dialog for the selected comment, seeded from
+    /// [`PrComment::memory_finding_seed`] and defaulting to the `General`
+    /// category. Editable before it's appended. No-op if a fix/reply/memory
+    /// dialog is already open or nothing is selected.
+    pub fn pr_review_open_memory_add(&mut self) {
+        let seed = match &self.mode {
+            AppMode::PrReview(state)
+                if state.reply.is_none()
+                    && state.fix_confirm.is_none()
+                    && state.memory_add.is_none() =>
+            {
+                state
+                    .selected_comment()
+                    .map(|c| (c.id, c.memory_finding_seed()))
+            }
+            _ => return,
+        };
+        let Some((comment_id, seed)) = seed else {
+            self.message = Some("No comment selected".into());
+            return;
+        };
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.memory_add = Some(MemoryAddState {
+                comment_id,
+                category: 0,
+                editor: TextEditor::new(seed),
+                editing: false,
+            });
+        }
+    }
+
+    /// Enter edit mode so keystrokes flow to the finding editor.
+    pub fn pr_review_memory_add_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.editing = true;
+        }
+    }
+
+    /// Leave edit mode, returning to the confirm view (the text is kept).
+    pub fn pr_review_memory_add_stop_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.editing = false;
+        }
+    }
+
+    /// Forward a key to the open finding editor (only meaningful in edit mode).
+    pub fn pr_review_memory_add_editor_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+            && memory_add.editing
+        {
+            memory_add.editor.handle_key(key);
+        }
+    }
+
+    /// Cycle the category (confirm view only) through [`MEMORY_CATEGORIES`].
+    pub fn pr_review_cycle_memory_category(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(memory_add) = &mut state.memory_add
+        {
+            memory_add.category = (memory_add.category + 1) % MEMORY_CATEGORIES.len();
+        }
+    }
+
+    /// Close the "add to memory" dialog without appending.
+    pub fn pr_review_cancel_memory_add(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.memory_add = None;
+        }
+    }
+
+    /// Memory-add dialog status for the key handler: `None` when closed, else
+    /// whether it is currently in edit mode.
+    pub fn pr_review_memory_add_view(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::PrReview(state) => state.memory_add.as_ref().map(|m| m.editing),
+            _ => None,
+        }
+    }
+
+    /// Append the (possibly edited) finding to the review-memory doc and close
+    /// the dialog. Whitespace/newlines in the finding text are collapsed to a
+    /// single line first, since the doc stores each finding as one bullet.
+    /// Dedup-aware and append-only (`review_memory::append_finding`) — never
+    /// touches existing prose. Zero agent tokens; a local file write only.
+    pub fn pr_review_append_memory(&mut self) -> Result<()> {
+        let prep = match &self.mode {
+            AppMode::PrReview(state) => state.memory_add.as_ref().map(|memory_add| {
+                (
+                    state.workdir.clone(),
+                    MEMORY_CATEGORIES[memory_add.category],
+                    memory_add.editor.text(),
+                )
+            }),
+            _ => return Ok(()),
+        };
+        let Some((workdir, category, finding)) = prep else {
+            return Ok(());
+        };
+
+        let finding = finding.split_whitespace().collect::<Vec<_>>().join(" ");
+        if finding.is_empty() {
+            self.message = Some("Finding is empty — type something or esc to cancel".into());
+            return Ok(());
+        }
+
+        let repo = self.repo_for_project_path(&workdir);
+        let path =
+            review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
+        let appended = review_memory::append_finding(&path, category, &finding)?;
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.memory_add = None;
+        }
+        let toast = if appended {
+            format!("Added to memory · {category}")
+        } else {
+            "Already in memory · skipped".to_string()
+        };
+        self.push_toast_success(toast);
         Ok(())
     }
 

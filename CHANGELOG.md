@@ -21,6 +21,14 @@ are tagged.
   `.amf/review-memory.md`. This is groundwork only — there's no pane key or
   agent action wired up to it yet; that lands with the PR-review lookback
   bootstrap and "add to memory" key.
+- **"Add to memory" key in the PR review pane.** Press `M` on a selected
+  comment to append its distilled finding to `.amf/review-memory.md` — seeded
+  from the bot-stripped comment text plus a `file:line` hint, editable before
+  it's saved, with `Tab` cycling a category (Concurrency, Error handling,
+  Naming, Tests, …). Appends are dedup-aware, so re-adding the same finding
+  is a no-op rather than a duplicate line. Zero agent tokens — a local file
+  write only, and only on your explicit confirm. This is the incremental way
+  the review-memory doc grows during normal triage.
 - **Token usage shown in the PR review pane header.** Once a fix has spun
   up the dedicated (or existing-live) session, the header shows what
   triage has spent on it so far — e.g. `dedicated usage 12.3k eff · $0.15`

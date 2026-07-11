@@ -8293,6 +8293,28 @@ fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mod
             std::mem::discriminant(other)
         ),
     }
+    assert!(app.ai_review_pending.is_some());
+}
+
+#[test]
+fn start_ai_pr_review_refuses_to_start_a_second_review_while_one_is_running() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+
+    // Cancel back to the pane (as if the first review is still running in
+    // the background) and try to start a second one — it must not spawn a
+    // new background job or clobber `ai_review_pending`'s claim on the first.
+    app.start_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert!(app.ai_review_pending.is_none());
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("already running"))
+    );
 }
 
 #[test]
@@ -8306,6 +8328,7 @@ fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
         origin,
         stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
@@ -8335,6 +8358,7 @@ fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
                 path: Some("src/x.rs".into()),
                 line: Some(1),
                 body: "Do this differently.".into(),
+                diff_hunk: None,
             }],
             raw_output: "### src/x.rs:1\nDo this differently.\n".into(),
         },
@@ -8362,6 +8386,7 @@ fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
                 path: None,
                 line: None,
                 body: "stale".into(),
+                diff_hunk: None,
             }]);
         state.review.comments.extend(stale);
     }
@@ -8381,6 +8406,7 @@ fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
         origin,
         stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
@@ -8391,6 +8417,7 @@ fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
                 path: None,
                 line: None,
                 body: "fresh".into(),
+                diff_hunk: None,
             }],
             raw_output: "### General\nfresh\n".into(),
         },
@@ -8422,6 +8449,7 @@ fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
         origin,
         stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
@@ -8445,6 +8473,7 @@ fn cancel_ai_pr_review_returns_to_pane_without_dropping_the_bg_result() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
     app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
         origin,
         stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
@@ -8466,6 +8495,76 @@ fn cancel_ai_pr_review_returns_to_pane_without_dropping_the_bg_result() {
 }
 
 #[test]
+fn poll_ai_pr_review_bg_merges_into_the_pane_after_cancel_instead_of_dropping_findings() {
+    // Regression: `cancel_ai_pr_review` (`esc`) restores `self.mode` to
+    // `PrReview` well before the background pass finishes. `Done` used to
+    // look for `AppMode::AiPrReviewRunning` to find where to merge; once the
+    // user had cancelled, that match failed, so the findings were computed
+    // and logged but never merged into any comment list — while the
+    // success/warning toast still fired unconditionally, falsely announcing
+    // results that were actually thrown away. `ai_review_pending` (kept
+    // alive independent of `self.mode`, surviving the cancel) fixes this.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    // The user gives up watching and backs out...
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    // ...and keeps triaging in the meantime (marks the first comment done) —
+    // this change must survive the merge below, not get clobbered by the
+    // stale pre-`A` snapshot.
+    app.pr_review_mark_done();
+
+    // ...then the background pass finishes.
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "A real finding.".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### src/x.rs:1\nA real finding.\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(app.ai_review_pending.is_none());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(
+                state.review.comments.iter().any(|c| c.ai_generated),
+                "the finding must be merged, not silently dropped"
+            );
+            assert_eq!(
+                state.review.comments[0].triage,
+                crate::app::pr_review::TriageState::Done,
+                "triage done while cancelled must survive the merge"
+            );
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("1 finding"))
+    );
+}
+
+#[test]
 fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
     let db_dir = TempDir::new().unwrap();
     let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
@@ -8482,6 +8581,7 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
             path: Some("src/x.rs".into()),
             line: Some(3),
             body: "AI finding".into(),
+            diff_hunk: None,
         }]);
     let cached = crate::app::pr_review::PrReview {
         pr: pr.clone(),
@@ -8532,6 +8632,7 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
             path: None,
             line: None,
             body: "stale finding".into(),
+            diff_hunk: None,
         }]);
     let cached = crate::app::pr_review::PrReview {
         pr: old_pr.clone(),
@@ -9520,12 +9621,14 @@ fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
                 path: Some("a.rs".into()),
                 line: Some(1),
                 body: "eligible".into(),
+                diff_hunk: None,
             }]);
         let mut skipped =
             crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
                 path: Some("b.rs".into()),
                 line: Some(2),
                 body: "skipped, excluded".into(),
+                diff_hunk: None,
             }]);
         skipped[0].triage = crate::app::pr_review::TriageState::Skipped;
         let mut replied =
@@ -9533,6 +9636,7 @@ fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
                 path: Some("c.rs".into()),
                 line: Some(3),
                 body: "already posted, excluded".into(),
+                diff_hunk: None,
             }]);
         replied[0].triage = crate::app::pr_review::TriageState::Replied;
         state.review.comments.append(&mut untriaged);
@@ -9580,6 +9684,7 @@ fn pr_review_ai_review_post_edit_cancel_flow() {
                 path: None,
                 line: None,
                 body: "general finding".into(),
+                diff_hunk: None,
             }]);
         state.review.comments.append(&mut findings);
     }

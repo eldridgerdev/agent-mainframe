@@ -1139,6 +1139,49 @@ first), and the reviewer's output (plus comments triaged in the pane)
       convention) — run manually with `cargo test -- --ignored
       run_headless_handles_a_prompt_over_the_argv_limit`. →
       `src/claude.rs`.
+
+      **Fifth follow-up, same day.** With the review actually completing,
+      real use against this PR's own live diff surfaced three more gaps —
+      good evidence the "does this belong in this pane" question above is
+      the right one to sit with. (1) `findings_to_comments` builds a draft
+      with `is_bot: false`, and the role chip fell through straight to
+      `[human]` — a synthetic finding is neither; it now checks
+      `ai_generated` first and shows `[ai]` (the marker-legend footer text
+      updated to match). (2) A draft finding never had a `diff_hunk` at all
+      — nothing about *generating* a finding produces one the way GitHub's
+      API hands one over for free on a *fetched* comment — so the detail
+      pane's whole "Diff hunk" section was silently absent for every AI
+      finding. Fixed by reusing the diff parser already built for the
+      Final Review feature (`crate::diff::parse_unified_diff`, `DiffFile`/
+      `DiffHunk`): `run_ai_pr_review` parses the already-fetched PR diff once
+      and re-matches each anchored finding's `path:line` back into it
+      (`diff_hunk_for_line`), reconstructing the same `@@ ... @@`-plus-body
+      shape GitHub returns so it renders and injects exactly like a fetched
+      comment's hunk would (`None` when the line doesn't land in any hunk —
+      degrades the same way an unavailable GitHub hunk already does).
+      (3) The real bug from the "does this belong here" analysis above:
+      `esc` (`cancel_ai_pr_review`) restores `self.mode` to `PrReview` well
+      before the background pass finishes; `Done` used to look for
+      `AppMode::AiPrReviewRunning` to find where to merge, and once
+      cancelled that match failed — findings were parsed, logged, and then
+      never merged into any comment list, while the success/warning toast
+      still fired unconditionally, falsely announcing results that were
+      silently thrown away. Fixed with a new `App::ai_review_pending:
+      Option<PrReviewState>`, set alongside `ai_review_bg` in
+      `start_ai_pr_review` and *not* cleared by cancel, so `Done`'s handler
+      can always find where the review was for. It now resolves a `Target`
+      (`Running` / `Pane` / `Elsewhere`) from the *current* `self.mode`
+      before merging — `Pane` merges into whatever live state the user has
+      (including further triage made after cancelling, not the stale
+      pre-`A` snapshot), `Elsewhere` (navigated to a different PR/pane
+      entirely) caches without touching `self.mode`, and the toast notes
+      "(re-open to see it)" for that case. `start_ai_pr_review` also gained
+      a re-entrancy guard (a second `A` while one is already running now
+      warns instead of orphaning the first). Unit-tested (the exact
+      cancel-then-triage-then-Done sequence, the re-entrancy guard, plus
+      `diff_hunk_for_line` against a real parsed diff). →
+      `src/app/pr_review.rs`, `src/app/mod.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a
@@ -1226,6 +1269,42 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Open questions
 
+- **Does "AI review of the PR diff" (`A`/`W`) actually belong in this pane? —
+  RECONSIDER.** Real use surfaced a cluster of friction that all traces back
+  to the same seam: this pane's data model and state machine were built for
+  *triaging comments other people/bots already left on GitHub* — every
+  `PrComment` was assumed to have a real GitHub identity, resolution state,
+  and (for inline ones) a `diff_hunk` GitHub hands over for free. Bolting
+  "the AI generates its own draft comments" onto that model meant fighting
+  the fit at nearly every step so far:
+  - Draft findings need a synthetic id range clear of real GitHub ids, and
+    `reply_target()`/`x` resolve had to be specially guarded or degrade
+    silently for a comment with no real thread.
+  - The author/role chip defaulted a draft to `is_bot: false`, which read as
+    "human" until special-cased — a symptom of forcing a third kind
+    (AI-authored, not-yet-posted) through a two-value bot/human model.
+  - `diff_hunk` isn't free the way it is for a GitHub comment — it had to be
+    reverse-engineered by re-parsing the whole PR diff
+    (`crate::diff::parse_unified_diff`) and matched back to each finding's
+    `path:line` after the fact, because nothing in the "generate findings"
+    path naturally produces one.
+  - The background-job lifecycle (start → running screen → cancel → done)
+    doesn't compose cleanly with "merge results into whichever pane state
+    the user is looking at by the time it finishes," which is a different
+    shape of problem than triage's request/response actions and caused a
+    real bug (findings silently dropped, with a false success toast, when
+    `Done` arrived after the user had already `esc`-ed back to the pane —
+    see the fourth follow-up below).
+
+  None of this is unfixable — each has landed a patch — but the accumulation
+  is a signal, not noise. Worth stepping back before adding anything more to
+  `A`/`W` specifically: is a dedicated "AI code review" workflow (its own
+  view/state, findings that are first-class rather than synthetic
+  `PrComment`s wearing a disguise, its own lifecycle for a background
+  generate-then-review pass) the better shape, with this pane staying
+  focused on triaging what reviewers *actually said*? Needs more
+  investigation and thought before deciding — not resolved here, just
+  flagged from real use.
 - **Which agent session runs the fixes? — DECIDED.** Default to spinning
   up (and reusing) one **dedicated review session** for all of the PR's
   fixes; offer **reuse-the-existing-live-session** as an option; never

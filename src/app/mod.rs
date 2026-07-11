@@ -628,6 +628,16 @@ pub struct App {
     /// Receiver for the background AI code review of the current PR's diff
     /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
     pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
+    /// The review-pane snapshot a background AI review ([`Self::ai_review_bg`])
+    /// was started against, kept alive independent of `self.mode` — in
+    /// particular across `cancel_ai_pr_review` (`esc`), which restores
+    /// `self.mode` to `PrReview` well before the background pass finishes.
+    /// Without this, `Done` arriving after a cancel finds `self.mode` is no
+    /// longer `AiPrReviewRunning` and has nowhere to merge the findings.
+    /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
+    /// together once `Done` is processed. See
+    /// `app::pr_review::poll_ai_pr_review_bg`.
+    pub ai_review_pending: Option<PrReviewState>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1944,6 +1954,7 @@ impl App {
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             ai_review_bg: None,
+            ai_review_pending: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2132,6 +2143,7 @@ impl App {
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
             ai_review_bg: None,
+            ai_review_pending: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

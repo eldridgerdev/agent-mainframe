@@ -181,6 +181,15 @@ pub struct AiFinding {
     pub path: Option<String>,
     pub line: Option<u32>,
     pub body: String,
+    /// The hunk (from the PR diff) covering `path:line`, matching the shape
+    /// GitHub's API hands over for free on a real review comment
+    /// (`@@ ... @@` header + body). Unlike a GitHub comment, nothing about
+    /// generating a finding naturally produces this — it's reconstructed
+    /// after parsing by re-matching `path:line` back into the diff
+    /// ([`diff_hunk_for_line`]) — so the pane can render/inject the same
+    /// context a fetched comment would carry. `None` when there's no
+    /// anchor, or the line couldn't be matched to a hunk.
+    pub diff_hunk: Option<String>,
 }
 
 /// Progress of the background AI PR review (`A` in the review pane, Epic E):
@@ -301,7 +310,12 @@ pub fn parse_ai_findings(output: &str) -> Vec<AiFinding> {
         };
         let body = lines.join("\n").trim().to_string();
         if !body.is_empty() {
-            out.push(AiFinding { path, line, body });
+            out.push(AiFinding {
+                path,
+                line,
+                body,
+                diff_hunk: None,
+            });
         }
     }
 
@@ -358,7 +372,7 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
                 line: f.line,
                 outdated: false,
                 file_level: f.path.is_some() && f.line.is_none(),
-                diff_hunk: None,
+                diff_hunk: f.diff_hunk.clone(),
                 body: f.body.clone(),
                 snippet,
                 in_reply_to: None,
@@ -370,6 +384,34 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
             }
         })
         .collect()
+}
+
+/// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
+/// its full body — the same shape GitHub's API hands back for free on a real
+/// review comment) for whichever hunk in `files` covers `path:line` on the
+/// new (current) side of the diff. An AI-review finding gets no such hunk for
+/// free — it's re-derived here by matching the model's `path:line` back into
+/// the already-fetched PR diff. `None` when the file isn't in the diff, or no
+/// hunk's new-side range covers `line` (a mismatched/hallucinated line
+/// number) — the finding still renders and injects fine without one, same as
+/// any GitHub comment whose hunk happens to be unavailable.
+fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) -> Option<String> {
+    let line = line as usize;
+    let file = files.iter().find(|f| f.path == path)?;
+    let hunk = file.hunks.iter().find(|h| {
+        let end = h.new_start + h.new_lines;
+        line >= h.new_start && line < end
+    })?;
+
+    let mut text = hunk.header.clone();
+    for l in &hunk.lines {
+        if matches!(l.kind, crate::diff::DiffLineKind::NoNewlineMarker) {
+            continue;
+        }
+        text.push('\n');
+        text.push_str(&l.text);
+    }
+    Some(text)
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
@@ -1212,9 +1254,24 @@ fn run_ai_pr_review(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = ClaudeLauncher::run_headless(&workdir, &prompt).map(|output| AiReviewOutcome {
-        findings: parse_ai_findings(&output),
-        raw_output: output,
+    let result = ClaudeLauncher::run_headless(&workdir, &prompt).map(|output| {
+        let mut findings = parse_ai_findings(&output);
+        // Attach each anchored finding's diff hunk by re-matching its
+        // `path:line` into the already-fetched PR diff — nothing about
+        // generating a finding produces one the way GitHub's API does for a
+        // fetched comment. A parse failure (malformed diff) just leaves every
+        // finding without a hunk rather than failing the whole review.
+        if let Ok(files) = crate::diff::parse_unified_diff(&diff) {
+            for finding in &mut findings {
+                if let (Some(path), Some(line)) = (&finding.path, finding.line) {
+                    finding.diff_hunk = diff_hunk_for_line(&files, path, line);
+                }
+            }
+        }
+        AiReviewOutcome {
+            findings,
+            raw_output: output,
+        }
     });
     let _ = tx.send(AiReviewProgress::Done(result));
 }
@@ -1827,7 +1884,14 @@ impl App {
     /// and switch to the full-screen running view. Any dialog open on the
     /// pane is cleared before stashing — the same precaution as the `f`/`P`
     /// stash (reopening a since-actioned dialog on return would be stale).
+    /// No-op (with a hint) if a review is already running — e.g. the user
+    /// cancelled back to the pane with `esc` and pressed `A` again before the
+    /// first pass finished — rather than orphaning it for a second one.
     pub fn start_ai_pr_review(&mut self) {
+        if self.ai_review_bg.is_some() {
+            self.push_toast_warning("AI review already running — wait for it to finish");
+            return;
+        }
         let mut origin = match &self.mode {
             AppMode::PrReview(state) => state.clone(),
             _ => return,
@@ -1849,6 +1913,7 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.ai_review_bg = Some(rx);
+        self.ai_review_pending = Some(origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
             Ok(diff) => run_ai_pr_review(thread_workdir, diff, memory, skill, tx),
@@ -1864,13 +1929,13 @@ impl App {
     }
 
     /// Poll the background AI PR review. Progress updates the running
-    /// screen's stage; `Done` merges the new draft findings into the stashed
-    /// pane — replacing any prior AI-review draft set, since each `A` run
-    /// supersedes the last — re-caches, restores the pane, and surfaces a
-    /// toast (success) or error (a real side effect, tokens spent, even if
-    /// the user already navigated away). Mirrors
-    /// [`App::poll_review_memory_bootstrap_bg`]. Returns `true` when a
-    /// redraw is warranted.
+    /// screen's stage; `Done` merges the new draft findings into whichever
+    /// pane state is the right target (see the `Target` enum below) — this
+    /// may run well after `esc` (`cancel_ai_pr_review`) has already returned
+    /// the user to the pane, since the background pass keeps going — then
+    /// re-caches and surfaces a toast (success/warning) or error (a real
+    /// side effect, tokens spent, even if the user already navigated away).
+    /// Returns `true` when a redraw is warranted.
     pub fn poll_ai_pr_review_bg(&mut self) -> bool {
         let Some(rx) = self.ai_review_bg.as_ref() else {
             return false;
@@ -1886,14 +1951,51 @@ impl App {
                 }
                 Ok(AiReviewProgress::Done(result)) => {
                     self.ai_review_bg = None;
-                    // Capture the origin before any mode-mutating side effect
-                    // below: `show_error` unconditionally resets `self.mode`
-                    // to `Normal`, which would otherwise clobber the running
-                    // screen's stashed pane before we get to restore it.
-                    let mut origin = match &self.mode {
-                        AppMode::AiPrReviewRunning(state) => Some(state.origin.clone()),
-                        _ => None,
+                    let Some(pending) = self.ai_review_pending.take() else {
+                        // Invariant: always set alongside `ai_review_bg` in
+                        // `start_ai_pr_review`. If it's ever missing there's
+                        // nowhere safe to merge into — just surface the error.
+                        if let Err(e) = result {
+                            self.show_error(e);
+                        }
+                        changed = true;
+                        break;
                     };
+                    let pr_number = pending.review.pr.number;
+
+                    // Where to land the result, resolved *before* any
+                    // mode-mutating side effect (`show_error` resets
+                    // `self.mode` to `Normal` for anything but
+                    // Normal/Help/Viewing) so both the success and error
+                    // paths can restore sensibly:
+                    // - `Running`: still on the running screen for this PR —
+                    //   merge and land in the pane.
+                    // - `Pane`: the user already backed out (`esc`) to this
+                    //   PR's pane — possibly triaging further in the
+                    //   meantime, so merge into *that* live state, not the
+                    //   stale pre-`A` snapshot (`pending`). This is the case
+                    //   that used to silently drop the findings entirely.
+                    // - `Elsewhere`: navigated away — a different PR, closed
+                    //   the pane, opened another dialog. Nowhere live to
+                    //   show it; cache only and leave `self.mode` alone.
+                    enum Target {
+                        Running,
+                        Pane(Box<PrReviewState>),
+                        Elsewhere,
+                    }
+                    let target = match &self.mode {
+                        AppMode::AiPrReviewRunning(state)
+                            if state.origin.review.pr.number == pr_number =>
+                        {
+                            Target::Running
+                        }
+                        AppMode::PrReview(state) if state.review.pr.number == pr_number => {
+                            Target::Pane(Box::new(state.clone()))
+                        }
+                        _ => Target::Elsewhere,
+                    };
+
+                    let mut landed: Option<PrReviewState> = None;
                     match result {
                         Ok(outcome) => {
                             let count = outcome.findings.len();
@@ -1907,8 +2009,8 @@ impl App {
                                 self.log_warn(
                                     "pr_review",
                                     format!(
-                                        "AI review parsed 0 findings from a non-empty response \
-                                         ({} chars) — raw output:\n{}",
+                                        "AI review of PR #{pr_number} parsed 0 findings from a \
+                                         non-empty response ({} chars) — raw output:\n{}",
                                         outcome.raw_output.len(),
                                         outcome.raw_output
                                     ),
@@ -1917,36 +2019,71 @@ impl App {
                                 self.log_debug(
                                     "pr_review",
                                     format!(
-                                        "AI review parsed {count} finding{} from {} chars of output",
+                                        "AI review of PR #{pr_number} parsed {count} finding{} \
+                                         from {} chars of output",
                                         if count == 1 { "" } else { "s" },
                                         outcome.raw_output.len()
                                     ),
                                 );
                             }
-                            if let Some(origin) = &mut origin {
-                                origin.review.comments.retain(|c| !c.ai_generated);
-                                origin
-                                    .review
-                                    .comments
-                                    .extend(findings_to_comments(&outcome.findings));
-                                self.cache_pr_review(&origin.review);
-                                self.apply_persisted_triage(&mut origin.review);
+
+                            let mut base = match &target {
+                                Target::Running => {
+                                    let AppMode::AiPrReviewRunning(state) = &self.mode else {
+                                        unreachable!()
+                                    };
+                                    state.origin.clone()
+                                }
+                                Target::Pane(state) => (**state).clone(),
+                                Target::Elsewhere => pending.clone(),
+                            };
+                            base.review.comments.retain(|c| !c.ai_generated);
+                            base.review
+                                .comments
+                                .extend(findings_to_comments(&outcome.findings));
+                            self.cache_pr_review(&base.review);
+                            self.apply_persisted_triage(&mut base.review);
+
+                            let elsewhere = matches!(target, Target::Elsewhere);
+                            if !elsewhere {
+                                landed = Some(base);
                             }
+
+                            let note = if elsewhere {
+                                format!(" for PR #{pr_number} (re-open to see it)")
+                            } else {
+                                String::new()
+                            };
                             if count == 0 {
-                                self.push_toast_warning(
-                                    "AI review found 0 findings — press D to check the debug log",
-                                );
+                                self.push_toast_warning(format!(
+                                    "AI review found 0 findings{note} — press D to check the \
+                                     debug log"
+                                ));
                             } else {
                                 self.push_toast_success(format!(
-                                    "AI review found {count} finding{}",
+                                    "AI review found {count} finding{}{note}",
                                     if count == 1 { "" } else { "s" }
                                 ));
                             }
                         }
-                        Err(e) => self.show_error(e),
+                        Err(e) => {
+                            // Preserve whatever live pane state exists before
+                            // `show_error` resets `self.mode` to `Normal`.
+                            landed = match &target {
+                                Target::Running => {
+                                    let AppMode::AiPrReviewRunning(state) = &self.mode else {
+                                        unreachable!()
+                                    };
+                                    Some(state.origin.clone())
+                                }
+                                Target::Pane(state) => Some((**state).clone()),
+                                Target::Elsewhere => None,
+                            };
+                            self.show_error(e);
+                        }
                     }
-                    if let Some(origin) = origin {
-                        self.mode = AppMode::PrReview(origin);
+                    if let Some(state) = landed {
+                        self.mode = AppMode::PrReview(state);
                     }
                     changed = true;
                     break;
@@ -1954,10 +2091,21 @@ impl App {
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.ai_review_bg = None;
-                    if let AppMode::AiPrReviewRunning(state) = &self.mode {
-                        self.mode = AppMode::PrReview(state.origin.clone());
-                        self.message = Some("AI review failed unexpectedly".to_string());
-                        changed = true;
+                    let pending = self.ai_review_pending.take();
+                    let pr_number = pending.as_ref().map(|p| p.review.pr.number);
+                    match &self.mode {
+                        AppMode::AiPrReviewRunning(state)
+                            if Some(state.origin.review.pr.number) == pr_number =>
+                        {
+                            self.mode = AppMode::PrReview(state.origin.clone());
+                            self.message = Some("AI review failed unexpectedly".to_string());
+                            changed = true;
+                        }
+                        AppMode::PrReview(state) if Some(state.review.pr.number) == pr_number => {
+                            self.message = Some("AI review failed unexpectedly".to_string());
+                            changed = true;
+                        }
+                        _ => {}
                     }
                     break;
                 }
@@ -1968,7 +2116,8 @@ impl App {
 
     /// Cancel the running screen (`esc`/`q`): return to the review pane. The
     /// background thread isn't aborted — if it finishes later,
-    /// [`App::poll_ai_pr_review_bg`] still surfaces the result.
+    /// [`App::poll_ai_pr_review_bg`] still surfaces the result (via
+    /// [`App::ai_review_pending`], which survives this).
     pub fn cancel_ai_pr_review(&mut self) {
         if let AppMode::AiPrReviewRunning(state) = &self.mode {
             self.mode = AppMode::PrReview(state.origin.clone());
@@ -4081,16 +4230,19 @@ mod tests {
                 path: Some("a.rs".into()),
                 line: Some(10),
                 body: "line finding".into(),
+                diff_hunk: None,
             },
             AiFinding {
                 path: Some("b.rs".into()),
                 line: None,
                 body: "file-level finding".into(),
+                diff_hunk: None,
             },
             AiFinding {
                 path: None,
                 line: None,
                 body: "general finding".into(),
+                diff_hunk: None,
             },
         ];
         let comments = findings_to_comments(&findings);
@@ -4148,16 +4300,19 @@ mod tests {
                 path: Some("a.rs".into()),
                 line: Some(10),
                 body: "Guard the lock here.".into(),
+                diff_hunk: None,
             },
             AiFinding {
                 path: Some("b.rs".into()),
                 line: None,
                 body: "Whole file needs a rewrite.".into(),
+                diff_hunk: None,
             },
             AiFinding {
                 path: None,
                 line: None,
                 body: "Consider consistent error handling.".into(),
+                diff_hunk: None,
             },
         ]);
         let refs: Vec<&PrComment> = comments.iter().collect();
@@ -4183,10 +4338,49 @@ mod tests {
             path: Some("a.rs".into()),
             line: Some(1),
             body: "x".into(),
+            diff_hunk: None,
         }]);
         let refs: Vec<&PrComment> = comments.iter().collect();
         let (summary, inline) = build_ai_review(&refs);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
+    }
+
+    fn sample_diff_files() -> Vec<crate::diff::DiffFile> {
+        crate::diff::parse_unified_diff(
+            "\
+diff --git a/src/lib.rs b/src/lib.rs
+index 1111111..2222222 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,3 @@
+ line1
+-line2
++line2 updated
++line3
+",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn diff_hunk_for_line_matches_the_covering_hunk() {
+        let files = sample_diff_files();
+        let hunk = diff_hunk_for_line(&files, "src/lib.rs", 1).expect("line 1 is in range");
+        assert!(hunk.starts_with("@@ -1,2 +1,3 @@"));
+        assert!(hunk.contains(" line1"));
+        assert!(hunk.contains("-line2"));
+        assert!(hunk.contains("+line2 updated"));
+        assert!(hunk.contains("+line3"));
+
+        // The last new-side line (3) is also covered.
+        assert!(diff_hunk_for_line(&files, "src/lib.rs", 3).is_some());
+    }
+
+    #[test]
+    fn diff_hunk_for_line_is_none_outside_the_hunk_or_file() {
+        let files = sample_diff_files();
+        assert!(diff_hunk_for_line(&files, "src/lib.rs", 999).is_none());
+        assert!(diff_hunk_for_line(&files, "src/other.rs", 1).is_none());
     }
 }

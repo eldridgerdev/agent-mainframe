@@ -1128,11 +1128,19 @@ fn draw_comment_detail(
     }
     lines.push(Line::from(header_spans));
 
-    // Author / role / kind chips.
+    // Author / role / kind chips. An AI-review draft is neither a bot nor a
+    // human GitHub account — label it distinctly rather than falling through
+    // to "human" (the `is_bot` false-default a draft finding is built with).
     lines.push(Line::from(vec![
         chip(&format!("@{}", c.author), theme.secondary.to_color()),
         chip(
-            if c.is_bot { "bot" } else { "human" },
+            if c.ai_generated {
+                "ai"
+            } else if c.is_bot {
+                "bot"
+            } else {
+                "human"
+            },
             theme.text_muted.to_color(),
         ),
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
@@ -1395,7 +1403,7 @@ fn marker_legend(theme: &Theme) -> Line<'static> {
             "   [outdated] line moved",
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::styled("   bot/human", muted),
+        Span::styled("   bot/human/ai", muted),
         Span::styled("   triage: ", muted),
         Span::styled("[ ] untriaged ", muted),
         Span::styled("[~] fixing ", Style::default().fg(theme.warning.to_color())),

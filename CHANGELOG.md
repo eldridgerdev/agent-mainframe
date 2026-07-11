@@ -38,7 +38,13 @@ are tagged.
   doesn't hold the exact requested heading level or wraps its whole reply in
   a code fence, and a `0 findings` result is now distinguished (a warning
   toast + a debug-log dump of the raw response) from a quiet success, so a
-  parsing mismatch doesn't look identical to "the diff was just clean".
+  parsing mismatch doesn't look identical to "the diff was just clean". A
+  draft finding's role chip now reads `[ai]` instead of falling through to
+  `[human]`, its detail pane shows the actual diff hunk (re-matched from the
+  PR diff by `path:line`, same as a fetched GitHub comment) instead of
+  nothing, and `esc`-ing back to the pane before the background pass
+  finishes no longer silently drops the findings while still claiming
+  success — they now merge into wherever you actually are when it lands.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

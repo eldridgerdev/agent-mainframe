@@ -7,8 +7,10 @@
   in-diff search, comment re-anchoring, resolve/unresolve thread
   state, the changeset overview + diff stats, and the build/test gate
   before approve have shipped. The remaining Round 2 item (file-level
-  PR comments) and a third round of review-loop / viewer upgrades
-  (**Round 3**, captured 2026-07-01) are not yet started.
+  PR comments) is still open. **Round 3** (captured 2026-07-01) has
+  started: its first item, interdiff on re-review, has shipped; the
+  rest of the loop-closing, viewer-ergonomics, AI co-review, and
+  workflow items are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -600,8 +602,27 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 Loop:
 
-- [ ] Interdiff on re-review (store per-file patches / blob ids in the
-      snapshot; show "since last review" diffs for changed files)
+- [x] Interdiff on re-review — `.claude/final-review-snapshot.json` gained a
+      `content` map (file path -> its `new_content` when the round finished,
+      skipped for binary files and deletions, `#[serde(default)]` so older
+      snapshots just load with nothing to diff against yet). Press `I` on a
+      `Δ`-flagged file to open a read-only modal with the diff between that
+      saved content and the file's current content — computed on demand via
+      a single local `git diff --no-index` (`build_interdiff` in
+      `src/app/review.rs`, materializing both blobs to `NamedTempFile`s and
+      reusing `crate::diff::load_review_file`, the same plumbing the
+      config-wizard confirm dialog and the Claude-hook diff-review prompt
+      already use), so unlike the AI-generated overview it needs no
+      child-process/poll machinery. A no-op with a message when there's
+      nothing to show: no prior review, the file has no saved content from
+      last round, or the diff comes back empty (the fingerprint can move for
+      reasons other than the file's own content, e.g. the base ref shifted).
+      The modal (`draw_interdiff_modal`, `src/ui/dialogs/diff.rs`) reuses
+      `draw_patch_panel` — the same syntax-highlighted unified-diff renderer
+      as the main patch panel — and takes full key precedence while open,
+      mirroring the changeset-overview modal exactly (`j`/`k`/PageUp/
+      PageDown/`g`/`G` scroll, `q`/`Esc` close). `App::open_interdiff` /
+      `close_interdiff` / `interdiff_scroll_*` in `src/app/review.rs`.
 - [ ] "Fixes ready — re-review?" notification (watch the fix session's
       idle status; one-key jump back into the review)
 - [ ] Apply suggestions locally (patch the worktree directly from

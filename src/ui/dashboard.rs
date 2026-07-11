@@ -903,8 +903,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.area(),
     );
 
+    // The PR-review family of full-screen modes (loading/picker/pane/running
+    // views) each `return` before reaching the shared `draw_toasts` call near
+    // the end of this function, so every one of them draws its own — a
+    // success/warning/error toast pushed while any of these is showing
+    // (e.g. the AI review's "found N findings" / error result landing while
+    // the user is back in the pane) would otherwise never appear, silently
+    // swallowed until the mode changes.
     if let AppMode::PrReviewLoading(state) = &app.mode {
         super::dialogs::draw_pr_review_loading(frame, state, &app.throbber_state, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
     if matches!(app.mode, AppMode::PrReview(_)) {
@@ -921,6 +929,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.throbber_state,
             );
         }
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
     if let AppMode::PrPicker(state) = &app.mode {
@@ -929,6 +938,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.config.review_memory_path.as_deref(),
         );
         super::dialogs::draw_pr_picker(frame, state, &app.theme, &memory_path);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
     if let AppMode::ReviewMemoryBootstrapRunning(state) = &app.mode {
@@ -938,10 +948,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             &app.throbber_state,
             &app.theme,
         );
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
     if let AppMode::AiPrReviewRunning(state) = &app.mode {
         super::dialogs::draw_ai_pr_review_running(frame, state, &app.throbber_state, &app.theme);
+        super::draw_toasts(frame, &app.toasts, &app.theme);
         return;
     }
 

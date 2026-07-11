@@ -189,7 +189,18 @@ pub struct AiFinding {
 /// `Done` fires exactly once at the end.
 pub enum AiReviewProgress {
     Reviewing { token_estimate: usize },
-    Done(Result<Vec<AiFinding>>),
+    Done(Result<AiReviewOutcome>),
+}
+
+/// Successful result of one AI PR review pass: the parsed findings plus the
+/// agent's raw response text. The raw text isn't shown in the UI — it exists
+/// so [`App::poll_ai_pr_review_bg`] can write it to the debug log, since a
+/// model that doesn't follow the fixed-format instruction produces zero
+/// parsed findings with no other visible signal that anything went wrong
+/// (vs. a genuinely clean diff, which also parses to zero findings).
+pub struct AiReviewOutcome {
+    pub findings: Vec<AiFinding>,
+    pub raw_output: String,
 }
 
 /// Assemble the AI code-review prompt: the PR diff, the review-memory doc's
@@ -238,13 +249,51 @@ pub fn ai_review_prompt(diff: &str, memory: &str, skill: Option<&str>) -> String
     out
 }
 
+/// If `output` is entirely wrapped in one fenced code block (a common way
+/// models "helpfully" package a response even when told not to add anything
+/// outside the requested format, e.g. ` ```markdown ... ``` `), strip the
+/// fence and return the inner text. Otherwise returns `output` unchanged.
+fn strip_outer_code_fence(output: &str) -> &str {
+    let trimmed = output.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let Some(close_at) = after_open.rfind("```") else {
+        return trimmed;
+    };
+    // Skip an optional language tag on the opening fence line (```markdown).
+    let body_start = after_open.find('\n').map_or(0, |i| i + 1);
+    if body_start > close_at {
+        return trimmed;
+    }
+    after_open[body_start..close_at].trim()
+}
+
+/// Recognize a finding heading: 1-4 leading `#` characters followed by
+/// whitespace and the heading text. [`ai_review_prompt`] asks for exactly
+/// [`AI_FINDING_HEADING_PREFIX`] (`###`), but models don't reliably hold a
+/// specific heading level (`##`/`#` are common substitutions), so the parser
+/// accepts any small heading level rather than silently dropping every
+/// finding over that one mismatch.
+fn strip_finding_heading(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+    if !(1..=4).contains(&hashes) {
+        return None;
+    }
+    let rest = trimmed[hashes..].trim_start();
+    (!rest.is_empty()).then_some(rest)
+}
+
 /// Parse the AI reviewer's fixed-format output ([`ai_review_prompt`]) into
-/// findings. Each [`AI_FINDING_HEADING_PREFIX`]-led heading starts a new
-/// finding; a `path:line` heading (the line parses as `u32`) anchors it,
-/// anything else (`General`, malformed) leaves it pathless. Body lines up to
-/// the next heading are joined and trimmed. Empty findings (blank body) are
-/// dropped rather than erroring — a partially-malformed response still yields
-/// whatever findings did parse.
+/// findings. Tolerant of common formatting drift: an outer code fence around
+/// the whole response is stripped first ([`strip_outer_code_fence`]), and any
+/// small markdown heading level starts a new finding ([`strip_finding_heading`],
+/// not just the requested `###`). A `path:line` heading (the line parses as
+/// `u32`) anchors it, anything else (`General`, malformed) leaves it pathless.
+/// Body lines up to the next heading are joined and trimmed. Empty findings
+/// (blank body) are dropped rather than erroring — a partially-malformed
+/// response still yields whatever findings did parse.
 pub fn parse_ai_findings(output: &str) -> Vec<AiFinding> {
     fn flush(current: Option<(Option<String>, Option<u32>, Vec<&str>)>, out: &mut Vec<AiFinding>) {
         let Some((path, line, lines)) = current else {
@@ -256,10 +305,11 @@ pub fn parse_ai_findings(output: &str) -> Vec<AiFinding> {
         }
     }
 
+    let output = strip_outer_code_fence(output);
     let mut findings = Vec::new();
     let mut current: Option<(Option<String>, Option<u32>, Vec<&str>)> = None;
     for raw_line in output.lines() {
-        match raw_line.strip_prefix(AI_FINDING_HEADING_PREFIX) {
+        match strip_finding_heading(raw_line) {
             Some(heading) => {
                 flush(current.take(), &mut findings);
                 let (path, line) = match heading.trim().rsplit_once(':') {
@@ -1162,8 +1212,10 @@ fn run_ai_pr_review(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result =
-        ClaudeLauncher::run_headless(&workdir, &prompt).map(|output| parse_ai_findings(&output));
+    let result = ClaudeLauncher::run_headless(&workdir, &prompt).map(|output| AiReviewOutcome {
+        findings: parse_ai_findings(&output),
+        raw_output: output,
+    });
     let _ = tx.send(AiReviewProgress::Done(result));
 }
 
@@ -1843,21 +1895,53 @@ impl App {
                         _ => None,
                     };
                     match result {
-                        Ok(findings) => {
-                            let count = findings.len();
+                        Ok(outcome) => {
+                            let count = outcome.findings.len();
+                            // A model that ignores the fixed-format
+                            // instruction parses to zero findings with no
+                            // other signal — log the raw response so that
+                            // case is diagnosable (press `D` for the debug
+                            // log) instead of looking identical to "the diff
+                            // was just clean".
+                            if count == 0 && !outcome.raw_output.trim().is_empty() {
+                                self.log_warn(
+                                    "pr_review",
+                                    format!(
+                                        "AI review parsed 0 findings from a non-empty response \
+                                         ({} chars) — raw output:\n{}",
+                                        outcome.raw_output.len(),
+                                        outcome.raw_output
+                                    ),
+                                );
+                            } else {
+                                self.log_debug(
+                                    "pr_review",
+                                    format!(
+                                        "AI review parsed {count} finding{} from {} chars of output",
+                                        if count == 1 { "" } else { "s" },
+                                        outcome.raw_output.len()
+                                    ),
+                                );
+                            }
                             if let Some(origin) = &mut origin {
                                 origin.review.comments.retain(|c| !c.ai_generated);
                                 origin
                                     .review
                                     .comments
-                                    .extend(findings_to_comments(&findings));
+                                    .extend(findings_to_comments(&outcome.findings));
                                 self.cache_pr_review(&origin.review);
                                 self.apply_persisted_triage(&mut origin.review);
                             }
-                            self.push_toast_success(format!(
-                                "AI review found {count} finding{}",
-                                if count == 1 { "" } else { "s" }
-                            ));
+                            if count == 0 {
+                                self.push_toast_warning(
+                                    "AI review found 0 findings — press D to check the debug log",
+                                );
+                            } else {
+                                self.push_toast_success(format!(
+                                    "AI review found {count} finding{}",
+                                    if count == 1 { "" } else { "s" }
+                                ));
+                            }
                         }
                         Err(e) => self.show_error(e),
                     }
@@ -3955,6 +4039,39 @@ mod tests {
     fn parse_ai_findings_empty_output_yields_no_findings() {
         assert!(parse_ai_findings("").is_empty());
         assert!(parse_ai_findings("no headings at all, just prose").is_empty());
+    }
+
+    #[test]
+    fn parse_ai_findings_tolerates_a_different_heading_level() {
+        // The prompt asks for `###`, but models don't reliably hold a
+        // specific heading level — `##` and bare `#` should still parse.
+        let output = "## src/x.rs:5\nDouble-hash heading.\n\n# General\nSingle-hash heading.\n";
+        let findings = parse_ai_findings(output);
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].path.as_deref(), Some("src/x.rs"));
+        assert_eq!(findings[0].body, "Double-hash heading.");
+        assert_eq!(findings[1].path, None);
+        assert_eq!(findings[1].body, "Single-hash heading.");
+    }
+
+    #[test]
+    fn parse_ai_findings_strips_an_outer_code_fence() {
+        let output = "```markdown\n### a.rs:1\nFenced finding.\n```\n";
+        let findings = parse_ai_findings(output);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].body, "Fenced finding.");
+    }
+
+    #[test]
+    fn parse_ai_findings_leaves_output_without_a_full_wrap_alone() {
+        // A fence that doesn't wrap the *entire* response (e.g. a fenced
+        // suggestion inside a finding's own body) must not be treated as the
+        // outer-wrap case, or its content would be silently dropped.
+        let output = "### a.rs:1\nSee below:\n```rust\nfoo();\n```\nmore text\n";
+        let findings = parse_ai_findings(output);
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].body.contains("foo();"));
+        assert!(findings[0].body.contains("more text"));
     }
 
     #[test]

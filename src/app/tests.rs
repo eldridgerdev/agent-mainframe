@@ -8329,13 +8329,16 @@ fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
         ),
     }
 
-    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(vec![
-        crate::app::pr_review::AiFinding {
-            path: Some("src/x.rs".into()),
-            line: Some(1),
-            body: "Do this differently.".into(),
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "Do this differently.".into(),
+            }],
+            raw_output: "### src/x.rs:1\nDo this differently.\n".into(),
         },
-    ])))
+    )))
     .unwrap();
     assert!(app.poll_ai_pr_review_bg());
     assert!(app.ai_review_bg.is_none());
@@ -8382,13 +8385,16 @@ fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
         origin,
         stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
     });
-    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(vec![
-        crate::app::pr_review::AiFinding {
-            path: None,
-            line: None,
-            body: "fresh".into(),
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "fresh".into(),
+            }],
+            raw_output: "### General\nfresh\n".into(),
         },
-    ])))
+    )))
     .unwrap();
     assert!(app.poll_ai_pr_review_bg());
     match &app.mode {
@@ -8447,8 +8453,13 @@ fn cancel_ai_pr_review_returns_to_pane_without_dropping_the_bg_result() {
     app.cancel_ai_pr_review();
     assert!(matches!(app.mode, AppMode::PrReview(_)));
 
-    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(vec![])))
-        .unwrap();
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![],
+            raw_output: String::new(),
+        },
+    )))
+    .unwrap();
     assert!(app.poll_ai_pr_review_bg());
     assert!(app.ai_review_bg.is_none());
     assert!(matches!(app.mode, AppMode::PrReview(_)));

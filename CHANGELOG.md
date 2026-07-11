@@ -31,7 +31,14 @@ are tagged.
   throbber now animates properly for the (potentially long) blocking `gh`/
   `claude` call rather than sitting frozen, and `esc`-ing back to the pane
   while it's still running shows a throbber + "AI review running…" in the
-  header, so neither screen reads as stuck or stalled.
+  header, so neither screen reads as stuck or stalled. Success/warning/error
+  toasts (e.g. "AI review found N findings") now actually render while any of
+  the PR-review pane's full-screen modes are showing — they were being pushed
+  but silently swallowed before. Finding-parsing also tolerates a model that
+  doesn't hold the exact requested heading level or wraps its whole reply in
+  a code fence, and a `0 findings` result is now distinguished (a warning
+  toast + a debug-log dump of the raw response) from a quiet success, so a
+  parsing mismatch doesn't look identical to "the diff was just clean".
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

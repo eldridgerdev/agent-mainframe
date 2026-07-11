@@ -1087,6 +1087,31 @@ first), and the reviewer's output (plus comments triaged in the pane)
       handled) rather than just the one that was reported. Unit-tested
       (all three modes report `has_visible_animation() == true`). →
       `src/app/mod.rs`, `src/app/tests.rs`.
+
+      **Third follow-up, same day.** With the throbber fixed, the actual
+      report was "the review runs, says it's done, but nothing happens" —
+      two compounding bugs. (1) `PrReviewLoading`/`PrReview`/`PrPicker`/
+      `ReviewMemoryBootstrapRunning`/`AiPrReviewRunning` each `return` from
+      `ui::dashboard::draw` before reaching the shared `draw_toasts` call, so
+      *every* toast pushed while any of them is showing — including the AI
+      review's own "found N findings" result — was silently swallowed; all
+      five now draw toasts too. (2) `parse_ai_findings` required the exact
+      `###` heading level `ai_review_prompt` asks for; a model that
+      substitutes `##`/`#` (common) or wraps its whole reply in a code fence
+      (also common, despite "no prose outside it") now parses to **zero**
+      findings with nothing to show and no error — indistinguishable from a
+      genuinely clean diff. The parser now accepts any 1-4-level heading
+      (`strip_finding_heading`) and strips a single outer code fence
+      (`strip_outer_code_fence`) before parsing; `AiReviewProgress::Done`'s
+      success payload became `AiReviewOutcome { findings, raw_output }` so
+      [`App::poll_ai_pr_review_bg`] can tell the two zero-finding cases apart
+      — a **0-finding** result now pushes a *warning* toast pointing at the
+      debug log (`D`) instead of a quiet success, and the raw response is
+      always logged (`log_warn` when 0 findings from non-empty output,
+      `log_debug` otherwise) so a persistent mismatch is diagnosable without
+      re-running anything. Unit-tested (both new parse helpers; the poll's
+      zero-vs-nonzero toast/log branches indirectly via existing coverage). →
+      `src/app/pr_review.rs`, `src/ui/dashboard.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

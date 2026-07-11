@@ -1380,6 +1380,141 @@ impl App {
         Ok(())
     }
 
+    /// Open the changeset-overview modal (reviewer-triggered, `O`). Reuses a
+    /// cached overview for free; only spawns a headless pass when nothing is
+    /// cached and nothing is already generating, so simply reopening the modal
+    /// never re-triggers a headless request on its own — the plan's "manual
+    /// only, never automatic" requirement is about *generation*, not viewing.
+    pub fn open_changeset_overview(&mut self) {
+        let AppMode::DiffViewer(state) = &mut self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        state.changeset_overview_open = true;
+        if state.changeset_overview.is_none() && state.changeset_overview_child.is_none() {
+            self.generate_changeset_overview();
+        }
+    }
+
+    /// Spawn (or re-spawn) a headless whole-changeset overview pass. Unlike
+    /// `open_changeset_overview` this always starts a fresh generation when
+    /// none is already in flight — the explicit "regenerate" action once the
+    /// modal is open.
+    pub fn generate_changeset_overview(&mut self) {
+        let (workdir, prompt) = {
+            let AppMode::DiffViewer(state) = &self.mode else {
+                return;
+            };
+            if !state.review || state.changeset_overview_child.is_some() {
+                return;
+            }
+            if state.files.is_empty() {
+                return;
+            }
+            (
+                state.workdir.clone(),
+                build_changeset_overview_prompt(&state.files),
+            )
+        };
+
+        match crate::claude::ClaudeLauncher::spawn_headless(&workdir, &prompt) {
+            Ok(child) => {
+                self.message = Some("Changeset overview running…".to_string());
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.changeset_overview_child = Some(child);
+                }
+            }
+            Err(err) => {
+                self.message = Some(format!("Changeset overview unavailable: {err}"));
+            }
+        }
+    }
+
+    /// Poll an in-flight changeset-overview generation; on completion cache the
+    /// result and reset the modal's scroll. Mirrors `poll_review_walkthrough`.
+    pub fn poll_changeset_overview(&mut self) -> Result<()> {
+        let finished = match &mut self.mode {
+            AppMode::DiffViewer(state) => match state.changeset_overview_child.as_mut() {
+                Some(child) => child.try_wait()?,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let Some(status) = finished else {
+            return Ok(());
+        };
+
+        let child = match &mut self.mode {
+            AppMode::DiffViewer(state) => state.changeset_overview_child.take(),
+            _ => None,
+        };
+        let Some(child) = child else {
+            return Ok(());
+        };
+
+        let output = child.wait_with_output()?;
+        let overview = if status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if text.is_empty() {
+                "Changeset overview was empty.".to_string()
+            } else {
+                text
+            }
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            format!("Changeset overview unavailable: {stderr}")
+        };
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.changeset_overview = Some(overview);
+            state.changeset_overview_scroll = 0;
+        }
+        Ok(())
+    }
+
+    /// Close the changeset-overview modal. The cached overview (if any) is kept
+    /// so reopening with `O` doesn't re-run the headless pass.
+    pub fn close_changeset_overview(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.changeset_overview_open = false;
+        }
+    }
+
+    /// Max scroll offset for the changeset-overview modal, in rendered
+    /// (markdown-wrapped) visual lines. Mirrors `review_note_max_scroll`.
+    fn changeset_overview_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .changeset_overview_rendered_lines
+            .saturating_sub(state.changeset_overview_view_height)
+    }
+
+    pub fn changeset_overview_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::changeset_overview_max_scroll(state);
+            state.changeset_overview_scroll = (state.changeset_overview_scroll + amount).min(max);
+        }
+    }
+
+    pub fn changeset_overview_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.changeset_overview_scroll =
+                state.changeset_overview_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn changeset_overview_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.changeset_overview_scroll = 0;
+        }
+    }
+
+    pub fn changeset_overview_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.changeset_overview_scroll = Self::changeset_overview_max_scroll(state);
+        }
+    }
+
     /// Accept the AI draft comment under the line cursor, promoting it to a
     /// permanent human comment. Returns `true` if a draft was accepted (so the
     /// key handler can stop), `false` if the cursored line carries no draft.
@@ -2674,6 +2809,57 @@ fn build_co_review_prompt(file: &crate::diff::DiffFile) -> String {
          output nothing at all.\n\n\
          File: {}\n\n```\n{}\n```",
         file.path, body
+    )
+}
+
+/// Build the prompt for an on-demand overview / risk summary of the **whole**
+/// changeset (reviewer-triggered via `O`, never automatic). Bounded on two
+/// axes so a large changeset can't produce an unbounded headless request: the
+/// file list is capped at `MAX_FILES`, and each included file's patch gets a
+/// much smaller budget than the single-file walkthrough's, since this prompt
+/// aggregates many files at once.
+fn build_changeset_overview_prompt(files: &[crate::diff::DiffFile]) -> String {
+    const MAX_FILES: usize = 30;
+    const MAX_PATCH_PER_FILE: usize = 400;
+    const MAX_TOTAL: usize = 16000;
+
+    let mut body = String::new();
+    let included = files.iter().filter(|f| !f.is_binary).take(MAX_FILES);
+    let included_count = included.clone().count();
+    for file in included {
+        let mut patch = if file.patch.trim().is_empty() {
+            file.new_content.clone().unwrap_or_default()
+        } else {
+            file.patch.clone()
+        };
+        if patch.len() > MAX_PATCH_PER_FILE {
+            patch.truncate(MAX_PATCH_PER_FILE);
+            patch.push_str("\n… (truncated)");
+        }
+        body.push_str(&format!(
+            "### {} (+{} -{})\n```diff\n{}\n```\n\n",
+            file.path, file.additions, file.deletions, patch
+        ));
+        if body.len() > MAX_TOTAL {
+            body.truncate(MAX_TOTAL);
+            body.push_str("\n… (changeset truncated)\n\n");
+            break;
+        }
+    }
+    let remaining = files.len().saturating_sub(included_count);
+    if remaining > 0 {
+        body.push_str(&format!("… and {remaining} more file(s) not shown.\n"));
+    }
+
+    format!(
+        "You are helping a reviewer triage a full changeset before a final review. \
+         Given the per-file diffs below, write a short markdown overview: a couple \
+         of sentences on what the change does overall, then a bulleted list of the \
+         areas it touches, then a short \"Risk factors\" list flagging anything that \
+         deserves extra attention (large surface area, files with no obvious test \
+         coverage, cross-cutting or structural changes, anything that looks \
+         unusually risky). Be concise — this is a triage aid, not a full review.\n\n\
+         {body}"
     )
 }
 

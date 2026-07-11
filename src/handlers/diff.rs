@@ -40,6 +40,28 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The changeset-overview modal is a read-only summary layered over the
+    // diff, but it still takes full precedence while open so none of the
+    // underlying review verdict/navigation keys leak through underneath it.
+    let changeset_overview_open =
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.changeset_overview_open);
+    if changeset_overview_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.close_changeset_overview(),
+            KeyCode::Char('O') => app.generate_changeset_overview(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                app.changeset_overview_scroll_down(PATCH_SCROLL_STEP)
+            }
+            KeyCode::Char('k') | KeyCode::Up => app.changeset_overview_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::PageDown => app.changeset_overview_scroll_down(PATCH_PAGE_STEP),
+            KeyCode::PageUp => app.changeset_overview_scroll_up(PATCH_PAGE_STEP),
+            KeyCode::Home | KeyCode::Char('g') => app.changeset_overview_scroll_top(),
+            KeyCode::End | KeyCode::Char('G') => app.changeset_overview_scroll_bottom(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
     let editing_general = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
@@ -234,6 +256,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('A') => {
                 app.generate_co_review();
+                return Ok(());
+            }
+            KeyCode::Char('O') => {
+                app.open_changeset_overview();
                 return Ok(());
             }
             KeyCode::Char('a') => {
@@ -1532,6 +1558,48 @@ index 1111111..2222222 100644
         app.poll_review_walkthrough().unwrap();
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(state.generated_notes.is_empty()),
+            _ => panic!("expected diff viewer"),
+        }
+    }
+
+    #[test]
+    fn shift_o_opens_changeset_overview_modal_and_q_closes_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('O'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert!(state.changeset_overview_open),
+            _ => panic!("expected diff viewer"),
+        }
+
+        // While the modal is open, q closes it rather than finishing the
+        // review (the modal takes full precedence over the underlying keys).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert!(!state.changeset_overview_open),
+            _ => panic!("expected diff viewer, not finished"),
+        }
+    }
+
+    #[test]
+    fn reopening_a_cached_overview_does_not_regenerate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.changeset_overview = Some("cached overview".to_string());
+        }
+        app.message = Some("sentinel".to_string());
+
+        app.open_changeset_overview();
+        // Generation is skipped when a cached overview already exists, so the
+        // message (which generation would overwrite) is untouched.
+        assert_eq!(app.message.as_deref(), Some("sentinel"));
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(state.changeset_overview_open);
+                assert!(state.changeset_overview_child.is_none());
+            }
             _ => panic!("expected diff viewer"),
         }
     }

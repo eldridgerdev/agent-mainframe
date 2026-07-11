@@ -92,6 +92,61 @@ pub fn draw_diff_viewer(frame: &mut Frame, state: &mut DiffViewerState, theme: &
     if state.changeset_overview_open {
         draw_changeset_overview_modal(frame, state, theme);
     }
+    if state.interdiff_open {
+        draw_interdiff_modal(frame, state, theme);
+    }
+}
+
+/// A centered modal showing the "since last review" diff for the current
+/// file (`I` in the final review): the diff between its content when the
+/// last review round finished and its content now. Read-only, and takes full
+/// key precedence while open, mirroring `draw_changeset_overview_modal`.
+/// Reuses `draw_patch_panel` — the same unified-diff renderer as the main
+/// patch panel — against the on-demand `DiffFile` computed by
+/// `App::open_interdiff`, so it needs none of the comment/cursor plumbing.
+fn draw_interdiff_modal(frame: &mut Frame, state: &DiffViewerState, theme: &Theme) {
+    let area = centered_rect(90, 80, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
+
+    let title = state
+        .interdiff_file
+        .as_ref()
+        .map(|file| format!("Since Last Review: {}", file.path))
+        .unwrap_or_else(|| "Since Last Review".to_string());
+
+    draw_patch_panel(
+        frame,
+        rows[0],
+        state.interdiff_file.as_ref(),
+        PatchPanelOptions {
+            layout: DiffViewerLayout::Unified,
+            title,
+            border_color: theme.primary.to_color(),
+            scroll: state.interdiff_scroll,
+            include_prologue: true,
+            new_file_presentation: false,
+            ..Default::default()
+        },
+        theme,
+    );
+
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(theme.warning.to_color()));
+    let hint = Line::from(vec![
+        key("j"),
+        Span::raw("/"),
+        key("k"),
+        Span::raw(" scroll  "),
+        key("q"),
+        Span::raw("/"),
+        key("Esc"),
+        Span::raw(" close"),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[1]);
 }
 
 /// A centered modal showing the on-demand whole-changeset overview / risk
@@ -1548,6 +1603,19 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
     first_line.push(Span::raw("  "));
     first_line.push(key("O"));
     first_line.push(Span::raw(" overview"));
+
+    // Offer the interdiff only for a file that actually changed since the
+    // last review — the case where re-reading the whole diff to find the fix
+    // is the exact pain this feature answers.
+    let current_changed = state
+        .files
+        .get(state.selected_file)
+        .is_some_and(|file| state.changed_since_last.contains(&file.path));
+    if current_changed {
+        first_line.push(Span::raw("  "));
+        first_line.push(key("I"));
+        first_line.push(Span::raw(" since last review"));
+    }
 
     // Surface the jump-to-next-undecided affordance only while files still lack
     // a verdict.

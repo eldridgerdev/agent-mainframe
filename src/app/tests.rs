@@ -9993,6 +9993,92 @@ fn re_review_carries_an_unresolved_thread_and_reports_its_count() {
 }
 
 #[test]
+fn interdiff_shows_diff_since_last_reviewed_content() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Round 1: src/a.rs's worktree content at the time the round finishes is
+    // captured into the snapshot.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].new_content = Some("fn a() {}\n".into());
+    }
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+    app.finish_final_review().unwrap();
+
+    // Round 2: the agent edited src/a.rs since. Its base-ref patch is left
+    // empty (as in the fixture) — the interdiff must not depend on it.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].new_content = Some("fn a() {\n    println!(\"hi\");\n}\n".into());
+    }
+
+    app.open_interdiff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.interdiff_open, "modal opens when content changed");
+            let diff_file = state
+                .interdiff_file
+                .as_ref()
+                .expect("interdiff computed against last round's content");
+            assert_eq!(diff_file.path, "src/a.rs");
+            assert!(
+                !diff_file.hunks.is_empty(),
+                "the content actually changed between rounds"
+            );
+            assert!(diff_file.patch.contains("println"), "{}", diff_file.patch);
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn interdiff_noop_without_prior_review() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // No prior finished review, so no snapshot exists on disk yet.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.open_interdiff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(!state.interdiff_open, "nothing to diff against yet");
+            assert!(state.interdiff_file.is_none());
+        }
+        _ => panic!("expected diff viewer"),
+    }
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No prior review to diff against")
+    );
+}
+
+#[test]
 fn session_picker_offers_todos_when_project_has_none() {
     let mut app = App::new_for_test(
         store_with_feature(ProjectStatus::Active),

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -104,6 +105,15 @@ struct ReviewSnapshot {
     /// Defaulted so snapshots written before this field load unchanged.
     #[serde(default)]
     threads: std::collections::HashMap<String, Vec<LineComment>>,
+    /// file path -> the file's `new_content` as it stood when this round
+    /// finished. Used to compute an on-demand "since last review" interdiff
+    /// for a changed file (`open_interdiff`) without re-reading history from
+    /// git. Absent for binary files and deletions (no content to diff from).
+    /// Defaulted so snapshots written before this field load unchanged —
+    /// interdiff simply has nothing to diff against until the next round
+    /// refreshes the snapshot.
+    #[serde(default)]
+    content: std::collections::HashMap<String, String>,
 }
 
 /// Path of the saved review-snapshot file for a feature workdir.
@@ -115,6 +125,24 @@ fn review_snapshot_path(workdir: &Path) -> PathBuf {
 fn load_review_snapshot(workdir: &Path) -> Option<ReviewSnapshot> {
     let content = std::fs::read_to_string(review_snapshot_path(workdir)).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// Compute the diff between two arbitrary content strings as an in-memory
+/// `DiffFile`, by materializing each to a temp file and reusing
+/// `crate::diff::load_review_file` — the same plumbing the config-wizard
+/// confirm dialog (`build_config_confirm_diff`) and the Claude-hook diff-
+/// review prompt already use to diff two blobs that aren't necessarily
+/// checked into git history.
+fn build_interdiff(
+    old_content: &str,
+    new_content: &str,
+    display_path: &str,
+) -> Result<crate::diff::DiffFile> {
+    let mut original = tempfile::NamedTempFile::new()?;
+    original.write_all(old_content.as_bytes())?;
+    let mut modified = tempfile::NamedTempFile::new()?;
+    modified.write_all(new_content.as_bytes())?;
+    crate::diff::load_review_file(original.path(), modified.path(), display_path)
 }
 
 /// A stable-enough fingerprint of a file's diff. Hashes the patch plus the
@@ -330,6 +358,10 @@ impl App {
                     (!kept.is_empty()).then(|| (f.path.clone(), kept))
                 })
                 .collect(),
+            content: files
+                .iter()
+                .filter_map(|f| f.new_content.clone().map(|c| (f.path.clone(), c)))
+                .collect(),
         };
         let path = review_snapshot_path(workdir);
         if let Some(parent) = path.parent() {
@@ -534,6 +566,95 @@ impl App {
                 "Re-review: {changed}/{total} file(s) changed since the last \
                  review{when}{thread_note} — showing changed only (F to cycle filter)"
             ));
+        }
+    }
+
+    /// Open the "since last review" interdiff modal for the current file: the
+    /// diff between its content when the last review round finished and its
+    /// content now (`I` in the final review). Computed on demand — a single
+    /// local `git diff --no-index`, not a headless pass — so there is no
+    /// caching/polling machinery to manage, unlike the changeset overview.
+    /// A no-op with a message when there is nothing meaningful to show: no
+    /// prior review, the file has no saved content from last round (new since
+    /// then, or was binary/deleted), or the content is actually unchanged
+    /// (the file's fingerprint can also move for reasons other than its own
+    /// content, e.g. the base ref shifted underneath it).
+    pub fn open_interdiff(&mut self) {
+        let AppMode::DiffViewer(state) = &self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        let Some(file) = state.files.get(state.selected_file) else {
+            return;
+        };
+        let Some(snapshot) = load_review_snapshot(&state.workdir) else {
+            self.message = Some("No prior review to diff against".to_string());
+            return;
+        };
+        let Some(old_content) = snapshot.content.get(&file.path).cloned() else {
+            self.message = Some("No prior review content for this file".to_string());
+            return;
+        };
+        let new_content = file.new_content.clone().unwrap_or_default();
+        let path = file.path.clone();
+        match build_interdiff(&old_content, &new_content, &path) {
+            Ok(diff_file) if diff_file.hunks.is_empty() && !diff_file.is_binary => {
+                self.message = Some("No changes to this file since the last review".to_string());
+            }
+            Ok(diff_file) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.interdiff_file = Some(diff_file);
+                    state.interdiff_open = true;
+                    state.interdiff_scroll = 0;
+                }
+            }
+            Err(err) => {
+                self.message = Some(format!("Failed to compute interdiff: {err}"));
+            }
+        }
+    }
+
+    pub fn close_interdiff(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_open = false;
+        }
+    }
+
+    /// Max scroll offset for the interdiff modal, approximated from the raw
+    /// patch line count (unified layout only), mirroring
+    /// `diff_patch_line_count`'s estimate elsewhere.
+    fn interdiff_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .interdiff_file
+            .as_ref()
+            .map(|file| file.patch.lines().count().saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    pub fn interdiff_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::interdiff_max_scroll(state);
+            state.interdiff_scroll = (state.interdiff_scroll + amount).min(max);
+        }
+    }
+
+    pub fn interdiff_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = state.interdiff_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn interdiff_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = 0;
+        }
+    }
+
+    pub fn interdiff_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = Self::interdiff_max_scroll(state);
         }
     }
 

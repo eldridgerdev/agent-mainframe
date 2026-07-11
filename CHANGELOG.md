@@ -12,6 +12,14 @@ are tagged.
 
 ### Added
 
+- **"Since last review" interdiff in the final review.** Press `I` on a
+  file flagged `Δ` (changed since your last review round) to see just the
+  diff between what you reviewed last time and what's there now, instead of
+  re-reading the whole base-ref diff to spot the fix. Computed on demand
+  from a snapshot of the file's content taken when the last round finished
+  — no extra config, and it's a no-op with a message on a first-ever review
+  or a file whose diff moved for reasons other than its own content (e.g.
+  the base ref shifted).
 - **Build/test gate before finishing a final review.** Point
   `final_review_check_command` at your project's build, test, or proof
   script in `.amf/config.json` (or globally in `~/.config/amf/config.json`;

@@ -1188,6 +1188,8 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
             Span::raw(" comment  "),
             key("S"),
             Span::raw(" suggest  "),
+            key("R"),
+            Span::raw(" resolve/reopen  "),
             key("n"),
             Span::raw("/"),
             key("p"),
@@ -1208,17 +1210,23 @@ fn draw_review_footer(frame: &mut Frame, area: Rect, state: &mut DiffViewerState
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(2)])
                 .split(area);
-            let title = match (comment.draft, comment.is_range()) {
-                (true, true) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
-                (true, false) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
-                (false, true) if comment.suggestion.is_some() => {
-                    " suggestion on these lines (Enter comment · S suggest) "
+            // A draft can never be resolved (only a kept comment can be), so the
+            // resolved variants only need to branch off the non-draft arms.
+            let title = match (comment.draft, comment.is_range(), comment.resolved) {
+                (true, true, _) => " AI draft on these lines (a accept · d dismiss · Enter edit) ",
+                (true, false, _) => " AI draft on this line (a accept · d dismiss · Enter edit) ",
+                (false, true, true) => {
+                    " resolved thread on these lines (Enter to edit · R reopen) "
                 }
-                (false, false) if comment.suggestion.is_some() => {
-                    " suggestion on this line (Enter comment · S suggest) "
+                (false, false, true) => " resolved thread on this line (Enter to edit · R reopen) ",
+                (false, true, false) if comment.suggestion.is_some() => {
+                    " suggestion on these lines (Enter comment · S suggest · R resolve) "
                 }
-                (false, true) => " comment on these lines (Enter to edit) ",
-                (false, false) => " comment on this line (Enter to edit) ",
+                (false, false, false) if comment.suggestion.is_some() => {
+                    " suggestion on this line (Enter comment · S suggest · R resolve) "
+                }
+                (false, true, false) => " comment on these lines (Enter to edit · R resolve) ",
+                (false, false, false) => " comment on this line (Enter to edit · R resolve) ",
             };
             let box_color = if comment.draft {
                 theme.warning.to_color()
@@ -3041,6 +3049,8 @@ index 0000000..1111111
                 anchor_context: None,
                 start_anchor_context: None,
                 anchor_lost: false,
+                resolved: false,
+                carried: false,
             }],
         );
         assert_eq!(cursor_comment_text(&state), Some("needs a guard\nfor None"));
@@ -3068,6 +3078,8 @@ index 0000000..1111111
                 anchor_context: None,
                 start_anchor_context: None,
                 anchor_lost: false,
+                resolved: false,
+                carried: false,
             }],
         );
         // 20 body lines (+ severity header) clamp to 6 visible + 2 border rows.

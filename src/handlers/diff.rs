@@ -189,6 +189,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.diff_review_start_suggestion();
                     return Ok(());
                 }
+                KeyCode::Char('R') => {
+                    app.diff_review_toggle_resolved();
+                    return Ok(());
+                }
                 KeyCode::Esc if app.diff_search_active() => {
                     // Unwind a committed search before exiting cursor mode, so
                     // Esc peels back search → cursor → finish predictably.
@@ -480,7 +484,7 @@ pub fn handle_review_harness_pick_key(app: &mut App, key: KeyCode) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, ViewState};
+    use crate::app::{AppMode, DiffViewerLayout, DiffViewerState, FileFilter, ViewState};
     use crate::diff::{DiffFile, DiffFileStatus, DiffHunk, DiffLine, DiffLineKind};
     use crate::project::{
         AgentKind, Feature, Project, ProjectStatus, ProjectStore, SessionKind, VibeMode,
@@ -1144,6 +1148,123 @@ index 1111111..2222222 100644
     }
 
     #[test]
+    fn resolving_the_only_comment_clears_auto_reject_and_omits_it_from_feedback() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // Write a comment: it auto-rejects the file.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for c in "bug here".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(s) if s.decisions.contains_key("a.rs")
+        ));
+
+        // Resolving the only comment clears the auto-set verdict — no open
+        // thread means nothing left forcing "needs revision".
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('R'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => {
+                assert!(!state.decisions.contains_key("a.rs"));
+                let comments = state.line_comments.get("a.rs").unwrap();
+                assert!(comments[0].resolved);
+            }
+            _ => panic!("expected diff viewer"),
+        }
+
+        // Reopening it puts the auto-reject back.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('R'))).unwrap();
+        assert!(matches!(
+            &app.mode,
+            AppMode::DiffViewer(s) if s.decisions.contains_key("a.rs")
+        ));
+
+        // Resolve again, then approve explicitly so the file has a verdict.
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('R'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('a'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+
+        // A resolved thread never reaches the feedback file, so an
+        // all-approved round with nothing else to say writes nothing.
+        assert!(!dir.path().join(".claude/final-review-feedback.md").exists());
+    }
+
+    #[test]
+    fn unresolved_filter_is_skipped_when_no_open_thread_but_shown_once_one_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        // With no comments at all, cycling through the filters must skip
+        // straight past `Unresolved` (mirroring the `Changed` skip when there's
+        // no prior snapshot).
+        for _ in 0..4 {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+            assert!(matches!(
+                &app.mode,
+                AppMode::DiffViewer(s) if s.file_filter != FileFilter::Unresolved
+            ));
+        }
+
+        // Land back on `All`, then add an open comment.
+        while !matches!(&app.mode, AppMode::DiffViewer(s) if s.file_filter == FileFilter::All) {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for c in "needs work".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // Now the cycle should land on `Unresolved` with the file visible.
+        let mut saw_unresolved = false;
+        for _ in 0..5 {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char('F'))).unwrap();
+            if let AppMode::DiffViewer(state) = &app.mode
+                && state.file_filter == FileFilter::Unresolved
+            {
+                saw_unresolved = true;
+                assert_eq!(state.visible_file_indices(), vec![0]);
+            }
+        }
+        assert!(saw_unresolved, "Unresolved filter never appeared");
+    }
+
+    #[test]
+    fn carried_unresolved_comment_is_tagged_in_the_feedback_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        set_single_hunk(&mut app);
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('c'))).unwrap();
+        handle_diff_viewer_key(&mut app, key(KeyCode::Enter)).unwrap();
+        for c in "from last round".chars() {
+            handle_diff_viewer_key(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_diff_viewer_key(&mut app, key(KeyCode::Tab)).unwrap();
+
+        // Mark it carried, mirroring how a restored thread arrives from the
+        // previous round's snapshot.
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.line_comments.get_mut("a.rs").unwrap()[0].carried = true;
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        let feedback =
+            std::fs::read_to_string(dir.path().join(".claude/final-review-feedback.md")).unwrap();
+        assert!(
+            feedback.contains("(unresolved from a previous round)"),
+            "{feedback}"
+        );
+    }
+
+    #[test]
     fn suggestion_prefills_line_and_writes_suggestion_block() {
         let dir = tempfile::TempDir::new().unwrap();
         let mut app = make_review_app(dir.path(), &["a.rs"]);
@@ -1784,6 +1905,8 @@ index 1111111..2222222 100644
                     anchor_context: None,
                     start_anchor_context: None,
                     anchor_lost: false,
+                    resolved: false,
+                    carried: false,
                 }],
             );
         }

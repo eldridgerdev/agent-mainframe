@@ -4,12 +4,11 @@
   **Progress → Round 1** is implemented and merged, and Round 2's AI
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
   comment-implied rejections, severity tags, agent replies-back,
-  in-diff search and comment re-anchoring have shipped. The remaining
-  Round 2 items (thread state, changeset overview, build gate,
-  file-level PR comments) and a third round of review-loop / viewer
-  upgrades (**Round 3**, captured 2026-07-01) are not yet started.
-  With re-anchoring landed, **thread state** is now unblocked: it is the
-  one remaining piece needed to carry comments across rounds.
+  in-diff search, comment re-anchoring, and resolve/unresolve thread
+  state have shipped. The remaining Round 2 items (changeset overview,
+  build gate, file-level PR comments) and a third round of review-loop
+  / viewer upgrades (**Round 3**, captured 2026-07-01) are not yet
+  started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -457,7 +456,34 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       the agent said it did. Surfaced per file (anchor-free), so it ships without
       the thread-state / re-anchor machinery; per-comment threaded rendering
       beside each individual line comment still pairs with the two items below.
-- [ ] Resolve / unresolve thread state across rounds
+- [x] Resolve / unresolve thread state across rounds — each kept line comment
+      is a thread with a `resolved` flag (`LineComment.resolved` in
+      `src/app/state.rs`, serde-defaulted so old progress/snapshot files load
+      as open). With the line cursor active, `R` toggles the comment under the
+      cursor between resolved and reopened (`diff_review_toggle_resolved` in
+      `src/app/review.rs`); the peek box and cursor-mode footer surface the key
+      and label a settled thread "resolved thread". Resolving a file's last
+      open thread clears its comment-implied rejection the same way removing
+      the comment does (`diff_review_sync_auto_reject` now keys off
+      `LineComment::is_open_thread`, i.e. kept and unresolved); reopening one
+      re-applies it. On finish, a resolved thread is withheld from
+      `.claude/final-review-feedback.md` and the PR review — only open threads
+      reach the agent — so settling a conversation actually stops re-sending
+      it. Threads carry across rounds: `save_review_snapshot` gained a
+      `threads` map of every kept comment (any resolved state) tagged
+      `carried`, and `restore_review_progress`'s fresh-round case seeds
+      `line_comments` from it (dropping only threads that are both resolved
+      and anchor-lost, which have nothing left to show). A carried comment
+      that's still open renders in the feedback file tagged "(unresolved from
+      a previous round)". A new `Unresolved` step in the `F` file-filter cycle
+      (skipped when nothing is open, like `Changed` without a snapshot) narrows
+      to files with an open thread, and `apply_review_snapshot_diff` reports
+      the carried-over count in the re-review open message. Restoring carried
+      threads makes `line_comments` non-empty on a fresh open, so the
+      "pristine re-review" check that steers the auto-`Changed` filter and
+      approval carry-over now asks `has_only_carried_comments()` instead of
+      emptiness, and a file with an open thread is excluded from the
+      stale-approval carry regardless of its last verdict.
 - [x] Re-anchor comments across edits — a line comment anchors to an exact
       `DiffLineLocation`, so when the diff reloads underneath it and the line has
       moved, the anchor no longer resolves and the comment silently vanishes from

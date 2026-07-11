@@ -73,6 +73,13 @@ struct ReviewSnapshot {
     /// carried verdicts, everything simply re-checked).
     #[serde(default)]
     decisions: std::collections::HashMap<String, ReviewDecision>,
+    /// file path -> the kept (non-draft) line comments the round finished with,
+    /// each tagged `carried` and keeping its `resolved` flag. Restored as live
+    /// threads when the next round opens, so a conversation survives the agent
+    /// addressing it — the cross-round half of the re-anchor machinery.
+    /// Defaulted so snapshots written before this field load unchanged.
+    #[serde(default)]
+    threads: std::collections::HashMap<String, Vec<LineComment>>,
 }
 
 /// Path of the saved review-snapshot file for a feature workdir.
@@ -267,6 +274,7 @@ impl App {
         workdir: &Path,
         files: &[crate::diff::DiffFile],
         decisions: &std::collections::HashMap<String, ReviewDecision>,
+        line_comments: &std::collections::HashMap<String, Vec<LineComment>>,
     ) {
         let snapshot = ReviewSnapshot {
             reviewed_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -279,6 +287,24 @@ impl App {
             decisions: files
                 .iter()
                 .filter_map(|f| decisions.get(&f.path).map(|d| (f.path.clone(), d.clone())))
+                .collect(),
+            // Carry every kept comment — resolved or not — into the next round as
+            // a thread. Unadjudicated AI drafts are dropped: a finding the human
+            // never accepted is not a conversation worth reopening.
+            threads: files
+                .iter()
+                .filter_map(|f| {
+                    let kept: Vec<LineComment> = line_comments
+                        .get(&f.path)?
+                        .iter()
+                        .filter(|c| !c.draft)
+                        .map(|c| LineComment {
+                            carried: true,
+                            ..c.clone()
+                        })
+                        .collect();
+                    (!kept.is_empty()).then(|| (f.path.clone(), kept))
+                })
                 .collect(),
         };
         let path = review_snapshot_path(workdir);
@@ -298,11 +324,21 @@ impl App {
         }
     }
 
-    /// On opening a fresh final review, restore any previously saved decisions /
-    /// comments / general feedback for the feature. Skipped when the in-memory
-    /// review state already holds verdicts (e.g. an in-review `r` refresh), so a
-    /// reload never clobbers work in progress. Stale entries for paths no longer
-    /// in the diff are dropped and the file position is clamped.
+    /// Decide what state a final review opens with. The single choke point for
+    /// restoration, with three cases taken in order:
+    ///
+    /// 1. The in-memory review already holds verdicts / comments / feedback —
+    ///    an in-review `r` refresh or base-ref change. Leave it alone; a reload
+    ///    must never clobber work in progress.
+    /// 2. A `.claude/final-review-progress.json` exists — a review that was
+    ///    paused (or interrupted by an AMF quit / crash). Restore it verbatim.
+    ///    Its `line_comments` already contain any threads carried in at the open
+    ///    that started it, so case 3 must not also run.
+    /// 3. Otherwise this is a fresh round after a finished one. Seed the line
+    ///    comments from the last snapshot's threads so unresolved conversations
+    ///    survive the agent addressing them.
+    ///
+    /// In cases 2 and 3, entries for paths no longer in the diff are dropped.
     pub fn restore_review_progress(&mut self) {
         let AppMode::DiffViewer(state) = &mut self.mode else {
             return;
@@ -314,11 +350,33 @@ impl App {
         {
             return;
         }
-        let Some(progress) = load_review_progress(&state.workdir) else {
-            return;
-        };
         let known: std::collections::HashSet<&str> =
             state.files.iter().map(|f| f.path.as_str()).collect();
+
+        let Some(progress) = load_review_progress(&state.workdir) else {
+            // Fresh round: carry the previous round's threads back in.
+            let Some(snapshot) = load_review_snapshot(&state.workdir) else {
+                return;
+            };
+            state.line_comments = snapshot
+                .threads
+                .into_iter()
+                .filter(|(path, _)| known.contains(path.as_str()))
+                .filter_map(|(path, comments)| {
+                    let live: Vec<LineComment> = comments
+                        .into_iter()
+                        // A settled thread whose code is gone has nothing left to
+                        // show, and would otherwise pile up round after round. An
+                        // *unresolved* lost anchor is kept and surfaced — it may
+                        // simply not have been addressed yet.
+                        .filter(|c| !(c.resolved && c.anchor_lost))
+                        .map(|c| LineComment { carried: true, ..c })
+                        .collect();
+                    (!live.is_empty()).then_some((path, live))
+                })
+                .collect();
+            return;
+        };
         state.decisions = progress
             .decisions
             .into_iter()
@@ -382,8 +440,12 @@ impl App {
         // Only steer a fresh review: leave an in-progress / refreshed review's
         // filter and selection untouched. Computed before any carry-over below
         // so restored approvals don't make the open read as non-pristine.
+        // `line_comments` alone can't gate this: `restore_review_progress` just
+        // seeded it with threads carried in from the last round, which is
+        // exactly the state a fresh re-review opens with — so only comments
+        // authored *this* session count as work in progress.
         let pristine = state.decisions.is_empty()
-            && state.line_comments.is_empty()
+            && state.has_only_carried_comments()
             && state.general_feedback.is_empty()
             && state.file_filter == FileFilter::All;
         if !pristine {
@@ -393,11 +455,14 @@ impl App {
         // changed since the last finished round, so the reviewer resumes from the
         // saved approved state and only re-checks the changed / rejected files.
         // Changed files were dropped from `changed_since_last`'s complement, so
-        // their stale approval is deliberately not restored.
+        // their stale approval is deliberately not restored. A file with an open
+        // thread is also excluded — an unresolved conversation means the file
+        // still needs a look, whatever its stale verdict says.
         let carry: Vec<String> = state
             .files
             .iter()
             .filter(|f| !state.changed_since_last.contains(&f.path))
+            .filter(|f| !state.file_has_unresolved_thread(&f.path))
             .filter(|f| {
                 matches!(
                     snapshot.decisions.get(&f.path),
@@ -414,13 +479,25 @@ impl App {
         } else {
             format!(" (last reviewed {})", snapshot.reviewed_at)
         };
+        // Threads carried in from the last round are restored by
+        // `restore_review_progress` before this runs, so this count already
+        // reflects what survived into the fresh round.
+        let unresolved = state.unresolved_thread_count();
+        let thread_note = if unresolved == 0 {
+            String::new()
+        } else {
+            format!(
+                " · {unresolved} unresolved thread{} carried over",
+                if unresolved == 1 { "" } else { "s" }
+            )
+        };
         if changed == 0 {
             self.message = Some(format!(
-                "Re-review: no files changed since the last review{when}"
+                "Re-review: no files changed since the last review{when}{thread_note}"
             ));
         } else if changed == total {
             self.message = Some(format!(
-                "Re-review: all {total} file(s) changed since the last review{when}"
+                "Re-review: all {total} file(s) changed since the last review{when}{thread_note}"
             ));
         } else {
             // Narrow to the changed files and land on the first of them.
@@ -431,7 +508,7 @@ impl App {
             }
             self.message = Some(format!(
                 "Re-review: {changed}/{total} file(s) changed since the last \
-                 review{when} — showing changed only (F to cycle filter)"
+                 review{when}{thread_note} — showing changed only (F to cycle filter)"
             ));
         }
     }
@@ -855,14 +932,15 @@ impl App {
                 let comments = state.line_comments.entry(path).or_default();
                 // Carry over a suggested change already attached to the span so
                 // editing the prose doesn't drop it.
-                let suggestion = comments
-                    .iter()
-                    .find(|c| {
-                        c.covered_indices(&locs)
-                            .map(|r| !(*r.end() < lo || *r.start() > hi))
-                            .unwrap_or(false)
-                    })
-                    .and_then(|c| c.suggestion.clone());
+                let overlapping = comments.iter().find(|c| {
+                    c.covered_indices(&locs)
+                        .map(|r| !(*r.end() < lo || *r.start() > hi))
+                        .unwrap_or(false)
+                });
+                let suggestion = overlapping.and_then(|c| c.suggestion.clone());
+                // Likewise its round of origin: editing a thread inherited from a
+                // previous round must not re-brand it as freshly authored.
+                let carried = overlapping.is_some_and(|c| c.carried);
                 // Drop any existing comment whose span overlaps the new one.
                 comments.retain(|c| {
                     c.covered_indices(&locs)
@@ -886,6 +964,10 @@ impl App {
                         anchor_context: None,
                         start_anchor_context: None,
                         anchor_lost: false,
+                        // Writing on a thread re-opens it: fresh prose means the
+                        // reviewer has more to say, settled or not.
+                        resolved: false,
+                        carried,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -903,14 +985,15 @@ impl App {
         self.persist_review_progress();
     }
 
-    /// Reconcile a file's implicit "needs revision" verdict with its kept
-    /// (non-draft) line comments: a commented file is a file that needs work, so
-    /// the first kept comment defaults an undecided file to `Reject` with empty
-    /// feedback (the comments carry the specifics), and removing the last kept
-    /// comment clears a rejection that was auto-set this way. An explicit
-    /// verdict — approve/skip/reject, or a carried-over approval — is never
-    /// overridden. Called after every comment mutation, before the progress
-    /// persist, so what's on disk always reflects the synced verdict.
+    /// Reconcile a file's implicit "needs revision" verdict with its open
+    /// threads (kept, non-draft, unresolved comments): an open thread is a file
+    /// that needs work, so the first one defaults an undecided file to `Reject`
+    /// with empty feedback (the comments carry the specifics), and a file with
+    /// no more open threads — every comment removed or resolved — clears a
+    /// rejection that was auto-set this way. An explicit verdict —
+    /// approve/skip/reject, or a carried-over approval — is never overridden.
+    /// Called after every comment mutation, before the progress persist, so
+    /// what's on disk always reflects the synced verdict.
     fn diff_review_sync_auto_reject(&mut self, path: &str) {
         if let AppMode::DiffViewer(state) = &mut self.mode {
             if !state.review {
@@ -919,7 +1002,7 @@ impl App {
             let has_kept = state
                 .line_comments
                 .get(path)
-                .is_some_and(|comments| comments.iter().any(|c| !c.draft));
+                .is_some_and(|comments| comments.iter().any(|c| c.is_open_thread()));
             if has_kept {
                 if !state.decisions.contains_key(path) {
                     state.decisions.insert(
@@ -1044,6 +1127,7 @@ impl App {
                 let severity = existing
                     .map(|c| c.severity)
                     .unwrap_or(state.comment_severity);
+                let carried = existing.is_some_and(|c| c.carried);
                 comments.retain(|c| {
                     c.covered_indices(&locs)
                         .map(|r| *r.end() < lo || *r.start() > hi)
@@ -1061,6 +1145,10 @@ impl App {
                         anchor_context: None,
                         start_anchor_context: None,
                         anchor_lost: false,
+                        // Attaching a suggestion re-opens a settled thread, as
+                        // writing prose on it does.
+                        resolved: false,
+                        carried,
                     });
                     comments.sort_by_key(|c| {
                         let loc = c.start.unwrap_or(c.location);
@@ -1371,6 +1459,55 @@ impl App {
         false
     }
 
+    /// Toggle the resolved state of the kept (non-draft) comment under the line
+    /// cursor — the reviewer marking a conversation settled, or re-opening one
+    /// they marked too soon. Returns `true` if a comment was toggled.
+    pub fn diff_review_toggle_resolved(&mut self) -> bool {
+        let acted = if let AppMode::DiffViewer(state) = &mut self.mode {
+            let Some(cur) = state.comment_cursor else {
+                return false;
+            };
+            let Some(file) = state.files.get(state.selected_file) else {
+                return false;
+            };
+            let path = file.path.clone();
+            let locs = file.addressable_lines();
+            match state.line_comments.get_mut(&path).and_then(|comments| {
+                comments.iter_mut().find(|c| {
+                    !c.draft
+                        && c.covered_indices(&locs)
+                            .is_some_and(|range| range.contains(&cur))
+                })
+            }) {
+                Some(comment) => {
+                    comment.resolved = !comment.resolved;
+                    Some((path, comment.resolved))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        match acted {
+            Some((path, resolved)) => {
+                self.message = Some(
+                    if resolved {
+                        "Thread resolved"
+                    } else {
+                        "Thread re-opened"
+                    }
+                    .to_string(),
+                );
+                // A resolved thread is settled, so it can't be the reason a file
+                // stays auto-rejected; re-opening one can put that back.
+                self.diff_review_sync_auto_reject(&path);
+                self.persist_review_progress();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Move the line cursor to the next draft comment in the current file
     /// (wrapping), so a reviewer can Tab through the AI's findings.
     pub fn diff_review_jump_next_draft(&mut self) {
@@ -1626,8 +1763,12 @@ impl App {
                 return;
             }
             state.file_filter = state.file_filter.next();
-            // `Changed` is only meaningful when a prior review exists to compare
-            // against; otherwise skip straight past it.
+            // `Unresolved` is only meaningful when at least one open thread
+            // exists; `Changed` only when a prior review exists to compare
+            // against. Otherwise skip straight past them.
+            if state.file_filter == FileFilter::Unresolved && state.unresolved_thread_count() == 0 {
+                state.file_filter = state.file_filter.next();
+            }
             if state.file_filter == FileFilter::Changed && !state.has_prior_review {
                 state.file_filter = state.file_filter.next();
             }
@@ -1712,7 +1853,7 @@ impl App {
         // …but record a fingerprint of what was reviewed (even an all-approved
         // round) so the next review can flag files that changed since.
         if !files.is_empty() {
-            self.save_review_snapshot(&workdir, &files, &decisions);
+            self.save_review_snapshot(&workdir, &files, &decisions, &line_comments);
         }
 
         let total = files.len();
@@ -1739,10 +1880,14 @@ impl App {
         let mut line_comment_count = 0usize;
         for file in &files {
             if let Some(comments) = line_comments.get(&file.path) {
-                // Unaccepted AI drafts never reach the feedback file or the PR
-                // review — only comments the human kept.
-                let kept: Vec<LineComment> =
-                    comments.iter().filter(|c| !c.draft).cloned().collect();
+                // Unaccepted AI drafts and resolved threads never reach the
+                // feedback file or the PR review — only open threads the human
+                // kept and hasn't settled.
+                let kept: Vec<LineComment> = comments
+                    .iter()
+                    .filter(|c| c.is_open_thread())
+                    .cloned()
+                    .collect();
                 if !kept.is_empty() {
                     line_comment_count += kept.len();
                     line_comment_sections.push((file.path.clone(), kept));
@@ -1820,8 +1965,16 @@ impl App {
                 for (file, comments) in &line_comment_sections {
                     for comment in comments {
                         let anchor = comment_anchor_label(file, comment);
+                        // Only unresolved threads reach this point (`kept` above
+                        // filters on `is_open_thread`), so a carried comment here
+                        // is always still open — flag it as such.
+                        let carried_tag = if comment.carried {
+                            " (unresolved from a previous round)"
+                        } else {
+                            ""
+                        };
                         round.push_str(&format!(
-                            "#### {anchor} — [{}]\n\n",
+                            "#### {anchor} — [{}]{carried_tag}\n\n",
                             comment.severity.label()
                         ));
                         if !comment.text.is_empty() {
@@ -2564,6 +2717,9 @@ fn parse_co_review_output(
             anchor_context: None,
             start_anchor_context: None,
             anchor_lost: false,
+            // A draft is not a thread until the human accepts it.
+            resolved: false,
+            carried: false,
         });
     }
     out
@@ -2647,6 +2803,8 @@ mod tests {
             anchor_context: None,
             start_anchor_context: None,
             anchor_lost: false,
+            resolved: false,
+            carried: false,
         }
     }
 
@@ -2668,6 +2826,8 @@ mod tests {
             anchor_context: None,
             start_anchor_context: None,
             anchor_lost: false,
+            resolved: false,
+            carried: false,
         }
     }
 
@@ -3196,6 +3356,8 @@ index 1111111..2222222 100644
             anchor_context: CommentAnchorContext::capture(&file.addressable_line_texts(), idx),
             start_anchor_context: None,
             anchor_lost: false,
+            resolved: false,
+            carried: false,
         }
     }
 
@@ -3319,6 +3481,8 @@ index 1111111..2222222 100644
             }),
             start_anchor_context: None,
             anchor_lost: false,
+            resolved: false,
+            carried: false,
         };
         let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
         assert_eq!((moved, lost), (0, 1));
@@ -3382,6 +3546,8 @@ index 1111111..2222222 100644
             anchor_context: None,
             start_anchor_context: None,
             anchor_lost: false,
+            resolved: false,
+            carried: false,
         };
         let (moved, lost) = reanchor_file_comments(&after, std::slice::from_mut(&mut comment));
         assert_eq!((moved, lost), (0, 1));

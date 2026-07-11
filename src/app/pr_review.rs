@@ -386,15 +386,27 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
         .collect()
 }
 
+/// Lines of context kept on each side of the target line when extracting a
+/// windowed hunk for an AI finding ([`diff_hunk_for_line`]). Deliberately
+/// small: unlike a human reviewer's inline comment — which GitHub anchors to
+/// a hunk that's already a few lines of context around a small change — an
+/// AI finding can point at a line inside a large contiguous block of
+/// new/changed code, where the *actual* diff hunk covering it spans the
+/// whole block (in the worst case, most of the file). Reconstructing that
+/// whole hunk would defeat the point of showing "the lines this finding is
+/// about."
+const AI_FINDING_HUNK_CONTEXT_LINES: usize = 6;
+
 /// Reconstruct a GitHub-style `diff_hunk` string (the `@@ ... @@` header plus
-/// its full body — the same shape GitHub's API hands back for free on a real
-/// review comment) for whichever hunk in `files` covers `path:line` on the
-/// new (current) side of the diff. An AI-review finding gets no such hunk for
-/// free — it's re-derived here by matching the model's `path:line` back into
-/// the already-fetched PR diff. `None` when the file isn't in the diff, or no
-/// hunk's new-side range covers `line` (a mismatched/hallucinated line
-/// number) — the finding still renders and injects fine without one, same as
-/// any GitHub comment whose hunk happens to be unavailable.
+/// a small window of body lines around the target — not the whole matched
+/// hunk, see [`AI_FINDING_HUNK_CONTEXT_LINES`]) for whichever hunk in `files`
+/// covers `path:line` on the new (current) side of the diff. An AI-review
+/// finding gets no such hunk for free — it's re-derived here by matching the
+/// model's `path:line` back into the already-fetched PR diff. `None` when the
+/// file isn't in the diff, or no hunk's new-side range covers `line` (a
+/// mismatched/hallucinated line number) — the finding still renders and
+/// injects fine without one, same as any GitHub comment whose hunk happens to
+/// be unavailable.
 fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) -> Option<String> {
     let line = line as usize;
     let file = files.iter().find(|f| f.path == path)?;
@@ -403,8 +415,56 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
         line >= h.new_start && line < end
     })?;
 
-    let mut text = hunk.header.clone();
-    for l in &hunk.lines {
+    // Walk the hunk tracking the old/new line number *at* each entry (before
+    // that line is consumed), both to find the target line's index and to
+    // know the old/new start of whatever window we slice out below.
+    let mut old_line = hunk.old_start;
+    let mut new_line = hunk.new_start;
+    let mut line_starts = Vec::with_capacity(hunk.lines.len());
+    let mut target_idx = None;
+    for (i, l) in hunk.lines.iter().enumerate() {
+        line_starts.push((old_line, new_line));
+        match l.kind {
+            crate::diff::DiffLineKind::Context => {
+                if target_idx.is_none() && new_line == line {
+                    target_idx = Some(i);
+                }
+                old_line += 1;
+                new_line += 1;
+            }
+            crate::diff::DiffLineKind::Added => {
+                if target_idx.is_none() && new_line == line {
+                    target_idx = Some(i);
+                }
+                new_line += 1;
+            }
+            crate::diff::DiffLineKind::Removed => old_line += 1,
+            crate::diff::DiffLineKind::NoNewlineMarker => {}
+        }
+    }
+    let target_idx = target_idx?;
+
+    let start_idx = target_idx.saturating_sub(AI_FINDING_HUNK_CONTEXT_LINES);
+    let end_idx = (target_idx + AI_FINDING_HUNK_CONTEXT_LINES + 1).min(hunk.lines.len());
+    let window = &hunk.lines[start_idx..end_idx];
+    let (window_old_start, window_new_start) = line_starts[start_idx];
+    let (mut window_old_count, mut window_new_count) = (0usize, 0usize);
+    for l in window {
+        match l.kind {
+            crate::diff::DiffLineKind::Context => {
+                window_old_count += 1;
+                window_new_count += 1;
+            }
+            crate::diff::DiffLineKind::Added => window_new_count += 1,
+            crate::diff::DiffLineKind::Removed => window_old_count += 1,
+            crate::diff::DiffLineKind::NoNewlineMarker => {}
+        }
+    }
+
+    let mut text = format!(
+        "@@ -{window_old_start},{window_old_count} +{window_new_start},{window_new_count} @@"
+    );
+    for l in window {
         if matches!(l.kind, crate::diff::DiffLineKind::NoNewlineMarker) {
             continue;
         }
@@ -4382,5 +4442,45 @@ index 1111111..2222222 100644
         let files = sample_diff_files();
         assert!(diff_hunk_for_line(&files, "src/lib.rs", 999).is_none());
         assert!(diff_hunk_for_line(&files, "src/other.rs", 1).is_none());
+    }
+
+    #[test]
+    fn diff_hunk_for_line_windows_a_large_hunk_instead_of_returning_it_whole() {
+        // Regression: an AI finding can point at a line inside a large
+        // contiguous block of new/changed code — e.g. a whole function this
+        // PR added — where the *actual* diff hunk covering it spans the
+        // entire block. Reconstructing that whole hunk read as "the whole
+        // file" rather than "the lines this finding is about".
+        // A pure-insertion hunk (no leading context line, so the added
+        // lines' content numbers line up exactly with their new-file line
+        // numbers) — as a whole new function this PR added would diff.
+        let mut diff = String::from(
+            "diff --git a/big.rs b/big.rs\n\
+             index 1111111..2222222 100644\n\
+             --- a/big.rs\n\
+             +++ b/big.rs\n\
+             @@ -1,0 +1,40 @@\n",
+        );
+        for i in 1..=40 {
+            diff.push_str(&format!("+line{i}\n"));
+        }
+        let files = crate::diff::parse_unified_diff(&diff).unwrap();
+
+        // Target a line comfortably in the middle of the 40-line hunk.
+        let hunk = diff_hunk_for_line(&files, "big.rs", 20).expect("line 20 is in range");
+        let lines: Vec<&str> = hunk.lines().collect();
+
+        // Bounded to context-on-each-side + the target line + the header,
+        // regardless of how large the real hunk is.
+        assert!(
+            lines.len() <= 2 * AI_FINDING_HUNK_CONTEXT_LINES + 2,
+            "expected a small window, got {} lines:\n{hunk}",
+            lines.len()
+        );
+        assert!(lines[0].starts_with("@@ "));
+        assert!(hunk.contains("+line20"));
+        // Lines far from the target on either side must not be included.
+        assert!(!hunk.contains("+line1\n"));
+        assert!(!hunk.contains("+line40"));
     }
 }

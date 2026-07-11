@@ -1182,6 +1182,21 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `diff_hunk_for_line` against a real parsed diff). →
       `src/app/pr_review.rs`, `src/app/mod.rs`, `src/ui/dialogs/pr_review.rs`,
       `src/app/tests.rs`.
+
+      **Sixth follow-up, same day.** Item (2) above still showed "the whole
+      file" — `diff_hunk_for_line` was reconstructing the *entire* matched
+      hunk verbatim, and this PR's own diff has hunks that are large
+      contiguous blocks of new code (whole functions added in one place),
+      so "the matching hunk" and "the whole file region" were
+      indistinguishable in practice. Rewrote it to walk the hunk tracking
+      old/new line numbers, locate the target line's index, and slice a
+      fixed `AI_FINDING_HUNK_CONTEXT_LINES` (6) window of lines on each
+      side — capped regardless of how large the real hunk is — then
+      synthesizes a matching `@@ ... @@` header for the trimmed range
+      rather than reusing the original hunk's. Unit-tested against a
+      40-line synthetic added-lines hunk: the returned window is bounded,
+      contains the target line, and excludes lines far to either side. →
+      `src/app/pr_review.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

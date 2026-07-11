@@ -40,9 +40,12 @@ are tagged.
   toast + a debug-log dump of the raw response) from a quiet success, so a
   parsing mismatch doesn't look identical to "the diff was just clean". A
   draft finding's role chip now reads `[ai]` instead of falling through to
-  `[human]`, its detail pane shows the actual diff hunk (re-matched from the
-  PR diff by `path:line`, same as a fetched GitHub comment) instead of
-  nothing, and `esc`-ing back to the pane before the background pass
+  `[human]`, its detail pane shows a small window of the actual diff around
+  its line (re-matched from the PR diff by `path:line`, same as a fetched
+  GitHub comment — capped to a few lines of context on each side rather than
+  the whole matched hunk, which for a large added block can otherwise read
+  as "the whole file") instead of nothing, and `esc`-ing back to the pane
+  before the background pass
   finishes no longer silently drops the findings while still claiming
   success — they now merge into wherever you actually are when it lands.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed

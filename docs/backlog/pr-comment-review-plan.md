@@ -1000,23 +1000,65 @@ first), and the reviewer's output (plus comments triaged in the pane)
       (`MEMORY_CATEGORIES`, `memory_finding_seed`), `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`,
       `src/app/tests.rs`.
-- [ ] **Perform an AI code review of the PR (local draft → optionally post).**
-      A pane action (e.g. `A`) that asks the agent to review the PR **diff**
-      (`gh pr diff`, fetched in Rust) and surface findings. **Default:
-      local draft** — findings appear in the existing list+detail pane as
-      draft items the user triages with the same verbs already built
-      (`f` inject-fix / `r` post / `s` skip / `M` add-to-memory), nothing
-      posts automatically. **Optional, configurable:** once vetted, a
-      "post as GitHub review" action drafts a real review (inline comments +
-      summary) and posts it via `gh` after explicit approval (reuses the
-      Epic C write substrate + the first-write `repo`-scope 403 handling).
-      The **review-findings memory is injected as context** so the agent
-      checks the team's known issues first. This spends agent tokens by
-      design — show a token preview and treat it as an explicit action,
-      distinct from zero-token triage. → `src/app/pr_review.rs`,
-      `src/github.rs`, `ClaudeLauncher::run_headless` (`src/claude.rs`),
-      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
-      `src/app/state.rs`.
+- [x] **Perform an AI code review of the PR (local draft → optionally post).**
+      `A` in the review pane asks the agent to review the PR **diff**
+      (`GhCli::pr_diff` → `gh pr diff <n>`, fetched in Rust) and surface
+      findings. **Default: local draft** — the diff fetch + one headless
+      `ClaudeLauncher::run_headless` pass run on a background thread (the same
+      channel/poll/full-screen-running-view shape as the review-memory
+      lookback bootstrap: `AiReviewProgress`/`AiReviewStage`,
+      `AppMode::AiPrReviewRunning`, `App::poll_ai_pr_review_bg` wired into
+      `main.rs`), with a token estimate shown once the prompt is assembled.
+      The agent is instructed to emit a fixed `### path:line` / body shape
+      (`ai_review_prompt`), parsed deterministically (`parse_ai_findings` —
+      malformed or pathless headings degrade to a general/`### General`
+      finding rather than erroring) and turned into ordinary draft
+      `PrComment`s (`findings_to_comments`, synthetic ids from a high
+      `AI_FINDING_ID_BASE` so they can never collide with a real GitHub
+      comment id; a new `PrComment::ai_generated` flag, `#[serde(default)]`
+      for cache backward-compat) merged into the pane's existing
+      `review.comments` — so the whole existing list/detail/sort/filter/triage
+      machinery (`f` inject-fix / `s` skip / `M` add-to-memory) works
+      unchanged, with an `[AI]` chip in the detail header for visual
+      distinction. `R`/`n` reply is guarded with a clear message on an
+      unposted draft (no real GitHub thread to reply into yet); `x` resolve
+      already degrades gracefully (no `thread_id`). The **review-findings
+      memory is injected as context** (`review_memory_path` → read the file,
+      empty string on miss) so the agent checks the team's known issues
+      first — and a new `AppConfig::ai_review_skill: Option<String>` (e.g.
+      `"review"`) optionally leads the prompt with an existing installed
+      Claude Code review skill/command as the primary methodology, since AMF
+      ships no bundled skill for reviewing a PR diff itself (checked: the
+      repo's own `ai-review.md` command reviews AMF's *tracked-change
+      history*, not a PR diff — unrelated); AMF still owns parsing the
+      findings back out either way. **Persistence:** draft findings persist
+      in the existing `pr_review_cache` JSON blob (no new table — `PrReview`/
+      `PrComment` were already `Serialize`/`Deserialize`), so a same-head-SHA
+      re-open replays them without re-spending tokens; a manual refresh (`r`)
+      carries forward same-SHA drafts (`App::carry_forward_ai_drafts`, called
+      before the fresh fetch overwrites the cache row) and correctly drops
+      them at a new SHA (the drafts reviewed code that's since changed —
+      re-run `A`). Each `A` run replaces the prior AI-draft set rather than
+      accumulating duplicates. **Optional, explicit action:** `W` gathers
+      every draft finding that isn't skipped or already posted, splits it into
+      inline `GhCli::create_review` comments (anchored `path`+`line` findings)
+      vs. a bulleted, editable summary (pathless/file-level findings —
+      GitHub has no line-less inline comment), and posts as a `COMMENT`-event
+      review (never auto-approve/request-changes, so no self-review 422 to
+      handle) after an approve/edit confirm dialog (mirrors the reply dialog:
+      edit the summary, `⏎` posts). On success every included finding is
+      marked `Replied` (so a second `W` doesn't duplicate); on failure — e.g.
+      GitHub's whole-review-rejected-if-any-comment-is-outside-the-diff
+      contract — the drafts are left untouched, reusing `create_review`'s
+      existing first-write `repo`-scope 403 handling. Unit-tested (prompt
+      assembly incl. the skill directive, findings parsing incl. malformed/
+      empty input, synthetic-id/kind assignment, the inline-vs-summary split,
+      the background poll's progress/success/error/cancel paths, and the
+      refresh-merge preserving same-SHA drafts while dropping them at a new
+      SHA). → `src/app/pr_review.rs`, `src/app/state.rs`, `src/app/mod.rs`,
+      `src/github.rs`, `src/handlers/pr_review.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/main.rs`,
+      `src/app/tests.rs`, `CHANGELOG.md`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

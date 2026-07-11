@@ -278,9 +278,7 @@ pub fn draw_review_memory_bootstrap_running(
         } => Line::from(vec![
             spinner,
             Span::styled(
-                format!(
-                    " Distilling findings from {pr_count} PRs (~{token_estimate} tokens)..."
-                ),
+                format!(" Distilling findings from {pr_count} PRs (~{token_estimate} tokens)..."),
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),

@@ -349,7 +349,8 @@ mod tests {
 
     #[test]
     fn parse_findings_markdown_ignores_non_bullet_prose() {
-        let text = "## Tests\nSome intro sentence the model added anyway.\n- Cover the error path\n";
+        let text =
+            "## Tests\nSome intro sentence the model added anyway.\n- Cover the error path\n";
         let findings = parse_findings_markdown(text);
         assert_eq!(
             findings,

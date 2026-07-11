@@ -3345,7 +3345,11 @@ mod tests {
                 "Fix race".to_string(),
                 "- (a.rs:1) Guard the lock".to_string(),
             ),
-            (2, "Add tests".to_string(), "- (review) Needs tests".to_string()),
+            (
+                2,
+                "Add tests".to_string(),
+                "- (review) Needs tests".to_string(),
+            ),
         ];
         let prompt = bootstrap_prompt(&bodies);
         assert!(prompt.contains("## Category"));

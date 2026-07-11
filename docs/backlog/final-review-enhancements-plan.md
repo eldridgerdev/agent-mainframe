@@ -5,10 +5,10 @@
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
   comment-implied rejections, severity tags, agent replies-back,
   in-diff search, comment re-anchoring, resolve/unresolve thread
-  state, and the changeset overview + diff stats have shipped. The
-  remaining Round 2 items (build gate, file-level PR comments) and a
-  third round of review-loop / viewer upgrades (**Round 3**, captured
-  2026-07-01) are not yet started.
+  state, the changeset overview + diff stats, and the build/test gate
+  before approve have shipped. The remaining Round 2 item (file-level
+  PR comments) and a third round of review-loop / viewer upgrades
+  (**Round 3**, captured 2026-07-01) are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -536,8 +536,26 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       coverage" available, since no per-file test-mapping convention exists
       anywhere in this codebase. `file_risk_marker` in
       `src/ui/dialogs/diff.rs`.
-- [ ] Build / test gate before approve — per-project configurable check
-      command
+- [x] Build / test gate before approve — a per-project
+      `final_review_check_command` (`ExtensionConfig` in `src/extension.rs`,
+      merged from `~/.config/amf/config.json` / `{repo}/.amf/config.json`
+      exactly like `lifecycle_hooks`, project overrides global) is run via
+      `bash -c` in the feature's workdir when finishing a review. Unset
+      (the default) skips it entirely — zero behavior change for projects
+      that don't opt in. The command runs in the background and is polled
+      to completion (`finish_check_child` / `finish_check_command` on
+      `DiffViewerState`, spawned in `finish_final_review` and polled by
+      `poll_final_review_check` each main-loop tick, mirroring
+      `changeset_overview_child`) so a slow `cargo build` or test suite
+      doesn't freeze the UI. Pass/fail is folded into the finish summary
+      message and a `### `/`**Check:**` section in
+      `.claude/final-review-feedback.md` (with captured output, capped at
+      `CHECK_OUTPUT_MAX_CHARS`, on failure). A failing check blocks the
+      "all files approved, nothing to write" fast path — the round is
+      always written and dispatched to the agent when the check fails,
+      even with zero rejections, which is the concrete answer to "block an
+      all-approve on failure". `complete_final_review` in
+      `src/app/review.rs`.
 - [ ] File-level PR comments instead of body-dumping whole-file
       rejections (`subject_type: file`)
 - [x] Jump-by-hunk navigation in the diff — press `]` / `[` in the final

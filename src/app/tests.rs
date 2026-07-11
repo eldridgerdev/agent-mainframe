@@ -7961,6 +7961,237 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
     });
 }
 
+/// Enter the PR picker directly (bypassing the real `gh pr list` call
+/// `open_pr_picker` would make) so bootstrap-pick tests can exercise the
+/// overlay's state transitions without hitting the network.
+fn enter_pr_picker_for_test(app: &mut App) {
+    app.mode = AppMode::PrPicker(crate::app::PrPickerState {
+        workdir: std::path::PathBuf::from("/tmp/test-workdir"),
+        entries: vec![],
+        selected: 0,
+        include_closed: false,
+        error: None,
+        bootstrap_pick: None,
+    });
+}
+
+#[test]
+fn review_memory_bootstrap_pick_opens_defaulting_to_fifty() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+
+    assert!(!app.review_memory_bootstrap_picking());
+    app.open_review_memory_bootstrap_pick();
+    assert!(app.review_memory_bootstrap_picking());
+
+    match &app.mode {
+        AppMode::PrPicker(state) => {
+            let pick = state.bootstrap_pick.as_ref().unwrap();
+            assert_eq!(
+                crate::app::pr_review::BootstrapDepth::ALL[pick.selected],
+                crate::app::pr_review::BootstrapDepth::default()
+            );
+        }
+        other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn review_memory_bootstrap_pick_move_wraps() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    app.open_review_memory_bootstrap_pick();
+
+    let selected = |app: &App| match &app.mode {
+        AppMode::PrPicker(state) => state.bootstrap_pick.as_ref().unwrap().selected,
+        _ => panic!("expected PrPicker"),
+    };
+
+    // Starts on the default (Fifty, index 1).
+    assert_eq!(selected(&app), 1);
+    app.review_memory_bootstrap_pick_move(1);
+    assert_eq!(selected(&app), 2);
+    app.review_memory_bootstrap_pick_move(1);
+    assert_eq!(selected(&app), 3);
+    // Wraps forward past the last entry.
+    app.review_memory_bootstrap_pick_move(1);
+    assert_eq!(selected(&app), 0);
+    // Wraps backward past the first entry.
+    app.review_memory_bootstrap_pick_move(-1);
+    assert_eq!(selected(&app), 3);
+}
+
+#[test]
+fn review_memory_bootstrap_pick_cancel_closes_the_overlay() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    app.open_review_memory_bootstrap_pick();
+    assert!(app.review_memory_bootstrap_picking());
+
+    app.review_memory_bootstrap_pick_cancel();
+
+    assert!(!app.review_memory_bootstrap_picking());
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
+#[test]
+fn poll_review_memory_bootstrap_bg_surfaces_result_and_returns_to_picker() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_bootstrap_bg = Some(rx);
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
+
+    tx.send(crate::app::pr_review::BootstrapProgress::Distilling {
+        pr_count: 3,
+        token_estimate: 42,
+    })
+    .unwrap();
+    assert!(app.poll_review_memory_bootstrap_bg());
+    match &app.mode {
+        AppMode::ReviewMemoryBootstrapRunning(state) => assert_eq!(
+            state.stage,
+            crate::app::pr_review::BootstrapStage::Distilling {
+                pr_count: 3,
+                token_estimate: 42,
+            }
+        ),
+        other => panic!(
+            "expected ReviewMemoryBootstrapRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    tx.send(crate::app::pr_review::BootstrapProgress::Done(Ok(
+        crate::app::pr_review::BootstrapOutcome {
+            pr_count: 3,
+            appended: 2,
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_review_memory_bootstrap_bg());
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+    assert!(app.review_memory_bootstrap_bg.is_none());
+}
+
+#[test]
+fn poll_review_memory_bootstrap_bg_error_still_returns_to_picker() {
+    // Regression: `show_error` unconditionally resets `self.mode` to `Normal`
+    // for any non-Normal/Help/Viewing mode. The `Done(Err(_))` branch used to
+    // call it *before* restoring the origin picker, so a failed distill (e.g.
+    // the headless `claude` call erroring) dumped the user onto the bare
+    // dashboard instead of back to the PR picker like the success path does.
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_bootstrap_bg = Some(rx);
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
+
+    tx.send(crate::app::pr_review::BootstrapProgress::Done(Err(
+        anyhow::anyhow!("claude headless command failed"),
+    )))
+    .unwrap();
+    assert!(app.poll_review_memory_bootstrap_bg());
+    match &app.mode {
+        AppMode::PrPicker(state) => {
+            assert!(
+                state
+                    .error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("claude headless command failed")),
+                "expected the picker's inline error to surface the failure, got {:?}",
+                state.error
+            );
+        }
+        other => panic!("expected PrPicker, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(app.review_memory_bootstrap_bg.is_none());
+}
+
+#[test]
+fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_result() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.review_memory_bootstrap_bg = Some(rx);
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
+
+    // The user gives up watching...
+    app.cancel_review_memory_bootstrap();
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+
+    // ...but the background run still finishes and reports its result (a real
+    // side effect: it wrote findings and spent tokens), even though the user
+    // isn't looking at the running screen anymore.
+    tx.send(crate::app::pr_review::BootstrapProgress::Done(Ok(
+        crate::app::pr_review::BootstrapOutcome {
+            pr_count: 5,
+            appended: 1,
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_review_memory_bootstrap_bg());
+    assert!(app.review_memory_bootstrap_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
 #[test]
 fn pr_review_fix_session_usage_reads_the_target_sessions_tokens() {
     let mut store = store_with_feature(ProjectStatus::Active);

@@ -329,6 +329,36 @@ impl GhCli {
         parse_pr_list_json(&output.stdout)
     }
 
+    /// List the repository's most-recently-updated merged/closed pull
+    /// requests, for the review-memory lookback bootstrap (Epic E): it needs
+    /// PR history, not open work in progress. `gh`'s `--state closed` filter
+    /// already covers both closed-without-merge and merged PRs (a merged
+    /// PR's underlying state is `CLOSED`), so no client-side filtering is
+    /// needed. `limit` bounds how many to fetch. Zero agent tokens (one
+    /// `gh pr list` call).
+    pub fn list_recent_closed_prs(workdir: &Path, limit: u32) -> Result<Vec<PrListEntry>> {
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--state",
+                "closed",
+                "--limit",
+                &limit.to_string(),
+                "--json",
+                "number,title,author,headRefName,updatedAt,isDraft,state",
+            ])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh pr list`.")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("`gh pr list` failed: {}", stderr.trim());
+        }
+        parse_pr_list_json(&output.stdout)
+    }
+
     /// Inline review comments for a PR (file/line-anchored), all pages.
     pub fn pr_review_comments(workdir: &Path, number: u32) -> Result<Vec<ReviewComment>> {
         fetch_paginated(

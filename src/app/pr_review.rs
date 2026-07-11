@@ -19,9 +19,10 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::*;
+use crate::claude::ClaudeLauncher;
 use crate::editor::TextEditor;
 use crate::github::{
-    GhCli, IssueComment, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
+    GhCli, IssueComment, PrListEntry, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
 };
 
 /// Snippet length (chars) shown in the comment list.
@@ -58,6 +59,84 @@ pub(crate) const MEMORY_CATEGORIES: &[&str] = &[
     "API design",
     "Style",
 ];
+
+/// Practical ceiling for the "All" lookback depth. Not truly unbounded — a
+/// repo's full closed-PR history could be thousands deep, and both the `gh`
+/// fetch loop and the one-shot distill pass scale with it.
+const BOOTSTRAP_ALL_LIMIT: u32 = 500;
+
+/// How far back the review-memory lookback bootstrap (Epic E) looks when
+/// seeding `review-memory.md` from history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapDepth {
+    Twenty,
+    Fifty,
+    Hundred,
+    All,
+}
+
+impl BootstrapDepth {
+    pub const ALL: [BootstrapDepth; 4] = [Self::Twenty, Self::Fifty, Self::Hundred, Self::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Twenty => "20 PRs",
+            Self::Fifty => "50 PRs",
+            Self::Hundred => "100 PRs",
+            Self::All => "All",
+        }
+    }
+
+    /// The `gh pr list --limit` value this depth fetches.
+    pub fn limit(self) -> u32 {
+        match self {
+            Self::Twenty => 20,
+            Self::Fifty => 50,
+            Self::Hundred => 100,
+            Self::All => BOOTSTRAP_ALL_LIMIT,
+        }
+    }
+}
+
+impl Default for BootstrapDepth {
+    /// Matches the plan's mockup, which highlights 50 PRs by default.
+    fn default() -> Self {
+        Self::Fifty
+    }
+}
+
+/// Progress of the background lookback-bootstrap fetch + distill (`b` in the
+/// PR picker). Two stages: the `gh` fetch loop (zero agent tokens) and the one
+/// headless agent pass that clusters the gathered comments into findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootstrapStage {
+    FetchingComments,
+    Distilling {
+        pr_count: usize,
+        token_estimate: usize,
+    },
+}
+
+/// Outcome of a completed bootstrap run.
+#[derive(Debug, Clone, Copy)]
+pub struct BootstrapOutcome {
+    /// PRs whose comments/reviews contributed non-empty text to the prompt.
+    pub pr_count: usize,
+    /// Findings newly appended to the memory doc (dedup-aware — re-running
+    /// the bootstrap over overlapping history won't double them up).
+    pub appended: usize,
+}
+
+/// Messages sent back from the background bootstrap thread. `Distilling` fires
+/// once, right before the one headless agent call, so the running screen can
+/// show a token estimate for that call; `Done` fires exactly once at the end.
+pub enum BootstrapProgress {
+    Distilling {
+        pr_count: usize,
+        token_estimate: usize,
+    },
+    Done(Result<BootstrapOutcome>),
+}
 
 /// Which agent session a "fix" prompt is injected into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -717,6 +796,126 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// Flatten one PR's review comments + review summaries into plain-text lines
+/// for the lookback-bootstrap prompt (Epic E). Bot bodies are stripped like
+/// everywhere else in this module; empty bodies (bare approvals, blank
+/// comments) are dropped. Returns an empty string when the PR has nothing
+/// worth feeding to the distiller.
+fn bootstrap_pr_text(comments: &[ReviewComment], reviews: &[Review]) -> String {
+    let mut lines = Vec::new();
+    for c in comments {
+        let text = if c.user.is_bot() {
+            strip_bot_boilerplate(&c.body)
+        } else {
+            c.body.clone()
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let loc = match &c.path {
+            Some(p) => match c.line.or(c.original_line) {
+                Some(l) => format!("{p}:{l}"),
+                None => p.clone(),
+            },
+            None => "general".to_string(),
+        };
+        lines.push(format!("- ({loc}) {}", text.replace('\n', " ")));
+    }
+    for r in reviews {
+        let text = if r.user.is_bot() {
+            strip_bot_boilerplate(&r.body)
+        } else {
+            r.body.clone()
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        lines.push(format!("- (review) {}", text.replace('\n', " ")));
+    }
+    lines.join("\n")
+}
+
+/// Assemble the one distill prompt from every PR's gathered text. Instructs
+/// the agent to output the same `## Category` / `- bullet` shape
+/// [`review_memory::append_finding`] writes, so the response can be fed
+/// straight back through [`review_memory::parse_findings_markdown`] with no
+/// further parsing.
+fn bootstrap_prompt(pr_bodies: &[(u32, String, String)]) -> String {
+    let mut out = String::from(
+        "You are distilling recurring code-review findings from a project's PR \
+         history into a durable list of lessons for future reviews.\n\n\
+         Below are review comments and review summaries from several recent, \
+         already-merged/closed pull requests. Identify findings that recur across \
+         multiple PRs, or that state a general rule the team clearly cares about — \
+         not a one-off nitpick specific to a single PR's code. Ignore praise, \
+         procedural comments (\"LGTM\", \"done\"), and anything that reads as already \
+         resolved.\n\n\
+         Output ONLY a Markdown list grouped under `## Category` headings (categories \
+         like General, Concurrency, Error handling, Naming, Tests, Performance, API \
+         design, Style), one finding per `- ` bullet, phrased as a general rule (not \
+         tied to a specific file, PR, or person). No prose outside the headings and \
+         bullets.\n\n---\n\n",
+    );
+    for (number, title, body) in pr_bodies {
+        out.push_str(&format!("### PR #{number}: {title}\n{body}\n\n"));
+    }
+    out.trim_end().to_string()
+}
+
+/// Background body of the lookback bootstrap (Epic E): fetch comments/reviews
+/// for every listed PR (zero agent tokens), then make **one** headless agent
+/// pass to cluster them into findings and append the new ones to the memory
+/// doc. Runs off the UI thread; progress and the final result are reported
+/// over `tx`. A single PR's fetch failure is skipped rather than aborting the
+/// whole run — one stale/deleted PR shouldn't sink the batch.
+fn run_review_memory_bootstrap(
+    workdir: PathBuf,
+    memory_path: PathBuf,
+    entries: Vec<PrListEntry>,
+    tx: std::sync::mpsc::Sender<BootstrapProgress>,
+) {
+    let mut pr_bodies = Vec::new();
+    for entry in &entries {
+        let comments = GhCli::pr_review_comments(&workdir, entry.number).unwrap_or_default();
+        let reviews = GhCli::pr_reviews(&workdir, entry.number).unwrap_or_default();
+        let text = bootstrap_pr_text(&comments, &reviews);
+        if !text.is_empty() {
+            pr_bodies.push((entry.number, entry.title.clone(), text));
+        }
+    }
+
+    if pr_bodies.is_empty() {
+        let _ = tx.send(BootstrapProgress::Done(Ok(BootstrapOutcome {
+            pr_count: 0,
+            appended: 0,
+        })));
+        return;
+    }
+
+    let prompt = bootstrap_prompt(&pr_bodies);
+    let _ = tx.send(BootstrapProgress::Distilling {
+        pr_count: pr_bodies.len(),
+        token_estimate: estimate_tokens(&prompt),
+    });
+
+    let result = ClaudeLauncher::run_headless(&workdir, &prompt).and_then(|output| {
+        let findings = review_memory::parse_findings_markdown(&output);
+        let mut appended = 0;
+        for (category, finding) in &findings {
+            if review_memory::append_finding(&memory_path, category, finding)? {
+                appended += 1;
+            }
+        }
+        Ok(BootstrapOutcome {
+            pr_count: pr_bodies.len(),
+            appended,
+        })
+    });
+    let _ = tx.send(BootstrapProgress::Done(result));
+}
+
 impl App {
     /// Open the PR comment-review pane for the selected feature's branch.
     ///
@@ -1046,6 +1245,7 @@ impl App {
                     selected,
                     include_closed: false,
                     error: None,
+                    bootstrap_pick: None,
                 });
             }
             Err(e) => {
@@ -2357,6 +2557,192 @@ impl App {
             state.detail_scroll = (state.detail_scroll + amount).min(max_scroll);
         }
     }
+
+    /// Open the lookback-bootstrap depth picker (`b` in the PR picker): an
+    /// overlay on the picker, not a separate mode, mirroring how the fix
+    /// harness picker overlays the review pane.
+    pub fn open_review_memory_bootstrap_pick(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode {
+            state.bootstrap_pick = Some(BootstrapPickState {
+                selected: BootstrapDepth::ALL
+                    .iter()
+                    .position(|d| *d == BootstrapDepth::default())
+                    .unwrap_or(0),
+            });
+        }
+    }
+
+    /// Whether the bootstrap depth picker is currently open over the PR picker.
+    pub fn review_memory_bootstrap_picking(&self) -> bool {
+        matches!(&self.mode, AppMode::PrPicker(state) if state.bootstrap_pick.is_some())
+    }
+
+    /// Move the depth-picker highlight (`+1`/`-1`, wrapping).
+    pub fn review_memory_bootstrap_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrPicker(state) = &mut self.mode
+            && let Some(pick) = &mut state.bootstrap_pick
+        {
+            let len = BootstrapDepth::ALL.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+        }
+    }
+
+    /// Close the depth picker without running anything, staying on the PR
+    /// picker.
+    pub fn review_memory_bootstrap_pick_cancel(&mut self) {
+        if let AppMode::PrPicker(state) = &mut self.mode {
+            state.bootstrap_pick = None;
+        }
+    }
+
+    /// Confirm the chosen depth: resolve the recent closed/merged PRs
+    /// synchronously (one cheap `gh` call), then hand the heavy work — the
+    /// per-PR comment fetch loop and the one distill pass — to a background
+    /// thread and switch to the full-screen running view.
+    pub fn review_memory_bootstrap_pick_confirm(&mut self) {
+        let (workdir, depth, mut origin) = match &self.mode {
+            AppMode::PrPicker(state) => {
+                let Some(pick) = &state.bootstrap_pick else {
+                    return;
+                };
+                let depth = BootstrapDepth::ALL[pick.selected];
+                (state.workdir.clone(), depth, state.clone())
+            }
+            _ => return,
+        };
+        origin.bootstrap_pick = None;
+
+        let entries = match GhCli::list_recent_closed_prs(&workdir, depth.limit()) {
+            Ok(entries) => entries,
+            Err(e) => {
+                self.mode = AppMode::PrPicker(origin);
+                self.show_error(e);
+                return;
+            }
+        };
+        if entries.is_empty() {
+            self.mode = AppMode::PrPicker(origin);
+            self.message = Some("No merged/closed PRs found to learn from".into());
+            return;
+        }
+
+        let repo = self.repo_for_project_path(&workdir);
+        let memory_path =
+            review_memory::review_memory_path(&repo, self.config.review_memory_path.as_deref());
+
+        self.log_info(
+            "pr_review",
+            format!(
+                "bootstrapping review memory from {} PRs (depth: {})",
+                entries.len(),
+                depth.label()
+            ),
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.review_memory_bootstrap_bg = Some(rx);
+        let thread_workdir = workdir.clone();
+        std::thread::spawn(move || {
+            run_review_memory_bootstrap(thread_workdir, memory_path, entries, tx);
+        });
+
+        self.mode = AppMode::ReviewMemoryBootstrapRunning(BootstrapRunState {
+            origin,
+            depth,
+            stage: BootstrapStage::FetchingComments,
+        });
+    }
+
+    /// Poll the background bootstrap. Progress messages update the running
+    /// screen's stage; `Done` always surfaces a toast (success) or error (the
+    /// run has a real side effect — tokens spent, findings written — even if
+    /// the user already navigated away), and restores the PR picker only if
+    /// the running screen is still showing. An error is also written onto the
+    /// restored picker's own inline `error` field so it's visible immediately
+    /// on return, not just logged. Returns `true` when a redraw is warranted.
+    pub fn poll_review_memory_bootstrap_bg(&mut self) -> bool {
+        let Some(rx) = self.review_memory_bootstrap_bg.as_ref() else {
+            return false;
+        };
+        let mut changed = false;
+        loop {
+            match rx.try_recv() {
+                Ok(BootstrapProgress::Distilling {
+                    pr_count,
+                    token_estimate,
+                }) => {
+                    if let AppMode::ReviewMemoryBootstrapRunning(state) = &mut self.mode {
+                        state.stage = BootstrapStage::Distilling {
+                            pr_count,
+                            token_estimate,
+                        };
+                    }
+                    changed = true;
+                }
+                Ok(BootstrapProgress::Done(result)) => {
+                    self.review_memory_bootstrap_bg = None;
+                    // Capture the origin before any mode-mutating side effect
+                    // below: `show_error` unconditionally resets `self.mode` to
+                    // `Normal` for any non-Normal/Help/Viewing mode, which would
+                    // otherwise clobber the running screen's stashed picker
+                    // before we get a chance to restore it.
+                    let mut origin = match &self.mode {
+                        AppMode::ReviewMemoryBootstrapRunning(state) => Some(state.origin.clone()),
+                        _ => None,
+                    };
+                    match result {
+                        Ok(outcome) => {
+                            self.push_toast_success(format!(
+                                "Bootstrapped review memory from {} PR{} · {} new finding{}",
+                                outcome.pr_count,
+                                if outcome.pr_count == 1 { "" } else { "s" },
+                                outcome.appended,
+                                if outcome.appended == 1 { "" } else { "s" },
+                            ));
+                        }
+                        Err(e) => {
+                            // `show_error` only logs and surfaces via the
+                            // dashboard's status bar, which the PR picker's
+                            // full-screen render doesn't draw — also set the
+                            // picker's own inline `error` (the same field
+                            // `pr_picker_choose` uses) so the failure is
+                            // actually visible on return, not just logged.
+                            let detail = e.to_string();
+                            if let Some(origin) = &mut origin {
+                                origin.error = Some(detail.clone());
+                            }
+                            self.show_error(e);
+                        }
+                    }
+                    if let Some(origin) = origin {
+                        self.mode = AppMode::PrPicker(origin);
+                    }
+                    changed = true;
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.review_memory_bootstrap_bg = None;
+                    if let AppMode::ReviewMemoryBootstrapRunning(state) = &self.mode {
+                        self.mode = AppMode::PrPicker(state.origin.clone());
+                        self.message = Some("Bootstrap failed unexpectedly".to_string());
+                        changed = true;
+                    }
+                    break;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Cancel the running screen (`esc`/`q`): return to the PR picker. The
+    /// background thread isn't aborted — if it finishes later,
+    /// [`App::poll_review_memory_bootstrap_bg`] still surfaces the result.
+    pub fn cancel_review_memory_bootstrap(&mut self) {
+        if let AppMode::ReviewMemoryBootstrapRunning(state) = &self.mode {
+            self.mode = AppMode::PrPicker(state.origin.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2866,5 +3252,106 @@ mod tests {
         bot.is_bot = true;
         assert!(human.agent_text().contains("<details>"));
         assert_eq!(bot.agent_text(), "plain");
+    }
+
+    fn review_comment(id: u64, path: Option<&str>, line: Option<u32>, body: &str) -> ReviewComment {
+        bot_review_comment(id, path, line, body, false)
+    }
+
+    fn bot_review_comment(
+        id: u64,
+        path: Option<&str>,
+        line: Option<u32>,
+        body: &str,
+        is_bot: bool,
+    ) -> ReviewComment {
+        ReviewComment {
+            id,
+            path: path.map(String::from),
+            line,
+            original_line: line,
+            diff_hunk: None,
+            subject_type: None,
+            body: body.to_string(),
+            user: if is_bot {
+                user("coderabbitai", "Bot")
+            } else {
+                user("alice", "User")
+            },
+            in_reply_to_id: None,
+            pull_request_review_id: None,
+        }
+    }
+
+    fn review(id: u64, body: &str, is_bot: bool) -> Review {
+        Review {
+            id,
+            body: body.to_string(),
+            state: "COMMENTED".into(),
+            user: if is_bot {
+                user("coderabbitai", "Bot")
+            } else {
+                user("alice", "User")
+            },
+        }
+    }
+
+    #[test]
+    fn bootstrap_depth_default_is_fifty() {
+        assert_eq!(BootstrapDepth::default(), BootstrapDepth::Fifty);
+        assert_eq!(BootstrapDepth::Fifty.limit(), 50);
+        assert_eq!(BootstrapDepth::Twenty.limit(), 20);
+        assert_eq!(BootstrapDepth::Hundred.limit(), 100);
+        assert!(BootstrapDepth::All.limit() > 100);
+    }
+
+    #[test]
+    fn bootstrap_pr_text_includes_location_and_review_lines() {
+        let comments = vec![review_comment(
+            1,
+            Some("src/app/sync.rs"),
+            Some(42),
+            "Guard this behind the lock.",
+        )];
+        let reviews = vec![review(2, "Looks solid overall.", false)];
+        let text = bootstrap_pr_text(&comments, &reviews);
+        assert_eq!(
+            text,
+            "- (src/app/sync.rs:42) Guard this behind the lock.\n- (review) Looks solid overall."
+        );
+    }
+
+    #[test]
+    fn bootstrap_pr_text_strips_bot_boilerplate_and_skips_empty() {
+        let comments = vec![
+            bot_review_comment(
+                1,
+                Some("a.rs"),
+                None,
+                "<details><summary>Prompt for AI agents</summary>noise</details>Real point.",
+                true,
+            ),
+            review_comment(2, None, None, "   "),
+        ];
+        let text = bootstrap_pr_text(&comments, &[]);
+        assert_eq!(text, "- (a.rs) Real point.");
+    }
+
+    #[test]
+    fn bootstrap_prompt_lists_every_pr_and_instructs_category_format() {
+        let bodies = vec![
+            (
+                1,
+                "Fix race".to_string(),
+                "- (a.rs:1) Guard the lock".to_string(),
+            ),
+            (2, "Add tests".to_string(), "- (review) Needs tests".to_string()),
+        ];
+        let prompt = bootstrap_prompt(&bodies);
+        assert!(prompt.contains("## Category"));
+        assert!(prompt.contains("### PR #1: Fix race"));
+        assert!(prompt.contains("- (a.rs:1) Guard the lock"));
+        assert!(prompt.contains("### PR #2: Add tests"));
+        assert!(prompt.contains("- (review) Needs tests"));
     }
 }

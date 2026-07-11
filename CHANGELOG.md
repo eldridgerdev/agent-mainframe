@@ -12,6 +12,16 @@ are tagged.
 
 ### Added
 
+- **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
+  `.amf/review-memory.md` from your PR history instead of building it up one
+  comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed
+  PRs); AMF fetches their review comments and summaries via `gh` (zero agent
+  tokens — bot boilerplate stripped, same as everywhere else in PR review),
+  then makes **one** agent pass to cluster the recurring findings and appends
+  the new ones (dedup-aware, so re-running over overlapping history is a
+  no-op). The running screen shows the PR count and a token estimate before
+  that one pass, and `esc` returns you to the picker without losing the run —
+  it keeps going in the background and still reports its result when done.
 - **Review-findings memory doc groundwork (no UI yet).** Added the on-disk
   primitives for `.amf/review-memory.md` — a version-controlled file that
   will accumulate the team's recurring code-review findings, grouped by

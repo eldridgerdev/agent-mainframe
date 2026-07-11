@@ -13,10 +13,10 @@ use unicode_width::UnicodeWidthStr;
 use std::path::Path;
 
 use crate::{
-    app::pr_review::{BootstrapDepth, BootstrapStage, CommentKind, PrComment},
+    app::pr_review::{AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment},
     app::{
-        BootstrapPickState, BootstrapRunState, PrNumberPromptState, PrPickerState,
-        PrReviewLoadState, PrReviewState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, PrNumberPromptState,
+        PrPickerState, PrReviewLoadState, PrReviewState,
     },
     editor::VimMode,
     theme::Theme,
@@ -292,6 +292,60 @@ pub fn draw_review_memory_bootstrap_running(
         Line::from(""),
         Line::from(Span::styled(
             "esc to return to the PR picker (the run keeps going in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
+}
+
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`). Mirrors [`draw_review_memory_bootstrap_running`].
+pub fn draw_ai_pr_review_running(
+    frame: &mut Frame,
+    state: &AiReviewRunState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " AI review of PR #{} (experimental) ",
+        state.origin.review.pr.number
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let status_line = match state.stage {
+        AiReviewStage::PreparingDiff => Line::from(vec![
+            spinner,
+            Span::styled(
+                " Fetching PR diff...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        AiReviewStage::Reviewing { token_estimate } => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Reviewing diff (~{token_estimate} tokens)..."),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    };
+
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        status_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc to return to the review pane (the run keeps going in the background)",
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -969,6 +1023,9 @@ fn draw_comment_detail(
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )];
+    if c.ai_generated {
+        header_spans.push(chip("AI", theme.info.to_color()));
+    }
     if c.outdated {
         header_spans.push(chip("outdated", theme.warning.to_color()));
     }

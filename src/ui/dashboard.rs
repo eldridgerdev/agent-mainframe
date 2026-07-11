@@ -937,6 +937,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
         return;
     }
+    if let AppMode::AiPrReviewRunning(state) = &app.mode {
+        super::dialogs::draw_ai_pr_review_running(frame, state, &app.throbber_state, &app.theme);
+        return;
+    }
 
     if let AppMode::Todos(state) = &app.mode {
         super::dialogs::draw_todos_view(frame, state, &app.theme, app.config.nerd_font);

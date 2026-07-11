@@ -12,6 +12,19 @@ are tagged.
 
 ### Added
 
+- **AI review of the PR diff (draft findings).** Press `A` in the PR-review
+  pane to have AMF review the PR's diff itself and surface findings as draft
+  items in the same list, triaged with the verbs already there (`f` inject-fix
+  · `s` skip · `M` add to memory). The review-memory doc is injected as
+  context so it checks the team's known recurring issues first; an optional
+  `ai_review_skill` config setting (e.g. `"review"`) leads the prompt with an
+  existing Claude Code review skill/command as the primary methodology, if you
+  have one installed. Draft findings persist in the PR's cache so re-opening
+  the pane at the same commit replays them without spending tokens again; a
+  manual refresh (`r`) carries them forward too, unless the PR has moved to a
+  new commit. This is an explicit, opt-in action — the running screen shows a
+  token estimate before the one paid pass, and `esc` lets it keep going in the
+  background.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

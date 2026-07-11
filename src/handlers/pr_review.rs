@@ -16,7 +16,8 @@ const FIX_PAGE_STEP: isize = 10;
 /// all marked fixes as separate prompts / `B` inject one combined prompt for all
 /// marked, `R`/`n` reply, `M` add to memory, `x` resolve/reopen the thread,
 /// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
-/// comment's file.
+/// comment's file, `A` run an AI review of the PR diff (Epic E — draft
+/// findings merge into this same list).
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
@@ -61,6 +62,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('r') => app.refresh_pr_review(),
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
+        KeyCode::Char('A') => app.start_ai_pr_review(),
         _ => {}
     }
     Ok(())
@@ -107,6 +109,17 @@ fn handle_bootstrap_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
 pub fn handle_review_memory_bootstrap_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
         app.cancel_review_memory_bootstrap();
+    }
+    Ok(())
+}
+
+/// Key handling while the AI PR review's background pass is running:
+/// `Esc`/`q` returns to the review pane without aborting the background
+/// thread (it keeps running — a real side effect, tokens spent — and
+/// [`App::poll_ai_pr_review_bg`] still surfaces the result whenever it lands).
+pub fn handle_ai_pr_review_running_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        app.cancel_ai_pr_review();
     }
     Ok(())
 }

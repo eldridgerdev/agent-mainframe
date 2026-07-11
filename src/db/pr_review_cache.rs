@@ -80,6 +80,7 @@ mod tests {
                 is_resolved: false,
                 triage: TriageState::Untriaged,
                 local_note: None,
+                ai_generated: false,
             }],
             fetched_at: Local::now(),
         }

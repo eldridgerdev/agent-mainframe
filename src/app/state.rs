@@ -1498,6 +1498,16 @@ pub struct BootstrapRunState {
     pub stage: crate::app::pr_review::BootstrapStage,
 }
 
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`), entered from the review pane.
+#[derive(Debug, Clone)]
+pub struct AiReviewRunState {
+    /// The review pane to return to on completion or cancel (dialogs cleared
+    /// before stashing, matching the `P`/`f` stash convention).
+    pub origin: PrReviewState,
+    pub stage: crate::app::pr_review::AiReviewStage,
+}
+
 /// State for the full-screen PR comment-review pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
@@ -1842,6 +1852,9 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Running the AI PR review's diff-fetch + review pass off the UI thread
+    /// (Epic E `A`); shows a loading frame with the current stage.
+    AiPrReviewRunning(AiReviewRunState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),

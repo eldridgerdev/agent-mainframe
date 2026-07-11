@@ -420,6 +420,14 @@ pub struct AppConfig {
     /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_memory_path: Option<String>,
+    /// Name of an existing Claude Code skill/command (without the leading `/`,
+    /// e.g. `"review"`) to lead the AI PR-review prompt (`A` in the PR-review
+    /// pane, Epic E of `pr-comment-review-plan.md`) with, so its review
+    /// methodology runs before AMF's own structured-findings instructions.
+    /// `None` (default) skips this — AMF ships no bundled skill for reviewing a
+    /// PR diff, so the feature must work without assuming one is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_review_skill: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -476,6 +484,7 @@ impl Default for AppConfig {
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
             review_memory_path: None,
+            ai_review_skill: None,
         }
     }
 }
@@ -616,6 +625,9 @@ pub struct App {
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
+    /// Receiver for the background AI code review of the current PR's diff
+    /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
+    pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1917,6 +1929,7 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2104,6 +2117,7 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

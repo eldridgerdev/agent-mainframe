@@ -301,6 +301,15 @@ impl GhCli {
         parse_pr_json(&output.stdout)
     }
 
+    /// Fetch the PR's unified diff (`gh pr diff <number>`), plain patch text —
+    /// not `--json`. Used as the AI reviewer's input; zero agent tokens by
+    /// itself (one `gh` call). Only the whole string's leading/trailing
+    /// whitespace is trimmed ([`Self::gh_stdout`]); interior diff content is
+    /// untouched.
+    pub fn pr_diff(workdir: &Path, number: u32) -> Result<String> {
+        Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()])
+    }
+
     /// List the repository's pull requests for the PR picker. `include_closed`
     /// switches between open-only (`--state open`, the default) and everything
     /// (`--state all`, i.e. open + closed + merged). Newest-updated first.

@@ -37,8 +37,8 @@ pub use hooks::{
 };
 pub use markdown::{draw_markdown_loading, draw_markdown_viewer};
 pub use pr_review::{
-    draw_pr_number_prompt, draw_pr_picker, draw_pr_review, draw_pr_review_loading,
-    draw_review_memory_bootstrap_running,
+    draw_ai_pr_review_running, draw_pr_number_prompt, draw_pr_picker, draw_pr_review,
+    draw_pr_review_loading, draw_review_memory_bootstrap_running,
 };
 pub use project::{draw_create_project_dialog, draw_delete_project_confirm};
 pub use prompt_library::{

@@ -636,6 +636,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
+        AppMode::AiPrReviewRunning(_) => Line::from(vec![
+            Span::raw(" Running AI PR review (experimental)...  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
         AppMode::PrReview(_) => Line::from(vec![
             Span::styled(" j/k", key_style()),
             Span::raw(" move  "),

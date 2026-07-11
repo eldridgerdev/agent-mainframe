@@ -7682,6 +7682,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -7958,6 +7959,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8978,6 +8980,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -9173,6 +9176,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -9433,6 +9437,96 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut untriaged =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(1),
+                body: "eligible".into(),
+            }]);
+        let mut skipped =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("b.rs".into()),
+                line: Some(2),
+                body: "skipped, excluded".into(),
+            }]);
+        skipped[0].triage = crate::app::pr_review::TriageState::Skipped;
+        let mut replied =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("c.rs".into()),
+                line: Some(3),
+                body: "already posted, excluded".into(),
+            }]);
+        replied[0].triage = crate::app::pr_review::TriageState::Replied;
+        state.review.comments.append(&mut untriaged);
+        state.review.comments.append(&mut skipped);
+        state.review.comments.append(&mut replied);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let post = state.ai_review_post.as_ref().expect("dialog should open");
+            assert_eq!(post.comment_ids.len(), 1);
+            assert_eq!(post.inline.len(), 1);
+            assert_eq!(post.inline[0].path, "a.rs");
+            assert!(!post.editing);
+        }
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_warns_when_nothing_eligible() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1); // no ai_generated comments at all
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.ai_review_post.is_none()),
+        _ => panic!("expected PrReview"),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("No AI findings to post"))
+    );
+}
+
+#[test]
+fn pr_review_ai_review_post_edit_cancel_flow() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut findings =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "general finding".into(),
+            }]);
+        state.review.comments.append(&mut findings);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_ai_review_post_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(true));
+    app.pr_review_ai_review_post_editor_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('!'),
+    ));
+
+    app.pr_review_ai_review_post_stop_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_cancel_ai_review_post();
+    assert_eq!(app.pr_review_ai_review_post_view(), None);
 }
 
 fn memory_add_editor_text(app: &App) -> String {

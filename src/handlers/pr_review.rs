@@ -17,7 +17,8 @@ const FIX_PAGE_STEP: isize = 10;
 /// marked, `R`/`n` reply, `M` add to memory, `x` resolve/reopen the thread,
 /// `m` mark done, `s` skip, `i` install syntax highlighting for the selected
 /// comment's file, `A` run an AI review of the PR diff (Epic E — draft
-/// findings merge into this same list).
+/// findings merge into this same list), `W` post the AI-review draft
+/// findings to GitHub as a real review.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
@@ -34,6 +35,10 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
     // The "add to memory" dialog, when open, captures all keys.
     if let Some(editing) = app.pr_review_memory_add_view() {
         return handle_memory_add_key(app, key, editing);
+    }
+    // The AI-review post-to-GitHub confirm dialog, when open, captures all keys.
+    if let Some(editing) = app.pr_review_ai_review_post_view() {
+        return handle_ai_review_post_key(app, key, editing);
     }
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -63,6 +68,7 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('i') => app.open_syntax_language_picker_for_selected_diff_file(),
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
         KeyCode::Char('A') => app.start_ai_pr_review(),
+        KeyCode::Char('W') => app.pr_review_open_ai_review_post_confirm(),
         _ => {}
     }
     Ok(())
@@ -142,6 +148,30 @@ fn handle_reply_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
         KeyCode::Enter => app.pr_review_post_reply()?,
         KeyCode::Char('e') => app.pr_review_reply_edit(),
         KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_reply(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Key handling while the AI-review post-to-GitHub confirm dialog is open.
+///
+/// Confirm view: `⏎` posts, `e` edits the summary, `esc`/`q` cancels. Edit
+/// mode: keystrokes flow to the summary editor; `esc` returns to the confirm
+/// view. Only the summary is editable — inline finding bodies are vetted by
+/// skipping (`s`), not hand-edited here.
+fn handle_ai_review_post_key(app: &mut App, key: KeyEvent, editing: bool) -> Result<()> {
+    if editing {
+        match key.code {
+            KeyCode::Esc => app.pr_review_ai_review_post_stop_edit(),
+            _ => app.pr_review_ai_review_post_editor_key(key),
+        }
+        return Ok(());
+    }
+
+    match key.code {
+        KeyCode::Enter => app.pr_review_post_ai_review()?,
+        KeyCode::Char('e') => app.pr_review_ai_review_post_edit(),
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_cancel_ai_review_post(),
         _ => {}
     }
     Ok(())

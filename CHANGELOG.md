@@ -24,7 +24,10 @@ are tagged.
   manual refresh (`r`) carries them forward too, unless the PR has moved to a
   new commit. This is an explicit, opt-in action — the running screen shows a
   token estimate before the one paid pass, and `esc` lets it keep going in the
-  background.
+  background. Once vetted (skip what you disagree with), `W` posts the
+  remaining findings to GitHub as a real review — anchored ones as inline
+  comments, everything else folded into an editable summary — always as a
+  `COMMENT` event (never auto-approve/request-changes).
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed

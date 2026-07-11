@@ -22,7 +22,8 @@ use super::*;
 use crate::claude::ClaudeLauncher;
 use crate::editor::TextEditor;
 use crate::github::{
-    GhCli, IssueComment, PrListEntry, PrRef, PrResolution, Review, ReviewComment, ReviewThread,
+    GhCli, IssueComment, PrListEntry, PrRef, PrResolution, PrReviewComment as GhPrReviewComment,
+    Review, ReviewComment, ReviewThread,
 };
 
 /// Snippet length (chars) shown in the comment list.
@@ -319,6 +320,39 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
             }
         })
         .collect()
+}
+
+/// Build the `(summary, inline comments)` GitHub review payload from a set of
+/// AI-review draft findings (Epic E `W` — "post as GitHub review"). A finding
+/// with a `path`+`line` anchor (and not `file_level`) becomes an inline
+/// [`GhPrReviewComment`]; everything else (pathless `General` findings, or a
+/// path-only file-level one — GitHub has no line-less inline review comment)
+/// folds into the summary body as a bullet instead, so nothing is silently
+/// dropped.
+fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) {
+    let mut inline = Vec::new();
+    let mut general = Vec::new();
+    for f in findings {
+        match (&f.path, f.line) {
+            (Some(path), Some(line)) if !f.file_level => inline.push(GhPrReviewComment {
+                path: path.clone(),
+                line,
+                side: "RIGHT",
+                start_line: None,
+                start_side: None,
+                body: f.body.clone(),
+            }),
+            (Some(path), _) => general.push(format!("- **{path}**: {}", f.body)),
+            (None, _) => general.push(format!("- {}", f.body)),
+        }
+    }
+
+    let mut body = String::from("AI review, via AMF.");
+    if !general.is_empty() {
+        body.push_str("\n\n");
+        body.push_str(&general.join("\n"));
+    }
+    (body, inline)
 }
 
 /// Which agent session a "fix" prompt is injected into.
@@ -1195,6 +1229,7 @@ impl App {
                 memory_add: None,
                 marked: std::collections::HashSet::new(),
                 pending_batch: false,
+                ai_review_post: None,
             });
             return;
         }
@@ -1687,6 +1722,7 @@ impl App {
                             memory_add: None,
                             marked: std::collections::HashSet::new(),
                             pending_batch: false,
+                            ai_review_post: None,
                         });
                     }
                     Err(e) => {
@@ -2637,6 +2673,141 @@ impl App {
             ReplyKind::NotNeeded => "Posted reply · marked skipped",
         };
         self.push_toast_success(toast.to_string());
+        Ok(())
+    }
+
+    /// Open the AI-review post confirm dialog (Epic E `W`): gather every
+    /// `ai_generated` draft finding that hasn't been skipped or already
+    /// posted, build the review payload ([`build_ai_review`]), and seed an
+    /// editable preview of the summary body. No-op (with a hint) if there are
+    /// no eligible findings, or if another dialog is already open.
+    pub fn pr_review_open_ai_review_post_confirm(&mut self) {
+        let findings: Vec<PrComment> = match &self.mode {
+            AppMode::PrReview(state)
+                if state.reply.is_none()
+                    && state.fix_confirm.is_none()
+                    && state.memory_add.is_none()
+                    && state.ai_review_post.is_none() =>
+            {
+                state
+                    .review
+                    .comments
+                    .iter()
+                    .filter(|c| {
+                        c.ai_generated
+                            && !matches!(c.triage, TriageState::Skipped | TriageState::Replied)
+                    })
+                    .cloned()
+                    .collect()
+            }
+            _ => return,
+        };
+        if findings.is_empty() {
+            self.push_toast_warning(
+                "No AI findings to post — run A to generate some, or skip fewer",
+            );
+            return;
+        }
+        let refs: Vec<&PrComment> = findings.iter().collect();
+        let (summary, inline) = build_ai_review(&refs);
+        let comment_ids = findings.iter().map(|c| c.id).collect();
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.ai_review_post = Some(AiReviewPostConfirmState {
+                comment_ids,
+                inline,
+                editor: TextEditor::new(summary),
+                editing: false,
+            });
+        }
+    }
+
+    pub fn pr_review_ai_review_post_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(post) = &mut state.ai_review_post
+        {
+            post.editing = true;
+        }
+    }
+
+    pub fn pr_review_ai_review_post_stop_edit(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(post) = &mut state.ai_review_post
+        {
+            post.editing = false;
+        }
+    }
+
+    pub fn pr_review_ai_review_post_editor_key(&mut self, key: crossterm::event::KeyEvent) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(post) = &mut state.ai_review_post
+            && post.editing
+        {
+            post.editor.handle_key(key);
+        }
+    }
+
+    /// Close the AI-review post dialog without posting.
+    pub fn pr_review_cancel_ai_review_post(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.ai_review_post = None;
+        }
+    }
+
+    /// AI-review post dialog status for the key handler: `None` when closed,
+    /// else whether it is currently in edit mode.
+    pub fn pr_review_ai_review_post_view(&self) -> Option<bool> {
+        match &self.mode {
+            AppMode::PrReview(state) => state.ai_review_post.as_ref().map(|p| p.editing),
+            _ => None,
+        }
+    }
+
+    /// Post the AI review to GitHub (`event: "COMMENT"` — never
+    /// auto-approve/request-changes) and, on success, mark every included
+    /// finding `Replied` so a re-post doesn't duplicate them. GitHub rejects
+    /// the *entire* review if any inline comment points outside the diff
+    /// (documented on [`GhCli::create_review`]); on that failure the drafts
+    /// are left untouched so nothing triaged is lost.
+    pub fn pr_review_post_ai_review(&mut self) -> Result<()> {
+        let prep = match &self.mode {
+            AppMode::PrReview(state) => state.ai_review_post.as_ref().map(|post| {
+                (
+                    state.workdir.clone(),
+                    state.review.pr.clone(),
+                    post.comment_ids.clone(),
+                    post.inline.clone(),
+                    post.editor.text().trim().to_string(),
+                )
+            }),
+            _ => return Ok(()),
+        };
+        let Some((workdir, pr, comment_ids, inline, body)) = prep else {
+            return Ok(());
+        };
+
+        if let Err(e) = GhCli::create_review(&workdir, &pr, &body, "COMMENT", &inline) {
+            self.show_error(e);
+            return Ok(());
+        }
+
+        if let AppMode::PrReview(state) = &mut self.mode {
+            for c in &mut state.review.comments {
+                if comment_ids.contains(&c.id) {
+                    c.triage = TriageState::Replied;
+                }
+            }
+            state.ai_review_post = None;
+        }
+        for id in &comment_ids {
+            self.persist_triage(pr.number, &pr.head_sha, *id, TriageState::Replied, None);
+        }
+        self.recache_current_review();
+        self.push_toast_success(format!(
+            "Posted AI review · {} comment{}",
+            comment_ids.len(),
+            if comment_ids.len() == 1 { "" } else { "s" }
+        ));
         Ok(())
     }
 
@@ -3851,5 +4022,54 @@ mod tests {
     fn ai_review_prompt_omits_empty_memory_section() {
         let prompt = ai_review_prompt("diff", "   \n", None);
         assert!(!prompt.contains("Known recurring findings"));
+    }
+
+    #[test]
+    fn build_ai_review_splits_anchored_and_general_findings() {
+        let comments = findings_to_comments(&[
+            AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(10),
+                body: "Guard the lock here.".into(),
+            },
+            AiFinding {
+                path: Some("b.rs".into()),
+                line: None,
+                body: "Whole file needs a rewrite.".into(),
+            },
+            AiFinding {
+                path: None,
+                line: None,
+                body: "Consider consistent error handling.".into(),
+            },
+        ]);
+        let refs: Vec<&PrComment> = comments.iter().collect();
+        let (summary, inline) = build_ai_review(&refs);
+
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0].path, "a.rs");
+        assert_eq!(inline[0].line, 10);
+        assert_eq!(inline[0].side, "RIGHT");
+        assert_eq!(inline[0].body, "Guard the lock here.");
+
+        assert!(summary.contains("AI review, via AMF."));
+        assert!(summary.contains("**b.rs**: Whole file needs a rewrite."));
+        assert!(summary.contains("Consider consistent error handling."));
+        // The anchored finding's own text shouldn't be duplicated into the
+        // summary — it already posts as its own inline comment.
+        assert!(!summary.contains("Guard the lock here."));
+    }
+
+    #[test]
+    fn build_ai_review_with_no_general_findings_has_bare_summary() {
+        let comments = findings_to_comments(&[AiFinding {
+            path: Some("a.rs".into()),
+            line: Some(1),
+            body: "x".into(),
+        }]);
+        let refs: Vec<&PrComment> = comments.iter().collect();
+        let (summary, inline) = build_ai_review(&refs);
+        assert_eq!(inline.len(), 1);
+        assert_eq!(summary, "AI review, via AMF.");
     }
 }

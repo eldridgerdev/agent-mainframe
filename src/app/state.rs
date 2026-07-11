@@ -1568,6 +1568,27 @@ pub struct PrReviewState {
     /// combined-batch confirm dialog instead of the single-comment one. Cleared
     /// when the picker is confirmed or cancelled.
     pub pending_batch: bool,
+    /// When `Some`, the AI-review post-to-GitHub confirm dialog is open over
+    /// the pane: a preview of the review that will post (Epic E `W`),
+    /// awaiting the user's approval.
+    pub ai_review_post: Option<AiReviewPostConfirmState>,
+}
+
+/// Confirm/edit dialog for posting the AI-review draft findings to GitHub as
+/// a real review (Epic E `W`). Built once when opened from the findings
+/// eligible to post (`ai_generated`, not skipped, not already posted); `⏎`
+/// posts as-is. Only the summary body is editable — the per-finding inline
+/// comment bodies are the AI's own text, vetted by skipping (`s`) rather than
+/// hand-edited here.
+#[derive(Debug, Clone)]
+pub struct AiReviewPostConfirmState {
+    /// Ids of every included finding (inline-anchored and summary-folded), so
+    /// a successful post can mark them all `Replied` in one pass.
+    pub comment_ids: Vec<u64>,
+    /// Inline review comments built from the anchored findings.
+    pub inline: Vec<crate::github::PrReviewComment>,
+    pub editor: TextEditor,
+    pub editing: bool,
 }
 
 /// A [`PrReviewState`] stashed while the user is watching the linked fix

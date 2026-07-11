@@ -516,7 +516,7 @@ pub fn draw_pr_review(
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   W post-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -559,6 +559,10 @@ pub fn draw_pr_review(
             .map(|c| c.author.as_str())
             .unwrap_or("reviewer");
         draw_memory_add_dialog(frame, memory_add, author, theme);
+    }
+    // AI-review post-to-GitHub confirm dialog overlays the pane when open.
+    if let Some(post) = &state.ai_review_post {
+        draw_ai_review_post_dialog(frame, post, theme);
     }
 }
 
@@ -607,6 +611,76 @@ fn draw_reply_dialog(
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[1],
+    );
+}
+
+/// AI-review post-to-GitHub confirm dialog (Epic E `W`): a preview of the
+/// review that will post — inline comment count, and the editable summary
+/// body — awaiting approval before [`GhCli::create_review`] runs.
+///
+/// [`GhCli::create_review`]: crate::github::GhCli::create_review
+fn draw_ai_review_post_dialog(
+    frame: &mut Frame,
+    post: &crate::app::AiReviewPostConfirmState,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 55, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Post AI review to GitHub ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // preview counts
+            Constraint::Min(1),    // summary body
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let n = post.comment_ids.len();
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "{n} finding{} · {} inline comment{}, rest folded into the summary",
+                    if n == 1 { "" } else { "s" },
+                    post.inline.len(),
+                    if post.inline.len() == 1 { "" } else { "s" },
+                ),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(Span::styled(
+                "Summary (edit freely):",
+                Style::default().fg(theme.text.to_color()),
+            )),
+        ]),
+        chunks[0],
+    );
+
+    let body_lines = super::editor_view::editor_lines(&post.editor, theme, "(summary body)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    let hints = if post.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] post to GitHub   [e] edit summary   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
     );
 }
 

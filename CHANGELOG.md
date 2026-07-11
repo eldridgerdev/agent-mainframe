@@ -192,6 +192,15 @@ are tagged.
 
 ### Fixed
 
+- **Headless Claude calls no longer fail on large prompts.** `ClaudeLauncher`
+  passed the prompt as a `-p <prompt>` command-line argument; Linux caps a
+  single argument at 128 KiB (`MAX_ARG_STRLEN`), well under what a real PR
+  diff or file review routinely runs to, so any prompt past that failed the
+  whole spawn with `E2BIG` ("claude headless command failed") before Claude
+  ever saw the request. The prompt is now piped over stdin instead, which has
+  no comparable ceiling. Affects every headless caller — the PR-review AI
+  review (`A`), the review-memory lookback bootstrap, final review's diff
+  walkthrough/co-review/changeset overview, and session summaries.
 - **Agent sessions start reliably on macOS.** Claude, Codex, opencode, Pi,
   custom sessions, and related launch helpers no longer paste long environment
   setup commands directly into tmux panes, so macOS no longer cuts off the

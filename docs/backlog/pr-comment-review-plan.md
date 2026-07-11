@@ -1112,6 +1112,33 @@ first), and the reviewer's output (plus comments triaged in the pane)
       re-running anything. Unit-tested (both new parse helpers; the poll's
       zero-vs-nonzero toast/log branches indirectly via existing coverage). →
       `src/app/pr_review.rs`, `src/ui/dashboard.rs`, `src/app/tests.rs`.
+
+      **Fourth follow-up, same day — the actual root cause.** Neither of the
+      above was it. Real-world use hit `claude headless command failed`
+      directly (not a silent 0-finding parse miss). Reproduced outside AMF:
+      `ClaudeLauncher::run_headless`/`spawn_headless` pass the prompt as a
+      `-p <prompt>` `argv` element, and Linux caps any single argument at
+      `MAX_ARG_STRLEN` (128 KiB, independent of the ~2 MiB total `ARG_MAX`) —
+      confirmed via a standalone Rust repro: a ~190 KB prompt makes
+      `Command::output()` return `Err(ArgumentListTooLong)` (`E2BIG`)
+      *before* `claude` ever runs. A real PR diff clears 128 KB routinely.
+      Piping the same prompt over stdin instead (`cat prompt | claude -p
+      --output-format text`) was verified working up to 300+ KB against the
+      live binary, including a case where the model correctly flagged a bug
+      in the padding content — so both `run_headless` (blocking, via a
+      writer thread + `wait_with_output` to avoid a pipe deadlock between
+      writing stdin and draining stdout/stderr) and `spawn_headless`
+      (non-blocking, via a detached writer thread so the call keeps returning
+      the `Child` immediately) now write the prompt to piped stdin instead of
+      `argv`. This is shared infrastructure, not specific to this pane: it
+      also fixes the review-memory lookback bootstrap and final review's
+      diff walkthrough / co-review / changeset overview for any prompt over
+      the same limit. A live-`claude` regression test lives at
+      `claude::tests::run_headless_handles_a_prompt_over_the_argv_limit`,
+      `#[ignore]`d (matches this file's existing no-live-external-calls
+      convention) — run manually with `cargo test -- --ignored
+      run_headless_handles_a_prompt_over_the_argv_limit`. →
+      `src/claude.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

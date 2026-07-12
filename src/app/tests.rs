@@ -9907,6 +9907,144 @@ fn enter_review_with_two_files(app: &mut App, workdir: &std::path::Path) {
     app.mode = AppMode::DiffViewer(state);
 }
 
+/// A `ProjectStore` with one project/feature named to match
+/// `enter_review_with_two_files`'s `ViewState` ("proj"/"feat"), so
+/// `finish_final_review`'s per-project `final_review_check_command` lookup
+/// resolves to the project rooted at `repo`.
+#[cfg(test)]
+fn store_with_review_project(repo: &std::path::Path) -> ProjectStore {
+    let now = Utc::now();
+    let feature = Feature {
+        id: "feat-1".to_string(),
+        name: "feat".to_string(),
+        branch: "feat".to_string(),
+        workdir: repo.to_path_buf(),
+        is_worktree: false,
+        tmux_session: "amf-feat".to_string(),
+        sessions: vec![],
+        collapsed: false,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: false,
+        agent: AgentKind::default(),
+        enable_chrome: false,
+        remote_control: false,
+        pending_worktree_script: false,
+        ready: false,
+        status: ProjectStatus::Active,
+        created_at: now,
+        last_accessed: now,
+        summary: None,
+        summary_updated_at: None,
+        nickname: None,
+    };
+    let project = Project {
+        id: "proj-1".to_string(),
+        name: "proj".to_string(),
+        repo: repo.to_path_buf(),
+        collapsed: false,
+        features: vec![feature],
+        created_at: now,
+        preferred_agent: AgentKind::default(),
+        is_git: false,
+    };
+    ProjectStore {
+        version: 5,
+        projects: vec![project],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    }
+}
+
+/// Poll `poll_final_review_check` until the spawned check process finishes
+/// (or a generous cap is hit), so tests don't race the child process.
+#[cfg(test)]
+fn drain_final_review_check(app: &mut App) {
+    for _ in 0..200 {
+        app.poll_final_review_check().unwrap();
+        let still_running =
+            matches!(&app.mode, AppMode::DiffViewer(state) if state.finish_check_child.is_some());
+        if !still_running {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("final review check did not complete in time");
+}
+
+#[test]
+fn final_review_check_command_pass_reported_after_all_approved() {
+    let repo = TempDir::new().unwrap();
+    std::fs::create_dir_all(repo.path().join(".amf")).unwrap();
+    std::fs::write(
+        repo.path().join(".amf").join("config.json"),
+        r#"{"final_review_check_command": "exit 0"}"#,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_review_project(repo.path()),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, repo.path());
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+
+    app.finish_final_review().unwrap();
+    assert!(
+        matches!(&app.mode, AppMode::DiffViewer(state) if state.finish_check_child.is_some()),
+        "the check should be spawned in the background rather than run inline"
+    );
+
+    drain_final_review_check(&mut app);
+
+    assert!(matches!(app.mode, AppMode::Viewing(_)));
+    let msg = app.message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("check `exit 0` passed"),
+        "message should report the passing check: {msg}"
+    );
+}
+
+#[test]
+fn final_review_check_command_failure_blocks_all_approved_fast_path() {
+    let repo = TempDir::new().unwrap();
+    std::fs::create_dir_all(repo.path().join(".amf")).unwrap();
+    std::fs::write(
+        repo.path().join(".amf").join("config.json"),
+        r#"{"final_review_check_command": "exit 1"}"#,
+    )
+    .unwrap();
+
+    let mut app = App::new_for_test(
+        store_with_review_project(repo.path()),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    enter_review_with_two_files(&mut app, repo.path());
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+
+    app.finish_final_review().unwrap();
+    drain_final_review_check(&mut app);
+
+    let msg = app.message.clone().unwrap_or_default();
+    assert!(
+        msg.contains("check `exit 1` FAILED"),
+        "message should report the failing check: {msg}"
+    );
+
+    let feedback =
+        std::fs::read_to_string(repo.path().join(".claude").join("final-review-feedback.md"))
+            .expect("a failing check must still write the feedback file, even with 0 rejections");
+    assert!(feedback.contains("**Check:** `exit 1` — FAILED"));
+}
+
 #[test]
 fn load_prior_agent_responses_populates_state_for_known_files() {
     let workdir = TempDir::new().unwrap();
@@ -10425,6 +10563,92 @@ fn re_review_carries_an_unresolved_thread_and_reports_its_count() {
     assert!(
         message.contains("1 unresolved thread carried over"),
         "{message}"
+    );
+}
+
+#[test]
+fn interdiff_shows_diff_since_last_reviewed_content() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // Round 1: src/a.rs's worktree content at the time the round finishes is
+    // captured into the snapshot.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].new_content = Some("fn a() {}\n".into());
+    }
+    app.diff_review_approve_current();
+    app.diff_review_approve_current();
+    app.finish_final_review().unwrap();
+
+    // Round 2: the agent edited src/a.rs since. Its base-ref patch is left
+    // empty (as in the fixture) — the interdiff must not depend on it.
+    enter_review_with_two_files(&mut app, workdir.path());
+    if let AppMode::DiffViewer(state) = &mut app.mode {
+        state.files[0].new_content = Some("fn a() {\n    println!(\"hi\");\n}\n".into());
+    }
+
+    app.open_interdiff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(state.interdiff_open, "modal opens when content changed");
+            let diff_file = state
+                .interdiff_file
+                .as_ref()
+                .expect("interdiff computed against last round's content");
+            assert_eq!(diff_file.path, "src/a.rs");
+            assert!(
+                !diff_file.hunks.is_empty(),
+                "the content actually changed between rounds"
+            );
+            assert!(diff_file.patch.contains("println"), "{}", diff_file.patch);
+        }
+        _ => panic!("expected diff viewer"),
+    }
+}
+
+#[test]
+fn interdiff_noop_without_prior_review() {
+    let workdir = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        ProjectStore {
+            version: 5,
+            projects: vec![],
+            session_bookmarks: vec![],
+            available_harnesses: vec![],
+            prompt_templates: Vec::new(),
+            extra: HashMap::new(),
+        },
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    // No prior finished review, so no snapshot exists on disk yet.
+    enter_review_with_two_files(&mut app, workdir.path());
+    app.open_interdiff();
+
+    match &app.mode {
+        AppMode::DiffViewer(state) => {
+            assert!(!state.interdiff_open, "nothing to diff against yet");
+            assert!(state.interdiff_file.is_none());
+        }
+        _ => panic!("expected diff viewer"),
+    }
+    assert_eq!(
+        app.message.as_deref(),
+        Some("No prior review to diff against")
     );
 }
 

@@ -62,6 +62,24 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
         return Ok(());
     }
 
+    // The interdiff modal is a read-only "since last review" diff for the
+    // current file, layered over the viewer like the changeset overview; it
+    // also takes full precedence while open.
+    let interdiff_open = matches!(&app.mode, AppMode::DiffViewer(state) if state.interdiff_open);
+    if interdiff_open {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => app.close_interdiff(),
+            KeyCode::Char('j') | KeyCode::Down => app.interdiff_scroll_down(PATCH_SCROLL_STEP),
+            KeyCode::Char('k') | KeyCode::Up => app.interdiff_scroll_up(PATCH_SCROLL_STEP),
+            KeyCode::PageDown => app.interdiff_scroll_down(PATCH_PAGE_STEP),
+            KeyCode::PageUp => app.interdiff_scroll_up(PATCH_PAGE_STEP),
+            KeyCode::Home | KeyCode::Char('g') => app.interdiff_scroll_top(),
+            KeyCode::End | KeyCode::Char('G') => app.interdiff_scroll_bottom(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     let review = matches!(&app.mode, AppMode::DiffViewer(state) if state.review);
     let editing_general = matches!(&app.mode, AppMode::DiffViewer(state) if state.editing_general);
     let editing_feedback = matches!(
@@ -260,6 +278,10 @@ pub fn handle_diff_viewer_key(app: &mut App, key: KeyEvent) -> Result<()> {
             }
             KeyCode::Char('O') => {
                 app.open_changeset_overview();
+                return Ok(());
+            }
+            KeyCode::Char('I') => {
+                app.open_interdiff();
                 return Ok(());
             }
             KeyCode::Char('a') => {
@@ -1578,6 +1600,38 @@ index 1111111..2222222 100644
         handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
         match &app.mode {
             AppMode::DiffViewer(state) => assert!(!state.changeset_overview_open),
+            _ => panic!("expected diff viewer, not finished"),
+        }
+    }
+
+    #[test]
+    fn capital_i_opens_interdiff_modal_and_q_closes_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Round 1: finish a review so a snapshot with content lands on disk.
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].new_content = Some("fn a() {}\n".into());
+        }
+        app.finish_final_review().unwrap();
+
+        // Round 2: same file, different content.
+        let mut app = make_review_app(dir.path(), &["a.rs"]);
+        if let AppMode::DiffViewer(state) = &mut app.mode {
+            state.files[0].new_content = Some("fn a() {\n    changed();\n}\n".into());
+        }
+
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('I'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert!(state.interdiff_open),
+            _ => panic!("expected diff viewer"),
+        }
+
+        // While the modal is open, q closes it rather than finishing the
+        // review (the modal takes full precedence over the underlying keys).
+        handle_diff_viewer_key(&mut app, key(KeyCode::Char('q'))).unwrap();
+        match &app.mode {
+            AppMode::DiffViewer(state) => assert!(!state.interdiff_open),
             _ => panic!("expected diff viewer, not finished"),
         }
     }

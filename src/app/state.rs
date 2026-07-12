@@ -736,6 +736,25 @@ pub struct DiffViewerState {
     /// Position within `search_matches` of the current match (the one the line
     /// cursor sits on). `None` when there are no matches.
     pub search_match_pos: Option<usize>,
+    /// In-flight background process running the project's configured
+    /// `final_review_check_command` (a build/test gate), spawned by
+    /// `finish_final_review` and polled to completion like
+    /// `changeset_overview_child`. `None` when no check is configured or
+    /// none is currently running.
+    pub finish_check_child: Option<Child>,
+    /// The command `finish_check_child` is running, kept so the result can
+    /// be reported once it exits.
+    pub finish_check_command: Option<String>,
+    /// On-demand "since last review" diff for the current file (`I` in the
+    /// final review), computed against the last review snapshot's saved
+    /// content by `open_interdiff`. Recomputed on each open (a single cheap
+    /// local `git diff --no-index`, not a headless pass) rather than kept
+    /// across files like `changeset_overview`.
+    pub interdiff_file: Option<crate::diff::DiffFile>,
+    /// True while the interdiff modal is shown; takes full key precedence
+    /// while open, mirroring `changeset_overview_open`.
+    pub interdiff_open: bool,
+    pub interdiff_scroll: usize,
 }
 
 impl DiffViewerState {
@@ -797,6 +816,11 @@ impl DiffViewerState {
             search_query: String::new(),
             search_matches: Vec::new(),
             search_match_pos: None,
+            finish_check_child: None,
+            finish_check_command: None,
+            interdiff_file: None,
+            interdiff_open: false,
+            interdiff_scroll: 0,
         }
     }
 

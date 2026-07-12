@@ -48,6 +48,24 @@ are tagged.
   before the background pass
   finishes no longer silently drops the findings while still claiming
   success — they now merge into wherever you actually are when it lands.
+- **"Since last review" interdiff in the final review.** Press `I` on a
+  file flagged `Δ` (changed since your last review round) to see just the
+  diff between what you reviewed last time and what's there now, instead of
+  re-reading the whole base-ref diff to spot the fix. Computed on demand
+  from a snapshot of the file's content taken when the last round finished
+  — no extra config, and it's a no-op with a message on a first-ever review
+  or a file whose diff moved for reasons other than its own content (e.g.
+  the base ref shifted).
+- **Build/test gate before finishing a final review.** Point
+  `final_review_check_command` at your project's build, test, or proof
+  script in `.amf/config.json` (or globally in `~/.config/amf/config.json`;
+  project overrides global, same as lifecycle hooks) and AMF runs it in the
+  background when you finish a review — no config means no change, it's
+  entirely opt-in. The command doesn't block the UI while it runs, and
+  pass/fail shows up in the finish summary and a `Check` section in
+  `.claude/final-review-feedback.md`. A failing check is never silently
+  swallowed by an all-approve: even with zero rejections, a failing check
+  still writes and dispatches the round so the agent sees it.
 - **Review-memory lookback bootstrap.** Press `b` in the PR picker to seed
   `.amf/review-memory.md` from your PR history instead of building it up one
   comment at a time. Pick a depth (20 / 50 / 100 / all recent merged & closed
@@ -210,6 +228,11 @@ are tagged.
   no comparable ceiling. Affects every headless caller — the PR-review AI
   review (`A`), the review-memory lookback bootstrap, final review's diff
   walkthrough/co-review/changeset overview, and session summaries.
+- **Claude sidebar TODOs stay tied to the selected session.** When another
+  Claude session has a newer task list, AMF no longer shows that unrelated
+  checklist in the current session's sidebar. The sidebar still uses the
+  selected session's own task store or transcript, so TODO progress remains
+  session-specific.
 - **Agent sessions start reliably on macOS.** Claude, Codex, opencode, Pi,
   custom sessions, and related launch helpers no longer paste long environment
   setup commands directly into tmux panes, so macOS no longer cuts off the

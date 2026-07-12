@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -5,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::app::pr_review::FixTarget;
+use crate::extension::merge_project_extension_config;
 
 /// Label (and de-facto identity) of the dedicated final-review agent session.
 /// Found-or-created by this label so re-running the review reuses the same
@@ -24,6 +26,29 @@ const REVIEW_FEEDBACK_PROMPT: &str = "A reviewer left feedback on these changes 
      line, starting with \"**Agent:** \" — say what you changed (e.g. \"fixed in src/foo.rs\") or, \
      if you disagree or are answering a [question], why. Keep each reply to a sentence or two. \
      These replies are shown to the reviewer beside your changes on the next review round.";
+
+/// Outcome of the project's optional `final_review_check_command` (a
+/// build/test gate), run in the background when finishing a review. `None`
+/// throughout `complete_final_review` whenever no command is configured.
+struct CheckOutcome {
+    command: String,
+    passed: bool,
+    output: String,
+}
+
+/// Cap on how much of a check command's combined stdout/stderr is kept, so a
+/// noisy build/test failure can't blow up the feedback file or the agent
+/// prompt built from it.
+const CHECK_OUTPUT_MAX_CHARS: usize = 4000;
+
+fn truncate_check_output(output: &str) -> String {
+    if output.chars().count() <= CHECK_OUTPUT_MAX_CHARS {
+        output.to_string()
+    } else {
+        let truncated: String = output.chars().take(CHECK_OUTPUT_MAX_CHARS).collect();
+        format!("{truncated}\n… (truncated)")
+    }
+}
 
 /// The resumable parts of an in-flight final review, persisted to
 /// `.claude/final-review-progress.json` so a long review can be paused
@@ -80,6 +105,15 @@ struct ReviewSnapshot {
     /// Defaulted so snapshots written before this field load unchanged.
     #[serde(default)]
     threads: std::collections::HashMap<String, Vec<LineComment>>,
+    /// file path -> the file's `new_content` as it stood when this round
+    /// finished. Used to compute an on-demand "since last review" interdiff
+    /// for a changed file (`open_interdiff`) without re-reading history from
+    /// git. Absent for binary files and deletions (no content to diff from).
+    /// Defaulted so snapshots written before this field load unchanged —
+    /// interdiff simply has nothing to diff against until the next round
+    /// refreshes the snapshot.
+    #[serde(default)]
+    content: std::collections::HashMap<String, String>,
 }
 
 /// Path of the saved review-snapshot file for a feature workdir.
@@ -91,6 +125,24 @@ fn review_snapshot_path(workdir: &Path) -> PathBuf {
 fn load_review_snapshot(workdir: &Path) -> Option<ReviewSnapshot> {
     let content = std::fs::read_to_string(review_snapshot_path(workdir)).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+/// Compute the diff between two arbitrary content strings as an in-memory
+/// `DiffFile`, by materializing each to a temp file and reusing
+/// `crate::diff::load_review_file` — the same plumbing the config-wizard
+/// confirm dialog (`build_config_confirm_diff`) and the Claude-hook diff-
+/// review prompt already use to diff two blobs that aren't necessarily
+/// checked into git history.
+fn build_interdiff(
+    old_content: &str,
+    new_content: &str,
+    display_path: &str,
+) -> Result<crate::diff::DiffFile> {
+    let mut original = tempfile::NamedTempFile::new()?;
+    original.write_all(old_content.as_bytes())?;
+    let mut modified = tempfile::NamedTempFile::new()?;
+    modified.write_all(new_content.as_bytes())?;
+    crate::diff::load_review_file(original.path(), modified.path(), display_path)
 }
 
 /// A stable-enough fingerprint of a file's diff. Hashes the patch plus the
@@ -306,6 +358,10 @@ impl App {
                     (!kept.is_empty()).then(|| (f.path.clone(), kept))
                 })
                 .collect(),
+            content: files
+                .iter()
+                .filter_map(|f| f.new_content.clone().map(|c| (f.path.clone(), c)))
+                .collect(),
         };
         let path = review_snapshot_path(workdir);
         if let Some(parent) = path.parent() {
@@ -510,6 +566,95 @@ impl App {
                 "Re-review: {changed}/{total} file(s) changed since the last \
                  review{when}{thread_note} — showing changed only (F to cycle filter)"
             ));
+        }
+    }
+
+    /// Open the "since last review" interdiff modal for the current file: the
+    /// diff between its content when the last review round finished and its
+    /// content now (`I` in the final review). Computed on demand — a single
+    /// local `git diff --no-index`, not a headless pass — so there is no
+    /// caching/polling machinery to manage, unlike the changeset overview.
+    /// A no-op with a message when there is nothing meaningful to show: no
+    /// prior review, the file has no saved content from last round (new since
+    /// then, or was binary/deleted), or the content is actually unchanged
+    /// (the file's fingerprint can also move for reasons other than its own
+    /// content, e.g. the base ref shifted underneath it).
+    pub fn open_interdiff(&mut self) {
+        let AppMode::DiffViewer(state) = &self.mode else {
+            return;
+        };
+        if !state.review {
+            return;
+        }
+        let Some(file) = state.files.get(state.selected_file) else {
+            return;
+        };
+        let Some(snapshot) = load_review_snapshot(&state.workdir) else {
+            self.message = Some("No prior review to diff against".to_string());
+            return;
+        };
+        let Some(old_content) = snapshot.content.get(&file.path).cloned() else {
+            self.message = Some("No prior review content for this file".to_string());
+            return;
+        };
+        let new_content = file.new_content.clone().unwrap_or_default();
+        let path = file.path.clone();
+        match build_interdiff(&old_content, &new_content, &path) {
+            Ok(diff_file) if diff_file.hunks.is_empty() && !diff_file.is_binary => {
+                self.message = Some("No changes to this file since the last review".to_string());
+            }
+            Ok(diff_file) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.interdiff_file = Some(diff_file);
+                    state.interdiff_open = true;
+                    state.interdiff_scroll = 0;
+                }
+            }
+            Err(err) => {
+                self.message = Some(format!("Failed to compute interdiff: {err}"));
+            }
+        }
+    }
+
+    pub fn close_interdiff(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_open = false;
+        }
+    }
+
+    /// Max scroll offset for the interdiff modal, approximated from the raw
+    /// patch line count (unified layout only), mirroring
+    /// `diff_patch_line_count`'s estimate elsewhere.
+    fn interdiff_max_scroll(state: &DiffViewerState) -> usize {
+        state
+            .interdiff_file
+            .as_ref()
+            .map(|file| file.patch.lines().count().saturating_sub(1))
+            .unwrap_or(0)
+    }
+
+    pub fn interdiff_scroll_down(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            let max = Self::interdiff_max_scroll(state);
+            state.interdiff_scroll = (state.interdiff_scroll + amount).min(max);
+        }
+    }
+
+    pub fn interdiff_scroll_up(&mut self, amount: usize) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = state.interdiff_scroll.saturating_sub(amount);
+        }
+    }
+
+    pub fn interdiff_scroll_top(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = 0;
+        }
+    }
+
+    pub fn interdiff_scroll_bottom(&mut self) {
+        if let AppMode::DiffViewer(state) = &mut self.mode {
+            state.interdiff_scroll = Self::interdiff_max_scroll(state);
         }
     }
 
@@ -1957,9 +2102,117 @@ impl App {
         self.message = Some(msg.to_string());
     }
 
-    /// Finish the review: write `.claude/final-review-feedback.md` for any
-    /// rejected files and return to the feature view with a summary message.
+    /// Finish the review. If the project has a `final_review_check_command`
+    /// configured (a build/test gate), spawn it in the background and return
+    /// immediately — `poll_final_review_check` picks up the result once the
+    /// process exits and actually completes the review. Otherwise (the
+    /// default: no command configured) completes immediately, unchanged from
+    /// before this gate existed.
     pub fn finish_final_review(&mut self) -> Result<()> {
+        let spawn_info = match &self.mode {
+            AppMode::DiffViewer(state)
+                if state.review
+                    && !state.files.is_empty()
+                    && state.finish_check_child.is_none() =>
+            {
+                Some((state.workdir.clone(), state.from_view.project_name.clone()))
+            }
+            _ => None,
+        };
+
+        let Some((workdir, project_name)) = spawn_info else {
+            return self.complete_final_review(None);
+        };
+
+        let command = self
+            .store
+            .projects
+            .iter()
+            .find(|p| p.name == project_name)
+            .map(|p| merge_project_extension_config(&self.config.extension, &p.repo))
+            .and_then(|ext| ext.final_review_check_command)
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
+
+        let Some(command) = command else {
+            return self.complete_final_review(None);
+        };
+
+        match std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&workdir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => {
+                if let AppMode::DiffViewer(state) = &mut self.mode {
+                    state.finish_check_command = Some(command.clone());
+                    state.finish_check_child = Some(child);
+                }
+                self.message = Some(format!("Running check before finishing: {command} …"));
+                Ok(())
+            }
+            // Don't let an environment problem (bad shell, missing dir, …)
+            // block finishing the review — complete it, but report the check
+            // as a failure so it isn't silently dropped.
+            Err(e) => self.complete_final_review(Some(CheckOutcome {
+                command,
+                passed: false,
+                output: format!("failed to start: {e}"),
+            })),
+        }
+    }
+
+    /// Poll the in-flight final-review check process (spawned by
+    /// `finish_final_review`); once it exits, actually finish the review with
+    /// its outcome folded in. Mirrors `poll_changeset_overview`.
+    pub fn poll_final_review_check(&mut self) -> Result<()> {
+        let finished = match &mut self.mode {
+            AppMode::DiffViewer(state) => match state.finish_check_child.as_mut() {
+                Some(child) => child.try_wait()?,
+                None => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let Some(status) = finished else {
+            return Ok(());
+        };
+
+        let (child, command) = match &mut self.mode {
+            AppMode::DiffViewer(state) => (
+                state.finish_check_child.take(),
+                state.finish_check_command.take(),
+            ),
+            _ => (None, None),
+        };
+        let (Some(child), Some(command)) = (child, command) else {
+            return Ok(());
+        };
+
+        let output = child.wait_with_output()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = if !stdout.trim().is_empty() && !stderr.trim().is_empty() {
+            format!("{}\n{}", stdout.trim(), stderr.trim())
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            stderr.trim().to_string()
+        };
+
+        self.complete_final_review(Some(CheckOutcome {
+            command,
+            passed: status.success(),
+            output: truncate_check_output(&combined),
+        }))
+    }
+
+    /// Write `.claude/final-review-feedback.md` for any rejected files and
+    /// return to the feature view with a summary message, folding in the
+    /// optional build/test-gate `check` outcome.
+    fn complete_final_review(&mut self, check: Option<CheckOutcome>) -> Result<()> {
         let (workdir, files, decisions, line_comments, general_feedback, from_view, fix_target) =
             match std::mem::replace(&mut self.mode, AppMode::Normal) {
                 AppMode::DiffViewer(state) => (
@@ -2030,12 +2283,24 @@ impl App {
             }
         }
 
-        if rejected.is_empty() && general_feedback.is_empty() && line_comment_sections.is_empty() {
+        // A failed check gate must never be swallowed by the "all approved"
+        // fast path below — it's the whole point of the gate.
+        let check_failed = matches!(&check, Some(c) if !c.passed);
+
+        if !check_failed
+            && rejected.is_empty()
+            && general_feedback.is_empty()
+            && line_comment_sections.is_empty()
+        {
             self.message = Some(if total == 0 {
                 "Final review: no changes against the base branch".to_string()
             } else {
+                let check_note = match &check {
+                    Some(c) => format!(" (check `{}` passed)", c.command),
+                    None => String::new(),
+                };
                 format!(
-                    "Final review complete: all {approved} reviewed file(s) approved{}",
+                    "Final review complete: all {approved} reviewed file(s) approved{}{check_note}",
                     if skipped > 0 {
                         format!(", {skipped} skipped")
                     } else {
@@ -2066,6 +2331,19 @@ impl App {
                  **Line comments:** {line_comment_count}\n\n",
                 rejected.len()
             ));
+
+            if let Some(c) = &check {
+                round.push_str(&format!(
+                    "**Check:** `{}` — {}\n\n",
+                    c.command,
+                    if c.passed { "passed" } else { "FAILED" }
+                ));
+                if !c.passed {
+                    round.push_str("```\n");
+                    round.push_str(&c.output);
+                    round.push_str("\n```\n\n");
+                }
+            }
 
             if !general_feedback.is_empty() {
                 round.push_str("### General Feedback\n\n");
@@ -2139,9 +2417,14 @@ impl App {
             } else {
                 String::new()
             };
+            let check_note = match &check {
+                Some(c) if c.passed => format!(", check `{}` passed", c.command),
+                Some(c) => format!(", check `{}` FAILED", c.command),
+                None => String::new(),
+            };
             let summary = format!(
                 "Final review: {approved} approved, {} need work, {skipped} skipped\
-                 {comment_note} — feedback saved to .claude/final-review-feedback.md",
+                 {comment_note}{check_note} — feedback saved to .claude/final-review-feedback.md",
                 rejected.len()
             );
             // Optionally mirror the feedback onto the branch's GitHub PR as a
@@ -2970,9 +3253,10 @@ pub(crate) fn parse_review_notes(content: &str) -> std::collections::HashMap<Str
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_file_path, build_pr_review, build_walkthrough_prompt, comment_anchor_label,
-        compose_feedback_log, compute_search_matches, parse_agent_responses,
+        CHECK_OUTPUT_MAX_CHARS, anchor_file_path, build_pr_review, build_walkthrough_prompt,
+        comment_anchor_label, compose_feedback_log, compute_search_matches, parse_agent_responses,
         parse_co_review_output, parse_review_notes, reanchor_file_comments, severity_review_event,
+        truncate_check_output,
     };
     use crate::app::state::DiffViewerState;
     use crate::app::{CommentAnchorContext, LineComment, Severity};
@@ -3237,6 +3521,23 @@ mod tests {
         let out = compose_feedback_log(Some(existing), "## Review — x\n\nnew.\n\n");
         assert!(out.starts_with("# Final Review Feedback\n\n## Review — x"));
         assert!(out.contains("old."));
+    }
+
+    #[test]
+    fn truncate_check_output_passes_short_output_through() {
+        assert_eq!(truncate_check_output("all good"), "all good");
+    }
+
+    #[test]
+    fn truncate_check_output_caps_long_output() {
+        let long = "x".repeat(CHECK_OUTPUT_MAX_CHARS + 500);
+        let out = truncate_check_output(&long);
+        assert!(out.starts_with(&"x".repeat(CHECK_OUTPUT_MAX_CHARS)));
+        assert!(out.ends_with("… (truncated)"));
+        assert_eq!(
+            out.chars().count(),
+            CHECK_OUTPUT_MAX_CHARS + "\n… (truncated)".chars().count()
+        );
     }
 
     #[test]

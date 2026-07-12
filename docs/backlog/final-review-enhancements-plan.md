@@ -5,10 +5,12 @@
   co-reviewer, suggested-change blocks, jump-by-hunk navigation,
   comment-implied rejections, severity tags, agent replies-back,
   in-diff search, comment re-anchoring, resolve/unresolve thread
-  state, and the changeset overview + diff stats have shipped. The
-  remaining Round 2 items (build gate, file-level PR comments) and a
-  third round of review-loop / viewer upgrades (**Round 3**, captured
-  2026-07-01) are not yet started.
+  state, the changeset overview + diff stats, and the build/test gate
+  before approve have shipped. The remaining Round 2 item (file-level
+  PR comments) is still open. **Round 3** (captured 2026-07-01) has
+  started: its first item, interdiff on re-review, has shipped; the
+  rest of the loop-closing, viewer-ergonomics, AI co-review, and
+  workflow items are not yet started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -536,8 +538,26 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       coverage" available, since no per-file test-mapping convention exists
       anywhere in this codebase. `file_risk_marker` in
       `src/ui/dialogs/diff.rs`.
-- [ ] Build / test gate before approve — per-project configurable check
-      command
+- [x] Build / test gate before approve — a per-project
+      `final_review_check_command` (`ExtensionConfig` in `src/extension.rs`,
+      merged from `~/.config/amf/config.json` / `{repo}/.amf/config.json`
+      exactly like `lifecycle_hooks`, project overrides global) is run via
+      `bash -c` in the feature's workdir when finishing a review. Unset
+      (the default) skips it entirely — zero behavior change for projects
+      that don't opt in. The command runs in the background and is polled
+      to completion (`finish_check_child` / `finish_check_command` on
+      `DiffViewerState`, spawned in `finish_final_review` and polled by
+      `poll_final_review_check` each main-loop tick, mirroring
+      `changeset_overview_child`) so a slow `cargo build` or test suite
+      doesn't freeze the UI. Pass/fail is folded into the finish summary
+      message and a `### `/`**Check:**` section in
+      `.claude/final-review-feedback.md` (with captured output, capped at
+      `CHECK_OUTPUT_MAX_CHARS`, on failure). A failing check blocks the
+      "all files approved, nothing to write" fast path — the round is
+      always written and dispatched to the agent when the check fails,
+      even with zero rejections, which is the concrete answer to "block an
+      all-approve on failure". `complete_final_review` in
+      `src/app/review.rs`.
 - [ ] File-level PR comments instead of body-dumping whole-file
       rejections (`subject_type: file`)
 - [x] Jump-by-hunk navigation in the diff — press `]` / `[` in the final
@@ -582,8 +602,27 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
 
 Loop:
 
-- [ ] Interdiff on re-review (store per-file patches / blob ids in the
-      snapshot; show "since last review" diffs for changed files)
+- [x] Interdiff on re-review — `.claude/final-review-snapshot.json` gained a
+      `content` map (file path -> its `new_content` when the round finished,
+      skipped for binary files and deletions, `#[serde(default)]` so older
+      snapshots just load with nothing to diff against yet). Press `I` on a
+      `Δ`-flagged file to open a read-only modal with the diff between that
+      saved content and the file's current content — computed on demand via
+      a single local `git diff --no-index` (`build_interdiff` in
+      `src/app/review.rs`, materializing both blobs to `NamedTempFile`s and
+      reusing `crate::diff::load_review_file`, the same plumbing the
+      config-wizard confirm dialog and the Claude-hook diff-review prompt
+      already use), so unlike the AI-generated overview it needs no
+      child-process/poll machinery. A no-op with a message when there's
+      nothing to show: no prior review, the file has no saved content from
+      last round, or the diff comes back empty (the fingerprint can move for
+      reasons other than the file's own content, e.g. the base ref shifted).
+      The modal (`draw_interdiff_modal`, `src/ui/dialogs/diff.rs`) reuses
+      `draw_patch_panel` — the same syntax-highlighted unified-diff renderer
+      as the main patch panel — and takes full key precedence while open,
+      mirroring the changeset-overview modal exactly (`j`/`k`/PageUp/
+      PageDown/`g`/`G` scroll, `q`/`Esc` close). `App::open_interdiff` /
+      `close_interdiff` / `interdiff_scroll_*` in `src/app/review.rs`.
 - [ ] "Fixes ready — re-review?" notification (watch the fix session's
       idle status; one-key jump back into the review)
 - [ ] Apply suggestions locally (patch the worktree directly from

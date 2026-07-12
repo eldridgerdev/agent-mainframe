@@ -425,6 +425,11 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         prompt_templates: serde_json::from_str::<ExtensionConfig>(&state.original_json)
             .map(|config| config.prompt_templates)
             .unwrap_or_default(),
+        // Same reasoning: the wizard has no UI for the final-review check
+        // command, so carry the loaded value through untouched.
+        final_review_check_command: serde_json::from_str::<ExtensionConfig>(&state.original_json)
+            .ok()
+            .and_then(|config| config.final_review_check_command),
     }
 }
 

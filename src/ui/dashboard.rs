@@ -917,14 +917,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if matches!(app.mode, AppMode::PrReview(_)) {
         let fix_session_usage = app.pr_review_fix_session_usage();
+        let triage_session_usage = app.pr_review_triage_session_usage();
         let ai_review_running = app.ai_review_bg.is_some();
         if let AppMode::PrReview(state) = &mut app.mode {
             super::dialogs::draw_pr_review(
                 frame,
                 state,
                 &app.theme,
-                fix_session_usage.as_ref(),
-                &app.config.token_pricing,
+                super::dialogs::PrReviewUsage {
+                    cumulative: fix_session_usage.as_ref(),
+                    visit: triage_session_usage.as_ref(),
+                    pricing: &app.config.token_pricing,
+                },
                 ai_review_running,
                 &app.throbber_state,
             );

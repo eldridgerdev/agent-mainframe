@@ -10,6 +10,7 @@ use crate::editor::TextEditor;
 use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
 use crate::plan_interview::{PlanQuestion, PlanQuestionKind, builtin_questions};
 use crate::project::{AgentKind, SessionKind, VibeMode};
+use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
 
 pub const STARTUP_MASK_MAX_DURATION: Duration = Duration::from_secs(8);
@@ -1471,6 +1472,9 @@ pub struct PrReviewLoadState {
     pub workdir: PathBuf,
     /// The resolved PR being loaded.
     pub pr: crate::github::PrRef,
+    /// Usage snapshots carried through a manual refresh so refreshing comments
+    /// does not restart the current triage-visit tally.
+    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
 }
 
 /// Manual PR-number override prompt: shown when the branch has no detectable
@@ -1564,6 +1568,11 @@ pub struct PrReviewState {
     pub sort_mode: crate::app::pr_review::PrSortMode,
     /// Which agent session "fix" prompts are injected into (toggle with `t`).
     pub fix_target: crate::app::pr_review::FixTarget,
+    /// Token totals already present when each fix-target session joined this
+    /// visit to the PR pane. Current totals minus these snapshots are the live
+    /// "this visit" tally; a target created after the pane opened has no
+    /// baseline, so all of its usage belongs to the visit.
+    pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
     /// Harness chosen for the dedicated review session, picked once before the
     /// first fix is injected and reused for the rest of the PR. `None` until the
     /// user picks (or when the dedicated session already exists / isn't the

@@ -1300,19 +1300,20 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Nice to have
 
-- **Triage-session token/cost tracker.** Surface a running tally of
-  tokens, usage, and estimated `$$` spent during a PR-comment triage
-  session — so the user can see, in-pane, exactly what the review loop
-  is costing. Builds on the Epic D "token usage surfaced per session"
-  item (`token_tracking.rs`), but scoped specifically to the PR-review
-  pane: count tokens spent on fix injections and reply drafts, attribute
-  them to the PR (`PR# + head SHA`), and show a live total in the pane
-  header or status bar (e.g. `~3.2k tok · ~$0.04 this session`). Because
-  triage is intentionally zero-token for fetch/list/triage, this makes
-  the "only pay for the work you asked for" design constraint visible and
-  auditable. Stretch: per-comment cost breakdown and a per-PR cumulative
-  total persisted in SQLite, so re-opening a PR shows total spend to
-  date.
+- [x] **Triage-session token/cost tracker.** The pane now snapshots the
+      selected fix target's usage when a PR-triage visit begins and shows the
+      live delta as `this visit N eff · $X` beside the existing cumulative
+      session usage. A dedicated session created by the first fix starts at
+      zero; switching to an already-running live session snapshots it at the
+      moment it is selected, so unrelated earlier work is not charged to the
+      triage visit. Returning with `P` or manually refreshing comments preserves
+      the snapshot. Per-counter saturating subtraction handles corrected or
+      rotated provider totals safely, and the narrow-header fallback prefers
+      the visit tally when both totals do not fit. Focused tests cover growth,
+      unchanged baselines, and saturating deltas. Stretch remains: per-comment
+      cost breakdown and a per-PR cumulative total persisted in SQLite. →
+      `src/app/state.rs`, `src/app/pr_review.rs`, `src/token_tracking.rs`,
+      `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
 - **Active-PR indicator on the dashboard.** Show a marker next to a
   feature in the dashboard list when its branch has an open PR — e.g. a

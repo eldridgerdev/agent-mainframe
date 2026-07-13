@@ -1225,6 +1225,7 @@ fn visible_animation_is_enabled_for_pr_review_running_screens() {
             owner: "o".to_string(),
             repo: "r".to_string(),
         },
+        usage_baselines: std::collections::HashMap::new(),
     });
     assert!(app.has_visible_animation());
 
@@ -8118,6 +8119,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
@@ -8395,6 +8397,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
@@ -8988,6 +8991,7 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
     app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
         workdir: std::path::PathBuf::from("/tmp/wd"),
         pr: pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
     });
     tx.send(Ok(fresh)).unwrap();
     assert!(app.poll_pr_review_bg());
@@ -9043,6 +9047,7 @@ fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
     app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
         workdir: std::path::PathBuf::from("/tmp/wd"),
         pr: new_pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
     });
     tx.send(Ok(fresh)).unwrap();
     assert!(app.poll_pr_review_bg());
@@ -9099,6 +9104,128 @@ fn pr_review_fix_session_usage_none_before_session_exists() {
     enter_pr_review_for_feature(&mut app, 2);
 
     assert!(app.pr_review_fix_session_usage().is_none());
+}
+
+#[test]
+fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+    );
+    let source = TokenUsageSource {
+        provider: TokenUsageProvider::Claude,
+        id: "triage-session".to_string(),
+    };
+    session.token_usage = Some(SessionTokenUsage {
+        source: source.clone(),
+        input_tokens: 1400,
+        output_tokens: 300,
+        cache_read_tokens: 200,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1900,
+    });
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    let AppMode::PrReview(state) = &mut app.mode else {
+        panic!("expected PR review pane");
+    };
+    state.usage_baselines.insert(
+        source.clone(),
+        SessionTokenUsage {
+            source,
+            input_tokens: 1000,
+            output_tokens: 200,
+            cache_read_tokens: 100,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            total_tokens: 1300,
+        },
+    );
+
+    let usage = app.pr_review_triage_session_usage().unwrap();
+    assert_eq!(usage.input_tokens, 400);
+    assert_eq!(usage.output_tokens, 100);
+    assert_eq!(usage.cache_read_tokens, 100);
+    assert_eq!(usage.total_tokens, 600);
+}
+
+#[test]
+fn pr_review_triage_session_usage_hides_an_unchanged_baseline() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Claude,
+        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+    );
+    let usage = SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "unchanged".to_string(),
+        },
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_tokens: 100,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1300,
+    };
+    session.token_usage = Some(usage.clone());
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    let AppMode::PrReview(state) = &mut app.mode else {
+        panic!("expected PR review pane");
+    };
+    state.usage_baselines.insert(usage.source.clone(), usage);
+
+    assert!(app.pr_review_triage_session_usage().is_none());
+}
+
+#[test]
+fn pr_review_switching_to_live_target_ignores_its_earlier_usage() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let usage = SessionTokenUsage {
+        source: TokenUsageSource {
+            provider: TokenUsageProvider::Claude,
+            id: "live-session".to_string(),
+        },
+        input_tokens: 800,
+        output_tokens: 200,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1000,
+    };
+    store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working".to_string())
+        .token_usage = Some(usage.clone());
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+    app.pr_review_toggle_fix_target();
+
+    assert!(app.pr_review_triage_session_usage().is_none());
+
+    let session = &mut app.store.projects[0].features[0].sessions[0];
+    session.token_usage.as_mut().unwrap().input_tokens += 250;
+    session.token_usage.as_mut().unwrap().total_tokens += 250;
+    let delta = app.pr_review_triage_session_usage().unwrap();
+    assert_eq!(delta.input_tokens, 250);
+    assert_eq!(delta.total_tokens, 250);
 }
 
 #[test]
@@ -9530,6 +9657,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,
@@ -9727,6 +9855,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         hide_resolved: false,
         sort_mode: crate::app::pr_review::PrSortMode::default(),
         fix_target: crate::app::pr_review::FixTarget::default(),
+        usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
         harness_pick: None,
         fix_confirm: None,

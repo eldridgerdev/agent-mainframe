@@ -1474,6 +1474,7 @@ impl App {
                 format!("cache hit for PR #{} @ {}", pr.number, pr.head_sha),
             );
             self.apply_persisted_triage(&mut review);
+            let usage_baselines = self.pr_review_initial_usage_baselines(&workdir);
             self.mode = AppMode::PrReview(PrReviewState {
                 workdir,
                 review,
@@ -1483,6 +1484,7 @@ impl App {
                 hide_resolved: false,
                 sort_mode: PrSortMode::default(),
                 fix_target: FixTarget::default(),
+                usage_baselines,
                 review_harness: None,
                 harness_pick: None,
                 fix_confirm: None,
@@ -1951,13 +1953,24 @@ impl App {
         let (tx, rx) = std::sync::mpsc::channel();
         self.pr_review_bg = Some(rx);
 
+        let usage_baselines = match &self.mode {
+            AppMode::PrReview(state) if state.review.pr.number == pr.number => {
+                state.usage_baselines.clone()
+            }
+            _ => self.pr_review_initial_usage_baselines(&workdir),
+        };
+
         let thread_workdir = workdir.clone();
         let thread_pr = pr.clone();
         std::thread::spawn(move || {
             let _ = tx.send(fetch_and_normalize(&thread_workdir, thread_pr));
         });
 
-        self.mode = AppMode::PrReviewLoading(PrReviewLoadState { workdir, pr });
+        self.mode = AppMode::PrReviewLoading(PrReviewLoadState {
+            workdir,
+            pr,
+            usage_baselines,
+        });
     }
 
     /// Whether a PR comment fetch is in flight.
@@ -1980,6 +1993,7 @@ impl App {
                     return false;
                 };
                 let workdir = state.workdir.clone();
+                let usage_baselines = state.usage_baselines.clone();
                 match result {
                     Ok(mut review) => {
                         self.log_info(
@@ -1998,6 +2012,7 @@ impl App {
                             hide_resolved: false,
                             sort_mode: PrSortMode::default(),
                             fix_target: FixTarget::default(),
+                            usage_baselines,
                             review_harness: None,
                             harness_pick: None,
                             fix_confirm: None,
@@ -2372,14 +2387,28 @@ impl App {
     /// Toggle which agent session "fix" prompts are injected into: the default
     /// dedicated review session, or the feature's existing live session.
     pub fn pr_review_toggle_fix_target(&mut self) {
+        let (workdir, target) = match &self.mode {
+            AppMode::PrReview(state) => (
+                state.workdir.clone(),
+                match state.fix_target {
+                    FixTarget::DedicatedReview => FixTarget::ExistingLive,
+                    FixTarget::ExistingLive => FixTarget::DedicatedReview,
+                },
+            ),
+            _ => return,
+        };
+        let baseline = self.fix_session_usage_for(&workdir, target);
         let label = {
             let AppMode::PrReview(state) = &mut self.mode else {
                 return;
             };
-            state.fix_target = match state.fix_target {
-                FixTarget::DedicatedReview => FixTarget::ExistingLive,
-                FixTarget::ExistingLive => FixTarget::DedicatedReview,
-            };
+            state.fix_target = target;
+            if let Some(usage) = baseline {
+                state
+                    .usage_baselines
+                    .entry(usage.source.clone())
+                    .or_insert(usage);
+            }
             state.fix_target.label()
         };
         self.push_toast_success(format!("Fixes target the {label}"));
@@ -3507,6 +3536,27 @@ impl App {
         })
     }
 
+    fn fix_session_usage_for(
+        &self,
+        workdir: &Path,
+        target: FixTarget,
+    ) -> Option<crate::token_tracking::SessionTokenUsage> {
+        let (pi, fi) = self.feature_indices_for_workdir(workdir)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let si = fix_session_index(feature, target, REVIEW_SESSION_LABEL)?;
+        feature.sessions[si].token_usage.clone()
+    }
+
+    fn pr_review_initial_usage_baselines(
+        &self,
+        workdir: &Path,
+    ) -> HashMap<crate::token_tracking::TokenUsageSource, crate::token_tracking::SessionTokenUsage>
+    {
+        self.fix_session_usage_for(workdir, FixTarget::default())
+            .map(|usage| [(usage.source.clone(), usage)].into_iter().collect())
+            .unwrap_or_default()
+    }
+
     /// Token usage for the session the pane's current fix target resolves to,
     /// for a header display. Read-only — unlike [`App::resolve_fix_session`] it
     /// never creates a session, so this is safe to call on every frame just to
@@ -3521,6 +3571,30 @@ impl App {
         let feature = &self.store.projects[pi].features[fi];
         let si = fix_session_index(feature, state.fix_target, REVIEW_SESSION_LABEL)?;
         feature.sessions[si].token_usage.clone()
+    }
+
+    /// Usage added to the selected fix target since this visit to the PR pane
+    /// began. Existing sessions are snapshotted on entry (or when selected via
+    /// `t`); a dedicated session created by the first fix starts from zero.
+    pub(crate) fn pr_review_triage_session_usage(
+        &self,
+    ) -> Option<crate::token_tracking::SessionTokenUsage> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let current = self.pr_review_fix_session_usage()?;
+        let delta = state
+            .usage_baselines
+            .get(&current.source)
+            .map(|baseline| crate::token_tracking::token_usage_delta(&current, baseline))
+            .unwrap_or(current);
+        (delta.input_tokens > 0
+            || delta.output_tokens > 0
+            || delta.cache_read_tokens > 0
+            || delta.cache_write_tokens > 0
+            || delta.reasoning_tokens > 0
+            || delta.total_tokens > 0)
+            .then_some(delta)
     }
 
     pub fn pr_review_scroll_detail_up(&mut self, amount: usize) {

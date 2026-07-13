@@ -1527,6 +1527,7 @@ impl App {
         if input.notification_type != "diff-review"
             && input.notification_type != "input-request"
             && input.notification_type != "change-reason"
+            && input.notification_type != "review-ready"
         {
             let _ = std::fs::remove_file(&input.file_path);
         }
@@ -1561,6 +1562,10 @@ impl App {
                         self.pending_inputs.remove(idx);
                     }
                     self.enter_view()?;
+                    if input.notification_type == "review-ready" {
+                        self.trigger_final_review()?;
+                        return Ok(());
+                    }
                     if is_structured_diff_review {
                         if !self.pending_inputs.iter().any(|pending| {
                             pending.session_id == input.session_id

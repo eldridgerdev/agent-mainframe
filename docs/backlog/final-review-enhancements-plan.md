@@ -8,9 +8,10 @@
   state, the changeset overview + diff stats, and the build/test gate
   before approve have shipped. The remaining Round 2 item (file-level
   PR comments) is still open. **Round 3** (captured 2026-07-01) has
-  started: its first item, interdiff on re-review, has shipped; the
-  rest of the loop-closing, viewer-ergonomics, AI co-review, and
-  workflow items are not yet started.
+  started: interdiff on re-review and the "fixes ready — re-review?"
+  notification have shipped; the rest of the loop-closing,
+  viewer-ergonomics, AI co-review, and workflow items are not yet
+  started.
 - **Owner:** unassigned
 - **Relates to:** the shipped native final review
   (`src/app/review.rs`, `src/handlers/diff.rs`,
@@ -623,8 +624,25 @@ Loop:
       mirroring the changeset-overview modal exactly (`j`/`k`/PageUp/
       PageDown/`g`/`G` scroll, `q`/`Esc` close). `App::open_interdiff` /
       `close_interdiff` / `interdiff_scroll_*` in `src/app/review.rs`.
-- [ ] "Fixes ready — re-review?" notification (watch the fix session's
-      idle status; one-key jump back into the review)
+- [x] "Fixes ready — re-review?" notification — dispatching the feedback
+      prompt (either target: the feature's existing agent pane or a
+      dedicated review session) now registers the tmux session in
+      `App::awaiting_review_fixes`, only once the prompt is actually
+      submitted (a paste-only, not-yet-sent prompt has nothing to watch
+      for). The existing agent-agnostic thinking-status sync
+      (`sync_thinking_status`) flips a `started_thinking` flag on that entry
+      the next time it observes the session thinking, then — the next time
+      it goes idle — raises a distinctly-labeled `review-ready` pending
+      input ("Fixes ready — re-review?") instead of the generic "waiting for
+      input" one, and clears the watch. Requiring an observed
+      thinking-then-idle round trip (rather than just "went idle") avoids
+      firing immediately off whatever idle/thinking state happened to
+      precede the dispatch. Selecting the notification (`handle_notification_select`
+      in `src/app/notifications.rs`) jumps into the feature view and calls
+      `trigger_final_review` directly — landing in the diff viewer rather
+      than just the pane — where the existing re-review snapshot machinery
+      auto-filters to `Changed` files, so this composes with **interdiff**
+      above for free. `AwaitingReviewFix` in `src/app/state.rs`.
 - [ ] Apply suggestions locally (patch the worktree directly from
       suggestion blocks; per-comment and apply-all-at-finish)
 - [ ] Finish summary screen (editable overview of all verdicts /

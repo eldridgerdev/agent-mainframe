@@ -1065,6 +1065,75 @@ fn ipc_opencode_sidebar_update_queues_sidebar_refresh() {
 }
 
 #[test]
+fn sync_thinking_status_raises_review_ready_after_watched_session_finishes() {
+    let repo = TempDir::new().unwrap();
+    let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);
+    store.projects[0].features[0].agent = AgentKind::Opencode;
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.awaiting_review_fixes.insert(
+        "amf-my-feat".to_string(),
+        AwaitingReviewFix {
+            started_thinking: false,
+        },
+    );
+
+    let sidebar_data = |status: &str| crate::app::opencode_storage::OpencodeSidebarData {
+        session_id: "ses-1".to_string(),
+        title: None,
+        latest_prompt: None,
+        status: Some(status.to_string()),
+        last_tool: None,
+        todo_count: None,
+        todo_preview: vec![],
+        pending_permission: None,
+        last_error: None,
+        lsp_summary: None,
+        live_summary: None,
+        model: None,
+        provider: None,
+        reasoning_tokens: None,
+        additions: None,
+        deletions: None,
+        files: None,
+    };
+
+    // Still working: `started_thinking` flips true, no notification yet.
+    app.opencode_sidebar_cache
+        .insert("amf-my-feat".to_string(), sidebar_data("busy"));
+    app.sync_thinking_status();
+    assert!(
+        app.awaiting_review_fixes
+            .get("amf-my-feat")
+            .is_some_and(|w| w.started_thinking),
+        "watched session should be marked as having started thinking"
+    );
+    assert!(
+        app.pending_inputs.is_empty(),
+        "no notification should fire while still thinking"
+    );
+
+    // Goes idle: the watched session raises a distinct "review-ready"
+    // notification instead of (not in addition to) the generic one, and the
+    // watch entry is cleared.
+    app.opencode_sidebar_cache
+        .insert("amf-my-feat".to_string(), sidebar_data("idle"));
+    app.sync_thinking_status();
+
+    assert!(!app.awaiting_review_fixes.contains_key("amf-my-feat"));
+    assert_eq!(app.pending_inputs.len(), 1);
+    let notif = &app.pending_inputs[0];
+    assert_eq!(notif.notification_type, "review-ready");
+    assert_eq!(notif.message, "Fixes ready — re-review?");
+    assert_eq!(notif.feature_name.as_deref(), Some("my-feat"));
+}
+
+#[test]
 fn visible_animation_is_enabled_for_dashboard_thinking_features() {
     let store = store_with_feature(ProjectStatus::Idle);
     let mut app = App::new_for_test(

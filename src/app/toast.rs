@@ -106,6 +106,7 @@ pub(crate) fn input_request_toast_message(input: &PendingInput) -> String {
 
     let label = match input.notification_type.as_str() {
         "diff-review" | "change-reason" => "diff review",
+        "review-ready" => "fixes ready",
         _ => "input request",
     };
     format!("New {label} from {target}")

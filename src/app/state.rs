@@ -168,6 +168,21 @@ pub struct PendingInput {
     pub reply_socket: Option<String>,
 }
 
+/// A feature whose dispatched review-fix prompt is being watched via the
+/// thinking-status sync so a "fixes ready — re-review?" notification can be
+/// raised once the agent goes idle again. Keyed by `feature.tmux_session` in
+/// `App::awaiting_review_fixes` (thinking status is tracked per tmux session,
+/// not per window, so this is the same granularity the dedicated-review-
+/// session target already lives with).
+#[derive(Debug, Clone)]
+pub struct AwaitingReviewFix {
+    /// Set once the session is observed thinking after the prompt was
+    /// dispatched, so an idle transition only fires the notification after
+    /// the agent has actually started (and finished) working — not on
+    /// whatever idle/thinking state happened to precede the dispatch.
+    pub started_thinking: bool,
+}
+
 pub enum RenameReturnTo {
     Dashboard,
     SessionSwitcher(super::SessionSwitcherState),

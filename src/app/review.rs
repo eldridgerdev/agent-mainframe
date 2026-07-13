@@ -2521,7 +2521,12 @@ impl App {
 
     /// Paste the address-feedback prompt into a resolved agent window,
     /// submitting (sending Enter) when configured. Returns a short status suffix
-    /// for the finish message.
+    /// for the finish message. On a successful *submitted* paste, starts
+    /// watching `session` (the feature's tmux session) via the thinking-status
+    /// sync so a later idle transition raises a "fixes ready — re-review?"
+    /// notification (see `AwaitingReviewFix` / `sync_thinking_status`). Not
+    /// watched when the prompt is only pasted, not submitted — the reviewer
+    /// hasn't sent it yet, so there's nothing to watch for finishing.
     fn paste_review_prompt(&mut self, session: &str, window: &str) -> String {
         let submit = self.config.final_review_submit_prompt;
         let pasted = self
@@ -2535,7 +2540,15 @@ impl App {
                 }
             });
         match pasted {
-            Ok(()) if submit => " — sent to agent".to_string(),
+            Ok(()) if submit => {
+                self.awaiting_review_fixes.insert(
+                    session.to_string(),
+                    AwaitingReviewFix {
+                        started_thinking: false,
+                    },
+                );
+                " — sent to agent".to_string()
+            }
             Ok(()) => " — pasted to agent (not submitted)".to_string(),
             Err(e) => format!(" (couldn't prompt agent: {e})"),
         }

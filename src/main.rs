@@ -1230,6 +1230,7 @@ fn run_loop<B: Backend>(
         }
 
         force_redraw |= app.poll_compose_clipboard_paste();
+        force_redraw |= app.poll_compose_submit();
 
         if app.has_active_sidebar() {
             force_redraw |= app.poll_sidebar_load_results();

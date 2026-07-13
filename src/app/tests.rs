@@ -2692,6 +2692,38 @@ fn submit_compose_rejects_empty_buffer() {
 }
 
 #[test]
+fn poll_compose_submit_keeps_pasting_indicator_until_delivery_finishes() {
+    let repo = TempDir::new().unwrap();
+    let mut app = App::new_for_test(
+        store_with_repo(repo.path().to_path_buf(), ProjectStatus::Active),
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let mut state = ComposeState::new(
+        compose_test_view(),
+        repo.path().to_path_buf(),
+        "Describe [Image 1]".to_string(),
+        Vec::new(),
+    );
+    state.submit_in_progress = true;
+    assert!(state.paste_in_progress());
+    app.mode = AppMode::Compose(state);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.compose_submit = Some(ComposeSubmit {
+        target: "amf-my-feat:claude".to_string(),
+        rx,
+    });
+
+    assert!(!app.poll_compose_submit());
+    assert!(matches!(&app.mode, AppMode::Compose(state) if state.paste_in_progress()));
+
+    tx.send(Ok(())).unwrap();
+    assert!(app.poll_compose_submit());
+    assert!(matches!(&app.mode, AppMode::Viewing(view) if view.session == "amf-my-feat"));
+}
+
+#[test]
 fn compose_suggestions_filter_by_prefix_and_complete() {
     let catalog = vec![
         compose_command("clear", false),

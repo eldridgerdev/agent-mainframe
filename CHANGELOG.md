@@ -250,6 +250,10 @@ are tagged.
   no comparable ceiling. Affects every headless caller — the PR-review AI
   review (`A`), the review-memory lookback bootstrap, final review's diff
   walkthrough/co-review/changeset overview, and session summaries.
+- **Sending pasted images from Windows/WSL now shows progress.** The composer
+  stays visible with `[Pasting...]` while AMF moves an attached image through
+  the Windows clipboard and waits for the agent harness to ingest it, so the
+  app no longer appears frozen during the slower PowerShell handoff.
 - **Claude sidebar TODOs stay tied to the selected session.** When another
   Claude session has a newer task list, AMF no longer shows that unrelated
   checklist in the current session's sidebar. The sidebar still uses the
@@ -353,6 +357,7 @@ are tagged.
 
 - No migration is required for focused PR-comment diff context; cached reviews
   adopt it automatically when displayed.
+- No migration is required for the Windows/WSL image-paste progress indicator.
 - No action required for comment re-anchoring. A review you paused before
   upgrading still resumes; its comments simply can't follow moved code until you
   re-add them, and any that no longer match are flagged rather than dropped.

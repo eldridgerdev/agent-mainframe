@@ -6,6 +6,13 @@ use crate::app::{App, AppMode};
 const COMPOSE_PAGE_SCROLL: usize = 10;
 
 pub fn handle_compose_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Image delivery on WSL runs in the background so the UI can keep
+    // showing its progress indicator. Keep the submitted buffer stable
+    // until that worker finishes.
+    if matches!(&app.mode, AppMode::Compose(state) if state.submit_in_progress) {
+        return Ok(());
+    }
+
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(' ') {
         // Hand off to the leader menu: close the composer (draft is
         // kept) and activate the leader in the underlying view.

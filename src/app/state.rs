@@ -1043,6 +1043,9 @@ pub struct ComposeState {
     pub images: Vec<ComposeImage>,
     /// Background clipboard read currently feeding this compose box.
     pub clipboard_paste_id: Option<u64>,
+    /// The compose buffer is being delivered to the harness in a
+    /// background worker. This is used for the slower WSL image path.
+    pub submit_in_progress: bool,
 }
 
 impl ComposeState {
@@ -1063,6 +1066,7 @@ impl ComposeState {
             suggestion_index: 0,
             images: Vec::new(),
             clipboard_paste_id: None,
+            submit_in_progress: false,
         };
         state.refresh_suggestions();
         state
@@ -1085,7 +1089,7 @@ impl ComposeState {
     }
 
     pub fn paste_in_progress(&self) -> bool {
-        self.clipboard_paste_id.is_some()
+        self.clipboard_paste_id.is_some() || self.submit_in_progress
     }
 
     pub fn scroll_up(&mut self, lines: usize) {

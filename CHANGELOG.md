@@ -330,9 +330,16 @@ are tagged.
   the visible rows used to scroll the selection out of view with no way to
   see it again. The list now auto-scrolls to keep the selected worktree
   visible, like every other picker in AMF.
+- **Inline PR comments now show the code they actually reference.** GitHub can
+  attach an entire newly-added function to a comment on one line, making the
+  relevant code hard to find and bloating fix prompts. AMF now centers the
+  displayed and injected diff on the referenced line with three surrounding
+  lines of context on each side, including for outdated and cached comments.
 
 ### Migration
 
+- No migration is required for focused PR-comment diff context; cached reviews
+  adopt it automatically when displayed.
 - No action required for comment re-anchoring. A review you paused before
   upgrading still resumes; its comments simply can't follow moved code until you
   re-add them, and any that no longer match are flagged rather than dropped.

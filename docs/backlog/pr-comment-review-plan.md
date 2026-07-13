@@ -1208,6 +1208,19 @@ first), and the reviewer's output (plus comments triaged in the pane)
       40-line synthetic added-lines hunk: the returned window is bounded,
       contains the target line, and excludes lines far to either side. →
       `src/app/pr_review.rs`.
+
+      **Seventh follow-up, same day.** GitHub-fetched comments still bypassed
+      that windowing: in real use, an outdated single-line comment arrived
+      with a 92-line `diff_hunk`, so the detail pane and fix prompt buried the
+      referenced line in an entire newly-added function. `PrComment::prompt_hunk`
+      now parses any large line-anchored GitHub hunk and rebuilds it around the
+      comment's actual old/new-side line with three surrounding lines on each
+      side and a corrected `@@` header. The transform happens when the hunk is
+      consumed, so existing cached reviews improve without a refresh; file-level
+      comments and malformed unanchored oversized hunks keep the existing
+      suppression safety net. Unit-tested against a 40-line added block, with
+      the target retained and distant lines excluded. → `src/app/pr_review.rs`,
+      `src/github.rs`, `src/ui/dialogs/pr_review.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

@@ -117,6 +117,10 @@ pub struct ReviewComment {
     /// Line the comment was originally left on (survives outdating).
     #[serde(default)]
     pub original_line: Option<u32>,
+    /// Which side of the diff `line` addresses (`"RIGHT"` for the current
+    /// file, `"LEFT"` for the base file).
+    #[serde(default)]
+    pub side: Option<String>,
     #[serde(default)]
     pub diff_hunk: Option<String>,
     /// What the comment is anchored to: `"line"` (the default) or `"file"` for a

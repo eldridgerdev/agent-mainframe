@@ -1180,7 +1180,7 @@ fn draw_comment_detail(
                 Style::default().fg(theme.warning.to_color()),
             )));
         }
-        lines.extend(diff_hunk_lines(hunk, c.path.as_deref(), theme));
+        lines.extend(diff_hunk_lines(&hunk, c.path.as_deref(), theme));
     } else if c.hunk_suppressed() {
         lines.push(divider(width, theme));
         lines.push(Line::from(Span::styled(

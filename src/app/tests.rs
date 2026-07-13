@@ -9920,7 +9920,7 @@ fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
                 path: Some("a.rs".into()),
                 line: Some(1),
                 body: "eligible".into(),
-                diff_hunk: None,
+                diff_hunk: Some("@@ -1,2 +1,2 @@".into()),
             }]);
         let mut skipped =
             crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
@@ -9971,6 +9971,44 @@ fn pr_review_open_ai_review_post_confirm_warns_when_nothing_eligible() {
             .last()
             .is_some_and(|t| t.message.contains("No AI findings to post"))
     );
+}
+
+#[test]
+fn ai_review_post_failure_keeps_the_dialog_open_with_an_inline_error() {
+    // Regression test for a real-use bug: `W` failing (e.g. GitHub's 422 when
+    // an inline comment no longer matches the diff) used to silently boot the
+    // user out of the review pane entirely, because `show_error` resets
+    // `self.mode` to `Normal` for any non-Normal/Help/Viewing mode.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut untriaged =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(1),
+                body: "eligible".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.append(&mut untriaged);
+    }
+    app.pr_review_open_ai_review_post_confirm();
+    assert!(matches!(&app.mode, AppMode::PrReview(state) if state.ai_review_post.is_some()));
+
+    app.fail_ai_review_post(anyhow::anyhow!("gh: Unprocessable Entity (HTTP 422)"));
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let post = state
+                .ai_review_post
+                .as_ref()
+                .expect("post-confirm dialog should stay open, not get booted to the dashboard");
+            assert_eq!(
+                post.error.as_deref(),
+                Some("gh: Unprocessable Entity (HTTP 422)")
+            );
+        }
+        _ => panic!("expected to stay in PrReview, not get booted to the dashboard"),
+    }
 }
 
 #[test]

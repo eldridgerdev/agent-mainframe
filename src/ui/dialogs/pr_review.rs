@@ -671,14 +671,20 @@ fn draw_ai_review_post_dialog(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // A prior post attempt's failure gets its own row rather than only being
+    // logged/toasted — `pr_review_post_ai_review` restores this dialog (with
+    // `error` set) specifically so a rejected post is recoverable in-place.
+    let mut constraints = vec![Constraint::Length(2)]; // preview counts
+    if post.error.is_some() {
+        constraints.push(Constraint::Length(2)); // error message
+    }
+    constraints.push(Constraint::Min(1)); // summary body
+    constraints.push(Constraint::Length(1)); // key hints
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2), // preview counts
-            Constraint::Min(1),    // summary body
-            Constraint::Length(1), // key hints
-        ])
+        .constraints(constraints)
         .split(inner);
+    let mut row = 0;
 
     let n = post.comment_ids.len();
     frame.render_widget(
@@ -697,14 +703,28 @@ fn draw_ai_review_post_dialog(
                 Style::default().fg(theme.text.to_color()),
             )),
         ]),
-        chunks[0],
+        chunks[row],
     );
+    row += 1;
+
+    if let Some(error) = &post.error {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("Post failed: {error}"),
+                Style::default().fg(theme.danger.to_color()),
+            )))
+            .wrap(Wrap { trim: false }),
+            chunks[row],
+        );
+        row += 1;
+    }
 
     let body_lines = super::editor_view::editor_lines(&post.editor, theme, "(summary body)");
     frame.render_widget(
         Paragraph::new(body_lines).wrap(Wrap { trim: false }),
-        chunks[1],
+        chunks[row],
     );
+    row += 1;
 
     let hints = if post.editing {
         "[esc] done editing"
@@ -716,7 +736,7 @@ fn draw_ai_review_post_dialog(
             hints,
             Style::default().fg(theme.primary.to_color()),
         ))),
-        chunks[2],
+        chunks[row],
     );
 }
 

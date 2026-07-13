@@ -1621,6 +1621,13 @@ pub struct AiReviewPostConfirmState {
     pub inline: Vec<crate::github::PrReviewComment>,
     pub editor: TextEditor,
     pub editing: bool,
+    /// Last post failure, shown inline so a recoverable error (e.g. GitHub
+    /// rejecting the review because a finding no longer matches the current
+    /// diff) doesn't require leaving the dialog to notice — `show_error`
+    /// unconditionally resets `self.mode` to `Normal` outside of
+    /// `Normal`/`Help`/`Viewing`, so the pane is restored with this set
+    /// rather than losing the dialog entirely.
+    pub error: Option<String>,
 }
 
 /// A [`PrReviewState`] stashed while the user is watching the linked fix

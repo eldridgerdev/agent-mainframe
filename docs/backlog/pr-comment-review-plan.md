@@ -1227,6 +1227,76 @@ first), and the reviewer's output (plus comments triaged in the pane)
   GitHub review; and, while reviewing, add a noteworthy comment to the
   memory with one key — each recurring finding written down once making
   the next review cheaper and sharper.
+ - [x] **BUG: `W` post failure gives a cryptic error and kicks you out of the
+      pane (from real use).** Reported: pressing `W` to post the AI review
+      showed `Error: `gh api` (create review) failed: gh: Unprocessable
+      Entity (HTTP 422)` (confirmed via the debug log, `D`) and dropped
+      straight back to the dashboard. **Two compounding problems, both
+      fixed:** (1) The 422 itself is GitHub's documented behavior for
+      `GhCli::create_review` — the whole review is rejected if *any* inline
+      comment's `path`/`line` doesn't land inside the PR's current diff —
+      but `gh api`'s stderr for it is just the terse `Unprocessable Entity
+      (HTTP 422)` line with no indication of *which* finding is the culprit,
+      and AMF was passing it straight through with no translation. Fixed
+      with a new `is_review_rejected_entity_error` check (sibling to the
+      existing `is_missing_write_scope`, `src/github.rs`) that detects the
+      422/"Unprocessable Entity" case and bails with an actionable message
+      instead (likely a stale AI finding since the diff moved — refresh and
+      re-run `A`, or skip it and retry `W`). (2) Far worse: on *any* error,
+      `pr_review_post_ai_review` called `self.show_error(e)`
+      (`src/app/project_ops.rs`), which unconditionally sets
+      `self.mode = AppMode::Normal` for every mode except `Normal`/`Help`/
+      `Viewing` — `PrReview` wasn't exempted, so a recoverable posting
+      failure silently booted the user all the way back to the dashboard.
+      Fixed by extracting a new `App::fail_ai_review_post` helper: it
+      captures the live `PrReviewState` (with the still-open post-confirm
+      dialog) before calling `show_error`, records the failure on a new
+      `AiReviewPostConfirmState::error` field, then restores `self.mode` to
+      that captured pane afterward — so the dialog stays open with the
+      error shown inline (`draw_ai_review_post_dialog`,
+      `src/ui/dialogs/pr_review.rs`, a new `danger`-styled row above the
+      summary body) instead of losing the pane. `show_error` itself is
+      untouched (still the shared logging/toast/message path other modes
+      rely on); only this one call site now works around its mode reset,
+      matching the same "capture origin before show_error, restore after"
+      pattern already used by `poll_ai_pr_review_bg` and
+      `poll_review_memory_bootstrap_bg`. Unit-tested
+      (`is_review_rejected_entity_error` against the exact real-use stderr
+      line and other error strings; `fail_ai_review_post` keeps the dialog
+      open with the error recorded rather than falling back to
+      `AppMode::Normal` — `GhCli::create_review` itself isn't invoked in
+      tests, matching this file's no-live-`gh`-calls convention). →
+      `src/github.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
+
+      **Follow-up, same day — the actual root cause.** The "stale finding"
+      diagnosis above was wrong: real use hit the *identical* 422 immediately
+      after `r` (refresh) + `A` (re-run the AI review) — a fresh diff and a
+      fresh model pass reproducing the same failure rules out staleness.
+      The real cause is that models compute `<path>:<line>` from the raw
+      unified-diff text themselves (`ai_review_prompt` shows the diff, not
+      pre-computed line numbers) by mentally counting from the `@@ -a,b +c,d
+      @@` hunk headers — an inherently error-prone arithmetic task, and a
+      miscount reproduces identically on every re-run since it's not a
+      function of *when* the diff was fetched. AMF already had the exact
+      signal for this: `run_ai_pr_review` matches each finding's `path:line`
+      back into the fetched diff via `diff_hunk_for_line`, and a line that
+      doesn't correspond to anything in the diff returns `None` — but
+      `build_ai_review` wasn't consulting that signal before deciding a
+      finding was inline-postable, so a finding with a miscounted line got
+      sent to GitHub's create-review API anyway, which validates the exact
+      same thing (a `line` outside the diff's hunks) and rejects the whole
+      review. Fixed by adding `f.diff_hunk.is_some()` to `build_ai_review`'s
+      inline-eligibility guard — a finding whose line didn't match anything
+      in the diff (and isn't file-level) now folds into the summary bullet
+      list (with its `path:line` kept as context, unlike the file-level
+      case which drops the line it never had) instead of a doomed inline
+      post, eliminating the whole failure class rather than just handling
+      it better after the fact. Unit-tested (a finding with no matching hunk
+      folds into the summary rather than the inline list; the two existing
+      `build_ai_review` tests updated to set a matching `diff_hunk` on their
+      still-inline-expected fixtures). → `src/app/pr_review.rs`,
+      `src/app/tests.rs`.
 
 ## Nice to have
 

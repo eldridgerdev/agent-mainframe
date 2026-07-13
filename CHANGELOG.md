@@ -12,6 +12,15 @@ are tagged.
 
 ### Added
 
+- A design doc for the planned **plan-mode guided discovery interview**
+  in `docs/backlog/plan-mode-interview-plan.md`, viewable in AMF's
+  in-app Markdown viewer alongside the other plans. It captures where
+  plan mode is headed — AMF interviews you about a feature (curated and
+  per-project questions plus AI follow-ups from your feature's own
+  agent harness), synthesizes a structured plan you review and edit,
+  and only then launches the agent seeded with it — including the
+  decision to replace the current shared repo-root `PLAN.md` with a
+  per-feature `.claude/plan.md`. Design only; no behavior changes yet.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

@@ -63,6 +63,17 @@ doc always says exactly what remains.
 
 ## Index
 
+- [Plan Mode: guided feature discovery](plan-mode-interview-plan.md) —
+  _Ready._ Grow plan mode from a boolean + PLAN.md skeleton into a
+  native TUI interview: feature brief, built-in + per-project question
+  banks, AI-adaptive follow-up rounds (headless run of the feature's
+  own agent harness, with fallback), then an
+  AI-synthesized structured plan behind a user review/edit gate before
+  the agent session launches seeded with it. Triggered from the feature
+  wizard when plan mode is on, and on-demand for existing features with
+  transcripts persisted for re-runs. Six epics: interview engine,
+  config templates, AI rounds, synthesis + review gate, on-demand +
+  persistence, polish.
 - [Feature TODOs](feature-todos-plan.md) — _All epics shipped._ A
   per-project TODO list added as a `SessionKind::Todos` session via the
   `s` picker (one per project, native UI, SQLite-backed). Each TODO

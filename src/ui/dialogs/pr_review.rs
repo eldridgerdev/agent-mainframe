@@ -118,7 +118,7 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
         let items: Vec<ListItem> = state
             .entries
             .iter()
-            .map(|entry| ListItem::new(pr_picker_row(entry, theme)))
+            .map(|entry| ListItem::new(pr_picker_row(entry, state.current_user.as_deref(), theme)))
             .collect();
         let list = List::new(items)
             .highlight_style(
@@ -354,8 +354,23 @@ pub fn draw_ai_pr_review_running(
 }
 
 /// One PR row: `#123  title  · @author · branch` plus a state chip for anything
-/// that isn't a plain open PR (draft / merged / closed).
-fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'static> {
+/// that isn't a plain open PR (draft / merged / closed). When `current_user`
+/// resolves and matches the entry's author, the author is highlighted and
+/// tagged `(you)` so the user's own PRs stand out without reading every
+/// `@author` in the list.
+fn pr_picker_row(
+    entry: &crate::github::PrListEntry,
+    current_user: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let is_mine = current_user.is_some_and(|me| entry.author.eq_ignore_ascii_case(me));
+    let author_style = if is_mine {
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
     let mut spans = vec![
         Span::styled(
             format!("#{} ", entry.number),
@@ -365,11 +380,15 @@ fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'sta
             entry.title.clone(),
             Style::default().fg(theme.text.to_color()),
         ),
+        Span::styled(format!("  · @{}", entry.author), author_style),
         Span::styled(
-            format!("  · @{} · {}", entry.author, entry.head_ref),
+            format!(" · {}", entry.head_ref),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    if is_mine {
+        spans.push(chip("you", theme.primary.to_color()));
+    }
     if entry.is_draft {
         spans.push(chip("draft", theme.text_muted.to_color()));
     }
@@ -1486,5 +1505,49 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "-old line");
         assert_eq!(line_text(&lines[1]), "+new line");
+    }
+
+    fn sample_entry(author: &str) -> crate::github::PrListEntry {
+        crate::github::PrListEntry {
+            number: 1,
+            title: "Sample PR".to_string(),
+            author: author.to_string(),
+            head_ref: "feature-branch".to_string(),
+            updated_at: String::new(),
+            is_draft: false,
+            state: "OPEN".to_string(),
+        }
+    }
+
+    #[test]
+    fn pr_picker_row_tags_the_current_users_own_pr() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_matches_current_user_case_insensitively() {
+        let theme = Theme::default();
+        let entry = sample_entry("Alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_other_authors() {
+        let theme = Theme::default();
+        let entry = sample_entry("bob");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(!line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_when_current_user_unresolved() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, None, &theme);
+        assert!(!line_text(&line).contains("you"));
     }
 }

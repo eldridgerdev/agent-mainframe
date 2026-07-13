@@ -260,8 +260,15 @@ impl GhCli {
                 ".author.login",
             ],
         )?;
-        let me = Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])?;
+        let me = Self::current_user(workdir)?;
         Ok(!author.is_empty() && author.eq_ignore_ascii_case(&me))
+    }
+
+    /// Resolve the authenticated `gh` user's login. Cheap (one `gh api` call),
+    /// but callers driving UI (e.g. the PR picker) should memoize this for the
+    /// session rather than re-resolving on every render.
+    pub fn current_user(workdir: &Path) -> Result<String> {
+        Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])
     }
 
     /// Run `gh <args>` in `workdir` and return trimmed stdout, erroring on a

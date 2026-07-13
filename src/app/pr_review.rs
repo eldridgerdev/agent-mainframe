@@ -1675,6 +1675,7 @@ impl App {
                 let selected = seed_number
                     .and_then(|n| entries.iter().position(|e| e.number == n))
                     .unwrap_or(0);
+                let current_user = self.resolve_gh_current_user(&workdir);
                 self.mode = AppMode::PrPicker(PrPickerState {
                     workdir,
                     entries,
@@ -1682,6 +1683,7 @@ impl App {
                     include_closed: false,
                     error: None,
                     bootstrap_pick: None,
+                    current_user,
                 });
             }
             Err(e) => {
@@ -1689,6 +1691,26 @@ impl App {
                 self.prompt_pr_number(workdir, Some(e.to_string()));
             }
         }
+    }
+
+    /// Resolve the authenticated `gh` user's login, memoized in
+    /// [`App::gh_current_user`] for the session so the PR picker doesn't
+    /// repeat the `gh api user` call on every open/refresh. A failed
+    /// resolution (e.g. `gh` unauthenticated) is cached too, rather than
+    /// retried on every call.
+    pub(crate) fn resolve_gh_current_user(&mut self, workdir: &Path) -> Option<String> {
+        if let Some(cached) = &self.gh_current_user {
+            return cached.clone();
+        }
+        let resolved = match GhCli::current_user(workdir) {
+            Ok(login) => Some(login),
+            Err(e) => {
+                self.log_warn("pr_review", format!("could not resolve gh user: {e}"));
+                None
+            }
+        };
+        self.gh_current_user = Some(resolved.clone());
+        resolved
     }
 
     /// Open the PR picker from inside the review pane (the `g` key), seeded on the

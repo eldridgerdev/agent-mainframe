@@ -1244,17 +1244,28 @@ first), and the reviewer's output (plus comments triaged in the pane)
   the badge once all threads are resolved, and color it by review state
   (changes-requested vs. approved vs. comments-only).
 
-- **Highlight the logged-in user's own PRs in the PR picker.** `GhCli::list_prs`
-  already returns each PR's `author` login (`src/github.rs`,
-  `PrListEntry::author`), and `gh api user`/`gh auth status` can resolve the
-  current account cheaply and cache it for the session (mirrors the existing
-  `gh auth status` caching noted under the preconditions section). Use that to
-  visually distinguish rows authored by the logged-in user in
-  `draw_pr_picker` (`src/ui/dialogs/pr_review.rs`) — e.g. a distinct color,
-  a `(you)` suffix, or sorting/grouping them first — so triaging your own
-  open PRs (the common case: fix review comments left on work you authored)
-  doesn't require reading every `@author` in the list to find them. Cheap and
-  read-only; no new `gh` calls beyond what's already cached.
+- [x] **Highlight the logged-in user's own PRs in the PR picker.** A new
+      `GhCli::current_user` (`src/github.rs`, `gh api user -q .login`) — also
+      now shared by `is_self_review`, which duplicated the same call inline —
+      is resolved once per session via `App::resolve_gh_current_user` and
+      memoized in a new `App::gh_current_user: Option<Option<String>>` field
+      (outer `None` = not yet attempted; `Some(None)` = attempted and failed,
+      also cached so an unauthenticated `gh` doesn't retry the call on every
+      picker open/refresh). `open_pr_picker` resolves it once and stores the
+      login on the new `PrPickerState::current_user` field; `pr_picker_row`
+      (`src/ui/dialogs/pr_review.rs`) compares it case-insensitively against
+      each entry's `author` and, on a match, bolds the `@author` span and adds
+      a `you` chip — so triaging your own open PRs (the common case: fixing
+      review comments left on work you authored) doesn't require reading
+      every `@author` in the list. `pr_picker_toggle_closed` (`a`) re-fetches
+      the entry list but leaves `current_user` untouched, since toggling the
+      open/closed filter doesn't change who's logged in. Cheap and read-only —
+      no new `gh` calls beyond the one made once per session. Unit-tested
+      (`pr_picker_row` tags a matching author case-insensitively, leaves a
+      non-matching author untagged, and stays untagged when the current user
+      is unresolved). → `src/github.rs`, `src/app/mod.rs`,
+      `src/app/pr_review.rs`, `src/app/state.rs`,
+      `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
 - **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
   reads as passive (just reading comments) when the feature actually drives

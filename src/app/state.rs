@@ -1501,6 +1501,9 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
+    /// The logged-in `gh` user's login, when resolvable — used to highlight
+    /// the user's own PRs in the row rendering. `None` if unresolved/failed.
+    pub current_user: Option<String>,
 }
 
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR

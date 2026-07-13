@@ -638,6 +638,11 @@ pub struct App {
     /// together once `Done` is processed. See
     /// `app::pr_review::poll_ai_pr_review_bg`.
     pub ai_review_pending: Option<PrReviewState>,
+    /// Memoized `GhCli::current_user` result for the session, so opening or
+    /// refreshing the PR picker doesn't repeat the `gh api user` call every
+    /// time. `None` = not yet resolved; `Some(None)` = resolution was
+    /// attempted and failed (e.g. `gh` unauthenticated).
+    pub gh_current_user: Option<Option<String>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -1955,6 +1960,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             ai_review_bg: None,
             ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2144,6 +2150,7 @@ impl App {
             review_memory_bootstrap_bg: None,
             ai_review_bg: None,
             ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

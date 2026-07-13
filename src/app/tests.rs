@@ -8034,6 +8034,7 @@ fn enter_pr_picker_for_test(app: &mut App) {
         include_closed: false,
         error: None,
         bootstrap_pick: None,
+        current_user: None,
     });
 }
 

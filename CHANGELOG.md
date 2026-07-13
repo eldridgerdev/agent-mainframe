@@ -12,6 +12,10 @@ are tagged.
 
 ### Added
 
+- **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
+  branch PR, or `g` inside the review pane) now bolds your `@login` and tags
+  it `you` when a row is one of your own PRs, so you don't have to read every
+  author to find your work in a shared repo's PR list.
 - **AI-authored PR review comments are attributed.** When you post an AI
   review (`W` in the PR-review pane), each inline comment now carries a
   small `— drafted by Claude via AMF` footer, so a reviewer looking at just

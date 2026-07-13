@@ -637,7 +637,7 @@ pub struct App {
     pub(crate) active_prs: HashMap<String, ActivePrStatus>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
-    /// A review pane stashed by `pr_review_toggle_to_session` (`P`) while the
+    /// A PR Triage pane stashed by `pr_review_toggle_to_session` (`P`) while the
     /// user watches the linked fix session; `leader+P` pops it back without a
     /// re-fetch. See [`PrReviewReturn`].
     pub pr_review_return: Option<PrReviewReturn>,

@@ -221,6 +221,11 @@ are tagged.
 
 ### Changed
 
+- **PR Comment Review is now PR Triage.** Dashboard help, pickers, pane titles,
+  status text, and documentation now use the outcome-focused name for the
+  workflow where you triage, fix, reply to, and resolve pull-request feedback.
+  New dedicated fix sessions are named `PR Triage`; existing `PR Review`
+  sessions continue to be found and reused.
 - **The dashboard session filter is temporarily disabled.** Pressing `f` on
   the dashboard no longer cycles session types, and the filter hint is hidden
   from the footer and help overlay. All sessions remain visible while the
@@ -393,6 +398,8 @@ are tagged.
 
 ### Migration
 
+- No migration is required for the PR Triage rename. Existing dedicated
+  `PR Review` sessions continue to work and are reused automatically.
 - No migration is required for focused PR-comment diff context; cached reviews
   adopt it automatically when displayed.
 - No migration is required for the Windows/WSL image-paste progress indicator.

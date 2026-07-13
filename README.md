@@ -32,7 +32,7 @@ is waiting for input.
   with line and multi-line comments and concrete suggested changes;
   optionally let Claude draft a first pass of comments, and post the
   result to the branch's GitHub PR.
-- **PR comment review** — triage GitHub PR review comments in a
+- **PR Triage** — triage GitHub PR review comments in a
   dedicated pane: reply, resolve threads, and inject scoped fix
   prompts into an agent session one at a time or in batches.
 - **Per-project TODO lists** — a native full-screen checklist per
@@ -284,7 +284,7 @@ Create-project and batch-feature templates, examples, and the JSON response form
 | `B` | Batch-create features for a workspace |
 | `O` | Open the `~/.config/amf` settings project |
 | `A` | Manage agent harnesses (the first-run wizard) |
-| `G` | Review PR comments |
+| `G` | Open PR Triage |
 | `s` | Open session picker / add a session |
 | `S` | Resume a Claude or Opencode session |
 | `r` | Rename selected feature or session |
@@ -525,20 +525,20 @@ it:
 - Re-reviewing the same feature marks files changed since your last
   pass with `Δ` and narrows the file list to just those files.
 
-### PR Comment Review
+### PR Triage
 
-Press `G` on a feature to review its GitHub pull-request comments
+Press `G` on a feature to triage its GitHub pull-request comments
 inside AMF (requires an authenticated `gh` CLI). If the branch has no
 detectable PR, a picker lists the repo's pull requests.
 
-In the review pane:
+In the PR Triage pane:
 
 - `j`/`k` navigate comments; bodies render as Markdown and diff hunks
   are colored and syntax-highlighted (press `i` to install a missing
   language parser without leaving the pane).
 - `f` injects a scoped fix prompt for the selected comment into an
   agent session — the first fix asks which harness the dedicated
-  review session should run. Mark several comments with `Space`, then
+  triage session should run. Mark several comments with `Space`, then
   `F` queues an individual fix per mark, or `B` sends one combined
   prompt for all of them.
 - `R` replies "Done in `<sha>`" from your latest commit, `n` replies

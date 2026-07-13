@@ -609,14 +609,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" close"),
         ]),
         AppMode::PrNumberPrompt(_) => Line::from(vec![
-            Span::raw(" Enter PR number (experimental)  "),
+            Span::raw(" PR Triage: enter PR number (experimental)  "),
             Span::styled("Enter", key_style()),
             Span::raw(" load  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
         AppMode::PrPicker(_) => Line::from(vec![
-            Span::raw(" Pick a PR (experimental)  "),
+            Span::raw(" PR Triage: pick a PR (experimental)  "),
             Span::styled("j/k", key_style()),
             Span::raw(" move  "),
             Span::styled("Enter", key_style()),
@@ -627,7 +627,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" cancel"),
         ]),
         AppMode::PrReviewLoading(_) => Line::from(vec![
-            Span::raw(" Fetching PR comments (experimental)...  "),
+            Span::raw(" Loading PR Triage comments (experimental)...  "),
             Span::styled("Esc", key_style()),
             Span::raw(" cancel"),
         ]),
@@ -642,6 +642,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw(" cancel"),
         ]),
         AppMode::PrReview(_) => Line::from(vec![
+            Span::raw(" PR Triage  "),
             Span::styled(" j/k", key_style()),
             Span::raw(" move  "),
             Span::styled("g", key_style()),

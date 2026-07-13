@@ -658,10 +658,10 @@ impl App {
         Ok(())
     }
 
-    /// Spin up the dedicated PR-review agent session: one agent window, labeled
-    /// [`crate::app::pr_review::REVIEW_SESSION_LABEL`], that the PR-review pane
+    /// Spin up the dedicated PR-triage agent session: one agent window, labeled
+    /// [`crate::app::pr_review::TRIAGE_SESSION_LABEL`], that the PR-triage pane
     /// reuses for every fix in a PR. Runs `harness` (the harness the user picked
-    /// for the review session) or falls back to the project's preferred agent,
+    /// for the triage session) or falls back to the project's preferred agent,
     /// with the feature's mode/flags — just like a picker-launched agent session,
     /// but with a fixed label so it can be found-and-reused. Returns the new
     /// session's index in `feature.sessions`.

@@ -33,7 +33,7 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Review PR by number (experimental) ")
+        .title(" PR Triage by number (experimental) ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));
@@ -73,13 +73,13 @@ pub fn draw_pr_number_prompt(frame: &mut Frame, state: &PrNumberPromptState, the
 }
 
 /// Full-screen PR picker: a scrollable list of the repo's PRs to open for
-/// review. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
+/// triage. `⏎` opens the highlighted one, `a` toggles closed/merged, `#` drops
 /// to the manual number prompt, `b` opens the review-memory lookback
 /// bootstrap. `memory_path` is the resolved review-memory doc path, shown in
 /// the bootstrap depth picker.
 pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, memory_path: &Path) {
     let area = frame.area();
-    let block = pane_block(theme).title(" Pick a PR to review (experimental) ");
+    let block = pane_block(theme).title(" Pick a PR to triage (experimental) ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -348,7 +348,7 @@ pub fn draw_ai_pr_review_running(
         status_line,
         Line::from(""),
         Line::from(Span::styled(
-            "esc to return to the review pane (the run keeps going in the background)",
+            "esc to return to PR Triage (the run keeps going in the background)",
             Style::default().fg(theme.text_muted.to_color()),
         )),
     ])
@@ -411,7 +411,8 @@ pub fn draw_pr_review_loading(
     theme: &Theme,
 ) {
     let area = frame.area();
-    let block = pane_block(theme).title(format!(" PR #{} (experimental) ", state.pr.number));
+    let block =
+        pane_block(theme).title(format!(" PR Triage · #{} (experimental) ", state.pr.number));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -424,7 +425,7 @@ pub fn draw_pr_review_loading(
         Line::from(vec![
             spinner,
             Span::styled(
-                " Fetching PR comments (experimental)...",
+                " Loading PR Triage comments (experimental)...",
                 Style::default()
                     .fg(theme.text.to_color())
                     .add_modifier(Modifier::BOLD),
@@ -444,7 +445,7 @@ pub fn draw_pr_review_loading(
     frame.render_widget(body, inner);
 }
 
-/// Full-screen PR comment-review pane: comment list on the left, detail on the
+/// Full-screen PR-triage pane: comment list on the left, detail on the
 /// right.
 pub struct PrReviewUsage<'a> {
     pub cumulative: Option<&'a SessionTokenUsage>,
@@ -475,7 +476,7 @@ pub fn draw_pr_review(
     // Header.
     let mut header_spans = vec![
         Span::styled(
-            format!(" PR #{} (experimental) ", review.pr.number),
+            format!(" PR Triage · #{} (experimental) ", review.pr.number),
             Style::default()
                 .fg(theme.primary.to_color())
                 .add_modifier(Modifier::BOLD),
@@ -591,7 +592,7 @@ pub fn draw_pr_review(
     frame.render_widget(keys, footer[0]);
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
-    // Harness picker overlays the pane on the first fix of a dedicated review.
+    // Harness picker overlays the pane on the first fix of a dedicated triage.
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
@@ -946,7 +947,7 @@ fn draw_fix_confirm(
     );
 }
 
-/// Single-select harness picker for the dedicated review session, shown on the
+/// Single-select harness picker for the dedicated triage session, shown on the
 /// first fix of a PR. The chosen harness is remembered for the rest of the PR
 /// (the session is created once and reused).
 fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, theme: &Theme) {
@@ -954,7 +955,7 @@ fn draw_harness_pick(frame: &mut Frame, pick: &crate::app::HarnessPickState, the
     crate::ui::draw_modal_overlay(frame, area, theme);
 
     let block = Block::default()
-        .title(" Harness for the review session ")
+        .title(" Harness for the triage session ")
         .borders(Borders::ALL)
         .style(Style::default().bg(theme.effective_bg()))
         .border_style(Style::default().fg(theme.primary.to_color()));

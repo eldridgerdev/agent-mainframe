@@ -999,7 +999,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 && stash.window == view.window
             {
                 badge_spans.push(Span::styled(
-                    " [Ctrl+Space P: back to review] ",
+                    " [Ctrl+Space P: back to PR Triage] ",
                     Style::default()
                         .fg(app.theme.info.to_color())
                         .add_modifier(Modifier::BOLD),

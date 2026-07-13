@@ -1492,7 +1492,7 @@ pub struct PrNumberPromptState {
 
 /// PR picker: a selectable list of the repo's pull requests, so the user can
 /// open a PR for review without knowing its number. Reached when the branch has
-/// no auto-detectable PR, or on demand from the review pane to switch PRs. The
+/// no auto-detectable PR, or on demand from PR Triage to switch PRs. The
 /// manual number prompt stays one keypress away (`#`).
 #[derive(Debug, Clone)]
 pub struct PrPickerState {
@@ -1544,7 +1544,7 @@ pub struct AiReviewRunState {
     pub stage: crate::app::pr_review::AiReviewStage,
 }
 
-/// State for the full-screen PR comment-review pane.
+/// State for the full-screen PR Triage pane.
 #[derive(Debug, Clone)]
 pub struct PrReviewState {
     /// Working directory of the feature whose PR we're reviewing. Used by the
@@ -1573,14 +1573,14 @@ pub struct PrReviewState {
     /// "this visit" tally; a target created after the pane opened has no
     /// baseline, so all of its usage belongs to the visit.
     pub usage_baselines: HashMap<TokenUsageSource, SessionTokenUsage>,
-    /// Harness chosen for the dedicated review session, picked once before the
+    /// Harness chosen for the dedicated triage session, picked once before the
     /// first fix is injected and reused for the rest of the PR. `None` until the
     /// user picks (or when the dedicated session already exists / isn't the
     /// target). Lets PR triage run on a different harness than the feature's
     /// working session.
     pub review_harness: Option<AgentKind>,
     /// When `Some`, the harness picker is open over the pane: the user is
-    /// choosing which agent harness the dedicated review session will run before
+    /// choosing which agent harness the dedicated triage session will run before
     /// the first fix is injected.
     pub harness_pick: Option<HarnessPickState>,
     /// When `Some`, the fix confirm/edit dialog is open over the pane, holding
@@ -1600,7 +1600,7 @@ pub struct PrReviewState {
     /// before it's appended to the review-memory doc.
     pub memory_add: Option<MemoryAddState>,
     /// Comment ids marked (with `space`) for a batch fix. `F` queues every
-    /// marked comment's fix prompt into the dedicated review session in one
+    /// marked comment's fix prompt into the dedicated triage session in one
     /// pass. Keyed by id (not index) so marks survive the hide-resolved filter
     /// shifting the visible rows. Cleared once the batch is queued.
     pub marked: std::collections::HashSet<u64>,
@@ -1640,7 +1640,7 @@ pub struct AiReviewPostConfirmState {
 }
 
 /// A [`PrReviewState`] stashed while the user is watching the linked fix
-/// session (`P` from the review pane), so `leader+P` can jump straight back
+/// session (`P` from PR Triage), so `leader+P` can jump straight back
 /// to the exact comment/scroll/dialog state without re-fetching. `session`
 /// and `window` identify the tmux target the stash was jumped *to*, so the
 /// restore only fires from that same session's view — a stash left behind
@@ -1652,7 +1652,7 @@ pub struct PrReviewReturn {
     pub state: PrReviewState,
 }
 
-/// Single-select harness picker shown before the dedicated PR-review session is
+/// Single-select harness picker shown before the dedicated PR-triage session is
 /// spun up, so the user can run triage fixes on a different harness than the
 /// feature's working session. Highlights the project's preferred agent by
 /// default.
@@ -1918,7 +1918,7 @@ pub enum AppMode {
     PrPicker(PrPickerState),
     /// Fetching a PR's comments off the UI thread; shows a loading frame.
     PrReviewLoading(PrReviewLoadState),
-    /// Triaging a PR's comments in the full-screen review pane.
+    /// Triaging a PR's comments in the full-screen PR Triage pane.
     PrReview(PrReviewState),
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.

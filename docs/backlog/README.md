@@ -136,7 +136,7 @@ doc always says exactly what remains.
   comment re-anchoring, a manual changeset overview, a per-project
   build/test gate, file-level PR comments, and jump-by-hunk / in-diff
   search.
-- [PR comment review](pr-comment-review-plan.md) — _Backlog._ Triage a
+- [PR Triage](pr-comment-review-plan.md) — _Partial._ Triage a
   GitHub PR's comments (inline, review summaries, conversation, bots)
   inside AMF and, per comment, inject a token-minimal fix into the live
   agent session, post an AI-drafted reply, or skip. Token efficiency is

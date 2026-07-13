@@ -1,6 +1,6 @@
-# PR Comment Review
+# PR Triage
 
-- **Status:** Backlog
+- **Status:** Partial
 - **Owner:** unassigned
 - **Relates to:** `trigger_final_review` / `DiffViewer` mode
   (`src/app/review.rs`), embedded tmux view (`AppMode::Viewing`,
@@ -1354,7 +1354,7 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/app/pr_review.rs`, `src/app/state.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
-- **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
+- [x] **Rename the feature to "PR Triage."** "PR Comment Review" / "PR review"
   reads as passive (just reading comments) when the feature actually drives
   the whole loop — triaging, fixing, replying, resolving. "PR Triage" matches
   what the pane does and disambiguates from the separate Epic E "AI code
@@ -1369,13 +1369,21 @@ first), and the reviewer's output (plus comments triaged in the pane)
   existing dedicated review sessions created under the old label would need a
   migration note (or the lookup would need to accept both labels for a
   transition period) rather than silently losing track of already-running
-  sessions. Pure rename — no behavior change otherwise.
+  sessions. Shipped across the dashboard/help entry, pane and picker titles,
+  loading/status labels, session-harness copy, README, and linked-session
+  return badge. New dedicated sessions use the `"PR Triage"` label; lookup
+  prefers that label but still recognizes the legacy `"PR Review"` label so
+  an already-running session is reused across upgrades. Focused unit coverage
+  verifies both current-label preference and legacy-label compatibility. →
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+  `src/ui/dialogs/help.rs`, `src/ui/status.rs`, `src/ui/dashboard.rs`,
+  `src/github.rs`, `README.md`.
 
-- **Dedicated review-session status badge in the PR review pane.** The
-  Viewing-mode corner badge (`[Ctrl+Space P: back to review]`,
+- **Dedicated triage-session status badge in the PR Triage pane.** The
+  Viewing-mode corner badge (`[Ctrl+Space P: back to PR Triage]`,
   `src/ui/dashboard.rs`) tells you when you're *inside* the dedicated
-  review session, but there's no equivalent the other way round: sitting in
-  the review pane while `f` has a fix running in the background, nothing
+  triage session, but there's no equivalent the other way round: sitting in
+  PR Triage while `f` has a fix running in the background, nothing
   in-pane shows whether that dedicated session even exists yet, or whether
   it's actively working vs. idle/finished. Add a small header badge —
   alongside the Epic D "token usage surfaced per session" span already in
@@ -1385,10 +1393,10 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `thinking_features` tracking `App::is_feature_thinking` already exposes
   (`src/app/sync.rs`). Gotcha to design around: `is_feature_thinking` is
   keyed by `tmux_session` at the *feature* level, not per-window, so as-is
-  it can't distinguish "the dedicated review session is thinking" from
+  it can't distinguish "the dedicated triage session is thinking" from
   "some other window in this feature is thinking" when they share a tmux
   session — likely needs a per-window/per-session variant of the thinking
-  probe, or a pane-content check scoped to the review session's window
+  probe, or a pane-content check scoped to the triage session's window
   specifically.
 
 ## Open questions

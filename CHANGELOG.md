@@ -262,6 +262,10 @@ are tagged.
   those stale entries and reinstalls the current local hooks on startup. This
   clears repeated `PostToolUse:Bash hook error` messages without requiring
   manual edits to `.claude/settings.local.json`.
+- **Claude hook paths with spaces work on macOS.** AMF now quotes its Claude
+  hook commands and cleans up older unquoted macOS hook entries, so paths under
+  `~/Library/Application Support/amf` no longer fail with `/bin/sh` errors
+  such as `Library/Application: no such file or directory`.
 - **File-level PR review comments no longer inject the whole file as a diff
   hunk.** A comment left on the file as a whole (GitHub's `subject_type:
   "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to

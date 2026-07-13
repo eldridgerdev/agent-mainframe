@@ -746,6 +746,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("q/Esc", key_style()),
             Span::raw(" skip"),
         ]),
+        AppMode::PlanInterview(_) => Line::from(vec![
+            Span::styled(" Enter", key_style()),
+            Span::raw(" next  "),
+            Span::styled("b", key_style()),
+            Span::raw(" back  "),
+            Span::styled("s", key_style()),
+            Span::raw(" skip  "),
+            Span::styled("f", key_style()),
+            Span::raw(" finish early  "),
+            Span::styled("Esc", key_style()),
+            Span::raw(" cancel"),
+        ]),
     };
 
     let message_line = if let Some(ref msg) = app.message {

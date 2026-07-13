@@ -325,7 +325,7 @@ picks the plan up with no display-layer changes.
 
 - [x] `src/plan_interview.rs`: `PlanQuestion` model, built-in
       question bank, unit tests
-- [ ] `AppMode::PlanInterview(PlanInterviewState)` with phase/step
+- [x] `AppMode::PlanInterview(PlanInterviewState)` with phase/step
       state machine (brief → static questions → done)
 - [ ] Question dialog UI: multi-line free-text (TextEditor) and
       select-options rendering, progress header, skip/back keys,

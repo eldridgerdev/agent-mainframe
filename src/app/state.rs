@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
 use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
+use crate::plan_interview::{PlanQuestion, PlanQuestionKind, builtin_questions};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::worktree::WorktreeInfo;
 
@@ -1860,6 +1861,8 @@ pub enum AppMode {
     TodosHostReassign(TodosHostReassignState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
+    #[allow(dead_code)] // Entered once the Epic 1 question dialog is wired up.
+    PlanInterview(PlanInterviewState),
     DeletingProject(String),
     DeletingFeature(String, String),
     DeletingFeatureInProgress(DeletingFeatureState),
@@ -2634,6 +2637,217 @@ pub struct PreparedFeatureLaunch {
     pub startup_prompt: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Consumed by the staged question-dialog integration.
+pub enum PlanInterviewPhase {
+    Brief,
+    StaticQuestions,
+    Done,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // Consumed by the staged question-dialog integration.
+pub enum PlanInterviewAdvanceError {
+    BriefRequired,
+    AnswerRequired,
+}
+
+/// In-memory state for the static-question interview delivered in Epic 1.
+///
+/// Draft persistence and AI-generated phases are intentionally layered onto
+/// this state in later epics. `pending_launch` is optional so the same state
+/// can also support on-demand interviews for existing features.
+#[allow(dead_code)] // The state machine lands immediately before its UI consumer.
+pub struct PlanInterviewState {
+    pub feature_name: String,
+    pub phase: PlanInterviewPhase,
+    pub questions: Vec<PlanQuestion>,
+    pub question_index: usize,
+    pub brief: String,
+    pub answers: Vec<Option<String>>,
+    pub editor: TextEditor,
+    pub selected_option: usize,
+    pub pending_launch: Option<PreparedFeatureLaunch>,
+}
+
+#[allow(dead_code)]
+impl PlanInterviewState {
+    pub fn for_feature_creation(pending_launch: PreparedFeatureLaunch) -> Self {
+        let feature_name = pending_launch.branch.clone();
+        Self::new(feature_name, builtin_questions(), Some(pending_launch))
+    }
+
+    pub fn new(
+        feature_name: String,
+        questions: Vec<PlanQuestion>,
+        pending_launch: Option<PreparedFeatureLaunch>,
+    ) -> Self {
+        let answer_count = questions.len();
+        Self {
+            feature_name,
+            phase: PlanInterviewPhase::Brief,
+            questions,
+            question_index: 0,
+            brief: String::new(),
+            answers: vec![None; answer_count],
+            editor: TextEditor::new(String::new()),
+            selected_option: 0,
+            pending_launch,
+        }
+    }
+
+    pub fn current_question(&self) -> Option<&PlanQuestion> {
+        if self.phase == PlanInterviewPhase::StaticQuestions {
+            self.questions.get(self.question_index)
+        } else {
+            None
+        }
+    }
+
+    /// Save the current input and move to the next interview step.
+    pub fn advance(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                if self.editor.text().trim().is_empty() {
+                    return Err(PlanInterviewAdvanceError::BriefRequired);
+                }
+                self.brief = self.editor.text().to_string();
+                if self.questions.is_empty() {
+                    self.phase = PlanInterviewPhase::Done;
+                } else {
+                    self.phase = PlanInterviewPhase::StaticQuestions;
+                    self.question_index = 0;
+                    self.load_current_answer();
+                }
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                self.save_current_answer(false)?;
+                self.move_after_current_question();
+            }
+            PlanInterviewPhase::Done => {}
+        }
+        Ok(())
+    }
+
+    /// Skip an optional question and move forward without recording an answer.
+    pub fn skip(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        let Some(question) = self.current_question() else {
+            return Ok(());
+        };
+        if !question.optional {
+            return Err(PlanInterviewAdvanceError::AnswerRequired);
+        }
+        self.answers[self.question_index] = None;
+        self.move_after_current_question();
+        Ok(())
+    }
+
+    /// Return to the previous step, restoring its draft answer into the editor.
+    pub fn back(&mut self) -> bool {
+        match self.phase {
+            PlanInterviewPhase::Brief => false,
+            PlanInterviewPhase::StaticQuestions if self.question_index == 0 => {
+                self.save_current_draft();
+                self.phase = PlanInterviewPhase::Brief;
+                self.editor = TextEditor::new(self.brief.clone());
+                self.selected_option = 0;
+                true
+            }
+            PlanInterviewPhase::StaticQuestions => {
+                self.save_current_draft();
+                self.question_index -= 1;
+                self.load_current_answer();
+                true
+            }
+            PlanInterviewPhase::Done if !self.questions.is_empty() => {
+                self.phase = PlanInterviewPhase::StaticQuestions;
+                self.question_index = self.questions.len() - 1;
+                self.load_current_answer();
+                true
+            }
+            PlanInterviewPhase::Done => {
+                self.phase = PlanInterviewPhase::Brief;
+                self.editor = TextEditor::new(self.brief.clone());
+                true
+            }
+        }
+    }
+
+    /// End questioning with the answers collected so far.
+    pub fn finish_early(&mut self) -> Result<(), PlanInterviewAdvanceError> {
+        match self.phase {
+            PlanInterviewPhase::Brief => {
+                if self.editor.text().trim().is_empty() {
+                    return Err(PlanInterviewAdvanceError::BriefRequired);
+                }
+                self.brief = self.editor.text().to_string();
+            }
+            PlanInterviewPhase::StaticQuestions => self.save_current_draft(),
+            PlanInterviewPhase::Done => {}
+        }
+        self.phase = PlanInterviewPhase::Done;
+        Ok(())
+    }
+
+    fn save_current_answer(
+        &mut self,
+        allow_empty_optional: bool,
+    ) -> Result<(), PlanInterviewAdvanceError> {
+        let Some(question) = self.questions.get(self.question_index) else {
+            return Ok(());
+        };
+        let answer = match &question.kind {
+            PlanQuestionKind::FreeText => {
+                let text = self.editor.text();
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text.to_string())
+                }
+            }
+            PlanQuestionKind::Select(options) => options.get(self.selected_option).cloned(),
+        };
+        if answer.is_none() && !question.optional && !allow_empty_optional {
+            return Err(PlanInterviewAdvanceError::AnswerRequired);
+        }
+        self.answers[self.question_index] = answer;
+        Ok(())
+    }
+
+    fn save_current_draft(&mut self) {
+        let _ = self.save_current_answer(true);
+    }
+
+    fn move_after_current_question(&mut self) {
+        if self.question_index + 1 >= self.questions.len() {
+            self.phase = PlanInterviewPhase::Done;
+        } else {
+            self.question_index += 1;
+            self.load_current_answer();
+        }
+    }
+
+    fn load_current_answer(&mut self) {
+        let existing = self
+            .answers
+            .get(self.question_index)
+            .and_then(|answer| answer.as_deref());
+        match self.questions.get(self.question_index).map(|q| &q.kind) {
+            Some(PlanQuestionKind::FreeText) => {
+                self.editor = TextEditor::new(existing.unwrap_or_default().to_string());
+                self.selected_option = 0;
+            }
+            Some(PlanQuestionKind::Select(options)) => {
+                self.editor = TextEditor::new(String::new());
+                self.selected_option = existing
+                    .and_then(|answer| options.iter().position(|option| option == answer))
+                    .unwrap_or(0);
+            }
+            None => {}
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CreateBatchFeaturesState {
     pub workspace_path: String,
@@ -2778,5 +2992,70 @@ mod tests {
     #[test]
     fn session_filter_all_has_seven_variants() {
         assert_eq!(SessionFilter::ALL.len(), 7);
+    }
+
+    #[test]
+    fn plan_interview_requires_a_brief_before_questions() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+
+        assert_eq!(
+            state.advance(),
+            Err(PlanInterviewAdvanceError::BriefRequired)
+        );
+        assert_eq!(state.phase, PlanInterviewPhase::Brief);
+
+        state.editor = TextEditor::new("Build the feature\nwith care".into());
+        state.advance().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::StaticQuestions);
+        assert_eq!(state.brief, "Build the feature\nwith care");
+        assert_eq!(state.current_question().unwrap().id, "scope");
+    }
+
+    #[test]
+    fn plan_interview_retains_answers_when_navigating_back() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+        state.editor = TextEditor::new("In: interviews. Out: AI.".into());
+        state.advance().unwrap();
+
+        assert_eq!(state.question_index, 1);
+        assert!(state.back());
+        assert_eq!(state.question_index, 0);
+        assert_eq!(state.editor.text(), "In: interviews. Out: AI.");
+
+        assert!(state.back());
+        assert_eq!(state.phase, PlanInterviewPhase::Brief);
+        assert_eq!(state.editor.text(), "A useful feature");
+    }
+
+    #[test]
+    fn plan_interview_skip_and_finish_early_preserve_progress() {
+        let mut state = PlanInterviewState::new(
+            "feature".into(),
+            crate::plan_interview::builtin_questions(),
+            None,
+        );
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+        state.skip().unwrap();
+        state.editor = TextEditor::new("Developers use it from the dashboard".into());
+        state.finish_early().unwrap();
+
+        assert_eq!(state.phase, PlanInterviewPhase::Done);
+        assert_eq!(state.answers[0], None);
+        assert_eq!(
+            state.answers[1].as_deref(),
+            Some("Developers use it from the dashboard")
+        );
     }
 }

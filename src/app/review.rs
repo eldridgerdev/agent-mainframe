@@ -2641,7 +2641,8 @@ impl App {
     ) -> String {
         use crate::github::{GhCli, PrResolution};
 
-        let (body, comments) = build_pr_review(rejected, line_comment_sections, general_feedback);
+        let (body, comments, file_comments) =
+            build_pr_review(rejected, line_comment_sections, general_feedback);
         let pr = match GhCli::resolve_pr(workdir) {
             Ok(PrResolution::Found(pr)) => pr,
             Ok(PrResolution::NoPrForBranch) => {
@@ -2662,20 +2663,46 @@ impl App {
                 format!("PR review event: {event} (PR #{})", pr.number),
             );
         }
-        match GhCli::create_review(workdir, &pr, &body, event, &comments) {
-            Ok(()) => {
-                let what = if comments.is_empty() {
-                    "review summary".to_string()
-                } else {
-                    format!("{} comment(s)", comments.len())
-                };
-                format!(" — posted {what} to PR #{}", pr.number)
-            }
+        let review_ok = match GhCli::create_review(workdir, &pr, &body, event, &comments) {
+            Ok(()) => true,
             Err(err) => {
                 self.log_warn("review", format!("PR review post failed: {err}"));
-                format!(" — couldn't post to PR #{}: {err}", pr.number)
+                return format!(" — couldn't post to PR #{}: {err}", pr.number);
+            }
+        };
+        let what = if comments.is_empty() {
+            "review summary".to_string()
+        } else {
+            format!("{} comment(s)", comments.len())
+        };
+        let mut suffix = format!(" — posted {what} to PR #{}", pr.number);
+        // Whole-file rejections can't ride along in the batch review above
+        // (GitHub's create-review endpoint has no file-level comment
+        // support), so post each as its own `subject_type: file` comment.
+        // Only attempted once the review itself is confirmed posted, and
+        // best-effort per file so one failure doesn't drop the rest.
+        if review_ok && !file_comments.is_empty() {
+            let mut posted = 0usize;
+            let mut failed = 0usize;
+            for fc in &file_comments {
+                match GhCli::create_file_comment(workdir, &pr, &fc.path, &fc.body) {
+                    Ok(()) => posted += 1,
+                    Err(err) => {
+                        failed += 1;
+                        self.log_warn(
+                            "review",
+                            format!("PR file comment post failed ({}): {err}", fc.path),
+                        );
+                    }
+                }
+            }
+            if failed == 0 {
+                suffix.push_str(&format!(", {posted} file comment(s)"));
+            } else {
+                suffix.push_str(&format!(", {posted} file comment(s) ({failed} failed)"));
             }
         }
+        suffix
     }
 }
 
@@ -2845,14 +2872,22 @@ fn severity_review_event(
 
 /// Assemble a GitHub PR review from a finished final review. Line comments
 /// become inline review comments — anchored to the current file line
-/// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`); the
-/// general feedback and whole-file rejections (which have no single line to
-/// anchor to) become the review's summary body. Returns `(body, comments)`.
+/// (`RIGHT`) or, for a deletion-only line, the base file line (`LEFT`).
+/// Whole-file rejections have no single line to anchor to either, but *do*
+/// have a file — they become `subject_type: file` comments instead of being
+/// dumped into the summary body (GitHub's batch review endpoint can't carry
+/// those, so the caller posts them as separate `create_file_comment` calls).
+/// The summary body carries only the general feedback. Returns `(body,
+/// comments, file_comments)`.
 fn build_pr_review(
     rejected: &[(String, String, Severity)],
     line_comment_sections: &[(String, Vec<LineComment>)],
     general_feedback: &str,
-) -> (String, Vec<crate::github::PrReviewComment>) {
+) -> (
+    String,
+    Vec<crate::github::PrReviewComment>,
+    Vec<crate::github::PrFileComment>,
+) {
     let mut comments = Vec::new();
     for (path, file_comments) in line_comment_sections {
         for comment in file_comments {
@@ -2896,25 +2931,29 @@ fn build_pr_review(
         }
     }
 
-    let mut body = String::new();
-    let general = general_feedback.trim();
-    if !general.is_empty() {
-        body.push_str(general);
-        body.push_str("\n\n");
-    }
-    if !rejected.is_empty() {
-        body.push_str("## Files needing revision\n\n");
-        for (file, feedback, severity) in rejected {
+    let body = general_feedback.trim().to_string();
+
+    // Whole-file rejections carry the same conventional-comments severity
+    // tag as line comments, with a filler line when the reviewer left no
+    // feedback text (mirrors the old body-dump's bare "needs revision").
+    let file_comments = rejected
+        .iter()
+        .map(|(file, feedback, severity)| {
             let feedback = feedback.trim();
             let tag = severity.label();
-            if feedback.is_empty() {
-                body.push_str(&format!("- **{file}** — needs revision [{tag}]\n"));
+            let body = if feedback.is_empty() {
+                format!("**[{tag}]** Needs revision.")
             } else {
-                body.push_str(&format!("- **{file}** [{tag}]\n\n{feedback}\n\n"));
+                format!("**[{tag}]** {feedback}")
+            };
+            crate::github::PrFileComment {
+                path: file.clone(),
+                body,
             }
-        }
-    }
-    (body.trim_end().to_string(), comments)
+        })
+        .collect();
+
+    (body, comments, file_comments)
 }
 
 /// Document title that heads the feedback log. Each review round is prepended
@@ -3352,7 +3391,7 @@ mod tests {
     }
 
     #[test]
-    fn pr_review_maps_lines_inline_and_folds_files_into_body() {
+    fn pr_review_maps_lines_inline_and_files_to_file_comments() {
         let rejected = vec![
             (
                 "src/a.rs".to_string(),
@@ -3368,7 +3407,8 @@ mod tests {
                 line_comment(None, Some(7), "why delete this?"),
             ],
         )];
-        let (body, comments) = build_pr_review(&rejected, &line_comments, "overall LGTM-ish");
+        let (body, comments, file_comments) =
+            build_pr_review(&rejected, &line_comments, "overall LGTM-ish");
 
         // Inline comments: an added/current line posts on RIGHT, a deletion-only
         // line on LEFT.
@@ -3379,13 +3419,18 @@ mod tests {
         assert_eq!(comments[1].line, 7);
         assert_eq!(comments[1].side, "LEFT");
 
-        // Body carries general feedback + whole-file rejections, including the
-        // bare "needs revision" line when no feedback text was given.
-        assert!(body.contains("overall LGTM-ish"));
-        assert!(body.contains("## Files needing revision"));
-        assert!(body.contains("**src/a.rs**"));
-        assert!(body.contains("tighten this up"));
-        assert!(body.contains("**src/b.rs** — needs revision"));
+        // Body carries only the general feedback now — whole-file rejections
+        // post as their own file-level comments instead of being dumped here.
+        assert_eq!(body, "overall LGTM-ish");
+        assert!(!body.contains("Files needing revision"));
+
+        // Whole-file rejections: one `PrFileComment` per file, tagged with its
+        // severity, with a filler line when no feedback text was given.
+        assert_eq!(file_comments.len(), 2);
+        assert_eq!(file_comments[0].path, "src/a.rs");
+        assert_eq!(file_comments[0].body, "**[suggestion]** tighten this up");
+        assert_eq!(file_comments[1].path, "src/b.rs");
+        assert_eq!(file_comments[1].body, "**[blocker]** Needs revision.");
     }
 
     #[test]
@@ -3394,9 +3439,10 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(3), None, "nit")],
         )];
-        let (body, comments) = build_pr_review(&[], &line_comments, "");
+        let (body, comments, file_comments) = build_pr_review(&[], &line_comments, "");
         assert!(body.is_empty());
         assert_eq!(comments.len(), 1);
+        assert!(file_comments.is_empty());
     }
 
     #[test]
@@ -3405,7 +3451,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![ranged_comment(10, 14, "this whole block")],
         )];
-        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].line, 14);
         assert_eq!(comments[0].side, "RIGHT");
@@ -3419,7 +3465,7 @@ mod tests {
             "src/c.rs".to_string(),
             vec![line_comment(Some(5), None, "nit")],
         )];
-        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments[0].start_line, None);
         assert_eq!(comments[0].start_side, None);
     }
@@ -3429,7 +3475,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "use a guard");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
         assert_eq!(comments.len(), 1);
         // The comment body leads with the conventional-comments severity tag.
         assert_eq!(
@@ -3443,7 +3489,7 @@ mod tests {
         let mut comment = line_comment(Some(5), None, "");
         comment.suggestion = Some("let x = y?;".to_string());
         let line_comments = vec![("src/c.rs".to_string(), vec![comment])];
-        let (_, comments) = build_pr_review(&[], &line_comments, "");
+        let (_, comments, _) = build_pr_review(&[], &line_comments, "");
         // Even a suggestion-only comment carries its severity tag.
         assert_eq!(
             comments[0].body,
@@ -3479,11 +3525,13 @@ mod tests {
     }
 
     #[test]
-    fn feedback_body_tags_line_comments_with_severity() {
-        // The PR summary body tags a whole-file rejection with its severity.
+    fn feedback_file_comment_tags_whole_file_rejection_with_severity() {
+        // A whole-file rejection's file-level comment carries its severity tag.
         let rejected = vec![("a.rs".to_string(), "fix".to_string(), Severity::Blocker)];
-        let (body, _) = build_pr_review(&rejected, &[], "");
-        assert!(body.contains("**a.rs** [blocker]"), "body was: {body}");
+        let (_, _, file_comments) = build_pr_review(&rejected, &[], "");
+        assert_eq!(file_comments.len(), 1);
+        assert_eq!(file_comments[0].path, "a.rs");
+        assert_eq!(file_comments[0].body, "**[blocker]** fix");
     }
 
     #[test]
@@ -4090,7 +4138,7 @@ index 1111111..2222222 100644
 
         // A stale line number must never be posted inline on the PR.
         let sections = vec![("src/foo.rs".to_string(), vec![comment])];
-        let (body, comments) = build_pr_review(&[], &sections, "");
+        let (body, comments, _) = build_pr_review(&[], &sections, "");
         assert!(comments.is_empty(), "lost anchor must not post inline");
         assert!(!body.contains("src/foo.rs:42"));
     }

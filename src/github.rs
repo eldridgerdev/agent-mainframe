@@ -184,6 +184,15 @@ pub struct PrReviewComment {
     pub body: String,
 }
 
+/// A whole-file PR review comment (`subject_type: "file"`, see
+/// [`GhCli::create_file_comment`]) — no line to anchor to, so it attaches to
+/// the file itself rather than a diff row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrFileComment {
+    pub path: String,
+    pub body: String,
+}
+
 impl GhCli {
     /// Check that a working `gh` binary is on PATH. Mirrors
     /// `TmuxManager::check_available` / `ClaudeLauncher::check_available`.
@@ -474,6 +483,28 @@ impl GhCli {
             bail!("`gh api` (create review) failed: {}", stderr.trim());
         }
         Ok(())
+    }
+
+    /// Post a whole-file review comment (`subject_type: "file"`), pinned to the
+    /// PR head commit. GitHub's batch `create_review` endpoint has no
+    /// file-level comment support in its `comments` array (only `line` /
+    /// `start_line` anchoring), and there's no way to attach a comment to an
+    /// already-created review after the fact — so this goes through the
+    /// single review-comment endpoint instead and posts immediately as its
+    /// own comment, not bundled into a `create_review` review object.
+    pub fn create_file_comment(workdir: &Path, pr: &PrRef, path: &str, body: &str) -> Result<()> {
+        let mut cmd = Command::new("gh");
+        cmd.args(["api", "--method", "POST"])
+            .arg(format!(
+                "repos/{}/{}/pulls/{}/comments",
+                pr.owner, pr.repo, pr.number
+            ))
+            .args(["-f", &format!("commit_id={}", pr.head_sha)])
+            .args(["-f", &format!("path={path}")])
+            .args(["-f", "subject_type=file"])
+            .args(["-f", &format!("body={body}")])
+            .current_dir(workdir);
+        run_write(cmd, "post file-level comment")
     }
 
     /// Post a reply into an existing inline review thread. `root_comment_id` is

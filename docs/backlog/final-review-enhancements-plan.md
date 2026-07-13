@@ -1,15 +1,10 @@
 # Final Review Enhancements
 
-- **Status:** Core shipped; Rounds 2–3 in backlog — every item under
-  **Progress → Round 1** is implemented and merged, and Round 2's AI
-  co-reviewer, suggested-change blocks, jump-by-hunk navigation,
-  comment-implied rejections, severity tags, agent replies-back,
-  in-diff search, comment re-anchoring, resolve/unresolve thread
-  state, the changeset overview + diff stats, and the build/test gate
-  before approve have shipped. The remaining Round 2 item (file-level
-  PR comments) is still open. **Round 3** (captured 2026-07-01) has
-  started: interdiff on re-review and the "fixes ready — re-review?"
-  notification have shipped; the rest of the loop-closing,
+- **Status:** Rounds 1–2 shipped; Round 3 in backlog — every item under
+  **Progress → Round 1** and **Round 2** is implemented and merged
+  (most recently Round 2's file-level PR comments). **Round 3** (captured
+  2026-07-01) has started: interdiff on re-review and the "fixes ready —
+  re-review?" notification have shipped; the rest of the loop-closing,
   viewer-ergonomics, AI co-review, and workflow items are not yet
   started.
 - **Owner:** unassigned
@@ -559,8 +554,19 @@ and outcome-driven PR review events by **Round 2 → severity tags**.
       even with zero rejections, which is the concrete answer to "block an
       all-approve on failure". `complete_final_review` in
       `src/app/review.rs`.
-- [ ] File-level PR comments instead of body-dumping whole-file
-      rejections (`subject_type: file`)
+- [x] File-level PR comments instead of body-dumping whole-file
+      rejections — a rejected file with no line comments now posts as its
+      own `subject_type: file` review comment attached to that file,
+      instead of a paragraph in the review's summary body. GitHub's batch
+      `create_review` endpoint has no file-level comment support in its
+      `comments` array (checked the REST docs: `subject_type` only exists
+      on the single-comment endpoint, and there's no way to attach a
+      standalone comment to an already-created review), so this is a
+      second round of best-effort `gh api` calls — one per rejected file —
+      made only after the batch review itself posts successfully.
+      `GhCli::create_file_comment` / `PrFileComment` (`src/github.rs`);
+      `build_pr_review` returns the new file-comment list alongside the
+      existing summary body and inline comments (`src/app/review.rs`).
 - [x] Jump-by-hunk navigation in the diff — press `]` / `[` in the final
       review to jump the line cursor to the next / previous hunk's first
       line (activating the cursor if it's off; `]` lands on the first

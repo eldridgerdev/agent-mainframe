@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **File-level PR comments for whole-file rejections.** When posting a
+  finished final review to its GitHub PR, a file you rejected without
+  anchoring feedback to a specific line now posts as its own comment
+  attached to that file — instead of being dumped as a paragraph in the
+  review's summary body alongside every other whole-file rejection.
 - **"Fixes ready — re-review?" notification.** After you finish a review
   and it dispatches feedback to an agent, AMF now watches that session and
   notifies you once the agent has finished working through it — instead of

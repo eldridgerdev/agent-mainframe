@@ -3963,6 +3963,45 @@ fn cleanup_recognizes_quoted_managed_claude_hooks() {
 }
 
 #[test]
+fn cleanup_recognizes_unquoted_macos_managed_claude_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        r#"{
+          "hooks": {
+            "Stop": [{
+              "matcher": "",
+              "hooks": [{
+                "type": "command",
+                "command": "/Users/me/Library/Application Support/amf/thinking-stop.sh"
+              }]
+            }]
+          }
+        }"#,
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "Stop");
+    assert!(
+        cmds.iter()
+            .all(|cmd| !cmd.starts_with("/Users/me/Library/Application Support/amf/")),
+        "unquoted macOS AMF hooks should be removed, got: {cmds:?}"
+    );
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| cmd.contains("thinking-stop.sh"))
+            .count(),
+        1,
+        "current quoted Stop hook should be the only thinking-stop hook: {cmds:?}"
+    );
+}
+
+#[test]
 fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_default() {
     let workdir = TempDir::new().unwrap();
     // Create the custom diff-review script so it gets picked up.

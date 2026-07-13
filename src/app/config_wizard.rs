@@ -683,6 +683,7 @@ mod tests {
                 text: "Where should this ship?".into(),
                 options: vec!["Desktop".into(), "Web".into()],
                 optional: false,
+                ..Default::default()
             }],
             skip_builtin_questions: Some(true),
             ..Default::default()

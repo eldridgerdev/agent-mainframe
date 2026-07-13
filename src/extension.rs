@@ -158,6 +158,10 @@ pub struct ConfiguredPlanQuestion {
     /// prompts in config.json.
     pub options: Vec<String>,
     pub optional: bool,
+    /// Runtime-only provenance used by the interview UI. Config files do not
+    /// need to declare their own scope; the global/project loader supplies it.
+    #[serde(skip)]
+    pub(crate) source: QuestionSource,
 }
 
 impl Default for ConfiguredPlanQuestion {
@@ -167,6 +171,7 @@ impl Default for ConfiguredPlanQuestion {
             text: String::new(),
             options: Vec::new(),
             optional: true,
+            source: QuestionSource::Template,
         }
     }
 }
@@ -195,7 +200,7 @@ impl ConfiguredPlanQuestion {
             } else {
                 PlanQuestionKind::Select(options)
             },
-            source: QuestionSource::Template,
+            source: self.source.clone(),
             optional: self.optional,
         })
     }
@@ -277,6 +282,12 @@ impl ExtensionConfig {
             preset.normalize_legacy_review_mode();
         }
     }
+
+    fn mark_global_plan_questions(&mut self) {
+        for question in &mut self.plan_questions {
+            question.source = QuestionSource::GlobalTemplate;
+        }
+    }
 }
 
 /// Thin wrapper used only for deserializing the
@@ -303,6 +314,7 @@ pub fn load_global_extension_config() -> ExtensionConfig {
         .map(|c| c.extension)
         .unwrap_or_default();
     config.normalize_legacy_review_modes();
+    config.mark_global_plan_questions();
     config
 }
 
@@ -324,7 +336,9 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .and_then(|s| serde_json::from_str::<ExtensionConfig>(&s).ok())
             .unwrap_or_default()
     } else {
-        return base.clone();
+        let mut merged = base.clone();
+        merged.mark_global_plan_questions();
+        return merged;
     };
 
     // Merge custom_sessions: start with project, then
@@ -357,9 +371,11 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
     for entry in &base.plan_questions {
         if !plan_questions
             .iter()
-            .any(|question| question.id == entry.id)
+            .any(|question| question.id.trim() == entry.id.trim())
         {
-            plan_questions.push(entry.clone());
+            let mut global_question = entry.clone();
+            global_question.source = QuestionSource::GlobalTemplate;
+            plan_questions.push(global_question);
         }
     }
 
@@ -657,7 +673,7 @@ mod tests {
         let project_config = ExtensionConfig {
             plan_questions: vec![
                 ConfiguredPlanQuestion {
-                    id: "shared".into(),
+                    id: " shared ".into(),
                     text: "Project wording?".into(),
                     ..Default::default()
                 },
@@ -677,11 +693,37 @@ mod tests {
         let merged = merge_project_extension_config(&global, tmp.path());
 
         assert_eq!(merged.plan_questions.len(), 3);
-        assert_eq!(merged.plan_questions[0].id, "shared");
+        assert_eq!(merged.plan_questions[0].id, " shared ");
         assert_eq!(merged.plan_questions[0].text, "Project wording?");
         assert_eq!(merged.plan_questions[1].id, "project-only");
         assert_eq!(merged.plan_questions[2].id, "global-only");
         assert_eq!(merged.skip_builtin_questions, Some(true));
+
+        let questions = merged.plan_interview_questions();
+        assert_eq!(questions.len(), 3);
+        assert_eq!(questions[0].id, "shared");
+        assert_eq!(questions[0].source, QuestionSource::Template);
+        assert_eq!(questions[2].source, QuestionSource::GlobalTemplate);
+    }
+
+    #[test]
+    fn global_questions_keep_global_source_without_project_config() {
+        let global = ExtensionConfig {
+            plan_questions: vec![ConfiguredPlanQuestion {
+                id: "audience".into(),
+                text: "Who is this for?".into(),
+                ..Default::default()
+            }],
+            skip_builtin_questions: Some(true),
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+        let questions = merged.plan_interview_questions();
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].source, QuestionSource::GlobalTemplate);
     }
 
     #[test]
@@ -724,6 +766,7 @@ mod tests {
                 text: "What should we deliberately leave out?".into(),
                 options: vec!["Nothing".into(), "Decide later".into()],
                 optional: false,
+                ..Default::default()
             }],
             ..Default::default()
         };

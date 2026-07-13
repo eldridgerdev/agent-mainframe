@@ -2139,7 +2139,7 @@ impl App {
     /// pane state is the right target (see the `Target` enum below) — this
     /// may run well after `esc` (`cancel_ai_pr_review`) has already returned
     /// the user to the pane, since the background pass keeps going — then
-    /// re-caches and surfaces a toast (success/warning) or error (a real
+    /// re-caches and surfaces a toast (success/warning/error; a real
     /// side effect, tokens spent, even if the user already navigated away).
     /// Returns `true` when a redraw is warranted.
     pub fn poll_ai_pr_review_bg(&mut self) -> bool {
@@ -2162,7 +2162,8 @@ impl App {
                         // `start_ai_pr_review`. If it's ever missing there's
                         // nowhere safe to merge into — just surface the error.
                         if let Err(e) = result {
-                            self.show_error(e);
+                            self.log_error("pr_review", format!("AI review failed: {e}"));
+                            self.push_toast_error(format!("AI review failed: {e}"));
                         }
                         changed = true;
                         break;
@@ -2170,10 +2171,8 @@ impl App {
                     let pr_number = pending.review.pr.number;
 
                     // Where to land the result, resolved *before* any
-                    // mode-mutating side effect (`show_error` resets
-                    // `self.mode` to `Normal` for anything but
-                    // Normal/Help/Viewing) so both the success and error
-                    // paths can restore sensibly:
+                    // any side effect so both the success and error paths can
+                    // restore sensibly:
                     // - `Running`: still on the running screen for this PR —
                     //   merge and land in the pane.
                     // - `Pane`: the user already backed out (`esc`) to this
@@ -2273,8 +2272,6 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            // Preserve whatever live pane state exists before
-                            // `show_error` resets `self.mode` to `Normal`.
                             landed = match &target {
                                 Target::Running => {
                                     let AppMode::AiPrReviewRunning(state) = &self.mode else {
@@ -2285,7 +2282,11 @@ impl App {
                                 Target::Pane(state) => Some((**state).clone()),
                                 Target::Elsewhere => None,
                             };
-                            self.show_error(e);
+                            self.log_error(
+                                "pr_review",
+                                format!("AI review of PR #{pr_number} failed: {e}"),
+                            );
+                            self.push_toast_error(format!("AI review failed: {e}"));
                         }
                     }
                     if let Some(state) = landed {
@@ -2299,16 +2300,20 @@ impl App {
                     self.ai_review_bg = None;
                     let pending = self.ai_review_pending.take();
                     let pr_number = pending.as_ref().map(|p| p.review.pr.number);
+                    let detail = pr_number.map_or_else(
+                        || "AI review failed unexpectedly".to_string(),
+                        |number| format!("AI review of PR #{number} failed unexpectedly"),
+                    );
+                    self.log_error("pr_review", detail);
+                    self.push_toast_error("AI review failed unexpectedly");
                     match &self.mode {
                         AppMode::AiPrReviewRunning(state)
                             if Some(state.origin.review.pr.number) == pr_number =>
                         {
                             self.mode = AppMode::PrReview(state.origin.clone());
-                            self.message = Some("AI review failed unexpectedly".to_string());
                             changed = true;
                         }
                         AppMode::PrReview(state) if Some(state.review.pr.number) == pr_number => {
-                            self.message = Some("AI review failed unexpectedly".to_string());
                             changed = true;
                         }
                         _ => {}
@@ -3586,6 +3591,24 @@ impl App {
         let feature = &self.store.projects[pi].features[fi];
         let si = pr_triage_session_index(feature, state.fix_target)?;
         feature.sessions[si].token_usage.clone()
+    }
+
+    /// Whether the dedicated PR-triage session exists and is actively
+    /// thinking or running a tool. Activity is keyed by the AMF
+    /// feature-session ID supplied by hooks/plugins, rather than the parent
+    /// tmux session, so another agent window cannot produce a false positive.
+    pub(crate) fn pr_review_dedicated_session_working(&self) -> Option<bool> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let si = pr_triage_session_index(feature, FixTarget::DedicatedReview)?;
+        let session_id = &feature.sessions[si].id;
+        Some(
+            self.ipc_thinking_feature_sessions.contains(session_id)
+                || self.ipc_tool_feature_sessions.contains(session_id),
+        )
     }
 
     /// Usage added to the selected fix target since this visit to the PR pane

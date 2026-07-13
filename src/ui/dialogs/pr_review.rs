@@ -458,6 +458,7 @@ pub fn draw_pr_review(
     state: &mut PrReviewState,
     theme: &Theme,
     usage: PrReviewUsage<'_>,
+    dedicated_session_working: Option<bool>,
     ai_review_running: bool,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
@@ -490,6 +491,14 @@ pub fn draw_pr_review(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    if let Some(working) = dedicated_session_working {
+        let (label, color) = if working {
+            ("  [dedicated ● working]", theme.warning.to_color())
+        } else {
+            ("  [dedicated idle]", theme.status_detail.to_color())
+        };
+        header_spans.push(Span::styled(label, Style::default().fg(color)));
+    }
     // The AI review (`A`) keeps running in the background after `esc` returns
     // here — without this, nothing in the pane hints that it's still working,
     // so the header gets a throbber + label for as long as it's in flight.

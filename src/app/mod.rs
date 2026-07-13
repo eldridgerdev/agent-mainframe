@@ -671,6 +671,13 @@ pub struct App {
     pub(crate) opencode_thinking_pane_cache: HashMap<String, (Instant, Option<bool>)>,
     pub ipc_thinking_sessions: std::collections::HashSet<String>,
     pub ipc_tool_sessions: std::collections::HashSet<String>,
+    /// Feature-session IDs currently reported as thinking by hook/plugin IPC.
+    /// Unlike `ipc_thinking_sessions`, this distinguishes agent windows that
+    /// share one feature-level tmux session.
+    pub ipc_thinking_feature_sessions: std::collections::HashSet<String>,
+    /// Feature-session IDs currently running a tool, kept separate from
+    /// thinking so either signal can independently keep a session working.
+    pub ipc_tool_feature_sessions: std::collections::HashSet<String>,
     pub summary_state: SummaryState,
     pub summary_rx: Option<std::sync::mpsc::Receiver<(String, Result<String, anyhow::Error>)>>,
     pub tmux: Box<dyn TmuxOps>,
@@ -1997,6 +2004,8 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
+            ipc_thinking_feature_sessions: std::collections::HashSet::new(),
+            ipc_tool_feature_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux: Box::new(TmuxManager),
@@ -2190,6 +2199,8 @@ impl App {
             opencode_thinking_pane_cache: HashMap::new(),
             ipc_thinking_sessions: std::collections::HashSet::new(),
             ipc_tool_sessions: std::collections::HashSet::new(),
+            ipc_thinking_feature_sessions: std::collections::HashSet::new(),
+            ipc_tool_feature_sessions: std::collections::HashSet::new(),
             summary_state: SummaryState::new(),
             summary_rx: None,
             tmux,

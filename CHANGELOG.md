@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **PR Triage shows whether its dedicated fix session is working.** Once the
+  session exists, the pane header shows `[dedicated ● working]` while that
+  exact agent session is thinking or running a tool, and `[dedicated idle]`
+  when it is waiting or finished. Activity in another agent window no longer
+  affects this status. No setup or migration is required.
 - A design doc for the planned **plan-mode guided discovery interview**
   in `docs/backlog/plan-mode-interview-plan.md`, viewable in AMF's
   in-app Markdown viewer alongside the other plans. It captures where
@@ -86,11 +91,14 @@ are tagged.
   header, so neither screen reads as stuck or stalled. Success/warning/error
   toasts (e.g. "AI review found N findings") now actually render while any of
   the PR-review pane's full-screen modes are showing — they were being pushed
-  but silently swallowed before. Finding-parsing also tolerates a model that
-  doesn't hold the exact requested heading level or wraps its whole reply in
-  a code fence, and a `0 findings` result is now distinguished (a warning
-  toast + a debug-log dump of the raw response) from a quiet success, so a
-  parsing mismatch doesn't look identical to "the diff was just clean". A
+  but silently swallowed before. A failed `A` run now uses that visible error
+  toast too, instead of putting the failure in a dashboard-only message that
+  cannot be seen after returning to PR Triage. Finding-parsing also tolerates
+  a model that doesn't hold the exact requested heading level or wraps its
+  whole reply in a code fence, and a `0 findings` result is now distinguished
+  (a warning toast + a debug-log dump of the raw response) from a quiet
+  success, so a parsing mismatch doesn't look identical to "the diff was just
+  clean". A
   draft finding's role chip now reads `[ai]` instead of falling through to
   `[human]`, its detail pane shows a small window of the actual diff around
   its line (re-matched from the PR diff by `path:line`, same as a fetched

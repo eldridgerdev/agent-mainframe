@@ -919,18 +919,19 @@ impl App {
     }
 
     pub(crate) fn note_codex_prompt_submit(&mut self, tmux_session: &str, tmux_window: &str) {
-        let mut matched: Option<(String, String)> = None;
+        let mut matched: Option<(String, String, String)> = None;
         for project in &self.store.projects {
             for feature in &project.features {
                 if feature.tmux_session != tmux_session || feature.agent != AgentKind::Codex {
                     continue;
                 }
-                let has_codex_window = feature
+                let codex_session_id = feature
                     .sessions
                     .iter()
-                    .any(|s| s.kind == SessionKind::Codex && s.tmux_window == tmux_window);
-                if has_codex_window {
-                    matched = Some((project.name.clone(), feature.name.clone()));
+                    .find(|s| s.kind == SessionKind::Codex && s.tmux_window == tmux_window)
+                    .map(|s| s.id.clone());
+                if let Some(codex_session_id) = codex_session_id {
+                    matched = Some((project.name.clone(), feature.name.clone(), codex_session_id));
                     break;
                 }
             }
@@ -939,8 +940,10 @@ impl App {
             }
         }
 
-        if let Some((project_name, feature_name)) = matched {
+        if let Some((project_name, feature_name, feature_session_id)) = matched {
             self.ipc_thinking_sessions.insert(tmux_session.to_string());
+            self.ipc_thinking_feature_sessions
+                .insert(feature_session_id);
             self.pending_inputs.retain(|p| {
                 !(p.notification_type == "input-request"
                     && p.project_name.as_deref() == Some(&project_name)

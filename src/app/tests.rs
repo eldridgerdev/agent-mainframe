@@ -8928,6 +8928,41 @@ fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
     assert!(app.poll_ai_pr_review_bg());
     assert!(app.ai_review_bg.is_none());
     assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed: gh pr diff failed")
+    );
+    assert!(
+        app.message.is_none(),
+        "AI-review failures should use a visible pane toast, not the hidden dashboard message"
+    );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_disconnect_returns_to_pane_with_error_toast() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    drop(tx);
+
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed unexpectedly")
+    );
+    assert!(app.message.is_none());
 }
 
 #[test]
@@ -9183,6 +9218,82 @@ fn pr_review_fix_session_usage_none_before_session_exists() {
     enter_pr_review_for_feature(&mut app, 2);
 
     assert!(app.pr_review_fix_session_usage().is_none());
+}
+
+#[test]
+fn pr_review_dedicated_session_status_is_scoped_to_its_session() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let other_session_id = store.projects[0].features[0]
+        .add_session_named(SessionKind::Claude, "Working session".to_string())
+        .id
+        .clone();
+    let dedicated_session_id = store.projects[0].features[0]
+        .add_session_named(
+            SessionKind::Claude,
+            crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+        )
+        .id
+        .clone();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(false));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": other_session_id,
+    }));
+    assert_eq!(
+        app.pr_review_dedicated_session_working(),
+        Some(false),
+        "another agent window in the feature must not light the badge"
+    );
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    // Either activity signal independently keeps the exact session working.
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-start",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "thinking-stop",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    app.handle_ipc_message_value(serde_json::json!({
+        "type": "tool-stop",
+        "session_id": tmux_session,
+        "amf_feature_session_id": dedicated_session_id,
+    }));
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(false));
+}
+
+#[test]
+fn pr_review_dedicated_session_status_is_absent_before_creation() {
+    let store = store_with_feature(ProjectStatus::Active);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), None);
 }
 
 #[test]

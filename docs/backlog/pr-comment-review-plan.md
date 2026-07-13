@@ -1221,6 +1221,37 @@ first), and the reviewer's output (plus comments triaged in the pane)
       suppression safety net. Unit-tested against a 40-line added block, with
       the target retained and distant lines excluded. → `src/app/pr_review.rs`,
       `src/github.rs`, `src/ui/dialogs/pr_review.rs`.
+
+      **Eighth follow-up — surface `A` failures as toasts (from real use).** A
+      failed background AI-review run called the shared `show_error`, which
+      stored the failure in AMF's dashboard status message. The result handler
+      then restored the full-screen PR Triage pane, where that message is not
+      rendered, so the user saw the run end without being able to read the
+      error. AI-review worker failures now remain logged with their full detail
+      and also push an eight-second error toast before returning to the pane;
+      unexpected worker-channel termination uses the same visible path. The
+      normal pane state is preserved, including when the user already cancelled
+      the running screen while the job continued in the background. Focused
+      tests cover both a returned worker error and a disconnected worker. →
+      `src/app/pr_review.rs`, `src/app/tests.rs`.
+- [ ] **HIGH PRIORITY — choose the agent harness for `A` AI reviews.** The
+      review-generation path is currently hard-coded to
+      `ClaudeLauncher::run_headless`, so the feature's selected harness and the
+      PR Triage `f`/`B` fix-session harness choice have no effect on `A`. This
+      makes AI review unavailable whenever Claude is rate-limited or otherwise
+      unavailable even if Codex, OpenCode, or Pi is ready. Before the paid
+      review pass starts, offer a single-select harness picker over the
+      project's allowed agents, defaulting to the project's preferred harness
+      and remembering the choice for subsequent `A` runs in that pane. Route
+      the prompt through a shared typed headless-runner abstraction with
+      harness-specific launch/error handling rather than treating every agent
+      as Claude. Keep this choice independent from the fix-session target: one
+      harness may generate the review while another handles `f`/`B` fixes.
+      Surface unavailable/unsupported harnesses before spending tokens, retain
+      the existing token preview/background lifecycle, and show failures in the
+      PR Triage error toast. Add focused coverage for picker defaults and
+      persistence, each supported runner, cancellation, and provider-specific
+      failure reporting.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a
@@ -1379,25 +1410,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `src/ui/dialogs/help.rs`, `src/ui/status.rs`, `src/ui/dashboard.rs`,
   `src/github.rs`, `README.md`.
 
-- **Dedicated triage-session status badge in the PR Triage pane.** The
-  Viewing-mode corner badge (`[Ctrl+Space P: back to PR Triage]`,
-  `src/ui/dashboard.rs`) tells you when you're *inside* the dedicated
-  triage session, but there's no equivalent the other way round: sitting in
-  PR Triage while `f` has a fix running in the background, nothing
-  in-pane shows whether that dedicated session even exists yet, or whether
-  it's actively working vs. idle/finished. Add a small header badge —
-  alongside the Epic D "token usage surfaced per session" span already in
-  `draw_pr_review`'s header (`src/ui/dialogs/pr_review.rs`) — that reads
-  something like `[dedicated ● working]` / `[dedicated idle]` once
-  `fix_session_index` resolves a session, reusing the same
-  `thinking_features` tracking `App::is_feature_thinking` already exposes
-  (`src/app/sync.rs`). Gotcha to design around: `is_feature_thinking` is
-  keyed by `tmux_session` at the *feature* level, not per-window, so as-is
-  it can't distinguish "the dedicated triage session is thinking" from
-  "some other window in this feature is thinking" when they share a tmux
-  session — likely needs a per-window/per-session variant of the thinking
-  probe, or a pane-content check scoped to the triage session's window
-  specifically.
+- [x] **Dedicated triage-session status badge in the PR Triage pane.** Once
+      the dedicated session exists, the pane header now shows
+      `[dedicated ● working]` while that exact agent session is thinking or
+      running a tool, and `[dedicated idle]` when it is waiting/finished; no
+      badge is shown before the first `f` creates the session. The existing
+      hook/plugin messages already carry `amf_feature_session_id`, but AMF
+      previously discarded that precision after using it for token-source
+      binding and retained only feature-level `tmux_session` activity. New
+      per-feature-session thinking/tool sets preserve those IDs through IPC,
+      and `pr_review_dedicated_session_working` checks the current or legacy
+      dedicated-session label against them. This avoids a blocking
+      `capture-pane` probe and, crucially, prevents another agent window in the
+      same feature from falsely lighting the badge. The local Codex
+      prompt-submit fast path now records the exact feature-session ID too, so
+      it does not wait for the later IPC round trip. Focused tests cover no
+      badge before creation, idle/working transitions, and isolation from a
+      different agent window in the same tmux session. → `src/app/mod.rs`,
+      `src/app/notifications.rs`, `src/app/sync.rs`, `src/app/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`.
 
 ## Open questions
 

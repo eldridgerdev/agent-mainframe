@@ -35,6 +35,12 @@ are tagged.
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every
   author to find your work in a shared repo's PR list.
+- **PR triage shows what the current visit costs.** After a fix uses the
+  dedicated or existing-live agent session, the PR-review header now shows the
+  tokens and estimated cost added during this visit alongside the session's
+  lifetime usage. Earlier work in a reused session is excluded, and the tally
+  survives refreshing comments or jumping into the fix session and back. No
+  setup or migration is required.
 - **AI-authored PR review comments are attributed.** When you post an AI
   review (`W` in the PR-review pane), each inline comment now carries a
   small `— drafted by Claude via AMF` footer, so a reviewer looking at just

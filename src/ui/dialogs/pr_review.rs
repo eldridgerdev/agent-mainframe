@@ -20,7 +20,10 @@ use crate::{
     },
     editor::VimMode,
     theme::Theme,
-    token_tracking::{SessionTokenUsage, TokenPricingConfig, format_feature_token_usage},
+    token_tracking::{
+        SessionTokenUsage, TokenPricingConfig, format_feature_token_usage,
+        format_token_usage_summary,
+    },
 };
 
 /// Modal prompt for a manual PR number, shown when the branch has no
@@ -443,12 +446,17 @@ pub fn draw_pr_review_loading(
 
 /// Full-screen PR comment-review pane: comment list on the left, detail on the
 /// right.
+pub struct PrReviewUsage<'a> {
+    pub cumulative: Option<&'a SessionTokenUsage>,
+    pub visit: Option<&'a SessionTokenUsage>,
+    pub pricing: &'a TokenPricingConfig,
+}
+
 pub fn draw_pr_review(
     frame: &mut Frame,
     state: &mut PrReviewState,
     theme: &Theme,
-    fix_session_usage: Option<&SessionTokenUsage>,
-    token_pricing: &TokenPricingConfig,
+    usage: PrReviewUsage<'_>,
     ai_review_running: bool,
     throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
@@ -500,17 +508,35 @@ pub fn draw_pr_review(
     // the "only pay for what you asked for" constraint made visible in-pane.
     // The header row is a single unwrapped line, so on a narrow terminal this
     // span is dropped rather than left to be silently clipped mid-text.
-    if let Some(usage) = fix_session_usage {
-        let usage_text = format!(
+    if let Some(cumulative) = usage.cumulative {
+        let cumulative_text = format!(
             "  · {} {}",
             state.fix_target.tag(),
-            format_feature_token_usage(usage, token_pricing)
+            format_feature_token_usage(cumulative, usage.pricing)
         );
         let used_width: usize = header_spans
             .iter()
             .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
             .sum();
-        if used_width + UnicodeWidthStr::width(usage_text.as_str()) <= outer[0].width as usize {
+        let visit_text = usage.visit.map(|visit_usage| {
+            format!(
+                "  · this visit {}",
+                format_token_usage_summary(visit_usage, usage.pricing)
+            )
+        });
+        // Prefer both totals. If the terminal is too narrow, keep the new
+        // visit-specific tally visible before falling back to the cumulative
+        // target-session total.
+        let usage_text = visit_text
+            .as_ref()
+            .map(|visit| format!("{cumulative_text} {}", visit.trim_start()))
+            .into_iter()
+            .chain(visit_text)
+            .chain(std::iter::once(cumulative_text))
+            .find(|text| {
+                used_width + UnicodeWidthStr::width(text.as_str()) <= outer[0].width as usize
+            });
+        if let Some(usage_text) = usage_text {
             header_spans.push(Span::styled(
                 usage_text,
                 Style::default().fg(theme.status_detail.to_color()),

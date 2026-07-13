@@ -13,6 +13,7 @@ mod input;
 mod mouse;
 mod normal;
 mod picker;
+mod plan_interview;
 mod pr_review;
 mod prompt_library;
 mod search;
@@ -55,6 +56,7 @@ pub use picker::{
     handle_opencode_session_confirm_key, handle_opencode_session_picker_key,
     handle_session_picker_key, handle_session_switcher_key, handle_syntax_language_picker_key,
 };
+pub use plan_interview::handle_plan_interview_key;
 pub use pr_review::{
     handle_ai_pr_review_running_key, handle_pr_number_prompt_key, handle_pr_picker_key,
     handle_pr_review_key, handle_pr_review_loading_key, handle_review_memory_bootstrap_running_key,
@@ -78,9 +80,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, visible_rows: u16) -> Result<()>
         AppMode::CreatingProject(_) => handle_create_project_key(app, key),
         AppMode::BrowsingPath(_) => handle_browse_path_key(app, key),
         AppMode::CreatingFeature(_) => handle_create_feature_key(app, key.code),
-        // Input handling lands with the native question dialog. The mode is
-        // not entered by production flows until that integration exists.
-        AppMode::PlanInterview(_) => Ok(()),
+        AppMode::PlanInterview(_) => handle_plan_interview_key(app, key),
         AppMode::CreatingBatchFeatures(_) => handle_create_batch_features_key(app, key.code),
         AppMode::DeletingProject(_) => handle_delete_project_key(app, key.code),
         AppMode::DeletingFeature(_, _) => handle_delete_feature_key(app, key.code),

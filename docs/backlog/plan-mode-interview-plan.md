@@ -327,11 +327,11 @@ picks the plan up with no display-layer changes.
       question bank, unit tests
 - [x] `AppMode::PlanInterview(PlanInterviewState)` with phase/step
       state machine (brief → static questions → done)
-- [ ] Question dialog UI: multi-line free-text (TextEditor) and
+- [x] Question dialog UI: multi-line free-text (TextEditor) and
       select-options rendering, progress header, skip/back keys,
       "finish early" key (writes answers-so-far; becomes
       "synthesize now" once Epic 4 lands)
-- [ ] Feature-creation integration: defer `PreparedFeatureLaunch`
+- [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
 - [ ] Write brief + answers into the workdir's `.claude/plan.md`
       (gitignored within `.claude/`)

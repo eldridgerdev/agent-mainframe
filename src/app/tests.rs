@@ -1597,6 +1597,107 @@ fn app_in_creating_feature_mode(
 }
 
 #[test]
+fn create_feature_with_plan_mode_defers_launch_into_interview() {
+    let repo = TempDir::new().unwrap();
+    let now = Utc::now();
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![Project {
+            id: "proj-1".into(),
+            name: "my-project".into(),
+            repo: repo.path().to_path_buf(),
+            collapsed: false,
+            features: vec![],
+            created_at: now,
+            preferred_agent: AgentKind::Claude,
+            is_git: true,
+        }],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: vec![],
+        extra: HashMap::new(),
+    };
+    let mut state = CreateFeatureState::new(
+        "my-project".into(),
+        repo.path().to_path_buf(),
+        Vec::new(),
+        true,
+    );
+    state.branch = "planned-feature".into();
+    state.plan_mode = true;
+    state.use_worktree = false;
+    state.session_name = "Claude 1".into();
+
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.mode = AppMode::CreatingFeature(state);
+    app.create_feature().unwrap();
+
+    assert!(app.store.projects[0].features.is_empty());
+    match &app.mode {
+        AppMode::PlanInterview(interview) => {
+            assert_eq!(interview.feature_name, "planned-feature");
+            assert_eq!(interview.phase, PlanInterviewPhase::Brief);
+            let pending = interview.pending_launch.as_ref().unwrap();
+            assert_eq!(pending.branch, "planned-feature");
+            assert!(pending.plan_mode);
+            assert_eq!(pending.workdir, repo.path());
+        }
+        _ => panic!("expected plan interview before feature launch"),
+    }
+}
+
+#[test]
+fn plan_interview_abort_can_resume_or_cancel_feature_creation() {
+    let repo = TempDir::new().unwrap();
+    let store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Stopped);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let store_file = NamedTempFile::new().unwrap();
+    app.store_path = store_file.path().to_path_buf();
+    app.finish_feature_launch(PreparedFeatureLaunch {
+        project_name: "my-project".into(),
+        branch: "planned-feature".into(),
+        workdir: repo.path().join(".worktrees/planned-feature"),
+        is_worktree: true,
+        mode: VibeMode::default(),
+        review: false,
+        plan_mode: true,
+        agent: AgentKind::Claude,
+        create_terminal: false,
+        session_name: "Claude 1".into(),
+        enable_chrome: false,
+        remote_control: false,
+        steering_enabled: false,
+        hook_succeeded: None,
+        startup_prompt: None,
+    })
+    .unwrap();
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if state.abort_confirmation));
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    assert!(matches!(&app.mode, AppMode::PlanInterview(state) if !state.abort_confirmation));
+
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Esc)).unwrap();
+    crate::handlers::handle_plan_interview_key(&mut app, ke(KeyCode::Char('n'))).unwrap();
+    assert!(matches!(app.mode, AppMode::Normal));
+    assert!(
+        app.message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("worktree kept")
+    );
+    assert_eq!(app.store.projects[0].features.len(), 1);
+}
+
+#[test]
 fn create_feature_empty_branch_sets_error_no_external_calls() {
     let store = store_with_feature(ProjectStatus::Stopped);
     let mut app = app_in_creating_feature_mode(

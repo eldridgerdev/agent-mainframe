@@ -549,6 +549,11 @@ impl App {
             true,
         )?;
 
+        if matches!(self.mode, AppMode::PlanInterview(_)) {
+            self.message = None;
+            return Ok(());
+        }
+
         match success {
             Some(true) => {
                 self.message = Some(format!(
@@ -632,6 +637,8 @@ impl App {
                         "hooks",
                         format!("Failed to finalize '{}': {}", hook.branch, err),
                     );
+                } else if matches!(self.mode, AppMode::PlanInterview(_)) {
+                    self.message = None;
                 } else if hook.success.unwrap_or(false) {
                     self.message = Some(format!(
                         "Created and started feature '{}' (hook succeeded)",

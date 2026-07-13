@@ -110,6 +110,18 @@ pub const VIEW_BURST_PANE_REFRESH_INTERVAL: Duration = Duration::from_millis(16)
 pub const VIEW_BURST_CURSOR_REFRESH_INTERVAL: Duration = Duration::from_millis(40);
 pub const VIEW_BACKGROUND_SYNC_DEFER_INTERVAL: Duration = Duration::from_millis(1500);
 
+/// Cached dashboard metadata for an open pull request associated with a
+/// feature's branch. The branch and head SHA travel with the badge so a
+/// background result can never be applied after the feature changes branches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActivePrStatus {
+    pub branch: String,
+    pub head_sha: String,
+    pub number: u32,
+    /// `None` means the PR resolved but its thread metadata could not be read.
+    pub unresolved_threads: Option<usize>,
+}
+
 /// Minimum spacing between control-mode streaming snapshots (keystroke
 /// bursts bypass this); each snapshot costs a full-frame redraw on the
 /// main thread.
@@ -618,6 +630,11 @@ pub struct App {
     pub usage: UsageManager,
     pub token_tracker: SessionTokenTracker,
     pub session_status_bg: Option<Receiver<sync::SessionStatusBgResult>>,
+    /// Background refresh and last-known values for the dashboard's open-PR
+    /// badges. Rendering only reads `active_prs`; all `gh` calls happen on the
+    /// worker behind `active_pr_bg`.
+    pub(crate) active_pr_bg: Option<Receiver<Vec<sync::ActivePrUpdate>>>,
+    pub(crate) active_prs: HashMap<String, ActivePrStatus>,
     /// Receiver for the background PR-comment fetch (see `app::pr_review`).
     pub pr_review_bg: Option<Receiver<Result<pr_review::PrReview>>>,
     /// A review pane stashed by `pr_review_toggle_to_session` (`P`) while the
@@ -1965,6 +1982,8 @@ impl App {
             usage: UsageManager::new(zai_enabled, zai_monthly, zai_weekly, zai_five_hour),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            active_pr_bg: None,
+            active_prs: HashMap::new(),
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
@@ -2156,6 +2175,8 @@ impl App {
             usage: UsageManager::new(false, None, None, None),
             token_tracker: SessionTokenTracker::default(),
             session_status_bg: None,
+            active_pr_bg: None,
+            active_prs: HashMap::new(),
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,

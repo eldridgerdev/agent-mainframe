@@ -328,6 +328,23 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(theme.text_muted.to_color()),
                         ));
                     }
+                    if let Some(pr) = app.active_pr_for_feature(&feature.id) {
+                        let (label, color) = match pr.unresolved_threads {
+                            Some(0) => (
+                                format!(" [PR #{} · 0 open]", pr.number),
+                                theme.success.to_color(),
+                            ),
+                            Some(count) => (
+                                format!(" [PR #{} · {} open]", pr.number, count),
+                                theme.info.to_color(),
+                            ),
+                            None => (format!(" [PR #{}]", pr.number), theme.info.to_color()),
+                        };
+                        line_spans.push(Span::styled(
+                            label,
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     if let Some(usage) = aggregate_token_usage(
                         feature
                             .sessions
@@ -644,7 +661,10 @@ mod tests {
         }
     }
 
-    fn render_feature_row(sessions: Vec<FeatureSession>) -> String {
+    fn render_feature_row_with_pr(
+        sessions: Vec<FeatureSession>,
+        active_pr: Option<crate::app::ActivePrStatus>,
+    ) -> String {
         let now = Utc::now();
         let feature = Feature {
             id: "feat-1".to_string(),
@@ -693,6 +713,9 @@ mod tests {
             Box::new(MockWorktreeOps::new()),
         );
         app.selection = crate::app::Selection::Feature(0, 0);
+        if let Some(active_pr) = active_pr {
+            app.active_prs.insert("feat-1".to_string(), active_pr);
+        }
 
         let backend = TestBackend::new(140, 8);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -706,6 +729,10 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    fn render_feature_row(sessions: Vec<FeatureSession>) -> String {
+        render_feature_row_with_pr(sessions, None)
     }
 
     #[test]
@@ -781,5 +808,20 @@ mod tests {
 
         assert!(rendered.contains("[usage 30.2k eff · $0.09]"));
         assert!(!rendered.contains("5.0M"));
+    }
+
+    #[test]
+    fn feature_row_shows_active_pr_and_unresolved_thread_count() {
+        let rendered = render_feature_row_with_pr(
+            vec![],
+            Some(crate::app::ActivePrStatus {
+                branch: "usage-feat".to_string(),
+                head_sha: "abc123".to_string(),
+                number: 321,
+                unresolved_threads: Some(4),
+            }),
+        );
+
+        assert!(rendered.contains("[PR #321 · 4 open]"));
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::github::{GhCli, PrResolution};
 use crate::project::{AgentKind, SessionKind, TokenUsageSourceMatch};
 use crate::summary::SummaryManager;
 use crate::tmux::TmuxManager;
@@ -10,6 +11,27 @@ use crate::token_tracking::{
 use chrono::Utc;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+struct ActivePrJob {
+    feature_id: String,
+    branch: String,
+    workdir: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) enum ActivePrLookup {
+    Found(ActivePrStatus),
+    NoPr,
+    Failed(String),
+}
+
+#[derive(Debug)]
+pub(crate) struct ActivePrUpdate {
+    pub feature_id: String,
+    pub branch: String,
+    pub lookup: ActivePrLookup,
+}
 
 fn read_status_line(content: &str) -> Option<String> {
     let line = content.lines().next()?.trim().to_string();
@@ -348,6 +370,126 @@ fn opencode_sidebar_thinking_state(
 }
 
 impl App {
+    /// Refresh dashboard PR badges without ever blocking rendering or input.
+    /// The main loop starts this on the existing feature-status cadence and
+    /// refuses to overlap jobs, so a slow `gh` invocation cannot build up a
+    /// queue of redundant work.
+    pub fn sync_active_prs_background(&mut self) {
+        if self.active_pr_bg.is_some() {
+            return;
+        }
+
+        let jobs = self
+            .store
+            .projects
+            .iter()
+            .filter(|project| project.is_git)
+            .flat_map(|project| {
+                project.features.iter().map(|feature| ActivePrJob {
+                    feature_id: feature.id.clone(),
+                    branch: feature.branch.clone(),
+                    workdir: feature.workdir.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+        if jobs.is_empty() {
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.active_pr_bg = Some(rx);
+        std::thread::spawn(move || {
+            let updates = jobs
+                .into_iter()
+                .map(|job| {
+                    let lookup = match GhCli::resolve_pr(&job.workdir) {
+                        Ok(PrResolution::Found(pr)) => {
+                            let unresolved_threads =
+                                GhCli::review_threads(&job.workdir, &pr.owner, &pr.repo, pr.number)
+                                    .ok()
+                                    .map(|threads| {
+                                        threads.iter().filter(|thread| !thread.is_resolved).count()
+                                    });
+                            ActivePrLookup::Found(ActivePrStatus {
+                                branch: job.branch.clone(),
+                                head_sha: pr.head_sha,
+                                number: pr.number,
+                                unresolved_threads,
+                            })
+                        }
+                        Ok(PrResolution::NoPrForBranch) => ActivePrLookup::NoPr,
+                        Err(error) => ActivePrLookup::Failed(error.to_string()),
+                    };
+                    ActivePrUpdate {
+                        feature_id: job.feature_id,
+                        branch: job.branch,
+                        lookup,
+                    }
+                })
+                .collect();
+            let _ = tx.send(updates);
+        });
+    }
+
+    /// Apply a completed dashboard PR refresh. Transient failures deliberately
+    /// preserve the previous value; a confirmed no-PR result removes it.
+    pub fn poll_active_pr_bg(&mut self) -> bool {
+        let Some(rx) = self.active_pr_bg.as_ref() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok(updates) => {
+                self.active_pr_bg = None;
+                self.apply_active_pr_updates(updates)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.active_pr_bg = None;
+                false
+            }
+        }
+    }
+
+    pub(crate) fn apply_active_pr_updates(&mut self, updates: Vec<ActivePrUpdate>) -> bool {
+        let mut changed = false;
+        for update in updates {
+            let branch_is_current = self.store.projects.iter().any(|project| {
+                project.features.iter().any(|feature| {
+                    feature.id == update.feature_id && feature.branch == update.branch
+                })
+            });
+            if !branch_is_current {
+                continue;
+            }
+
+            match update.lookup {
+                ActivePrLookup::Found(status) => {
+                    if self.active_prs.get(&update.feature_id) != Some(&status) {
+                        self.active_prs.insert(update.feature_id, status);
+                        changed = true;
+                    }
+                }
+                ActivePrLookup::NoPr => {
+                    changed |= self.active_prs.remove(&update.feature_id).is_some();
+                }
+                ActivePrLookup::Failed(error) => {
+                    self.log_debug(
+                        "github",
+                        format!(
+                            "Dashboard PR lookup failed for {} ({}): {}",
+                            update.feature_id, update.branch, error
+                        ),
+                    );
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn active_pr_for_feature(&self, feature_id: &str) -> Option<&ActivePrStatus> {
+        self.active_prs.get(feature_id)
+    }
+
     /// Kick off a background thread to do the expensive token-usage I/O.
     /// The thread takes ownership of `self.token_tracker` so the cache is
     /// preserved; it is swapped back in when `poll_session_status_bg` applies

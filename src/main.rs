@@ -787,6 +787,10 @@ fn run_loop<B: Backend>(
             }
         }
 
+        if app.active_pr_bg.is_some() && app.poll_active_pr_bg() {
+            force_redraw = true;
+        }
+
         if app.pr_review_bg.is_some() && app.poll_pr_review_bg() {
             force_redraw = true;
         }
@@ -1109,6 +1113,7 @@ fn run_loop<B: Backend>(
         {
             let started_at = Instant::now();
             app.sync_statuses();
+            app.sync_active_prs_background();
             app.perf
                 .record_duration("sync.statuses", started_at.elapsed());
             last_statuses_sync = Instant::now();
@@ -1263,6 +1268,7 @@ fn run_loop<B: Backend>(
             if startup_sync_statuses_pending {
                 let started_at = Instant::now();
                 app.sync_statuses();
+                app.sync_active_prs_background();
                 app.perf
                     .record_duration("startup.sync_statuses", started_at.elapsed());
                 startup_sync_statuses_pending = false;

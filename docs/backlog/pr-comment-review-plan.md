@@ -1315,18 +1315,21 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/app/state.rs`, `src/app/pr_review.rs`, `src/token_tracking.rs`,
       `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
-- **Active-PR indicator on the dashboard.** Show a marker next to a
-  feature in the dashboard list when its branch has an open PR — e.g. a
-  small badge or icon, ideally with the PR number and unresolved-comment
-  count (`PR #321 · 4`). Makes it obvious which features have a PR worth
-  reviewing (and how much is outstanding) before pressing `G`, and turns
-  the review entry point into something you're nudged toward rather than
-  having to remember. Must stay cheap: resolve PR state in the
-  background (reuse the `GhCli` layer) and cache it per `branch + head
-  SHA` so the dashboard never blocks or spams `gh`; refresh on the
-  existing status-sync cadence rather than per-frame. Stretch: dim/hide
-  the badge once all threads are resolved, and color it by review state
-  (changes-requested vs. approved vs. comments-only).
+- [x] **Active-PR indicator on the dashboard.** Feature rows now show
+      `[PR #321 · 4 open]` when their branch has an open pull request, with
+      zero-open badges colored as complete and a number-only fallback when
+      thread metadata is temporarily unavailable. A single non-overlapping
+      background batch runs on the existing feature-status sync cadence,
+      reusing `GhCli::resolve_pr` and `GhCli::review_threads`; rendering only
+      reads the in-memory cache, so no `gh` process can block a dashboard
+      frame. Cache entries carry the feature branch and PR head SHA, stale
+      results are discarded after a branch change, confirmed no-PR results
+      remove the badge, and transient GitHub failures preserve the last known
+      value. Focused tests cover applying/removing/preserving cached results,
+      rejecting stale-branch results, and rendering the badge with its open
+      thread count. Stretch remains: color the badge by review state
+      (changes-requested vs. approved vs. comments-only). → `src/app/sync.rs`,
+      `src/app/mod.rs`, `src/main.rs`, `src/ui/list.rs`, `src/app/tests.rs`.
 
 - [x] **Highlight the logged-in user's own PRs in the PR picker.** A new
       `GhCli::current_user` (`src/github.rs`, `gh api user -q .login`) — also

@@ -794,6 +794,10 @@ fn run_loop<B: Backend>(
             force_redraw = true;
         }
 
+        if app.ai_review_bg.is_some() && app.poll_ai_pr_review_bg() {
+            force_redraw = true;
+        }
+
         // Apply the one-shot VS Code availability check when it resolves.
         if let Ok(available) = vscode_check_rx.try_recv() {
             app.vscode_available = available;

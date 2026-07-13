@@ -260,8 +260,15 @@ impl GhCli {
                 ".author.login",
             ],
         )?;
-        let me = Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])?;
+        let me = Self::current_user(workdir)?;
         Ok(!author.is_empty() && author.eq_ignore_ascii_case(&me))
+    }
+
+    /// Resolve the authenticated `gh` user's login. Cheap (one `gh api` call),
+    /// but callers driving UI (e.g. the PR picker) should memoize this for the
+    /// session rather than re-resolving on every render.
+    pub fn current_user(workdir: &Path) -> Result<String> {
+        Self::gh_stdout(workdir, &["api", "user", "-q", ".login"])
     }
 
     /// Run `gh <args>` in `workdir` and return trimmed stdout, erroring on a
@@ -299,6 +306,15 @@ impl GhCli {
             bail!("Could not load PR #{number}: {}", stderr.trim());
         }
         parse_pr_json(&output.stdout)
+    }
+
+    /// Fetch the PR's unified diff (`gh pr diff <number>`), plain patch text —
+    /// not `--json`. Used as the AI reviewer's input; zero agent tokens by
+    /// itself (one `gh` call). Only the whole string's leading/trailing
+    /// whitespace is trimmed ([`Self::gh_stdout`]); interior diff content is
+    /// untouched.
+    pub fn pr_diff(workdir: &Path, number: u32) -> Result<String> {
+        Self::gh_stdout(workdir, &["pr", "diff", &number.to_string()])
     }
 
     /// List the repository's pull requests for the PR picker. `include_closed`

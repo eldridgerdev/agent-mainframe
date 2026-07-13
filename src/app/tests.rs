@@ -1094,6 +1094,66 @@ fn visible_animation_is_enabled_for_dashboard_summary_generation() {
 }
 
 #[test]
+fn visible_animation_is_enabled_while_ai_pr_review_runs_in_the_background() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    assert!(!app.has_visible_animation());
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    assert!(app.has_visible_animation());
+
+    app.ai_review_bg = None;
+    assert!(!app.has_visible_animation());
+}
+
+#[test]
+fn visible_animation_is_enabled_for_pr_review_running_screens() {
+    // Regression: `redraw_signature()` only hashes the mode's discriminant,
+    // not its stage, so these full-screen loading/running views need an
+    // unconditional `has_visible_animation` arm — otherwise the throbber only
+    // advances on the rare frame something else forces a redraw, and just
+    // sits frozen for the (potentially long) blocking `gh`/`claude` call in
+    // between, reading as "nothing is happening".
+    let mut app = pr_review_test_app();
+
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    assert!(app.has_visible_animation());
+
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: crate::github::PrRef {
+            number: 1,
+            head_sha: "sha".to_string(),
+            url: "https://github.com/o/r/pull/1".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+    });
+    assert!(app.has_visible_animation());
+
+    enter_pr_picker_for_test(&mut app);
+    let origin = match &app.mode {
+        AppMode::PrPicker(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    app.mode = AppMode::ReviewMemoryBootstrapRunning(crate::app::BootstrapRunState {
+        origin,
+        depth: crate::app::pr_review::BootstrapDepth::default(),
+        stage: crate::app::pr_review::BootstrapStage::FetchingComments,
+    });
+    assert!(app.has_visible_animation());
+}
+
+#[test]
 fn visible_items_prioritizes_non_worktree_features() {
     let now = Utc::now();
     let project = Project {
@@ -7772,6 +7832,7 @@ fn enter_pr_review(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8048,6 +8109,7 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8062,6 +8124,7 @@ fn enter_pr_picker_for_test(app: &mut App) {
         include_closed: false,
         error: None,
         bootstrap_pick: None,
+        current_user: None,
     });
 }
 
@@ -8280,6 +8343,422 @@ fn cancel_review_memory_bootstrap_returns_to_picker_without_dropping_the_bg_resu
     assert!(app.poll_review_memory_bootstrap_bg());
     assert!(app.review_memory_bootstrap_bg.is_none());
     assert!(matches!(app.mode, AppMode::PrPicker(_)));
+}
+
+#[test]
+fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mode() {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    app.pr_review_open_memory_add();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.memory_add.is_some()),
+        _ => panic!("expected PrReview"),
+    }
+
+    app.start_ai_pr_review();
+    assert!(app.ai_review_bg.is_some());
+    match &app.mode {
+        AppMode::AiPrReviewRunning(state) => {
+            assert_eq!(
+                state.stage,
+                crate::app::pr_review::AiReviewStage::PreparingDiff
+            );
+            // Any dialog open on the pane is cleared before stashing — the
+            // same precaution as the `f`/`P` stash.
+            assert!(state.origin.memory_add.is_none());
+        }
+        other => panic!(
+            "expected AiPrReviewRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+    assert!(app.ai_review_pending.is_some());
+}
+
+#[test]
+fn start_ai_pr_review_refuses_to_start_a_second_review_while_one_is_running() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+
+    // Cancel back to the pane (as if the first review is still running in
+    // the background) and try to start a second one — it must not spawn a
+    // new background job or clobber `ai_review_pending`'s claim on the first.
+    app.start_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert!(app.ai_review_pending.is_none());
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("already running"))
+    );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_surfaces_findings_and_returns_to_pane() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 2);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Reviewing {
+        token_estimate: 123,
+    })
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::AiPrReviewRunning(state) => assert_eq!(
+            state.stage,
+            crate::app::pr_review::AiReviewStage::Reviewing {
+                token_estimate: 123
+            }
+        ),
+        other => panic!(
+            "expected AiPrReviewRunning, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    }
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "Do this differently.".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### src/x.rs:1\nDo this differently.\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert_eq!(state.review.comments.len(), 3);
+            assert!(state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn poll_ai_pr_review_bg_done_replaces_prior_ai_draft_set() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    // Seed a stale AI draft left over from a prior `A` run.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let stale =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "stale".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.extend(stale);
+    }
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(
+        origin
+            .review
+            .comments
+            .iter()
+            .filter(|c| c.ai_generated)
+            .count(),
+        1
+    );
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "fresh".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### General\nfresh\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let ai_drafts: Vec<_> = state
+                .review
+                .comments
+                .iter()
+                .filter(|c| c.ai_generated)
+                .collect();
+            assert_eq!(ai_drafts.len(), 1);
+            assert_eq!(ai_drafts[0].body, "fresh");
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Err(
+        anyhow::anyhow!("gh pr diff failed"),
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+}
+
+#[test]
+fn cancel_ai_pr_review_returns_to_pane_without_dropping_the_bg_result() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![],
+            raw_output: String::new(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+}
+
+#[test]
+fn poll_ai_pr_review_bg_merges_into_the_pane_after_cancel_instead_of_dropping_findings() {
+    // Regression: `cancel_ai_pr_review` (`esc`) restores `self.mode` to
+    // `PrReview` well before the background pass finishes. `Done` used to
+    // look for `AppMode::AiPrReviewRunning` to find where to merge; once the
+    // user had cancelled, that match failed, so the findings were computed
+    // and logged but never merged into any comment list — while the
+    // success/warning toast still fired unconditionally, falsely announcing
+    // results that were actually thrown away. `ai_review_pending` (kept
+    // alive independent of `self.mode`, surviving the cancel) fixes this.
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    // The user gives up watching and backs out...
+    app.cancel_ai_pr_review();
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    // ...and keeps triaging in the meantime (marks the first comment done) —
+    // this change must survive the merge below, not get clobbered by the
+    // stale pre-`A` snapshot.
+    app.pr_review_mark_done();
+
+    // ...then the background pass finishes.
+    tx.send(crate::app::pr_review::AiReviewProgress::Done(Ok(
+        crate::app::pr_review::AiReviewOutcome {
+            findings: vec![crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(1),
+                body: "A real finding.".into(),
+                diff_hunk: None,
+            }],
+            raw_output: "### src/x.rs:1\nA real finding.\n".into(),
+        },
+    )))
+    .unwrap();
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(app.ai_review_pending.is_none());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(
+                state.review.comments.iter().any(|c| c.ai_generated),
+                "the finding must be merged, not silently dropped"
+            );
+            assert_eq!(
+                state.review.comments[0].triage,
+                crate::app::pr_review::TriageState::Done,
+                "triage done while cancelled must survive the merge"
+            );
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("1 finding"))
+    );
+}
+
+#[test]
+fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+
+    let pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".to_string(),
+        url: "https://github.com/o/r/pull/42".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let mut ai_drafts =
+        crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "AI finding".into(),
+            diff_hunk: None,
+        }]);
+    let cached = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![ai_drafts.remove(0)],
+        fetched_at: chrono::Local::now(),
+    };
+    db.save_pr_review_cache(&cached).unwrap();
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+
+    let fresh = crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: pr.clone(),
+    });
+    tx.send(Ok(fresh)).unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+}
+
+#[test]
+fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+
+    let old_pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".to_string(),
+        url: "https://github.com/o/r/pull/42".to_string(),
+        owner: "o".to_string(),
+        repo: "r".to_string(),
+    };
+    let mut ai_drafts =
+        crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "stale finding".into(),
+            diff_hunk: None,
+        }]);
+    let cached = crate::app::pr_review::PrReview {
+        pr: old_pr.clone(),
+        comments: vec![ai_drafts.remove(0)],
+        fetched_at: chrono::Local::now(),
+    };
+    db.save_pr_review_cache(&cached).unwrap();
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+
+    let new_pr = crate::github::PrRef {
+        head_sha: "sha2".to_string(),
+        ..old_pr.clone()
+    };
+    let fresh = crate::app::pr_review::PrReview {
+        pr: new_pr.clone(),
+        comments: vec![],
+        fetched_at: chrono::Local::now(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: std::path::PathBuf::from("/tmp/wd"),
+        pr: new_pr.clone(),
+    });
+    tx.send(Ok(fresh)).unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(!state.review.comments.iter().any(|c| c.ai_generated));
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
 }
 
 #[test]
@@ -8764,6 +9243,7 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -8959,6 +9439,7 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         memory_add: None,
         marked: std::collections::HashSet::new(),
         pending_batch: false,
+        ai_review_post: None,
     });
 }
 
@@ -9219,6 +9700,100 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut untriaged =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("a.rs".into()),
+                line: Some(1),
+                body: "eligible".into(),
+                diff_hunk: None,
+            }]);
+        let mut skipped =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("b.rs".into()),
+                line: Some(2),
+                body: "skipped, excluded".into(),
+                diff_hunk: None,
+            }]);
+        skipped[0].triage = crate::app::pr_review::TriageState::Skipped;
+        let mut replied =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("c.rs".into()),
+                line: Some(3),
+                body: "already posted, excluded".into(),
+                diff_hunk: None,
+            }]);
+        replied[0].triage = crate::app::pr_review::TriageState::Replied;
+        state.review.comments.append(&mut untriaged);
+        state.review.comments.append(&mut skipped);
+        state.review.comments.append(&mut replied);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let post = state.ai_review_post.as_ref().expect("dialog should open");
+            assert_eq!(post.comment_ids.len(), 1);
+            assert_eq!(post.inline.len(), 1);
+            assert_eq!(post.inline[0].path, "a.rs");
+            assert!(!post.editing);
+        }
+        _ => panic!("expected PrReview"),
+    }
+}
+
+#[test]
+fn pr_review_open_ai_review_post_confirm_warns_when_nothing_eligible() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1); // no ai_generated comments at all
+
+    app.pr_review_open_ai_review_post_confirm();
+    match &app.mode {
+        AppMode::PrReview(state) => assert!(state.ai_review_post.is_none()),
+        _ => panic!("expected PrReview"),
+    }
+    assert!(
+        app.toasts
+            .last()
+            .is_some_and(|t| t.message.contains("No AI findings to post"))
+    );
+}
+
+#[test]
+fn pr_review_ai_review_post_edit_cancel_flow() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut findings =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: None,
+                line: None,
+                body: "general finding".into(),
+                diff_hunk: None,
+            }]);
+        state.review.comments.append(&mut findings);
+    }
+
+    app.pr_review_open_ai_review_post_confirm();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_ai_review_post_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(true));
+    app.pr_review_ai_review_post_editor_key(crossterm::event::KeyEvent::from(
+        crossterm::event::KeyCode::Char('!'),
+    ));
+
+    app.pr_review_ai_review_post_stop_edit();
+    assert_eq!(app.pr_review_ai_review_post_view(), Some(false));
+
+    app.pr_review_cancel_ai_review_post();
+    assert_eq!(app.pr_review_ai_review_post_view(), None);
 }
 
 fn memory_add_editor_text(app: &App) -> String {

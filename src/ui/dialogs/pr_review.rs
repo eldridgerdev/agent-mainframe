@@ -13,10 +13,10 @@ use unicode_width::UnicodeWidthStr;
 use std::path::Path;
 
 use crate::{
-    app::pr_review::{BootstrapDepth, BootstrapStage, CommentKind, PrComment},
+    app::pr_review::{AiReviewStage, BootstrapDepth, BootstrapStage, CommentKind, PrComment},
     app::{
-        BootstrapPickState, BootstrapRunState, PrNumberPromptState, PrPickerState,
-        PrReviewLoadState, PrReviewState,
+        AiReviewRunState, BootstrapPickState, BootstrapRunState, PrNumberPromptState,
+        PrPickerState, PrReviewLoadState, PrReviewState,
     },
     editor::VimMode,
     theme::Theme,
@@ -118,7 +118,7 @@ pub fn draw_pr_picker(frame: &mut Frame, state: &PrPickerState, theme: &Theme, m
         let items: Vec<ListItem> = state
             .entries
             .iter()
-            .map(|entry| ListItem::new(pr_picker_row(entry, theme)))
+            .map(|entry| ListItem::new(pr_picker_row(entry, state.current_user.as_deref(), theme)))
             .collect();
         let list = List::new(items)
             .highlight_style(
@@ -299,9 +299,78 @@ pub fn draw_review_memory_bootstrap_running(
     frame.render_widget(body, inner);
 }
 
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`). Mirrors [`draw_review_memory_bootstrap_running`].
+pub fn draw_ai_pr_review_running(
+    frame: &mut Frame,
+    state: &AiReviewRunState,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
+    theme: &Theme,
+) {
+    let area = frame.area();
+    let block = pane_block(theme).title(format!(
+        " AI review of PR #{} (experimental) ",
+        state.origin.review.pr.number
+    ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let throbber = throbber_widgets_tui::Throbber::default()
+        .style(Style::default().fg(theme.warning.to_color()));
+    let spinner = throbber.to_symbol_span(throbber_state);
+
+    let status_line = match state.stage {
+        AiReviewStage::PreparingDiff => Line::from(vec![
+            spinner,
+            Span::styled(
+                " Fetching PR diff...",
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        AiReviewStage::Reviewing { token_estimate } => Line::from(vec![
+            spinner,
+            Span::styled(
+                format!(" Reviewing diff (~{token_estimate} tokens)..."),
+                Style::default()
+                    .fg(theme.text.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    };
+
+    let body = Paragraph::new(vec![
+        Line::from(""),
+        status_line,
+        Line::from(""),
+        Line::from(Span::styled(
+            "esc to return to the review pane (the run keeps going in the background)",
+            Style::default().fg(theme.text_muted.to_color()),
+        )),
+    ])
+    .wrap(Wrap { trim: false });
+    frame.render_widget(body, inner);
+}
+
 /// One PR row: `#123  title  · @author · branch` plus a state chip for anything
-/// that isn't a plain open PR (draft / merged / closed).
-fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'static> {
+/// that isn't a plain open PR (draft / merged / closed). When `current_user`
+/// resolves and matches the entry's author, the author is highlighted and
+/// tagged `(you)` so the user's own PRs stand out without reading every
+/// `@author` in the list.
+fn pr_picker_row(
+    entry: &crate::github::PrListEntry,
+    current_user: Option<&str>,
+    theme: &Theme,
+) -> Line<'static> {
+    let is_mine = current_user.is_some_and(|me| entry.author.eq_ignore_ascii_case(me));
+    let author_style = if is_mine {
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text_muted.to_color())
+    };
     let mut spans = vec![
         Span::styled(
             format!("#{} ", entry.number),
@@ -311,11 +380,15 @@ fn pr_picker_row(entry: &crate::github::PrListEntry, theme: &Theme) -> Line<'sta
             entry.title.clone(),
             Style::default().fg(theme.text.to_color()),
         ),
+        Span::styled(format!("  · @{}", entry.author), author_style),
         Span::styled(
-            format!("  · @{} · {}", entry.author, entry.head_ref),
+            format!(" · {}", entry.head_ref),
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    if is_mine {
+        spans.push(chip("you", theme.primary.to_color()));
+    }
     if entry.is_draft {
         spans.push(chip("draft", theme.text_muted.to_color()));
     }
@@ -376,6 +449,8 @@ pub fn draw_pr_review(
     theme: &Theme,
     fix_session_usage: Option<&SessionTokenUsage>,
     token_pricing: &TokenPricingConfig,
+    ai_review_running: bool,
+    throbber_state: &throbber_widgets_tui::ThrobberState,
 ) {
     let area = frame.area();
     let review = &state.review;
@@ -406,6 +481,21 @@ pub fn draw_pr_review(
             Style::default().fg(theme.text_muted.to_color()),
         ),
     ];
+    // The AI review (`A`) keeps running in the background after `esc` returns
+    // here — without this, nothing in the pane hints that it's still working,
+    // so the header gets a throbber + label for as long as it's in flight.
+    if ai_review_running {
+        header_spans.push(Span::raw("  "));
+        header_spans.push(
+            throbber_widgets_tui::Throbber::default()
+                .style(Style::default().fg(theme.warning.to_color()))
+                .to_symbol_span(throbber_state),
+        );
+        header_spans.push(Span::styled(
+            " AI review running…",
+            Style::default().fg(theme.warning.to_color()),
+        ));
+    }
     // Once the fix-target session exists, show what triage has spent on it —
     // the "only pay for what you asked for" constraint made visible in-pane.
     // The header row is a single unwrapped line, so on a narrow terminal this
@@ -462,7 +552,7 @@ pub fn draw_pr_review(
     };
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   W post-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -505,6 +595,10 @@ pub fn draw_pr_review(
             .map(|c| c.author.as_str())
             .unwrap_or("reviewer");
         draw_memory_add_dialog(frame, memory_add, author, theme);
+    }
+    // AI-review post-to-GitHub confirm dialog overlays the pane when open.
+    if let Some(post) = &state.ai_review_post {
+        draw_ai_review_post_dialog(frame, post, theme);
     }
 }
 
@@ -553,6 +647,76 @@ fn draw_reply_dialog(
             Style::default().fg(theme.primary.to_color()),
         ))),
         chunks[1],
+    );
+}
+
+/// AI-review post-to-GitHub confirm dialog (Epic E `W`): a preview of the
+/// review that will post — inline comment count, and the editable summary
+/// body — awaiting approval before [`GhCli::create_review`] runs.
+///
+/// [`GhCli::create_review`]: crate::github::GhCli::create_review
+fn draw_ai_review_post_dialog(
+    frame: &mut Frame,
+    post: &crate::app::AiReviewPostConfirmState,
+    theme: &Theme,
+) {
+    let area = super::super::dashboard::centered_rect(70, 55, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Post AI review to GitHub ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // preview counts
+            Constraint::Min(1),    // summary body
+            Constraint::Length(1), // key hints
+        ])
+        .split(inner);
+
+    let n = post.comment_ids.len();
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "{n} finding{} · {} inline comment{}, rest folded into the summary",
+                    if n == 1 { "" } else { "s" },
+                    post.inline.len(),
+                    if post.inline.len() == 1 { "" } else { "s" },
+                ),
+                Style::default().fg(theme.text_muted.to_color()),
+            )),
+            Line::from(Span::styled(
+                "Summary (edit freely):",
+                Style::default().fg(theme.text.to_color()),
+            )),
+        ]),
+        chunks[0],
+    );
+
+    let body_lines = super::editor_view::editor_lines(&post.editor, theme, "(summary body)");
+    frame.render_widget(
+        Paragraph::new(body_lines).wrap(Wrap { trim: false }),
+        chunks[1],
+    );
+
+    let hints = if post.editing {
+        "[esc] done editing"
+    } else {
+        "[⏎] post to GitHub   [e] edit summary   [esc] cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(theme.primary.to_color()),
+        ))),
+        chunks[2],
     );
 }
 
@@ -969,6 +1133,9 @@ fn draw_comment_detail(
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
     )];
+    if c.ai_generated {
+        header_spans.push(chip("AI", theme.info.to_color()));
+    }
     if c.outdated {
         header_spans.push(chip("outdated", theme.warning.to_color()));
     }
@@ -980,11 +1147,19 @@ fn draw_comment_detail(
     }
     lines.push(Line::from(header_spans));
 
-    // Author / role / kind chips.
+    // Author / role / kind chips. An AI-review draft is neither a bot nor a
+    // human GitHub account — label it distinctly rather than falling through
+    // to "human" (the `is_bot` false-default a draft finding is built with).
     lines.push(Line::from(vec![
         chip(&format!("@{}", c.author), theme.secondary.to_color()),
         chip(
-            if c.is_bot { "bot" } else { "human" },
+            if c.ai_generated {
+                "ai"
+            } else if c.is_bot {
+                "bot"
+            } else {
+                "human"
+            },
             theme.text_muted.to_color(),
         ),
         chip(kind_label(&c.kind), theme.text_muted.to_color()),
@@ -1247,7 +1422,7 @@ fn marker_legend(theme: &Theme) -> Line<'static> {
             "   [outdated] line moved",
             Style::default().fg(theme.warning.to_color()),
         ),
-        Span::styled("   bot/human", muted),
+        Span::styled("   bot/human/ai", muted),
         Span::styled("   triage: ", muted),
         Span::styled("[ ] untriaged ", muted),
         Span::styled("[~] fixing ", Style::default().fg(theme.warning.to_color())),
@@ -1330,5 +1505,49 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(line_text(&lines[0]), "-old line");
         assert_eq!(line_text(&lines[1]), "+new line");
+    }
+
+    fn sample_entry(author: &str) -> crate::github::PrListEntry {
+        crate::github::PrListEntry {
+            number: 1,
+            title: "Sample PR".to_string(),
+            author: author.to_string(),
+            head_ref: "feature-branch".to_string(),
+            updated_at: String::new(),
+            is_draft: false,
+            state: "OPEN".to_string(),
+        }
+    }
+
+    #[test]
+    fn pr_picker_row_tags_the_current_users_own_pr() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_matches_current_user_case_insensitively() {
+        let theme = Theme::default();
+        let entry = sample_entry("Alice");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_other_authors() {
+        let theme = Theme::default();
+        let entry = sample_entry("bob");
+        let line = pr_picker_row(&entry, Some("alice"), &theme);
+        assert!(!line_text(&line).contains("you"));
+    }
+
+    #[test]
+    fn pr_picker_row_does_not_tag_when_current_user_unresolved() {
+        let theme = Theme::default();
+        let entry = sample_entry("alice");
+        let line = pr_picker_row(&entry, None, &theme);
+        assert!(!line_text(&line).contains("you"));
     }
 }

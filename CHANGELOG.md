@@ -12,6 +12,53 @@ are tagged.
 
 ### Added
 
+- **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
+  branch PR, or `g` inside the review pane) now bolds your `@login` and tags
+  it `you` when a row is one of your own PRs, so you don't have to read every
+  author to find your work in a shared repo's PR list.
+- **AI-authored PR review comments are attributed.** When you post an AI
+  review (`W` in the PR-review pane), each inline comment now carries a
+  small `— drafted by Claude via AMF` footer, so a reviewer looking at just
+  that comment — without the review summary in view — can still tell it's
+  AI-authored rather than mistake it for your own words. Your own typed
+  replies (the "not needed" explanation, a "done in `<sha>`" note) are
+  never touched.
+- **AI review of the PR diff (draft findings).** Press `A` in the PR-review
+  pane to have AMF review the PR's diff itself and surface findings as draft
+  items in the same list, triaged with the verbs already there (`f` inject-fix
+  · `s` skip · `M` add to memory). The review-memory doc is injected as
+  context so it checks the team's known recurring issues first; an optional
+  `ai_review_skill` config setting (e.g. `"review"`) leads the prompt with an
+  existing Claude Code review skill/command as the primary methodology, if you
+  have one installed. Draft findings persist in the PR's cache so re-opening
+  the pane at the same commit replays them without spending tokens again; a
+  manual refresh (`r`) carries them forward too, unless the PR has moved to a
+  new commit. This is an explicit, opt-in action — the running screen shows a
+  token estimate before the one paid pass, and `esc` lets it keep going in the
+  background. Once vetted (skip what you disagree with), `W` posts the
+  remaining findings to GitHub as a real review — anchored ones as inline
+  comments, everything else folded into an editable summary — always as a
+  `COMMENT` event (never auto-approve/request-changes). The running screen's
+  throbber now animates properly for the (potentially long) blocking `gh`/
+  `claude` call rather than sitting frozen, and `esc`-ing back to the pane
+  while it's still running shows a throbber + "AI review running…" in the
+  header, so neither screen reads as stuck or stalled. Success/warning/error
+  toasts (e.g. "AI review found N findings") now actually render while any of
+  the PR-review pane's full-screen modes are showing — they were being pushed
+  but silently swallowed before. Finding-parsing also tolerates a model that
+  doesn't hold the exact requested heading level or wraps its whole reply in
+  a code fence, and a `0 findings` result is now distinguished (a warning
+  toast + a debug-log dump of the raw response) from a quiet success, so a
+  parsing mismatch doesn't look identical to "the diff was just clean". A
+  draft finding's role chip now reads `[ai]` instead of falling through to
+  `[human]`, its detail pane shows a small window of the actual diff around
+  its line (re-matched from the PR diff by `path:line`, same as a fetched
+  GitHub comment — capped to a few lines of context on each side rather than
+  the whole matched hunk, which for a large added block can otherwise read
+  as "the whole file") instead of nothing, and `esc`-ing back to the pane
+  before the background pass
+  finishes no longer silently drops the findings while still claiming
+  success — they now merge into wherever you actually are when it lands.
 - **"Since last review" interdiff in the final review.** Press `I` on a
   file flagged `Δ` (changed since your last review round) to see just the
   diff between what you reviewed last time and what's there now, instead of
@@ -183,6 +230,15 @@ are tagged.
 
 ### Fixed
 
+- **Headless Claude calls no longer fail on large prompts.** `ClaudeLauncher`
+  passed the prompt as a `-p <prompt>` command-line argument; Linux caps a
+  single argument at 128 KiB (`MAX_ARG_STRLEN`), well under what a real PR
+  diff or file review routinely runs to, so any prompt past that failed the
+  whole spawn with `E2BIG` ("claude headless command failed") before Claude
+  ever saw the request. The prompt is now piped over stdin instead, which has
+  no comparable ceiling. Affects every headless caller — the PR-review AI
+  review (`A`), the review-memory lookback bootstrap, final review's diff
+  walkthrough/co-review/changeset overview, and session summaries.
 - **Claude sidebar TODOs stay tied to the selected session.** When another
   Claude session has a newer task list, AMF no longer shows that unrelated
   checklist in the current session's sidebar. The sidebar still uses the

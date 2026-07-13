@@ -420,6 +420,14 @@ pub struct AppConfig {
     /// [`review_memory::DEFAULT_REVIEW_MEMORY_PATH`] when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_memory_path: Option<String>,
+    /// Name of an existing Claude Code skill/command (without the leading `/`,
+    /// e.g. `"review"`) to lead the AI PR-review prompt (`A` in the PR-review
+    /// pane, Epic E of `pr-comment-review-plan.md`) with, so its review
+    /// methodology runs before AMF's own structured-findings instructions.
+    /// `None` (default) skips this — AMF ships no bundled skill for reviewing a
+    /// PR diff, so the feature must work without assuming one is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_review_skill: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -476,6 +484,7 @@ impl Default for AppConfig {
             final_review_submit_prompt: true,
             final_review_post_to_pr: false,
             review_memory_path: None,
+            ai_review_skill: None,
         }
     }
 }
@@ -616,6 +625,24 @@ pub struct App {
     /// Receiver for the background review-memory lookback bootstrap (fetch +
     /// distill pass). See `app::pr_review::run_review_memory_bootstrap`.
     pub review_memory_bootstrap_bg: Option<Receiver<pr_review::BootstrapProgress>>,
+    /// Receiver for the background AI code review of the current PR's diff
+    /// (the `A` action). See `app::pr_review::run_ai_pr_review`.
+    pub ai_review_bg: Option<Receiver<pr_review::AiReviewProgress>>,
+    /// The review-pane snapshot a background AI review ([`Self::ai_review_bg`])
+    /// was started against, kept alive independent of `self.mode` — in
+    /// particular across `cancel_ai_pr_review` (`esc`), which restores
+    /// `self.mode` to `PrReview` well before the background pass finishes.
+    /// Without this, `Done` arriving after a cancel finds `self.mode` is no
+    /// longer `AiPrReviewRunning` and has nowhere to merge the findings.
+    /// `Some` exactly while `ai_review_bg` is `Some`; both are cleared
+    /// together once `Done` is processed. See
+    /// `app::pr_review::poll_ai_pr_review_bg`.
+    pub ai_review_pending: Option<PrReviewState>,
+    /// Memoized `GhCli::current_user` result for the session, so opening or
+    /// refreshing the PR picker doesn't repeat the `gh api user` call every
+    /// time. `None` = not yet resolved; `Some(None)` = resolution was
+    /// attempted and failed (e.g. `gh` unauthenticated).
+    pub gh_current_user: Option<Option<String>>,
     pub scroll_offset: usize,
     pub session_filter: SessionFilter,
     pub throbber_state: throbber_widgets_tui::ThrobberState,
@@ -797,6 +824,20 @@ impl App {
                 .harnesses
                 .iter()
                 .any(|h| h.status == HarnessCheckStatus::Checking),
+            // The AI review keeps running in the background after `esc`
+            // returns here; animate the header's throbber for as long as it
+            // is in flight (see `ui::dialogs::draw_pr_review`).
+            AppMode::PrReview(_) => self.ai_review_bg.is_some(),
+            // Full-screen loading/running views: `redraw_signature()` only
+            // hashes the mode's discriminant, not its stage, so without this
+            // the throbber only advances on the rare frame something else
+            // (a progress message, `Done`) forces a redraw — for the long
+            // stretch in between (the blocking `gh`/`claude` call) it just
+            // sits frozen, reading as "nothing is happening" even though the
+            // background thread is working.
+            AppMode::PrReviewLoading(_)
+            | AppMode::ReviewMemoryBootstrapRunning(_)
+            | AppMode::AiPrReviewRunning(_) => true,
             _ => false,
         };
         base || self.has_active_toasts()
@@ -1917,6 +1958,9 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
+            ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),
@@ -2104,6 +2148,9 @@ impl App {
             pr_review_bg: None,
             pr_review_return: None,
             review_memory_bootstrap_bg: None,
+            ai_review_bg: None,
+            ai_review_pending: None,
+            gh_current_user: None,
             scroll_offset: 0,
             session_filter: SessionFilter::default(),
             throbber_state: throbber_widgets_tui::ThrobberState::default(),

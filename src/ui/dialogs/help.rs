@@ -196,6 +196,9 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("i", "Install syntax highlighting for file"),
         ("r", "Refresh comments from GitHub"),
         ("g", "Pick a different PR to review"),
+        ("A", "AI review of the PR diff (draft findings)"),
+        ("W", "Post AI-review draft findings to GitHub"),
+        ("", "(e edit summary)"),
         ("q / Esc", "Close review pane"),
     ];
 

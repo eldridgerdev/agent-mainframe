@@ -1501,6 +1501,9 @@ pub struct PrPickerState {
     /// When `Some`, the lookback-bootstrap depth picker (`b`) is open over the
     /// picker.
     pub bootstrap_pick: Option<BootstrapPickState>,
+    /// The logged-in `gh` user's login, when resolvable — used to highlight
+    /// the user's own PRs in the row rendering. `None` if unresolved/failed.
+    pub current_user: Option<String>,
 }
 
 /// Depth picker for the review-memory lookback bootstrap (`b` in the PR
@@ -1520,6 +1523,16 @@ pub struct BootstrapRunState {
     pub origin: PrPickerState,
     pub depth: crate::app::pr_review::BootstrapDepth,
     pub stage: crate::app::pr_review::BootstrapStage,
+}
+
+/// Full-screen progress view for the AI PR review's background diff-fetch +
+/// review pass (Epic E `A`), entered from the review pane.
+#[derive(Debug, Clone)]
+pub struct AiReviewRunState {
+    /// The review pane to return to on completion or cancel (dialogs cleared
+    /// before stashing, matching the `P`/`f` stash convention).
+    pub origin: PrReviewState,
+    pub stage: crate::app::pr_review::AiReviewStage,
 }
 
 /// State for the full-screen PR comment-review pane.
@@ -1582,6 +1595,27 @@ pub struct PrReviewState {
     /// combined-batch confirm dialog instead of the single-comment one. Cleared
     /// when the picker is confirmed or cancelled.
     pub pending_batch: bool,
+    /// When `Some`, the AI-review post-to-GitHub confirm dialog is open over
+    /// the pane: a preview of the review that will post (Epic E `W`),
+    /// awaiting the user's approval.
+    pub ai_review_post: Option<AiReviewPostConfirmState>,
+}
+
+/// Confirm/edit dialog for posting the AI-review draft findings to GitHub as
+/// a real review (Epic E `W`). Built once when opened from the findings
+/// eligible to post (`ai_generated`, not skipped, not already posted); `⏎`
+/// posts as-is. Only the summary body is editable — the per-finding inline
+/// comment bodies are the AI's own text, vetted by skipping (`s`) rather than
+/// hand-edited here.
+#[derive(Debug, Clone)]
+pub struct AiReviewPostConfirmState {
+    /// Ids of every included finding (inline-anchored and summary-folded), so
+    /// a successful post can mark them all `Replied` in one pass.
+    pub comment_ids: Vec<u64>,
+    /// Inline review comments built from the anchored findings.
+    pub inline: Vec<crate::github::PrReviewComment>,
+    pub editor: TextEditor,
+    pub editing: bool,
 }
 
 /// A [`PrReviewState`] stashed while the user is watching the linked fix
@@ -1866,6 +1900,9 @@ pub enum AppMode {
     /// Running the review-memory lookback bootstrap's fetch + distill pass off
     /// the UI thread; shows a loading frame with the current stage.
     ReviewMemoryBootstrapRunning(BootstrapRunState),
+    /// Running the AI PR review's diff-fetch + review pass off the UI thread
+    /// (Epic E `A`); shows a loading frame with the current stage.
+    AiPrReviewRunning(AiReviewRunState),
     SteeringPrompt(SteeringPromptState),
     Compose(ComposeState),
     SessionPicker(SessionPickerState),

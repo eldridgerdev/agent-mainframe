@@ -1077,83 +1077,77 @@ pub fn ensure_notification_hooks(
     ensure_amf_skills(workdir, agent);
 }
 
-pub fn ensure_plan_mode_claude_md(workdir: &Path, repo: &Path, enabled: bool) {
+pub fn ensure_plan_mode_instructions(workdir: &Path, agent: &AgentKind, enabled: bool) {
     const BEGIN: &str = "<!-- AMF:plan-instructions:begin -->";
     const END: &str = "<!-- AMF:plan-instructions:end -->";
-
-    // The shared plan file lives at the repo root so all worktrees
-    // see the same file. Store it gitignored in a local-only location.
-    let plan_file = repo.join("PLAN.md");
-    let plan_path_str = plan_file.to_string_lossy();
-
-    let block = format!(
-        concat!(
-            "<!-- AMF:plan-instructions:begin -->\n\n",
-            "## Plan Mode\n\n",
-            "You are in **PLAN MODE**. A shared plan file is at:\n\n",
-            "```\n",
-            "{plan_file}\n",
-            "```\n\n",
-            "**Before doing any implementation work:**\n\n",
-            "1. Read the plan file to understand the current state\n",
-            "2. Update the plan with your intended approach\n",
-            "3. Keep the plan updated as you make progress\n\n",
-            "**Plan file format:**\n\n",
-            "```markdown\n",
-            "# Plan\n\n",
-            "## Goal\n",
-            "<overall objective>\n\n",
-            "## Tasks\n",
-            "- [ ] Task 1\n",
-            "- [x] Completed task\n\n",
-            "## Notes\n",
-            "<decisions, discoveries, blockers>\n",
-            "```\n\n",
-            "Update task checkboxes as you complete work. Other agents\n",
-            "working in parallel will read this same file.\n\n",
-            "<!-- AMF:plan-instructions:end -->\n",
-        ),
-        plan_file = plan_path_str,
+    const BLOCK: &str = concat!(
+        "<!-- AMF:plan-instructions:begin -->\n\n",
+        "## Plan Mode\n\n",
+        "This feature has a user-authored plan at `.claude/plan.md`.\n\n",
+        "Before doing implementation work, read the plan. Treat its decisions ",
+        "as settled unless the user says otherwise, and keep its task ",
+        "checkboxes and notes current as work progresses.\n\n",
+        "<!-- AMF:plan-instructions:end -->\n",
     );
+    const AGENTS_IGNORE_BEGIN: &str = "# AMF:plan-instructions:begin";
+    const AGENTS_IGNORE_END: &str = "# AMF:plan-instructions:end";
 
-    // Ensure PLAN.md is gitignored at the repo root.
-    let gitignore_path = repo.join(".gitignore");
-    ensure_gitignore_entry(&gitignore_path, "PLAN.md");
-
-    // Create a skeleton PLAN.md if enabling and file doesn't exist.
-    if enabled && !plan_file.exists() {
-        let _ = std::fs::write(
-            &plan_file,
-            "# Plan\n\n## Goal\n\n<describe the overall objective>\n\n\
-             ## Tasks\n\n- [ ] Task 1\n\n## Notes\n\n",
-        );
-    }
-
-    // Inject/remove plan instructions from workdir's CLAUDE.local.md.
-    let md_path = workdir.join("CLAUDE.local.md");
+    let uses_claude_local = matches!(agent, AgentKind::Claude);
+    let md_path = workdir.join(if uses_claude_local {
+        "CLAUDE.local.md"
+    } else {
+        "AGENTS.md"
+    });
+    let instruction_file_existed = md_path.exists();
     let current = std::fs::read_to_string(&md_path).unwrap_or_default();
     let has_block = current.contains(BEGIN);
+    let gitignore_path = workdir.join(".gitignore");
 
-    // Ensure CLAUDE.local.md is gitignored at the workdir root.
-    let wt_gitignore = workdir.join(".gitignore");
-    ensure_gitignore_entry(&wt_gitignore, "CLAUDE.local.md");
+    if uses_claude_local && enabled {
+        ensure_gitignore_entry(&gitignore_path, "CLAUDE.local.md");
+    } else if enabled && !instruction_file_existed {
+        let ignore = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+        if !ignore.lines().any(|line| line == "AGENTS.md") {
+            let managed_ignore = format!("{AGENTS_IGNORE_BEGIN}\nAGENTS.md\n{AGENTS_IGNORE_END}\n");
+            let content = if ignore.is_empty() {
+                managed_ignore
+            } else {
+                format!("{}\n{}", ignore.trim_end(), managed_ignore)
+            };
+            let _ = std::fs::write(&gitignore_path, content);
+        }
+    }
 
     if enabled {
         if has_block {
             return; // already injected
         }
         let content = if current.is_empty() {
-            block.clone()
+            BLOCK.to_string()
         } else {
-            format!("{}\n{}", current.trim_end(), block)
+            format!("{}\n{}", current.trim_end(), BLOCK)
         };
         let _ = std::fs::write(&md_path, content);
-    } else if has_block {
-        let stripped = strip_between_markers(&current, BEGIN, END);
-        if stripped.trim().is_empty() {
-            let _ = std::fs::remove_file(&md_path);
-        } else {
-            let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+    } else {
+        if has_block {
+            let stripped = strip_between_markers(&current, BEGIN, END);
+            if stripped.trim().is_empty() {
+                let _ = std::fs::remove_file(&md_path);
+            } else {
+                let _ = std::fs::write(&md_path, format!("{}\n", stripped.trim_end()));
+            }
+        }
+
+        if !uses_claude_local
+            && let Ok(ignore) = std::fs::read_to_string(&gitignore_path)
+            && ignore.contains(AGENTS_IGNORE_BEGIN)
+        {
+            let stripped = strip_between_markers(&ignore, AGENTS_IGNORE_BEGIN, AGENTS_IGNORE_END);
+            if stripped.trim().is_empty() {
+                let _ = std::fs::remove_file(&gitignore_path);
+            } else {
+                let _ = std::fs::write(&gitignore_path, format!("{}\n", stripped.trim_end()));
+            }
         }
     }
 }
@@ -1168,7 +1162,7 @@ pub fn strip_between_markers(s: &str, begin: &str, end: &str) -> String {
             end_pos
         };
         // eat leading blank line before begin marker
-        let begin_pos = if bi >= 2 && &s[bi - 2..bi] == "\n\n" {
+        let begin_pos = if s[..bi].ends_with("\n\n") {
             bi - 1
         } else {
             bi

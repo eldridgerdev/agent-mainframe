@@ -1,5 +1,6 @@
 use super::setup::{
-    cleanup_agent_injected_files, ensure_notification_hooks, strip_between_markers,
+    cleanup_agent_injected_files, ensure_notification_hooks, ensure_plan_mode_instructions,
+    strip_between_markers,
 };
 use super::steering::PromptConstraint;
 use super::sync::pane_shows_thinking_hint;
@@ -641,6 +642,93 @@ fn strip_between_markers_adjacent_markers() {
         "<!-- END -->",
     );
     assert_eq!(result, "");
+}
+
+#[test]
+fn strip_between_markers_handles_unicode_before_marker() {
+    let result = strip_between_markers(
+        "café\n\n<!-- BEGIN -->\nmanaged\n<!-- END -->\n",
+        "<!-- BEGIN -->",
+        "<!-- END -->",
+    );
+    assert_eq!(result, "café\n");
+}
+
+#[test]
+fn plan_mode_instructions_use_claude_local_and_per_workdir_plan() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(workdir.path().join("CLAUDE.local.md"), "# Existing\n").unwrap();
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, true);
+
+    let instructions = std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap();
+    assert!(instructions.starts_with("# Existing\n"));
+    assert!(instructions.contains("`.claude/plan.md`"));
+    assert_eq!(
+        instructions
+            .matches("<!-- AMF:plan-instructions:begin -->")
+            .count(),
+        1,
+        "instruction injection should be idempotent"
+    );
+    assert!(
+        std::fs::read_to_string(workdir.path().join(".gitignore"))
+            .unwrap()
+            .lines()
+            .any(|line| line == "CLAUDE.local.md")
+    );
+    assert!(!workdir.path().join("PLAN.md").exists());
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Claude, false);
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join("CLAUDE.local.md")).unwrap(),
+        "# Existing\n"
+    );
+}
+
+#[test]
+fn plan_mode_instructions_use_agents_for_non_claude_harnesses() {
+    for agent in [AgentKind::Codex, AgentKind::Opencode, AgentKind::Pi] {
+        let workdir = tempfile::TempDir::new().unwrap();
+
+        ensure_plan_mode_instructions(workdir.path(), &agent, true);
+
+        let instructions = std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap();
+        assert!(instructions.contains("`.claude/plan.md`"));
+        assert!(!workdir.path().join("CLAUDE.local.md").exists());
+        let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
+        assert!(ignore.lines().any(|line| line == "AGENTS.md"));
+
+        ensure_plan_mode_instructions(workdir.path(), &agent, false);
+        assert!(!workdir.path().join("AGENTS.md").exists());
+        assert!(
+            !workdir.path().join(".gitignore").exists(),
+            "AMF-owned AGENTS.md ignore entry should be cleaned up"
+        );
+    }
+}
+
+#[test]
+fn plan_mode_instructions_preserve_user_agents_file_and_ignore_rules() {
+    let workdir = tempfile::TempDir::new().unwrap();
+    std::fs::write(workdir.path().join("AGENTS.md"), "# User instructions\n").unwrap();
+    std::fs::write(workdir.path().join(".gitignore"), "target/\n").unwrap();
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Codex, true);
+
+    let ignore = std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap();
+    assert_eq!(ignore, "target/\n", "a user's AGENTS.md must stay tracked");
+
+    ensure_plan_mode_instructions(workdir.path(), &AgentKind::Codex, false);
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join("AGENTS.md")).unwrap(),
+        "# User instructions\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workdir.path().join(".gitignore")).unwrap(),
+        "target/\n"
+    );
 }
 
 // ── thinking hint parsing ─────────────────────────────────

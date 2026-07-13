@@ -214,19 +214,22 @@ impl GhCli {
 
     /// Resolve the open PR for the current branch in `workdir`.
     ///
-    /// Returns `NoPrForBranch` when the repo has a GitHub remote but no open PR
-    /// for the branch (caller should offer the manual-number override). Returns
-    /// an error for missing-remote / network / other failures.
+    /// Returns `NoPrForBranch` when the repo has a GitHub remote but no *open*
+    /// PR for the branch (caller should offer the manual-number override) —
+    /// this includes the case where `gh pr view` resolves to a closed/merged
+    /// PR that used to live on this branch, since `gh pr view` returns
+    /// whichever PR (any state) is associated with the branch, not just an
+    /// open one. Returns an error for missing-remote / network / other
+    /// failures.
     pub fn resolve_pr(workdir: &Path) -> Result<PrResolution> {
         let output = Command::new("gh")
-            .args(["pr", "view", "--json", "number,headRefOid,url"])
+            .args(["pr", "view", "--json", "number,headRefOid,url,state"])
             .current_dir(workdir)
             .output()
             .context("Failed to run `gh pr view`.")?;
 
         if output.status.success() {
-            let pr = parse_pr_json(&output.stdout)?;
-            return Ok(PrResolution::Found(pr));
+            return parse_pr_view_resolution(&output.stdout);
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -737,8 +740,30 @@ fn classify_pr_view_error(stderr: &str) -> PrViewError {
     }
 }
 
+/// Parse `resolve_pr`'s `{number, headRefOid, url, state}` `gh pr view`
+/// output into a [`PrResolution`], rejecting anything that isn't currently
+/// `OPEN` — `gh pr view` resolves to whichever PR (any state) is associated
+/// with the branch, so a branch whose only PR has since closed/merged
+/// otherwise resolves straight into that stale PR instead of falling
+/// through to the picker (bug from real use). A missing `state` field (only
+/// possible if a caller changes the requested JSON fields) doesn't block —
+/// only a state we can positively identify as non-open does.
+fn parse_pr_view_resolution(stdout: &[u8]) -> Result<PrResolution> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).context("Failed to parse `gh pr view` JSON output.")?;
+    if let Some(state) = v.get("state").and_then(|s| s.as_str())
+        && !state.eq_ignore_ascii_case("open")
+    {
+        return Ok(PrResolution::NoPrForBranch);
+    }
+    parse_pr_json(stdout).map(PrResolution::Found)
+}
+
 /// Parse the `{number, headRefOid, url}` JSON from `gh pr view`, deriving
-/// owner/repo from the PR URL (avoids a second `gh` call).
+/// owner/repo from the PR URL (avoids a second `gh` call). Used both by
+/// [`parse_pr_view_resolution`] and by `fetch_pr_by_number`, which
+/// intentionally has no state check — opening a specific (possibly closed)
+/// PR by number, e.g. from the picker, is the whole point there.
 fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
     let v: serde_json::Value =
         serde_json::from_slice(stdout).context("Failed to parse `gh pr view` JSON output.")?;
@@ -861,6 +886,52 @@ mod tests {
         assert_eq!(pr.head_sha, "abc123");
         assert_eq!(pr.owner, "o");
         assert_eq!(pr.repo, "r");
+    }
+
+    #[test]
+    fn resolve_pr_view_accepts_an_open_pr() {
+        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321","state":"OPEN"}"#;
+        match parse_pr_view_resolution(json).unwrap() {
+            PrResolution::Found(pr) => assert_eq!(pr.number, 321),
+            PrResolution::NoPrForBranch => panic!("expected an open PR to resolve as Found"),
+        }
+    }
+
+    #[test]
+    fn resolve_pr_view_rejects_a_closed_pr() {
+        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321","state":"CLOSED"}"#;
+        assert!(matches!(
+            parse_pr_view_resolution(json).unwrap(),
+            PrResolution::NoPrForBranch
+        ));
+    }
+
+    #[test]
+    fn resolve_pr_view_rejects_a_merged_pr() {
+        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321","state":"MERGED"}"#;
+        assert!(matches!(
+            parse_pr_view_resolution(json).unwrap(),
+            PrResolution::NoPrForBranch
+        ));
+    }
+
+    #[test]
+    fn resolve_pr_view_state_check_is_case_insensitive() {
+        let json = br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321","state":"open"}"#;
+        assert!(matches!(
+            parse_pr_view_resolution(json).unwrap(),
+            PrResolution::Found(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_pr_view_missing_state_field_does_not_block() {
+        let json =
+            br#"{"number":321,"headRefOid":"abc123","url":"https://github.com/o/r/pull/321"}"#;
+        assert!(matches!(
+            parse_pr_view_resolution(json).unwrap(),
+            PrResolution::Found(_)
+        ));
     }
 
     #[test]

@@ -230,6 +230,13 @@ are tagged.
 
 ### Fixed
 
+- **`G` no longer reopens an already-closed/merged PR.** A feature's branch
+  can outlive the PR it first shipped — you merge, then keep working on the
+  same branch. Pressing `G` used to resolve straight back into that
+  now-closed PR's review pane instead of noticing it was closed. AMF now
+  checks the PR's state and, if it isn't open, falls through to the PR
+  picker (with the manual-number/include-closed options still one keypress
+  away) rather than silently entering a stale review.
 - **Headless Claude calls no longer fail on large prompts.** `ClaudeLauncher`
   passed the prompt as a `-p <prompt>` command-line argument; Linux caps a
   single argument at 128 KiB (`MAX_ARG_STRLEN`), well under what a real PR

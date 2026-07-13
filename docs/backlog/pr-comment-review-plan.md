@@ -1214,6 +1214,38 @@ first), and the reviewer's output (plus comments triaged in the pane)
   GitHub review; and, while reviewing, add a noteworthy comment to the
   memory with one key — each recurring finding written down once making
   the next review cheaper and sharper.
+- [x] **HIGH PRIORITY — BUG: `G` on an existing session reopens an
+      already-closed/merged PR (from real use).** Reported: pressing `G` in a
+      session whose branch previously had a PR resolved straight into that
+      PR's review pane even though the PR was now closed/merged — instead of
+      either landing on a newer open PR for the same branch or falling
+      through to "no PR for this branch" (the picker / manual-number prompt).
+      **Confirmed root cause:** `GhCli::resolve_pr` (`src/github.rs`) ran
+      `gh pr view --json number,headRefOid,url` with no `--state` filter, and
+      `parse_pr_json` didn't request or check a `state` field at all — so
+      whatever PR `gh pr view` resolved for the branch (GitHub's API returns
+      the most recent PR for a head branch regardless of state, as long as
+      *one ever existed*) was treated as `PrResolution::Found` and opened
+      directly, no live/closed check. `classify_pr_view_error`'s `NoPr` path
+      only fires on `gh`'s literal "no pull requests found" stderr, which
+      doesn't happen here — `gh pr view` succeeds and returns a
+      closed/merged PR's data, not an error. An easy everyday repro in AMF's
+      workflow specifically: a feature's branch persists across a work
+      session, so finishing and merging one PR on that branch and then
+      continuing to work (new commits, later opening a *new* PR on the same
+      branch, or none yet) left `G` resolving to the old, now-closed PR.
+      **Fix:** `resolve_pr` now requests `state` too
+      (`gh pr view --json number,headRefOid,url,state`), and a new pure
+      `parse_pr_view_resolution` helper checks it case-insensitively —
+      anything that isn't `OPEN` now resolves as `PrResolution::NoPrForBranch`
+      instead of `Found`, which `open_pr_review` already routes to
+      `open_pr_picker` (listing open PRs, with `#`/`a` for a manual number or
+      closed/merged ones). `fetch_pr_by_number` (picker selection, manual
+      number) intentionally keeps no state check — opening a specific,
+      possibly-closed PR there is the whole point. A missing `state` field
+      doesn't block, only a positively-identified non-open one does. Unit
+      tested (`parse_pr_view_resolution`: open/closed/merged/case-insensitive/
+      missing-state cases). → `src/github.rs`.
 
 ## Nice to have
 

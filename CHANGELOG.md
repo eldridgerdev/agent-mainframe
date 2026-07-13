@@ -38,7 +38,9 @@ are tagged.
   through `AGENTS.md`. AMF removes its managed instructions when the feature
   stops or is deleted and moves them when the harness changes. It no longer
   creates or updates the old shared repo-root `PLAN.md`; existing copies are
-  left untouched and can be deleted if they are no longer needed.
+  left untouched and can be deleted if they are no longer needed. The `?`
+  help overlay and README now document every interview shortcut, including
+  multi-line answers, back navigation, skipping, finishing early, and cancel.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

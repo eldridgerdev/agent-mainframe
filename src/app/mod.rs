@@ -1868,6 +1868,7 @@ impl App {
         setup::ensure_notify_scripts();
         let db = crate::db::AmfDb::open_or_seed(&db_path, &crate::project::global_db_path())?;
         let store = db.load_store()?;
+        setup::repair_unquoted_claude_hooks_for_store(&store);
         let (sidebar_load_tx, sidebar_load_rx) = std::sync::mpsc::channel();
         // These caches are populated by the background sidebar-load tasks
         // scheduled in startup task 7 (schedule_sidebar_loads_for_all_features).

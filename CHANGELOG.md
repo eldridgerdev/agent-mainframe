@@ -265,7 +265,9 @@ are tagged.
 - **Claude hook paths with spaces work on macOS.** AMF now quotes its Claude
   hook commands and cleans up older unquoted macOS hook entries, so paths under
   `~/Library/Application Support/amf` no longer fail with `/bin/sh` errors
-  such as `Library/Application: no such file or directory`.
+  such as `Library/Application: no such file or directory`. Existing features
+  with stale local Claude settings are repaired during AMF startup, even if the
+  normal hook refresh already ran.
 - **File-level PR review comments no longer inject the whole file as a diff
   hunk.** A comment left on the file as a whole (GitHub's `subject_type:
   "file"`) carries the entire file diff as its `diff_hunk` — fixing it used to

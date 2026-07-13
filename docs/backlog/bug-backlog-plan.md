@@ -54,7 +54,10 @@ The shell input stops partway through the environment setup, around
   entries also stayed in existing `.claude/settings.local.json` files.
 - **Fix:** Quote AMF-managed Claude hook command paths, force one more hook
   refresh, and treat older unquoted `Library/Application Support/amf` helper
-  entries as managed so AMF removes and replaces them automatically.
+  entries as managed so AMF removes and replaces them automatically. AMF also
+  checks stored Claude feature workdirs during startup and immediately repairs
+  stale unquoted local hook settings, even if the global hook refresh stamp is
+  already current.
 
 ### Repro
 

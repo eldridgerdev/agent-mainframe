@@ -3588,6 +3588,24 @@ impl App {
         feature.sessions[si].token_usage.clone()
     }
 
+    /// Whether the dedicated PR-triage session exists and is actively
+    /// thinking or running a tool. Activity is keyed by the AMF
+    /// feature-session ID supplied by hooks/plugins, rather than the parent
+    /// tmux session, so another agent window cannot produce a false positive.
+    pub(crate) fn pr_review_dedicated_session_working(&self) -> Option<bool> {
+        let AppMode::PrReview(state) = &self.mode else {
+            return None;
+        };
+        let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
+        let feature = &self.store.projects[pi].features[fi];
+        let si = pr_triage_session_index(feature, FixTarget::DedicatedReview)?;
+        let session_id = &feature.sessions[si].id;
+        Some(
+            self.ipc_thinking_feature_sessions.contains(session_id)
+                || self.ipc_tool_feature_sessions.contains(session_id),
+        )
+    }
+
     /// Usage added to the selected fix target since this visit to the PR pane
     /// began. Existing sessions are snapshotted on entry (or when selected via
     /// `t`); a dedicated session created by the first fix starts from zero.

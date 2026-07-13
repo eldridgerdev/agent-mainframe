@@ -848,6 +848,10 @@ impl App {
         }
 
         if msg_type == "thinking-start" {
+            if let Some(feature_session_id) = msg.amf_feature_session_id.as_ref() {
+                self.ipc_thinking_feature_sessions
+                    .insert(feature_session_id.clone());
+            }
             if let Some(sid) = msg.session_id {
                 self.ipc_thinking_sessions.insert(sid.clone());
                 self.touch_feature_for_session(&sid);
@@ -856,6 +860,10 @@ impl App {
         }
 
         if msg_type == "thinking-stop" {
+            if let Some(feature_session_id) = msg.amf_feature_session_id.as_ref() {
+                self.ipc_thinking_feature_sessions
+                    .remove(feature_session_id);
+            }
             if let Some(sid) = msg.session_id {
                 self.ipc_thinking_sessions.remove(&sid);
             }
@@ -864,6 +872,10 @@ impl App {
 
         if msg_type == "tool-start" {
             let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
+            if let Some(feature_session_id) = msg.amf_feature_session_id.as_ref() {
+                self.ipc_tool_feature_sessions
+                    .insert(feature_session_id.clone());
+            }
             if let Some(sid) = msg.session_id {
                 self.ipc_tool_sessions.insert(sid.clone());
                 self.touch_feature_for_session(&sid);
@@ -897,6 +909,9 @@ impl App {
 
         if msg_type == "tool-stop" {
             let cwd_path = PathBuf::from(msg.cwd.as_deref().unwrap_or_default());
+            if let Some(feature_session_id) = msg.amf_feature_session_id.as_ref() {
+                self.ipc_tool_feature_sessions.remove(feature_session_id);
+            }
             let label = msg
                 .tool_name
                 .clone()

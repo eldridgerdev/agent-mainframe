@@ -1379,25 +1379,26 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `src/ui/dialogs/help.rs`, `src/ui/status.rs`, `src/ui/dashboard.rs`,
   `src/github.rs`, `README.md`.
 
-- **Dedicated triage-session status badge in the PR Triage pane.** The
-  Viewing-mode corner badge (`[Ctrl+Space P: back to PR Triage]`,
-  `src/ui/dashboard.rs`) tells you when you're *inside* the dedicated
-  triage session, but there's no equivalent the other way round: sitting in
-  PR Triage while `f` has a fix running in the background, nothing
-  in-pane shows whether that dedicated session even exists yet, or whether
-  it's actively working vs. idle/finished. Add a small header badge —
-  alongside the Epic D "token usage surfaced per session" span already in
-  `draw_pr_review`'s header (`src/ui/dialogs/pr_review.rs`) — that reads
-  something like `[dedicated ● working]` / `[dedicated idle]` once
-  `fix_session_index` resolves a session, reusing the same
-  `thinking_features` tracking `App::is_feature_thinking` already exposes
-  (`src/app/sync.rs`). Gotcha to design around: `is_feature_thinking` is
-  keyed by `tmux_session` at the *feature* level, not per-window, so as-is
-  it can't distinguish "the dedicated triage session is thinking" from
-  "some other window in this feature is thinking" when they share a tmux
-  session — likely needs a per-window/per-session variant of the thinking
-  probe, or a pane-content check scoped to the triage session's window
-  specifically.
+- [x] **Dedicated triage-session status badge in the PR Triage pane.** Once
+      the dedicated session exists, the pane header now shows
+      `[dedicated ● working]` while that exact agent session is thinking or
+      running a tool, and `[dedicated idle]` when it is waiting/finished; no
+      badge is shown before the first `f` creates the session. The existing
+      hook/plugin messages already carry `amf_feature_session_id`, but AMF
+      previously discarded that precision after using it for token-source
+      binding and retained only feature-level `tmux_session` activity. New
+      per-feature-session thinking/tool sets preserve those IDs through IPC,
+      and `pr_review_dedicated_session_working` checks the current or legacy
+      dedicated-session label against them. This avoids a blocking
+      `capture-pane` probe and, crucially, prevents another agent window in the
+      same feature from falsely lighting the badge. The local Codex
+      prompt-submit fast path now records the exact feature-session ID too, so
+      it does not wait for the later IPC round trip. Focused tests cover no
+      badge before creation, idle/working transitions, and isolation from a
+      different agent window in the same tmux session. → `src/app/mod.rs`,
+      `src/app/notifications.rs`, `src/app/sync.rs`, `src/app/pr_review.rs`,
+      `src/ui/dashboard.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/app/tests.rs`.
 
 ## Open questions
 

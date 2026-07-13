@@ -12,6 +12,11 @@ are tagged.
 
 ### Added
 
+- **PR Triage shows whether its dedicated fix session is working.** Once the
+  session exists, the pane header shows `[dedicated ● working]` while that
+  exact agent session is thinking or running a tool, and `[dedicated idle]`
+  when it is waiting or finished. Activity in another agent window no longer
+  affects this status. No setup or migration is required.
 - A design doc for the planned **plan-mode guided discovery interview**
   in `docs/backlog/plan-mode-interview-plan.md`, viewable in AMF's
   in-app Markdown viewer alongside the other plans. It captures where

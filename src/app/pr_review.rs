@@ -3112,6 +3112,7 @@ impl App {
                 inline,
                 editor: TextEditor::new(summary),
                 editing: false,
+                error: None,
             });
         }
     }
@@ -3162,7 +3163,11 @@ impl App {
     /// finding `Replied` so a re-post doesn't duplicate them. GitHub rejects
     /// the *entire* review if any inline comment points outside the diff
     /// (documented on [`GhCli::create_review`]); on that failure the drafts
-    /// are left untouched so nothing triaged is lost.
+    /// are left untouched so nothing triaged is lost, and the post-confirm
+    /// dialog stays open with the failure recorded on
+    /// [`AiReviewPostConfirmState::error`] rather than getting silently
+    /// closed by `show_error`'s mode reset (from real use — pressing `W`
+    /// into a rejected review used to boot the user back to the dashboard).
     pub fn pr_review_post_ai_review(&mut self) -> Result<()> {
         let prep = match &self.mode {
             AppMode::PrReview(state) => state.ai_review_post.as_ref().map(|post| {
@@ -3181,7 +3186,7 @@ impl App {
         };
 
         if let Err(e) = GhCli::create_review(&workdir, &pr, &body, "COMMENT", &inline) {
-            self.show_error(e);
+            self.fail_ai_review_post(e);
             return Ok(());
         }
 
@@ -3203,6 +3208,29 @@ impl App {
             if comment_ids.len() == 1 { "" } else { "s" }
         ));
         Ok(())
+    }
+
+    /// Record a `W` post failure inline on the still-open post-confirm
+    /// dialog and restore the review pane — working around `show_error`'s
+    /// unconditional `self.mode` reset to `Normal` for any
+    /// non-Normal/Help/Viewing mode, which would otherwise silently boot the
+    /// user back to the dashboard on a recoverable posting error (from real
+    /// use — see the bug backlog).
+    pub(crate) fn fail_ai_review_post(&mut self, e: anyhow::Error) {
+        let detail = e.to_string();
+        let mut origin = match &self.mode {
+            AppMode::PrReview(state) => Some(state.clone()),
+            _ => None,
+        };
+        if let Some(origin) = &mut origin
+            && let Some(post) = &mut origin.ai_review_post
+        {
+            post.error = Some(detail);
+        }
+        self.show_error(e);
+        if let Some(origin) = origin {
+            self.mode = AppMode::PrReview(origin);
+        }
     }
 
     /// Open the "add to memory" dialog for the selected comment, seeded from

@@ -249,6 +249,14 @@ are tagged.
 
 ### Fixed
 
+- **A failed `W` post no longer boots you out of the PR-review pane.**
+  Posting the AI review to GitHub can fail — most commonly a 422 because a
+  finding no longer lines up with the current diff — and previously that
+  silently kicked you all the way back to the dashboard with only a cryptic
+  passthrough error to go on. The post-confirm dialog now stays open with the
+  failure shown inline, and a rejected-review (422) failure gets an
+  actionable message pointing at the likely cause instead of GitHub's raw
+  status line.
 - **Headless Claude calls no longer fail on large prompts.** `ClaudeLauncher`
   passed the prompt as a `-p <prompt>` command-line argument; Linux caps a
   single argument at 128 KiB (`MAX_ARG_STRLEN`), well under what a real PR

@@ -491,6 +491,15 @@ impl GhCli {
                     "Posting to GitHub needs the `repo` scope. Run `! gh auth refresh -s repo` and try again."
                 );
             }
+            if is_review_rejected_entity_error(&stderr) {
+                bail!(
+                    "GitHub rejected the review (422) — most likely one of the inline comments \
+                     no longer lines up with the current diff (the PR moved since the AI review \
+                     ran). Refresh (r) and re-run the AI review (A), or skip the stale finding \
+                     and try W again. Raw: {}",
+                    stderr.trim()
+                );
+            }
             bail!("`gh api` (create review) failed: {}", stderr.trim());
         }
         Ok(())
@@ -635,6 +644,17 @@ fn run_write(mut cmd: Command, what: &str) -> Result<()> {
 fn is_missing_write_scope(stderr: &str) -> bool {
     let s = stderr.to_lowercase();
     s.contains("http 403") || (s.contains("403") && s.contains("scope")) || s.contains("must have")
+}
+
+/// Whether a `create_review` failure is GitHub's 422 Unprocessable Entity —
+/// its documented response when any inline comment in the review doesn't
+/// land inside the PR's current diff. `gh api`'s stderr for this case is
+/// just a terse status line with no detail on which comment is at fault, so
+/// this drives a friendlier, actionable message instead of passing it
+/// through verbatim.
+fn is_review_rejected_entity_error(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("422") || s.contains("unprocessable entity")
 }
 
 /// Run `gh api --paginate --slurp <endpoint>` and flatten the result.
@@ -813,6 +833,24 @@ mod tests {
         ));
         assert!(!is_missing_write_scope("HTTP 422: Validation Failed"));
         assert!(!is_missing_write_scope("could not resolve host github.com"));
+    }
+
+    #[test]
+    fn detects_review_rejected_entity_error() {
+        // The exact terse line `gh api` gives for this case (confirmed from
+        // real use — the debug log showed exactly this).
+        assert!(is_review_rejected_entity_error(
+            "gh: Unprocessable Entity (HTTP 422)"
+        ));
+        assert!(is_review_rejected_entity_error(
+            "HTTP 422: Validation Failed"
+        ));
+        assert!(!is_review_rejected_entity_error(
+            "gh: HTTP 403: Resource not accessible by integration"
+        ));
+        assert!(!is_review_rejected_entity_error(
+            "could not resolve host github.com"
+        ));
     }
 
     #[test]

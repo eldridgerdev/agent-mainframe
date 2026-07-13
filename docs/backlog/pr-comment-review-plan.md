@@ -1227,6 +1227,47 @@ first), and the reviewer's output (plus comments triaged in the pane)
   GitHub review; and, while reviewing, add a noteworthy comment to the
   memory with one key — each recurring finding written down once making
   the next review cheaper and sharper.
+ - [x] **BUG: `W` post failure gives a cryptic error and kicks you out of the
+      pane (from real use).** Reported: pressing `W` to post the AI review
+      showed `Error: `gh api` (create review) failed: gh: Unprocessable
+      Entity (HTTP 422)` (confirmed via the debug log, `D`) and dropped
+      straight back to the dashboard. **Two compounding problems, both
+      fixed:** (1) The 422 itself is GitHub's documented behavior for
+      `GhCli::create_review` — the whole review is rejected if *any* inline
+      comment's `path`/`line` doesn't land inside the PR's current diff —
+      but `gh api`'s stderr for it is just the terse `Unprocessable Entity
+      (HTTP 422)` line with no indication of *which* finding is the culprit,
+      and AMF was passing it straight through with no translation. Fixed
+      with a new `is_review_rejected_entity_error` check (sibling to the
+      existing `is_missing_write_scope`, `src/github.rs`) that detects the
+      422/"Unprocessable Entity" case and bails with an actionable message
+      instead (likely a stale AI finding since the diff moved — refresh and
+      re-run `A`, or skip it and retry `W`). (2) Far worse: on *any* error,
+      `pr_review_post_ai_review` called `self.show_error(e)`
+      (`src/app/project_ops.rs`), which unconditionally sets
+      `self.mode = AppMode::Normal` for every mode except `Normal`/`Help`/
+      `Viewing` — `PrReview` wasn't exempted, so a recoverable posting
+      failure silently booted the user all the way back to the dashboard.
+      Fixed by extracting a new `App::fail_ai_review_post` helper: it
+      captures the live `PrReviewState` (with the still-open post-confirm
+      dialog) before calling `show_error`, records the failure on a new
+      `AiReviewPostConfirmState::error` field, then restores `self.mode` to
+      that captured pane afterward — so the dialog stays open with the
+      error shown inline (`draw_ai_review_post_dialog`,
+      `src/ui/dialogs/pr_review.rs`, a new `danger`-styled row above the
+      summary body) instead of losing the pane. `show_error` itself is
+      untouched (still the shared logging/toast/message path other modes
+      rely on); only this one call site now works around its mode reset,
+      matching the same "capture origin before show_error, restore after"
+      pattern already used by `poll_ai_pr_review_bg` and
+      `poll_review_memory_bootstrap_bg`. Unit-tested
+      (`is_review_rejected_entity_error` against the exact real-use stderr
+      line and other error strings; `fail_ai_review_post` keeps the dialog
+      open with the error recorded rather than falling back to
+      `AppMode::Normal` — `GhCli::create_review` itself isn't invoked in
+      tests, matching this file's no-live-`gh`-calls convention). →
+      `src/github.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
+       `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
 ## Nice to have
 

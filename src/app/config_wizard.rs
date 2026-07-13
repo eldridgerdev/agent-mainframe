@@ -425,6 +425,14 @@ fn build_extension_config(state: &ConfigWizardState) -> ExtensionConfig {
         prompt_templates: serde_json::from_str::<ExtensionConfig>(&state.original_json)
             .map(|config| config.prompt_templates)
             .unwrap_or_default(),
+        // Plan interview questions are declarative-only for now; preserve
+        // them when the wizard edits another extension setting.
+        plan_questions: serde_json::from_str::<ExtensionConfig>(&state.original_json)
+            .map(|config| config.plan_questions)
+            .unwrap_or_default(),
+        skip_builtin_questions: serde_json::from_str::<ExtensionConfig>(&state.original_json)
+            .ok()
+            .and_then(|config| config.skip_builtin_questions),
         // Same reasoning: the wizard has no UI for the final-review check
         // command, so carry the loaded value through untouched.
         final_review_check_command: serde_json::from_str::<ExtensionConfig>(&state.original_json)
@@ -663,5 +671,27 @@ mod tests {
             build_extension_config(&state).allowed_agents,
             Some(Vec::new())
         );
+    }
+
+    #[test]
+    fn saving_unrelated_settings_preserves_plan_question_config() {
+        let mut state =
+            state_for_allowed_agents(ConfigScope::Project(PathBuf::from("/repo")), None, false);
+        let original = ExtensionConfig {
+            plan_questions: vec![crate::extension::ConfiguredPlanQuestion {
+                id: "delivery".into(),
+                text: "Where should this ship?".into(),
+                options: vec!["Desktop".into(), "Web".into()],
+                optional: false,
+            }],
+            skip_builtin_questions: Some(true),
+            ..Default::default()
+        };
+        state.original_json = serde_json::to_string(&original).unwrap();
+
+        let rebuilt = build_extension_config(&state);
+
+        assert_eq!(rebuilt.plan_questions, original.plan_questions);
+        assert_eq!(rebuilt.skip_builtin_questions, Some(true));
     }
 }

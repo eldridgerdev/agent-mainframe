@@ -355,12 +355,12 @@ picks the plan up with no display-layer changes.
 Demo: a project `config.json` adds/overrides questions; wizard
 interview shows them merged with (or replacing) the built-in bank.
 
-- [ ] `plan_questions` schema in `extension.rs` + global/project
+- [x] `plan_questions` schema in `extension.rs` + global/project
       merge by `id` (project wins), `skip_builtin_questions` flag
-- [ ] Select-option questions authored in config (HookPrompt-style)
+- [x] Select-option questions authored in config (HookPrompt-style)
 - [ ] Config-wizard / docs coverage; `amf-add-plan-question` skill
       (optional, mirrors `amf-add-prompt`)
-- [ ] Merge + parse unit tests
+- [x] Merge + parse unit tests
 
 ### Epic 3 — AI adaptive questioning
 

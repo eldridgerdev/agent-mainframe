@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::plan_interview::{PlanQuestion, PlanQuestionKind, QuestionSource, builtin_questions};
 use crate::project::{AgentKind, StoredVibeMode, VibeMode};
 use crate::prompt_library::PromptTemplate;
 
@@ -145,6 +146,61 @@ impl FeaturePreset {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfiguredPlanQuestion {
+    /// Stable identifier used when global, project, and built-in questions are
+    /// merged. A project question with the same ID replaces the earlier one.
+    pub id: String,
+    pub text: String,
+    /// An empty list produces a free-text question; a non-empty list produces
+    /// a native select question, matching the flat option shape used by hook
+    /// prompts in config.json.
+    pub options: Vec<String>,
+    pub optional: bool,
+}
+
+impl Default for ConfiguredPlanQuestion {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            text: String::new(),
+            options: Vec::new(),
+            optional: true,
+        }
+    }
+}
+
+impl ConfiguredPlanQuestion {
+    fn to_plan_question(&self) -> Option<PlanQuestion> {
+        let id = self.id.trim();
+        let text = self.text.trim();
+        if id.is_empty() || text.is_empty() {
+            return None;
+        }
+
+        let options = self
+            .options
+            .iter()
+            .map(|option| option.trim())
+            .filter(|option| !option.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        Some(PlanQuestion {
+            id: id.to_string(),
+            text: text.to_string(),
+            kind: if options.is_empty() {
+                PlanQuestionKind::FreeText
+            } else {
+                PlanQuestionKind::Select(options)
+            },
+            source: QuestionSource::Template,
+            optional: self.optional,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ExtensionConfig {
@@ -157,6 +213,13 @@ pub struct ExtensionConfig {
     /// The library view can export user templates here. Phase 3 surfaces
     /// these in the picker with a `Global` / `Project` source badge.
     pub prompt_templates: Vec<PromptTemplate>,
+    /// Questions layered onto the built-in plan interview bank. IDs are stable
+    /// merge keys; project entries replace global entries with the same ID.
+    pub plan_questions: Vec<ConfiguredPlanQuestion>,
+    /// `None` means inherit from the broader config scope. This keeps an empty
+    /// project config from accidentally undoing a global opt-out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skip_builtin_questions: Option<bool>,
     /// Shell command run (via `bash -c` in the feature's workdir) when
     /// finishing a final review — a build/test gate. `None`/empty skips it
     /// entirely (the default). Project overrides global, same as
@@ -180,6 +243,33 @@ impl ExtensionConfig {
             .filter(|preset| self.allows_agent(&preset.agent))
             .cloned()
             .collect()
+    }
+
+    /// Build the static interview bank after applying configured overrides.
+    /// Replacing a built-in keeps its original position; new questions append
+    /// in merged config order.
+    pub fn plan_interview_questions(&self) -> Vec<PlanQuestion> {
+        let mut questions = if self.skip_builtin_questions.unwrap_or(false) {
+            Vec::new()
+        } else {
+            builtin_questions()
+        };
+
+        for configured in &self.plan_questions {
+            let Some(question) = configured.to_plan_question() else {
+                continue;
+            };
+            if let Some(index) = questions
+                .iter()
+                .position(|existing| existing.id == question.id)
+            {
+                questions[index] = question;
+            } else {
+                questions.push(question);
+            }
+        }
+
+        questions
     }
 
     fn normalize_legacy_review_modes(&mut self) {
@@ -223,6 +313,8 @@ pub fn load_global_extension_config() -> ExtensionConfig {
 /// - feature_presets: same rules
 /// - lifecycle_hooks: project fields override global
 /// - keybindings: project overrides global per-action
+/// - plan_questions: project appends; ID collision → project wins
+/// - skip_builtin_questions: project overrides global when explicitly set
 pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> ExtensionConfig {
     let project_path = repo.join(".amf").join("config.json");
 
@@ -257,6 +349,17 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
     for entry in &base.prompt_templates {
         if !prompt_templates.iter().any(|e| e.name == entry.name) {
             prompt_templates.push(entry.clone());
+        }
+    }
+
+    // Merge plan questions by stable ID (project wins).
+    let mut plan_questions = project.plan_questions.clone();
+    for entry in &base.plan_questions {
+        if !plan_questions
+            .iter()
+            .any(|question| question.id == entry.id)
+        {
+            plan_questions.push(entry.clone());
         }
     }
 
@@ -301,6 +404,10 @@ pub fn merge_project_extension_config(base: &ExtensionConfig, repo: &Path) -> Ex
             .clone()
             .or_else(|| base.allowed_agents.clone()),
         prompt_templates,
+        plan_questions,
+        skip_builtin_questions: project
+            .skip_builtin_questions
+            .or(base.skip_builtin_questions),
         final_review_check_command,
     };
     merged.normalize_legacy_review_modes();
@@ -527,6 +634,109 @@ mod tests {
                 .any(|t| t.name == "project-only")
         );
         assert_eq!(merged.prompt_templates.len(), 3);
+    }
+
+    #[test]
+    fn plan_questions_merge_by_id_and_project_wins() {
+        let global = ExtensionConfig {
+            plan_questions: vec![
+                ConfiguredPlanQuestion {
+                    id: "shared".into(),
+                    text: "Global wording?".into(),
+                    ..Default::default()
+                },
+                ConfiguredPlanQuestion {
+                    id: "global-only".into(),
+                    text: "Global only?".into(),
+                    ..Default::default()
+                },
+            ],
+            skip_builtin_questions: Some(true),
+            ..Default::default()
+        };
+        let project_config = ExtensionConfig {
+            plan_questions: vec![
+                ConfiguredPlanQuestion {
+                    id: "shared".into(),
+                    text: "Project wording?".into(),
+                    ..Default::default()
+                },
+                ConfiguredPlanQuestion {
+                    id: "project-only".into(),
+                    text: "Project only?".into(),
+                    ..Default::default()
+                },
+            ],
+            // An omitted project flag inherits the global setting.
+            skip_builtin_questions: None,
+            ..Default::default()
+        };
+        let tmp = TempDir::new().unwrap();
+        write_extension_config(&tmp, &project_config);
+
+        let merged = merge_project_extension_config(&global, tmp.path());
+
+        assert_eq!(merged.plan_questions.len(), 3);
+        assert_eq!(merged.plan_questions[0].id, "shared");
+        assert_eq!(merged.plan_questions[0].text, "Project wording?");
+        assert_eq!(merged.plan_questions[1].id, "project-only");
+        assert_eq!(merged.plan_questions[2].id, "global-only");
+        assert_eq!(merged.skip_builtin_questions, Some(true));
+    }
+
+    #[test]
+    fn configured_plan_questions_parse_free_text_and_select_options() {
+        let raw = r#"{
+            "plan_questions": [
+                {
+                    "id": "audience",
+                    "text": "Who is this for?"
+                },
+                {
+                    "id": "delivery",
+                    "text": "Where should this ship?",
+                    "options": [" Desktop ", "Web"],
+                    "optional": false
+                }
+            ],
+            "skip_builtin_questions": true
+        }"#;
+
+        let config: ExtensionConfig = serde_json::from_str(raw).unwrap();
+        let questions = config.plan_interview_questions();
+
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0].source, QuestionSource::Template);
+        assert_eq!(questions[0].kind, PlanQuestionKind::FreeText);
+        assert!(questions[0].optional);
+        assert_eq!(
+            questions[1].kind,
+            PlanQuestionKind::Select(vec!["Desktop".into(), "Web".into()])
+        );
+        assert!(!questions[1].optional);
+    }
+
+    #[test]
+    fn configured_question_can_override_a_builtin_in_place() {
+        let config = ExtensionConfig {
+            plan_questions: vec![ConfiguredPlanQuestion {
+                id: "scope".into(),
+                text: "What should we deliberately leave out?".into(),
+                options: vec!["Nothing".into(), "Decide later".into()],
+                optional: false,
+            }],
+            ..Default::default()
+        };
+
+        let questions = config.plan_interview_questions();
+
+        assert_eq!(questions.len(), builtin_questions().len());
+        assert_eq!(questions[0].id, "scope");
+        assert_eq!(questions[0].source, QuestionSource::Template);
+        assert_eq!(
+            questions[0].kind,
+            PlanQuestionKind::Select(vec!["Nothing".into(), "Decide later".into()])
+        );
     }
 
     #[test]

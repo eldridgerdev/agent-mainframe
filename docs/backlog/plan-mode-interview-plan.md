@@ -335,14 +335,14 @@ picks the plan up with no display-layer changes.
       until interview completes; abort path (launch-anyway vs cancel)
 - [x] Write brief + answers into the workdir's `.claude/plan.md`
       (gitignored within `.claude/`)
-- [ ] Replace `ensure_plan_mode_claude_md` with
+- [x] Replace `ensure_plan_mode_claude_md` with
       `ensure_plan_mode_instructions(workdir, agent, enabled)`:
       marker block into the harness's instruction file
       (`CLAUDE.local.md` for claude, `AGENTS.md` for
       codex/opencode/pi), pointing at the per-workdir plan file —
       fixes existing plan mode being instruction-visible to claude
       only
-- [ ] Delete the shared repo-root `PLAN.md` skeleton/gitignore
+- [x] Delete the shared repo-root `PLAN.md` skeleton/gitignore
       behavior (per audit verdict; old PLAN.md files are inert
       leftovers, not migrated)
 - [ ] Unit test: non-worktree first feature (workdir == repo root)

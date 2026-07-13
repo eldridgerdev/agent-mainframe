@@ -30,7 +30,13 @@ are tagged.
   migration is required. Completing the interview now saves the brief and
   answers to the feature's gitignored `.claude/plan.md` before launch, so the
   resulting plan stays isolated to that feature and is ready for the agent and
-  AMF's plan preview.
+  AMF's plan preview. Plan instructions now follow the feature's selected
+  harness: Claude reads them from its local instruction file, while Codex,
+  OpenCode, and Pi receive them through `AGENTS.md`. AMF removes its managed
+  instructions when the feature stops or is deleted and moves them when the
+  harness changes. It no longer creates or updates the old shared repo-root
+  `PLAN.md`; existing copies are left untouched and can be deleted if they are
+  no longer needed.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

@@ -21,8 +21,10 @@ are tagged.
   and only then launches the agent seeded with it — including the
   decision to replace the current shared repo-root `PLAN.md` with a
   per-feature `.claude/plan.md`. Implementation is now underway with
-  the curated built-in question bank defined and tested; the interview
-  UI is not connected yet, so there are no behavior changes in this slice.
+  the curated built-in question bank and its brief-to-questions workflow
+  defined and tested, including back navigation, skipping, and finishing
+  early. The interview UI is not connected yet, so there are no behavior
+  changes in this slice.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

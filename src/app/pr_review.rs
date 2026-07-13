@@ -536,15 +536,29 @@ fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) 
     let mut general = Vec::new();
     for f in findings {
         match (&f.path, f.line) {
-            (Some(path), Some(line)) if !f.file_level => inline.push(GhPrReviewComment {
-                path: path.clone(),
-                line,
-                side: "RIGHT",
-                start_line: None,
-                start_side: None,
-                body: append_ai_attribution(&f.body),
-            }),
-            (Some(path), _) => general.push(format!("- **{path}**: {}", f.body)),
+            // `diff_hunk.is_some()` gates whether the model's self-reported
+            // line actually landed inside a hunk of the diff GitHub will
+            // validate the review against (`diff_hunk_for_line`, computed
+            // from the very same diff at generation time) — models count
+            // lines from the raw unified-diff text themselves and can get
+            // this wrong independent of whether the PR has since moved, so
+            // a `None` hunk here means GitHub's create-review API would
+            // reject this line too (real-use bug: a persistent 422 on `W`
+            // that survived a refresh + re-run, because the miscount
+            // reproduces identically each time). Fold it into the summary
+            // instead of a doomed inline comment.
+            (Some(path), Some(line)) if !f.file_level && f.diff_hunk.is_some() => {
+                inline.push(GhPrReviewComment {
+                    path: path.clone(),
+                    line,
+                    side: "RIGHT",
+                    start_line: None,
+                    start_side: None,
+                    body: append_ai_attribution(&f.body),
+                })
+            }
+            (Some(path), Some(line)) => general.push(format!("- **{path}:{line}**: {}", f.body)),
+            (Some(path), None) => general.push(format!("- **{path}**: {}", f.body)),
             (None, _) => general.push(format!("- {}", f.body)),
         }
     }
@@ -4515,7 +4529,9 @@ mod tests {
                 path: Some("a.rs".into()),
                 line: Some(10),
                 body: "Guard the lock here.".into(),
-                diff_hunk: None,
+                // A matched hunk is what makes a finding eligible to post
+                // inline — see `build_ai_review`'s `diff_hunk.is_some()` gate.
+                diff_hunk: Some("@@ -8,4 +8,5 @@".into()),
             },
             AiFinding {
                 path: Some("b.rs".into()),
@@ -4556,12 +4572,32 @@ mod tests {
             path: Some("a.rs".into()),
             line: Some(1),
             body: "x".into(),
-            diff_hunk: None,
+            diff_hunk: Some("@@ -1,2 +1,2 @@".into()),
         }]);
         let refs: Vec<&PrComment> = comments.iter().collect();
         let (summary, inline) = build_ai_review(&refs);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
+    }
+
+    #[test]
+    fn build_ai_review_folds_an_unmatched_line_into_the_summary_instead_of_posting_it() {
+        // Regression test for a real-use bug: a persistent 422 on `W` that
+        // survived a refresh + re-run of the AI review, because the model's
+        // self-reported line didn't actually correspond to a line in the
+        // diff (an inherent miscount, not staleness) — `diff_hunk_for_line`
+        // already signals this via a `None` hunk, but `build_ai_review`
+        // wasn't consulting it before attempting to post the line inline.
+        let comments = findings_to_comments(&[AiFinding {
+            path: Some("a.rs".into()),
+            line: Some(999),
+            body: "Guard the lock here.".into(),
+            diff_hunk: None,
+        }]);
+        let refs: Vec<&PrComment> = comments.iter().collect();
+        let (summary, inline) = build_ai_review(&refs);
+        assert!(inline.is_empty());
+        assert!(summary.contains("**a.rs:999**: Guard the lock here."));
     }
 
     #[test]

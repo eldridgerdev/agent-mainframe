@@ -1269,6 +1269,35 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/github.rs`, `src/app/pr_review.rs`, `src/app/state.rs`,
        `src/ui/dialogs/pr_review.rs`, `src/app/tests.rs`.
 
+      **Follow-up, same day — the actual root cause.** The "stale finding"
+      diagnosis above was wrong: real use hit the *identical* 422 immediately
+      after `r` (refresh) + `A` (re-run the AI review) — a fresh diff and a
+      fresh model pass reproducing the same failure rules out staleness.
+      The real cause is that models compute `<path>:<line>` from the raw
+      unified-diff text themselves (`ai_review_prompt` shows the diff, not
+      pre-computed line numbers) by mentally counting from the `@@ -a,b +c,d
+      @@` hunk headers — an inherently error-prone arithmetic task, and a
+      miscount reproduces identically on every re-run since it's not a
+      function of *when* the diff was fetched. AMF already had the exact
+      signal for this: `run_ai_pr_review` matches each finding's `path:line`
+      back into the fetched diff via `diff_hunk_for_line`, and a line that
+      doesn't correspond to anything in the diff returns `None` — but
+      `build_ai_review` wasn't consulting that signal before deciding a
+      finding was inline-postable, so a finding with a miscounted line got
+      sent to GitHub's create-review API anyway, which validates the exact
+      same thing (a `line` outside the diff's hunks) and rejects the whole
+      review. Fixed by adding `f.diff_hunk.is_some()` to `build_ai_review`'s
+      inline-eligibility guard — a finding whose line didn't match anything
+      in the diff (and isn't file-level) now folds into the summary bullet
+      list (with its `path:line` kept as context, unlike the file-level
+      case which drops the line it never had) instead of a doomed inline
+      post, eliminating the whole failure class rather than just handling
+      it better after the fact. Unit-tested (a finding with no matching hunk
+      folds into the summary rather than the inline list; the two existing
+      `build_ai_review` tests updated to set a matching `diff_hunk` on their
+      still-inline-expected fixtures). → `src/app/pr_review.rs`,
+      `src/app/tests.rs`.
+
 ## Nice to have
 
 - **Triage-session token/cost tracker.** Surface a running tally of

@@ -9920,7 +9920,7 @@ fn pr_review_open_ai_review_post_confirm_gathers_eligible_findings_only() {
                 path: Some("a.rs".into()),
                 line: Some(1),
                 body: "eligible".into(),
-                diff_hunk: None,
+                diff_hunk: Some("@@ -1,2 +1,2 @@".into()),
             }]);
         let mut skipped =
             crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {

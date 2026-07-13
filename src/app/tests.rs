@@ -3914,6 +3914,55 @@ fn claude_hooks_preserve_existing_user_hooks() {
 }
 
 #[test]
+fn claude_hook_commands_are_shell_quoted_for_paths_with_spaces() {
+    let path = PathBuf::from("/Users/me/Library/Application Support/amf/save-prompt.sh");
+    let command = crate::app::setup::claude_hook_command(&path);
+
+    assert_eq!(
+        command,
+        "'/Users/me/Library/Application Support/amf/save-prompt.sh'"
+    );
+}
+
+#[test]
+fn cleanup_recognizes_quoted_managed_claude_hooks() {
+    let workdir = TempDir::new().unwrap();
+    let claude_dir = workdir.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let managed = crate::project::amf_config_dir().join("save-prompt.sh");
+    let quoted = crate::app::setup::claude_hook_command(&managed);
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        format!(
+            r#"{{
+              "hooks": {{
+                "UserPromptSubmit": [{{
+                  "matcher": "",
+                  "hooks": [{{
+                    "type": "command",
+                    "command": {quoted:?}
+                  }}]
+                }}]
+              }}
+            }}"#
+        ),
+    )
+    .unwrap();
+
+    call_ensure_hooks(&workdir, VibeMode::Vibe);
+
+    let s = read_settings(&workdir);
+    let cmds = hook_commands_for(&s, "UserPromptSubmit");
+    assert_eq!(
+        cmds.iter()
+            .filter(|cmd| cmd.contains("save-prompt.sh"))
+            .count(),
+        1,
+        "quoted managed hook should be replaced, not duplicated: {cmds:?}"
+    );
+}
+
+#[test]
 fn vibeless_pre_tool_use_includes_custom_diff_review_when_script_present_by_default() {
     let workdir = TempDir::new().unwrap();
     // Create the custom diff-review script so it gets picked up.
@@ -4066,7 +4115,9 @@ fn ensure_hooks_removes_stale_temp_home_amf_hooks() {
     assert_eq!(
         post_cmds
             .iter()
-            .filter(|cmd| cmd.ends_with("/.config/amf/tool-stop.sh"))
+            .filter(|cmd| cmd
+                .trim_matches('\'')
+                .ends_with("/.config/amf/tool-stop.sh"))
             .count(),
         1,
         "only the current AMF PostToolUse hook should remain"

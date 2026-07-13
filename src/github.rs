@@ -193,7 +193,7 @@ impl GhCli {
     /// `TmuxManager::check_available` / `ClaudeLauncher::check_available`.
     pub fn check_available() -> Result<()> {
         let output = Command::new("gh").arg("--version").output().context(
-            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR review.",
+            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com to use PR Triage.",
         )?;
         if !output.status.success() {
             bail!("GitHub CLI (`gh`) is not working correctly. Try `gh --version`.");
@@ -237,7 +237,7 @@ impl GhCli {
         match classify_pr_view_error(&stderr) {
             PrViewError::NoPr => Ok(PrResolution::NoPrForBranch),
             PrViewError::NoRemote => bail!(
-                "No GitHub remote found for this repository. PR review needs a GitHub-hosted repo."
+                "No GitHub remote found for this repository. PR Triage needs a GitHub-hosted repo."
             ),
             PrViewError::Other => {
                 bail!("`gh pr view` failed: {}", stderr.trim());

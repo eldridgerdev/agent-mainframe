@@ -8248,7 +8248,7 @@ fn pr_review_close_returns_to_dashboard() {
 
 #[test]
 fn pr_review_toggle_to_session_requires_existing_session() {
-    // `store_with_feature` has no sessions, so there's no dedicated review
+    // `store_with_feature` has no sessions, so there's no dedicated triage
     // session to jump to yet — the toggle must hint rather than create one
     // as a side effect of a quick peek.
     let store = store_with_feature(ProjectStatus::Active);
@@ -8268,7 +8268,7 @@ fn pr_review_toggle_to_session_requires_existing_session() {
 #[test]
 fn pr_review_toggle_to_session_jumps_and_stashes_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -8285,7 +8285,7 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
     match &app.mode {
         AppMode::Viewing(view) => {
             assert_eq!(view.session, "amf-my-feat");
-            assert_eq!(view.session_label, "PR Review");
+            assert_eq!(view.session_label, "PR Triage");
         }
         other => panic!("expected Viewing, got {:?}", std::mem::discriminant(other)),
     }
@@ -8301,7 +8301,7 @@ fn pr_review_toggle_to_session_jumps_and_stashes_state() {
 #[test]
 fn pr_review_return_to_pane_restores_stashed_state() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -8328,7 +8328,7 @@ fn pr_review_return_to_pane_restores_stashed_state() {
 #[test]
 fn pr_review_return_to_pane_ignores_mismatched_session() {
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -8378,7 +8378,7 @@ fn pr_review_inject_fix_also_stashes_return_state() {
     // even though `f` is the far more common way into that session (`P` is
     // just a peek). `f` must stash exactly like `P` does.
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     tmux.expect_session_exists().returning(|_| true);
@@ -9144,7 +9144,7 @@ fn pr_review_fix_session_usage_reads_the_target_sessions_tokens() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
         SessionKind::Claude,
-        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
     );
     session.token_usage = Some(SessionTokenUsage {
         source: TokenUsageSource {
@@ -9190,7 +9190,7 @@ fn pr_review_triage_session_usage_reports_only_growth_since_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
         SessionKind::Claude,
-        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
     );
     let source = TokenUsageSource {
         provider: TokenUsageProvider::Claude,
@@ -9240,7 +9240,7 @@ fn pr_review_triage_session_usage_hides_an_unchanged_baseline() {
     let mut store = store_with_feature(ProjectStatus::Active);
     let session = store.projects[0].features[0].add_session_named(
         SessionKind::Claude,
-        crate::app::pr_review::REVIEW_SESSION_LABEL.to_string(),
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
     );
     let usage = SessionTokenUsage {
         source: TokenUsageSource {
@@ -9573,7 +9573,7 @@ fn pr_review_queue_marked_with_nothing_marked_hints() {
 
 #[test]
 fn pr_review_queue_marked_without_session_hints() {
-    // `store_with_feature` has no sessions, so the dedicated review session
+    // `store_with_feature` has no sessions, so the dedicated triage session
     // doesn't exist yet — the batch must refuse rather than cold-start one.
     let store = store_with_feature(ProjectStatus::Active);
     let mut app = App::new_for_test(
@@ -9591,17 +9591,17 @@ fn pr_review_queue_marked_without_session_hints() {
         app.message
             .as_deref()
             .unwrap_or("")
-            .contains("No review session yet"),
-        "expected a hint to start the review session, got {:?}",
+            .contains("No triage session yet"),
+        "expected a hint to start the triage session, got {:?}",
         app.message
     );
 }
 
 #[test]
 fn pr_review_queue_marked_sends_and_marks_fixing() {
-    // A feature with an existing dedicated "PR Review" session to queue into.
+    // A feature with an existing dedicated "PR Triage" session to queue into.
     let mut store = store_with_feature(ProjectStatus::Active);
-    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Review".to_string());
+    store.projects[0].features[0].add_session_named(SessionKind::Claude, "PR Triage".to_string());
 
     let mut tmux = MockTmuxOps::new();
     // Two marked comments → two submissions, each: clear input, paste, Enter.

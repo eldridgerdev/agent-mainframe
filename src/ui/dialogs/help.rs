@@ -33,7 +33,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("D", "View debug log"),
         ("p", "Open syntax parser picker"),
         ("L", "Open prompt library"),
-        ("G", "Review PR comments (experimental)"),
+        ("G", "Open PR Triage (experimental)"),
         ("T", "Theme picker"),
         ("c", "Start feature (create tmux)"),
         ("x", "Stop feature / remove session"),
@@ -113,7 +113,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("R", "Refresh pane sizing"),
         ("D", "Debug log"),
         ("A", "Manage agent harnesses"),
-        ("P", "Back to PR review pane (if one is stashed)"),
+        ("P", "Back to PR Triage (if one is stashed)"),
     ];
 
     for (key, desc) in &view_keybinds {
@@ -166,7 +166,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  While reviewing PR comments:",
+        "  In PR Triage:",
         Style::default()
             .fg(theme.primary.to_color())
             .add_modifier(Modifier::BOLD),
@@ -183,7 +183,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("F", "Queue marked fixes as separate prompts"),
         ("B", "Inject one combined prompt for all marked"),
         ("t", "Toggle fix target session"),
-        ("", "(first fix picks the review harness)"),
+        ("", "(first fix picks the triage harness)"),
         ("P", "Jump to the linked fix session"),
         ("", "(Ctrl+Space P there jumps back)"),
         ("R", "Reply 'Done in <sha>'"),
@@ -195,11 +195,11 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("s", "Skip comment (local)"),
         ("i", "Install syntax highlighting for file"),
         ("r", "Refresh comments from GitHub"),
-        ("g", "Pick a different PR to review"),
+        ("g", "Pick a different PR to triage"),
         ("A", "AI review of the PR diff (draft findings)"),
         ("W", "Post AI-review draft findings to GitHub"),
         ("", "(e edit summary)"),
-        ("q / Esc", "Close review pane"),
+        ("q / Esc", "Close PR Triage"),
     ];
 
     for (key, desc) in &pr_review_keybinds {

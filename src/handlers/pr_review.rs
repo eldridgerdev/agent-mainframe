@@ -9,7 +9,7 @@ const DETAIL_SCROLL_STEP: usize = 5;
 /// Visual rows scrolled per page-key press in the fix-prompt editor.
 const FIX_PAGE_STEP: isize = 10;
 
-/// Key handling for the full-screen PR comment-review pane.
+/// Key handling for the full-screen PR Triage pane.
 ///
 /// Navigate the comment list, scroll the detail, hide/show resolved comments,
 /// refresh from GitHub, and exit. Action keys: `f` fix, `space` mark / `F` queue

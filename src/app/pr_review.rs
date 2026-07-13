@@ -30,10 +30,15 @@ use crate::github::{
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
 
-/// Label (and de-facto identity) of the dedicated PR-review agent session. The
+/// Label (and de-facto identity) of the dedicated PR-triage agent session. The
 /// session is found-or-created by this label so the same window is reused for
 /// every fix in a PR (plan token principle #4 — pay per-session overhead once).
-pub(crate) const REVIEW_SESSION_LABEL: &str = "PR Review";
+pub(crate) const TRIAGE_SESSION_LABEL: &str = "PR Triage";
+
+/// Label used before the feature was renamed to PR Triage. Keep recognizing it
+/// so an upgrade reuses an already-running dedicated session instead of quietly
+/// creating a second one.
+const LEGACY_REVIEW_SESSION_LABEL: &str = "PR Review";
 
 /// Pause between consecutive prompts when queuing a batch of fixes into one
 /// session, so the harness registers each `Enter` as its own submission before
@@ -574,7 +579,7 @@ fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) 
 /// Which agent session a "fix" prompt is injected into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum FixTarget {
-    /// A single dedicated review session, spun up once and reused for every fix
+    /// A single dedicated triage session, spun up once and reused for every fix
     /// in the PR. The default: per-session overhead (system prompt, tool
     /// definitions, skills) is paid once and file reads amortize across
     /// comments, and review work stays out of the user's working session.
@@ -589,7 +594,7 @@ impl FixTarget {
     /// Short human label for footers / toasts.
     pub fn label(self) -> &'static str {
         match self {
-            FixTarget::DedicatedReview => "dedicated review session",
+            FixTarget::DedicatedReview => "dedicated triage session",
             FixTarget::ExistingLive => "existing live session",
         }
     }
@@ -663,6 +668,17 @@ pub(crate) fn fix_session_index(
             .iter()
             .position(|s| s.kind.is_agent_harness() && s.label == dedicated_label),
     }
+}
+
+/// Resolve the dedicated PR-triage session, preferring the current label while
+/// retaining compatibility with sessions created under the old "PR Review"
+/// label. Existing-live targeting is unchanged.
+pub(crate) fn pr_triage_session_index(feature: &Feature, target: FixTarget) -> Option<usize> {
+    fix_session_index(feature, target, TRIAGE_SESSION_LABEL).or_else(|| {
+        (target == FixTarget::DedicatedReview)
+            .then(|| fix_session_index(feature, target, LEGACY_REVIEW_SESSION_LABEL))
+            .flatten()
+    })
 }
 
 /// What kind of GitHub comment this is.
@@ -1012,7 +1028,7 @@ pub fn estimate_tokens(text: &str) -> usize {
 /// bot-stripped text, diff hunk) and, like it, **no file contents** (token
 /// principle #3): the preamble and any repeated file context are paid once
 /// across the whole set instead of once per comment. Injected once into the
-/// dedicated review session so the agent works the list autonomously.
+/// dedicated triage session so the agent works the list autonomously.
 pub fn combined_fix_prompt(comments: &[&PrComment]) -> String {
     let mut out = String::from(
         "Address these PR review comments. Work through each one in order; \
@@ -1430,7 +1446,7 @@ fn run_ai_pr_review(
 }
 
 impl App {
-    /// Open the PR comment-review pane for the selected feature's branch.
+    /// Open PR Triage for the selected feature's branch.
     ///
     /// Runs the `gh` preconditions and resolves the PR synchronously (cheap),
     /// then kicks the comment fetch onto a background thread. All of this
@@ -1461,7 +1477,7 @@ impl App {
         }
     }
 
-    /// Open the review pane for a resolved PR, preferring the SQLite cache.
+    /// Open the PR Triage pane for a resolved PR, preferring the SQLite cache.
     ///
     /// A cache hit (same `PR# + head SHA`) skips the four `gh` calls entirely and
     /// shows the stored comments instantly; a miss falls back to the background
@@ -1568,7 +1584,7 @@ impl App {
     }
 
     /// Set the selected comment's triage state in-memory and persist it. The
-    /// comment keeps its existing `local_note`. No-op outside the review pane or
+    /// comment keeps its existing `local_note`. No-op outside PR Triage or
     /// with no selection.
     fn pr_review_set_triage(&mut self, state: TriageState) {
         let Some((pr_number, head_sha, comment_id, note)) = ({
@@ -1663,7 +1679,7 @@ impl App {
     /// it's busy) while the user keeps triaging. Each is a separate prompt
     /// (distinct from the combined-prompt batch), sharing the session's warm
     /// file context. Marked comments that are already GitHub-resolved are skipped
-    /// (token principle #6). Requires the review session to already exist — the
+    /// (token principle #6). Requires the triage session to already exist — the
     /// first fix (`f`) establishes and warms it; this never cold-starts a session
     /// to auto-submit into. Each queued comment is marked `Fixing` and persisted;
     /// the marked set is cleared on success.
@@ -1703,9 +1719,9 @@ impl App {
             return Ok(());
         };
         let feature = &self.store.projects[pi].features[fi];
-        let Some(si) = fix_session_index(feature, target, REVIEW_SESSION_LABEL) else {
+        let Some(si) = pr_triage_session_index(feature, target) else {
             self.message = Some(
-                "No review session yet — press f on a comment to start one, then F to queue the rest"
+                "No triage session yet — press f on a comment to start one, then F to queue the rest"
                     .into(),
             );
             return Ok(());
@@ -1738,7 +1754,7 @@ impl App {
             state.marked.clear();
         }
         self.push_toast_success(format!(
-            "Queued {count} fix{} into the review session",
+            "Queued {count} fix{} into the triage session",
             if count == 1 { "" } else { "es" }
         ));
         Ok(())
@@ -1793,7 +1809,7 @@ impl App {
         resolved
     }
 
-    /// Open the PR picker from inside the review pane (the `g` key), seeded on the
+    /// Open the PR picker from PR Triage (the `g` key), seeded on the
     /// PR currently being reviewed so it starts highlighted.
     pub fn open_pr_picker_from_pane(&mut self) {
         let (workdir, current) = match &self.mode {
@@ -2044,7 +2060,7 @@ impl App {
         }
     }
 
-    /// Close the review pane / cancel a pending load and return to the dashboard.
+    /// Close PR Triage / cancel a pending load and return to the dashboard.
     pub fn close_pr_review(&mut self) {
         self.pr_review_bg = None;
         self.mode = AppMode::Normal;
@@ -2385,7 +2401,7 @@ impl App {
     }
 
     /// Toggle which agent session "fix" prompts are injected into: the default
-    /// dedicated review session, or the feature's existing live session.
+    /// dedicated triage session, or the feature's existing live session.
     pub fn pr_review_toggle_fix_target(&mut self) {
         let (workdir, target) = match &self.mode {
             AppMode::PrReview(state) => (
@@ -2420,7 +2436,7 @@ impl App {
     /// confirms. Editing is opt-in (`e`) from the dialog.
     ///
     /// For the dedicated-review target, the first fix of a PR first opens the
-    /// harness picker (which harness the review session should run) — the fix
+    /// harness picker (which harness the triage session should run) — the fix
     /// confirm follows once the user picks. Subsequent fixes (harness already
     /// chosen, or a dedicated session already exists) go straight to the dialog.
     pub fn pr_review_open_fix_confirm(&mut self) {
@@ -2454,7 +2470,7 @@ impl App {
     /// Open the **combined-batch** confirm dialog (`B`): assemble one numbered
     /// prompt from every marked, not-yet-resolved comment and show it (with a
     /// `~N tokens` preview and editing) before injecting it once into the
-    /// dedicated review session — the "fix all of these, then I'll come back"
+    /// dedicated triage session — the "fix all of these, then I'll come back"
     /// flow. Requires a non-empty marked set (`space` to mark); like a single
     /// fix, the first fix of a dedicated-review PR picks the harness first.
     pub fn pr_review_open_batch_confirm(&mut self) {
@@ -2545,15 +2561,14 @@ impl App {
         match self.feature_indices_for_workdir(&state.workdir) {
             Some((pi, fi)) => {
                 let feature = &self.store.projects[pi].features[fi];
-                fix_session_index(feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL)
-                    .is_none()
+                pr_triage_session_index(feature, FixTarget::DedicatedReview).is_none()
             }
             // No feature resolved yet — let the inject path surface the error.
             None => false,
         }
     }
 
-    /// Open the single-select harness picker for the dedicated review session,
+    /// Open the single-select harness picker for the dedicated triage session,
     /// highlighting the project's preferred agent by default. No-op if a comment
     /// isn't selected or no harnesses are available.
     fn pr_review_open_harness_pick(&mut self) {
@@ -2599,7 +2614,7 @@ impl App {
         }
     }
 
-    /// Whether the harness picker is currently open over the review pane.
+    /// Whether the harness picker is currently open over PR Triage.
     pub fn pr_review_harness_picking(&self) -> bool {
         matches!(
             &self.mode,
@@ -2633,7 +2648,7 @@ impl App {
             state.review_harness = chosen.clone();
         }
         if let Some(agent) = &chosen {
-            self.push_toast_success(format!("Review session will run {}", agent.display_name()));
+            self.push_toast_success(format!("Triage session will run {}", agent.display_name()));
         }
         // Continue into the dialog the pending action wanted (single or batch).
         self.pr_review_continue_after_harness();
@@ -2747,7 +2762,7 @@ impl App {
 
     /// Confirm the dialog: inject the (possibly edited) prompt into the chosen
     /// agent session and switch the user into that session to watch it (no
-    /// auto-advance). The dedicated review session is spun up on first use and
+    /// auto-advance). The dedicated triage session is spun up on first use and
     /// reused thereafter; the existing-live target reuses the feature's running
     /// agent session. Delivery goes through the shared compose / prompt-library
     /// seam: pasted without sending so the user reviews before it runs.
@@ -2856,12 +2871,12 @@ impl App {
         self.deliver_prompt(prompt, Some(view))
     }
 
-    /// Jump from the review pane straight into the linked fix session (`P`),
+    /// Jump from PR Triage straight into the linked fix session (`P`),
     /// stashing the pane's exact state (selection, scroll, open dialogs) so
     /// `pr_review_return_to_pane` can pop back to it without re-fetching.
     /// Unlike `f`, this never spins up the dedicated session — it only jumps
     /// to one that already exists, so a quick "peek at the agent" doesn't
-    /// have the side effect of starting a review session on its own.
+    /// have the side effect of starting a triage session on its own.
     pub fn pr_review_toggle_to_session(&mut self) -> Result<()> {
         let state = match std::mem::replace(&mut self.mode, AppMode::Normal) {
             AppMode::PrReview(state) => state,
@@ -2877,9 +2892,9 @@ impl App {
             return Ok(());
         };
         let feature = &self.store.projects[pi].features[fi];
-        let Some(si) = fix_session_index(feature, state.fix_target, REVIEW_SESSION_LABEL) else {
+        let Some(si) = pr_triage_session_index(feature, state.fix_target) else {
             self.mode = AppMode::PrReview(state);
-            self.push_toast_warning("No review session yet — press f to start one");
+            self.push_toast_warning("No triage session yet — press f to start one");
             return Ok(());
         };
         let session = feature.tmux_session.clone();
@@ -2901,7 +2916,7 @@ impl App {
     /// elsewhere is not popped into an unrelated session's view.
     pub fn pr_review_return_to_pane(&mut self) {
         let Some(stash) = &self.pr_review_return else {
-            self.push_toast_warning("No review pane to return to");
+            self.push_toast_warning("No PR Triage pane to return to");
             return;
         };
         let matches_current = matches!(
@@ -2909,7 +2924,7 @@ impl App {
             AppMode::Viewing(view) if view.session == stash.session && view.window == stash.window
         );
         if !matches_current {
-            self.push_toast_warning("No review pane linked to this session");
+            self.push_toast_warning("No PR Triage pane linked to this session");
             return;
         }
         if let Some(stash) = self.pr_review_return.take() {
@@ -3509,14 +3524,14 @@ impl App {
         self.ensure_feature_running_for_new_session(pi, fi)?;
 
         let feature = &self.store.projects[pi].features[fi];
-        if let Some(si) = fix_session_index(feature, target, REVIEW_SESSION_LABEL) {
+        if let Some(si) = pr_triage_session_index(feature, target) {
             return Ok((pi, fi, si));
         }
 
         match target {
             FixTarget::DedicatedReview => {
                 let si =
-                    self.create_dedicated_review_session(pi, fi, REVIEW_SESSION_LABEL, harness)?;
+                    self.create_dedicated_review_session(pi, fi, TRIAGE_SESSION_LABEL, harness)?;
                 Ok((pi, fi, si))
             }
             FixTarget::ExistingLive => {
@@ -3543,7 +3558,7 @@ impl App {
     ) -> Option<crate::token_tracking::SessionTokenUsage> {
         let (pi, fi) = self.feature_indices_for_workdir(workdir)?;
         let feature = &self.store.projects[pi].features[fi];
-        let si = fix_session_index(feature, target, REVIEW_SESSION_LABEL)?;
+        let si = pr_triage_session_index(feature, target)?;
         feature.sessions[si].token_usage.clone()
     }
 
@@ -3569,7 +3584,7 @@ impl App {
         };
         let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
         let feature = &self.store.projects[pi].features[fi];
-        let si = fix_session_index(feature, state.fix_target, REVIEW_SESSION_LABEL)?;
+        let si = pr_triage_session_index(feature, state.fix_target)?;
         feature.sessions[si].token_usage.clone()
     }
 
@@ -4248,34 +4263,41 @@ mod tests {
         // Nothing running yet: both strategies report "must create / nothing to
         // reuse".
         assert_eq!(
-            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::DedicatedReview),
             None
         );
         assert_eq!(
-            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::ExistingLive),
             None
         );
 
         // A regular live agent session satisfies existing-live but not dedicated.
         feature.add_session_named(SessionKind::Claude, "Claude".into());
         assert_eq!(
-            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::ExistingLive),
             Some(0)
         );
         assert_eq!(
-            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::DedicatedReview),
             None
         );
 
-        // Once the dedicated review session exists it is reused by label, while
-        // existing-live still resolves to the first agent session.
-        feature.add_session_named(SessionKind::Claude, REVIEW_SESSION_LABEL.into());
+        // An already-running session created before the rename is still reused.
+        feature.add_session_named(SessionKind::Claude, LEGACY_REVIEW_SESSION_LABEL.into());
         assert_eq!(
-            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::DedicatedReview),
             Some(1)
         );
+
+        // The current label wins when both exist, while existing-live still
+        // resolves to the first agent session.
+        feature.add_session_named(SessionKind::Claude, TRIAGE_SESSION_LABEL.into());
         assert_eq!(
-            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::DedicatedReview),
+            Some(2)
+        );
+        assert_eq!(
+            pr_triage_session_index(&feature, FixTarget::ExistingLive),
             Some(0)
         );
     }
@@ -4298,11 +4320,11 @@ mod tests {
         // A terminal window is not an agent harness, so it is never a fix target.
         feature.add_session_named(SessionKind::Terminal, "Terminal".into());
         assert_eq!(
-            fix_session_index(&feature, FixTarget::ExistingLive, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::ExistingLive),
             None
         );
         assert_eq!(
-            fix_session_index(&feature, FixTarget::DedicatedReview, REVIEW_SESSION_LABEL),
+            pr_triage_session_index(&feature, FixTarget::DedicatedReview),
             None
         );
     }

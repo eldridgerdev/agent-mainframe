@@ -10,7 +10,7 @@ use crate::extension::merge_project_extension_config;
 
 /// Label (and de-facto identity) of the dedicated final-review agent session.
 /// Found-or-created by this label so re-running the review reuses the same
-/// window. Kept distinct from PR review's "PR Review" session so the two
+/// window. Kept distinct from PR Triage's "PR Triage" session so the two
 /// dedicated targets never collide on one feature.
 pub(crate) const FINAL_REVIEW_SESSION_LABEL: &str = "Final Review";
 

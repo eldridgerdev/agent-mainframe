@@ -20,6 +20,10 @@ const FIX_PAGE_STEP: isize = 10;
 /// findings merge into this same list), `W` post the AI-review draft
 /// findings to GitHub as a real review.
 pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    // The AI-review harness picker is independent from the fix-session picker.
+    if app.pr_review_ai_harness_picking() {
+        return handle_ai_harness_pick_key(app, key);
+    }
     // The harness picker, when open, captures all keys.
     if app.pr_review_harness_picking() {
         return handle_harness_pick_key(app, key);
@@ -69,6 +73,19 @@ pub fn handle_pr_review_key(app: &mut App, key: KeyEvent) -> Result<()> {
         KeyCode::Char('g') => app.open_pr_picker_from_pane(),
         KeyCode::Char('A') => app.start_ai_pr_review(),
         KeyCode::Char('W') => app.pr_review_open_ai_review_post_confirm(),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Pick the harness for the paid `A` review pass. Confirm validates the CLI
+/// before any diff is fetched or agent tokens are spent; failures stay inline.
+fn handle_ai_harness_pick_key(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => app.pr_review_ai_harness_pick_cancel(),
+        KeyCode::Down | KeyCode::Char('j') => app.pr_review_ai_harness_pick_move(1),
+        KeyCode::Up | KeyCode::Char('k') => app.pr_review_ai_harness_pick_move(-1),
+        KeyCode::Enter => app.pr_review_ai_harness_pick_confirm(),
         _ => {}
     }
     Ok(())

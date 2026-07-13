@@ -15,8 +15,11 @@ are tagged.
 - **PR Triage shows whether its dedicated fix session is working.** Once the
   session exists, the pane header shows `[dedicated ● working]` while that
   exact agent session is thinking or running a tool, and `[dedicated idle]`
-  when it is waiting or finished. Activity in another agent window no longer
-  affects this status. No setup or migration is required.
+  when it is waiting or finished. This now follows the dedicated session
+  correctly whether it uses Claude, Codex, OpenCode, or Pi—even when the
+  feature's primary session uses a different harness. Activity in another
+  agent window no longer affects this status. No setup or migration is
+  required.
 - A design doc for the planned **plan-mode guided discovery interview**
   in `docs/backlog/plan-mode-interview-plan.md`, viewable in AMF's
   in-app Markdown viewer alongside the other plans. It captures where
@@ -74,18 +77,27 @@ are tagged.
   setup or migration is required.
 - **AI-authored PR review comments are attributed.** When you post an AI
   review (`W` in the PR-review pane), each inline comment now carries a
-  small `— drafted by Claude via AMF` footer, so a reviewer looking at just
+  small `— drafted by AI via AMF` footer, so a reviewer looking at just
   that comment — without the review summary in view — can still tell it's
   AI-authored rather than mistake it for your own words. Your own typed
   replies (the "not needed" explanation, a "done in `<sha>`" note) are
   never touched.
+- **Choose the harness that generates an AI PR review.** The first time you
+  press `A` in a PR Triage pane, AMF now offers the project's enabled Claude,
+  Codex, OpenCode, and Pi harnesses, defaults to the project's preference, and
+  remembers the choice for later reviews in that pane. This choice is separate
+  from the harness used for `f`/`B` fixes, so a rate limit or outage on one
+  provider no longer blocks review generation when another is available. AMF
+  validates the selected CLI before fetching the diff or spending tokens, and
+  provider-specific failures remain visible in PR Triage. No setup or migration
+  is required.
 - **AI review of the PR diff (draft findings).** Press `A` in the PR-review
   pane to have AMF review the PR's diff itself and surface findings as draft
   items in the same list, triaged with the verbs already there (`f` inject-fix
   · `s` skip · `M` add to memory). The review-memory doc is injected as
   context so it checks the team's known recurring issues first; an optional
   `ai_review_skill` config setting (e.g. `"review"`) leads the prompt with an
-  existing Claude Code review skill/command as the primary methodology, if you
+  existing review skill/command as the primary methodology, if you
   have one installed. Draft findings persist in the PR's cache so re-opening
   the pane at the same commit replays them without spending tokens again; a
   manual refresh (`r`) carries them forward too, unless the PR has moved to a
@@ -96,7 +108,7 @@ are tagged.
   comments, everything else folded into an editable summary — always as a
   `COMMENT` event (never auto-approve/request-changes). The running screen's
   throbber now animates properly for the (potentially long) blocking `gh`/
-  `claude` call rather than sitting frozen, and `esc`-ing back to the pane
+  agent call rather than sitting frozen, and `esc`-ing back to the pane
   while it's still running shows a throbber + "AI review running…" in the
   header, so neither screen reads as stuck or stalled. Success/warning/error
   toasts (e.g. "AI review found N findings") now actually render while any of

@@ -1234,24 +1234,35 @@ first), and the reviewer's output (plus comments triaged in the pane)
       the running screen while the job continued in the background. Focused
       tests cover both a returned worker error and a disconnected worker. →
       `src/app/pr_review.rs`, `src/app/tests.rs`.
-- [ ] **HIGH PRIORITY — choose the agent harness for `A` AI reviews.** The
-      review-generation path is currently hard-coded to
-      `ClaudeLauncher::run_headless`, so the feature's selected harness and the
-      PR Triage `f`/`B` fix-session harness choice have no effect on `A`. This
-      makes AI review unavailable whenever Claude is rate-limited or otherwise
-      unavailable even if Codex, OpenCode, or Pi is ready. Before the paid
-      review pass starts, offer a single-select harness picker over the
-      project's allowed agents, defaulting to the project's preferred harness
-      and remembering the choice for subsequent `A` runs in that pane. Route
-      the prompt through a shared typed headless-runner abstraction with
-      harness-specific launch/error handling rather than treating every agent
-      as Claude. Keep this choice independent from the fix-session target: one
-      harness may generate the review while another handles `f`/`B` fixes.
-      Surface unavailable/unsupported harnesses before spending tokens, retain
-      the existing token preview/background lifecycle, and show failures in the
-      PR Triage error toast. Add focused coverage for picker defaults and
-      persistence, each supported runner, cancellation, and provider-specific
-      failure reporting.
+- [x] **Choose the agent harness for `A` AI reviews.** The first `A` in a PR
+      Triage pane now opens an independent single-select picker over the
+      project's allowed agents, highlights the project's preferred harness,
+      and remembers the choice in `PrReviewState::ai_review_harness` for later
+      `A` runs in that pane. This is deliberately separate from
+      `review_harness`, so one provider can generate review findings while
+      another owns the dedicated `f`/`B` fix session. Confirming validates the
+      selected CLI before the diff fetch or paid pass starts; an unavailable
+      provider leaves the picker open with its actionable error, while cancel
+      returns to the pane with no background job or token spend. The footer and
+      running screen name the selected review harness.
+
+      A new typed `HeadlessRunner` routes the existing background lifecycle
+      through all four built-in agents: Claude print mode, Codex `exec`,
+      OpenCode `run`, and Pi print mode. Every runner receives the prompt over
+      piped stdin (including OpenCode, whose current `run` implementation
+      explicitly merges piped stdin into its message), preserving support for
+      PR diffs beyond Linux's per-argument size limit; stdout is drained while
+      a writer thread feeds stdin to avoid large-prompt/large-response pipe
+      deadlocks. Spawn, write, exit-status, and stderr failures name the chosen
+      provider and continue through the existing PR Triage error-toast path.
+      Since posted findings are no longer necessarily Claude-authored, their
+      attribution is now the accurate provider-neutral `drafted by AI via AMF`.
+      Focused tests cover every runner command, stdin delivery,
+      provider-specific stderr, preferred-default picker state, remembered
+      choice, and cancellation before spend. → `src/headless.rs`,
+      `src/app/state.rs`, `src/app/pr_review.rs`,
+      `src/handlers/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+      `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a
@@ -1330,6 +1341,40 @@ first), and the reviewer's output (plus comments triaged in the pane)
       `src/app/tests.rs`.
 
 ## Nice to have
+
+- [ ] **BUG — support sequential/multiple PRs for the same feature branch.**
+      When a feature branch is reused for another PR, AMF can keep showing the
+      previous closed PR instead of the current open one (observed here: the
+      feature still reports closed PR #449 while work has moved to PR #450).
+      Treat the PR number as changing feature state rather than a permanent
+      branch identity: branch auto-detection should prefer the current open PR
+      when GitHub has multiple PRs for the same head branch, and a transition
+      to a different PR number must invalidate or replace the active-PR badge,
+      cached `PrReviewState`, pending AI-review target, and `P` return stash
+      associated with the old PR. Preserve each PR's own SQLite comment/cache
+      history under its existing PR-number keys, but never let reopening the
+      feature silently restore a closed predecessor. Manual selection of a
+      closed PR in the picker must remain possible and explicit. Add regression
+      coverage for closed `#N` + open `#N+1` on one branch, including dashboard
+      badge refresh, `G` auto-entry, and returning from the linked triage
+      session.
+
+- [ ] **BUG — posted AI-review findings remain trapped as drafts after `W`.**
+      After generating findings with `A` and successfully posting them as a
+      GitHub review with `W`, the pane still treats each finding as an
+      unposted synthetic AI draft. The user cannot use the normal follow-up
+      workflow to mark it done and post a `Done in <sha>` reply; the action is
+      rejected with the "AI draft" message even though the finding now exists
+      on GitHub. Separate **provenance** (`ai_generated`) from **publication
+      state**. On successful `W`, reconcile every posted inline finding with
+      its real GitHub review-comment/thread identity (and general findings with
+      the posted review/conversation representation), then enable the same
+      `m`, `R`, `n`, and applicable `x` actions as reviewer-authored comments.
+      A refresh or cache-hit reopen must retain that mapping and must not
+      recreate a duplicate draft; failed or cancelled `W` must leave findings
+      as local drafts. Add regression coverage for `A` → `W` → mark done →
+      reply, including inline and summary-folded findings and a reopen after
+      posting.
 
 - [x] **Triage-session token/cost tracker.** The pane now snapshots the
       selected fix target's usage when a PR-triage visit begins and shows the

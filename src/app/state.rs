@@ -1579,6 +1579,11 @@ pub struct PrReviewState {
     /// target). Lets PR triage run on a different harness than the feature's
     /// working session.
     pub review_harness: Option<AgentKind>,
+    /// Harness used to generate AI review drafts with `A`. Independent from
+    /// `review_harness`, which only controls the dedicated fix session.
+    pub ai_review_harness: Option<AgentKind>,
+    /// Single-select picker shown before the first AI-review run in this pane.
+    pub ai_harness_pick: Option<AiHarnessPickState>,
     /// When `Some`, the harness picker is open over the pane: the user is
     /// choosing which agent harness the dedicated triage session will run before
     /// the first fix is injected.
@@ -1662,6 +1667,15 @@ pub struct HarnessPickState {
     pub agents: Vec<AgentKind>,
     /// Index into `agents` of the highlighted choice.
     pub selected: usize,
+}
+
+/// Harness picker for the paid, headless `A` review pass. An unavailable CLI
+/// leaves the picker open and records an actionable inline error.
+#[derive(Debug, Clone)]
+pub struct AiHarnessPickState {
+    pub agents: Vec<AgentKind>,
+    pub selected: usize,
+    pub error: Option<String>,
 }
 
 /// Reply dialog for one comment. Replies are contextual, not free-form: either

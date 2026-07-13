@@ -228,6 +228,7 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
         ("r", "Refresh comments from GitHub"),
         ("g", "Pick a different PR to triage"),
         ("A", "AI review of the PR diff (draft findings)"),
+        ("", "(first run picks and remembers its harness)"),
         ("W", "Post AI-review draft findings to GitHub"),
         ("", "(e edit summary)"),
         ("q / Esc", "Close PR Triage"),

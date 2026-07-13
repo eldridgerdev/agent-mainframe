@@ -474,13 +474,28 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
     Some(text)
 }
 
+/// Attribution appended to GitHub content the agent harness generated on the
+/// user's behalf, as opposed to text the user typed — today that's Epic E
+/// AI-review findings, and it's the one shared helper any future AI-drafted
+/// reply should also route through, so every AI-authored post reads as one
+/// consistent voice. Scoped to AI-authored bodies only: a user-typed reply
+/// (the "not needed" reason, a hand-edited "done in `<sha>`" template) is the
+/// user's own words and stays unmarked. AI-review generation always runs
+/// through `ClaudeLauncher::run_headless`, i.e. always Claude, independent of
+/// whichever harness a "fix" gets injected into.
+fn append_ai_attribution(body: &str) -> String {
+    format!("{}\n\n— drafted by Claude via AMF", body.trim_end())
+}
+
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
 /// AI-review draft findings (Epic E `W` — "post as GitHub review"). A finding
 /// with a `path`+`line` anchor (and not `file_level`) becomes an inline
 /// [`GhPrReviewComment`]; everything else (pathless `General` findings, or a
 /// path-only file-level one — GitHub has no line-less inline review comment)
 /// folds into the summary body as a bullet instead, so nothing is silently
-/// dropped.
+/// dropped. Inline comments carry their own attribution footer since they can
+/// surface on their own (e.g. the Files-changed view) without the review
+/// summary in sight; the summary already self-identifies via its opening line.
 fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) {
     let mut inline = Vec::new();
     let mut general = Vec::new();
@@ -492,7 +507,7 @@ fn build_ai_review(findings: &[&PrComment]) -> (String, Vec<GhPrReviewComment>) 
                 side: "RIGHT",
                 start_line: None,
                 start_side: None,
-                body: f.body.clone(),
+                body: append_ai_attribution(&f.body),
             }),
             (Some(path), _) => general.push(format!("- **{path}**: {}", f.body)),
             (None, _) => general.push(format!("- {}", f.body)),
@@ -4382,7 +4397,10 @@ mod tests {
         assert_eq!(inline[0].path, "a.rs");
         assert_eq!(inline[0].line, 10);
         assert_eq!(inline[0].side, "RIGHT");
-        assert_eq!(inline[0].body, "Guard the lock here.");
+        assert_eq!(
+            inline[0].body,
+            "Guard the lock here.\n\n— drafted by Claude via AMF"
+        );
 
         assert!(summary.contains("AI review, via AMF."));
         assert!(summary.contains("**b.rs**: Whole file needs a rewrite."));
@@ -4404,6 +4422,18 @@ mod tests {
         let (summary, inline) = build_ai_review(&refs);
         assert_eq!(inline.len(), 1);
         assert_eq!(summary, "AI review, via AMF.");
+    }
+
+    #[test]
+    fn append_ai_attribution_appends_footer_and_trims_trailing_whitespace() {
+        assert_eq!(
+            append_ai_attribution("Guard the lock here."),
+            "Guard the lock here.\n\n— drafted by Claude via AMF"
+        );
+        assert_eq!(
+            append_ai_attribution("Trailing newline.\n\n"),
+            "Trailing newline.\n\n— drafted by Claude via AMF"
+        );
     }
 
     fn sample_diff_files() -> Vec<crate::diff::DiffFile> {

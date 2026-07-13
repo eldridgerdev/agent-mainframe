@@ -848,18 +848,29 @@ from the last *N* PRs) is reached from the PR entry flow:
       untouched — a human's quoted diff still renders. Unit-tested (fence
       stripped, suggestion-fence stripped, leading `> ` lines stripped, a
       non-diff fence left byte-for-byte intact). → `src/app/pr_review.rs`.
-- [ ] **AI attribution on AMF-posted comments (honesty — from real use).**
-      When AMF posts content the agent harness generated (Epic E AI-review
-      findings, and any future AI-drafted reply), append a **subtle, machine
-      attribution footer** so reviewers can tell it was written by the agent
-      harness *through AMF* — e.g. a one-line footer naming the harness
-      (`— drafted by <harness> via AMF`) and/or a hidden marker for tooling.
-      Scope it to **AI-authored** bodies: a user-typed reply (the Epic C
-      "not-needed" reason, hand-edited templates) is the user's own words and
-      shouldn't be misattributed — though an optional lighter "posted via
-      AMF" tag for those is worth deciding (see open question). Make the exact
-      footer text a single shared helper so replies and review posts stay
-      consistent. → `src/app/pr_review.rs`, `src/github.rs`.
+- [x] **AI attribution on AMF-posted comments (honesty — from real use).**
+      A new shared `append_ai_attribution` helper (`src/app/pr_review.rs`)
+      appends `— drafted by Claude via AMF` to AI-authored GitHub content —
+      wired into `build_ai_review`'s inline-comment bodies (Epic E `W` — "post
+      as GitHub review"), which previously posted `f.body` verbatim with no
+      attribution of their own. The top-level review summary already
+      self-identifies (`"AI review, via AMF."` as its opening line, unchanged),
+      but each *inline* comment can surface on its own — e.g. GitHub's
+      Files-changed view — without the summary in sight, so it needed its own
+      marker. Hardcoded to "Claude" rather than a generic `<harness>` slot:
+      AI-review generation always runs through
+      `ClaudeLauncher::run_headless`, independent of whichever harness a
+      "fix" gets injected into (`review_harness` only targets the fix
+      session), so there's no other harness it could currently be. Scoped to
+      AI-authored bodies only, per the original design — a user-typed reply
+      (the Epic C "not-needed" reason, hand-edited "done in `<sha>`"
+      template) is the user's own words and stays unmarked; the general/
+      pathless findings folded into the summary bullet list aren't
+      individually footed since the summary's opening line already covers
+      them. One shared helper so any future AI-drafted reply routes through
+      the same wording. Unit-tested (`append_ai_attribution` appends the
+      footer and trims trailing whitespace first; `build_ai_review`'s inline
+      body now includes it). → `src/app/pr_review.rs`.
 - [x] **BUG: triage/reply state is lost on return (from real use).**
       Root cause was the **head-SHA in the triage key**, not a missing flush:
       `pr_review_set_triage` (`m`/`s`), the reply post path, and the

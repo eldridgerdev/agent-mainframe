@@ -12,6 +12,13 @@ are tagged.
 
 ### Added
 
+- **AI-authored PR review comments are attributed.** When you post an AI
+  review (`W` in the PR-review pane), each inline comment now carries a
+  small `— drafted by Claude via AMF` footer, so a reviewer looking at just
+  that comment — without the review summary in view — can still tell it's
+  AI-authored rather than mistake it for your own words. Your own typed
+  replies (the "not needed" explanation, a "done in `<sha>`" note) are
+  never touched.
 - **AI review of the PR diff (draft findings).** Press `A` in the PR-review
   pane to have AMF review the PR's diff itself and surface findings as draft
   items in the same list, triaged with the verbs already there (`f` inject-fix

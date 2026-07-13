@@ -91,11 +91,14 @@ are tagged.
   header, so neither screen reads as stuck or stalled. Success/warning/error
   toasts (e.g. "AI review found N findings") now actually render while any of
   the PR-review pane's full-screen modes are showing — they were being pushed
-  but silently swallowed before. Finding-parsing also tolerates a model that
-  doesn't hold the exact requested heading level or wraps its whole reply in
-  a code fence, and a `0 findings` result is now distinguished (a warning
-  toast + a debug-log dump of the raw response) from a quiet success, so a
-  parsing mismatch doesn't look identical to "the diff was just clean". A
+  but silently swallowed before. A failed `A` run now uses that visible error
+  toast too, instead of putting the failure in a dashboard-only message that
+  cannot be seen after returning to PR Triage. Finding-parsing also tolerates
+  a model that doesn't hold the exact requested heading level or wraps its
+  whole reply in a code fence, and a `0 findings` result is now distinguished
+  (a warning toast + a debug-log dump of the raw response) from a quiet
+  success, so a parsing mismatch doesn't look identical to "the diff was just
+  clean". A
   draft finding's role chip now reads `[ai]` instead of falling through to
   `[human]`, its detail pane shows a small window of the actual diff around
   its line (re-matched from the PR diff by `path:line`, same as a fetched

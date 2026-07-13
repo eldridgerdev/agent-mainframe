@@ -8928,6 +8928,41 @@ fn poll_ai_pr_review_bg_error_still_returns_to_pane() {
     assert!(app.poll_ai_pr_review_bg());
     assert!(app.ai_review_bg.is_none());
     assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed: gh pr diff failed")
+    );
+    assert!(
+        app.message.is_none(),
+        "AI-review failures should use a visible pane toast, not the hidden dashboard message"
+    );
+}
+
+#[test]
+fn poll_ai_pr_review_bg_disconnect_returns_to_pane_with_error_toast() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    let origin = match &app.mode {
+        AppMode::PrReview(state) => state.clone(),
+        _ => unreachable!(),
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(origin.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+    drop(tx);
+
+    assert!(app.poll_ai_pr_review_bg());
+    assert!(app.ai_review_bg.is_none());
+    assert!(matches!(app.mode, AppMode::PrReview(_)));
+    assert_eq!(
+        app.toasts.last().map(|toast| toast.message.as_str()),
+        Some("AI review failed unexpectedly")
+    );
+    assert!(app.message.is_none());
 }
 
 #[test]

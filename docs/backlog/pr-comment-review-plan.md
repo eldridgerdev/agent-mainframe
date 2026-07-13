@@ -1221,6 +1221,19 @@ first), and the reviewer's output (plus comments triaged in the pane)
       suppression safety net. Unit-tested against a 40-line added block, with
       the target retained and distant lines excluded. → `src/app/pr_review.rs`,
       `src/github.rs`, `src/ui/dialogs/pr_review.rs`.
+
+      **Eighth follow-up — surface `A` failures as toasts (from real use).** A
+      failed background AI-review run called the shared `show_error`, which
+      stored the failure in AMF's dashboard status message. The result handler
+      then restored the full-screen PR Triage pane, where that message is not
+      rendered, so the user saw the run end without being able to read the
+      error. AI-review worker failures now remain logged with their full detail
+      and also push an eight-second error toast before returning to the pane;
+      unexpected worker-channel termination uses the same visible path. The
+      normal pane state is preserved, including when the user already cancelled
+      the running screen while the job continued in the background. Focused
+      tests cover both a returned worker error and a disconnected worker. →
+      `src/app/pr_review.rs`, `src/app/tests.rs`.
 - **Acceptance:** bootstrap a `review-memory.md` from the last 50 PRs in
   one pass; run an AI review of an open PR that flags issues informed by
   that memory, triage its findings in-pane, optionally post them as a

@@ -144,7 +144,7 @@ pub struct PlanQuestion {
     pub id: String,            // stable slug, e.g. "ui-surface"
     pub text: String,
     pub kind: PlanQuestionKind,   // FreeText | Select(Vec<String>)
-    pub source: QuestionSource,   // Builtin | Template | Ai { round }
+    pub source: QuestionSource,   // Builtin | GlobalTemplate | Template | Ai { round }
     pub optional: bool,           // skippable without an answer
 }
 ```
@@ -157,8 +157,10 @@ pub struct PlanQuestion {
 - **User templates** (config): a `plan_questions` array in
   `config.json`, merged global → project by `id` exactly like
   `feature_presets` / `prompt_templates` in `extension.rs` (project
-  wins). Select options use the same authoring shape as `HookPrompt`
-  options. A project can also set `skip_builtin_questions: true`.
+  wins after trimming surrounding ID whitespace). Select options use
+  the same authoring shape as `HookPrompt` options. A project can also
+  set `skip_builtin_questions: true`. The interview progress header
+  identifies configured questions as global or project templates.
 - **AI-adaptive**: an interviewer prompt (constant, versioned in
   code) receives the feature brief, all prior Q&A, and cheap repo
   context (README head, top-level dir listing, CLAUDE.md if present)
@@ -355,12 +357,13 @@ picks the plan up with no display-layer changes.
 Demo: a project `config.json` adds/overrides questions; wizard
 interview shows them merged with (or replacing) the built-in bank.
 
-- [ ] `plan_questions` schema in `extension.rs` + global/project
+- [x] `plan_questions` schema in `extension.rs` + global/project
       merge by `id` (project wins), `skip_builtin_questions` flag
-- [ ] Select-option questions authored in config (HookPrompt-style)
+- [x] Select-option questions authored in config (HookPrompt-style)
+- [x] Normalized ID overrides and accurate Global/Project template labels
 - [ ] Config-wizard / docs coverage; `amf-add-plan-question` skill
       (optional, mirrors `amf-add-prompt`)
-- [ ] Merge + parse unit tests
+- [x] Merge + parse unit tests
 
 ### Epic 3 — AI adaptive questioning
 

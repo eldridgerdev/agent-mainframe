@@ -46,6 +46,16 @@ are tagged.
   left untouched and can be deleted if they are no longer needed. The `?`
   help overlay and README now document every interview shortcut, including
   multi-line answers, back navigation, skipping, finishing early, and cancel.
+- **Plan-mode interviews support custom questions.** Add `plan_questions` to
+  global or project AMF config to append free-text questions, offer selectable
+  answers with an `options` list, or replace a built-in question by reusing its
+  ID. Project questions override global questions with the same ID, and
+  `skip_builtin_questions` can run an interview using only configured
+  questions. IDs are normalized before global and project questions are
+  merged, so surrounding whitespace cannot prevent a project override. The
+  interview also labels global and project templates with their actual scope.
+  Existing configs keep the built-in interview unchanged, so no migration is
+  required.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

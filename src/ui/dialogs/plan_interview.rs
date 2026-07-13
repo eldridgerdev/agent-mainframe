@@ -144,6 +144,7 @@ fn progress_header(state: &PlanInterviewState, theme: &Theme) -> Paragraph<'stat
                 .current_question()
                 .map(|question| match question.source {
                     QuestionSource::Builtin => "Built-in".to_string(),
+                    QuestionSource::GlobalTemplate => "Global template".to_string(),
                     QuestionSource::Template => "Project template".to_string(),
                     QuestionSource::Ai { round } => format!("AI round {round}"),
                 })

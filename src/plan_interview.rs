@@ -19,6 +19,7 @@ pub enum PlanQuestionKind {
 #[serde(rename_all = "snake_case")]
 pub enum QuestionSource {
     Builtin,
+    GlobalTemplate,
     Template,
     Ai { round: usize },
 }
@@ -136,7 +137,7 @@ mod tests {
                 id: "deployment-target".into(),
                 text: "Where should this run?".into(),
                 kind: PlanQuestionKind::Select(vec!["Local".into(), "Cloud".into()]),
-                source: QuestionSource::Template,
+                source: QuestionSource::GlobalTemplate,
                 optional: false,
             },
             PlanQuestion {

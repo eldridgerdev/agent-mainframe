@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::PromptAnalysis;
 use crate::editor::TextEditor;
 use crate::extension::{CustomSessionConfig, FeaturePreset, LifecycleHooks};
-use crate::plan_interview::{PlanQuestion, PlanQuestionKind, builtin_questions};
+use crate::plan_interview::{PlanQuestion, PlanQuestionKind};
 use crate::project::{AgentKind, SessionKind, VibeMode};
 use crate::token_tracking::{SessionTokenUsage, TokenUsageSource};
 use crate::worktree::WorktreeInfo;
@@ -2685,9 +2685,12 @@ pub struct PlanInterviewState {
 }
 
 impl PlanInterviewState {
-    pub fn for_feature_creation(pending_launch: PreparedFeatureLaunch) -> Self {
+    pub fn for_feature_creation(
+        pending_launch: PreparedFeatureLaunch,
+        questions: Vec<PlanQuestion>,
+    ) -> Self {
         let feature_name = pending_launch.branch.clone();
-        Self::new(feature_name, builtin_questions(), Some(pending_launch))
+        Self::new(feature_name, questions, Some(pending_launch))
     }
 
     pub fn new(

@@ -13,7 +13,17 @@ const PLAN_FILE_NAME: &str = "plan.md";
 
 impl App {
     pub(crate) fn start_plan_interview(&mut self, prepared: PreparedFeatureLaunch) {
-        self.mode = AppMode::PlanInterview(PlanInterviewState::for_feature_creation(prepared));
+        let questions = self
+            .store
+            .find_project(&prepared.project_name)
+            .map(|project| {
+                self.extension_for_repo(&project.repo)
+                    .plan_interview_questions()
+            })
+            .unwrap_or_else(crate::plan_interview::builtin_questions);
+        self.mode = AppMode::PlanInterview(PlanInterviewState::for_feature_creation(
+            prepared, questions,
+        ));
         self.message = None;
     }
 

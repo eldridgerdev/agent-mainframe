@@ -50,7 +50,7 @@ const AMF_SKILLS: &[(&str, &str)] = &[
 const CLAUDE_SETTINGS_LOCAL_JSON: &str = "settings.local.json";
 const CLAUDE_SETTINGS_JSON: &str = "settings.json";
 const CLAUDE_STATE_JSON: &str = "amf-hook-state.json";
-const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":amf-active-hook-guard-v1");
+const HOOK_REFRESH_STAMP: &str = concat!(env!("CARGO_PKG_VERSION"), ":quoted-claude-hooks-v2");
 const CLAUDE_MANAGED_SCRIPT_NAMES: &[&str] = &[
     "notify.sh",
     "clear-notify.sh",
@@ -149,21 +149,43 @@ fn claude_managed_commands() -> Vec<String> {
         .collect()
 }
 
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn shell_unquote_single(value: &str) -> String {
+    value
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+        .map(|value| value.replace("'\\''", "'"))
+        .unwrap_or_else(|| value.to_string())
+}
+
+pub(crate) fn claude_hook_command(path: &Path) -> String {
+    shell_quote(&path.to_string_lossy())
+}
+
 fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
-    if managed_commands.iter().any(|managed| managed == command) {
+    let normalized = shell_unquote_single(command);
+    if managed_commands
+        .iter()
+        .any(|managed| managed == command || managed == &normalized)
+    {
         return true;
     }
 
-    // The XDG-aware config-dir resolver depends on HOME/XDG_CONFIG_HOME.
-    // Older verification runs could install hooks while HOME pointed at a
-    // temporary Claude scratchpad, leaving deleted helper paths such as
-    // /tmp/claude-.../scratchpad/amf_verify_home/.config/amf/tool-stop.sh.
-    // Treat only AMF's known helper names under a .config/amf directory as
-    // managed so unrelated user hooks with the same basename are preserved.
-    let Some((parent, name)) = command.rsplit_once('/') else {
+    // The config-dir resolver depends on HOME/XDG_CONFIG_HOME and can differ
+    // across platforms. Older runs may leave helper paths from a previous AMF
+    // config root, including macOS' Library/Application Support path.
+    // Treat only AMF's known helper names under a recognized AMF config
+    // directory as managed so unrelated user hooks with the same basename are
+    // preserved.
+    let Some((parent, name)) = normalized.rsplit_once('/') else {
         return false;
     };
-    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name) && parent.ends_with("/.config/amf")
+    CLAUDE_MANAGED_SCRIPT_NAMES.contains(&name)
+        && (parent.ends_with("/.config/amf")
+            || parent.ends_with("/Library/Application Support/amf"))
 }
 
 fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[String]) -> bool {
@@ -888,31 +910,13 @@ pub fn ensure_notification_hooks(
 
     let config_dir = crate::project::amf_config_dir();
     let managed_commands = claude_managed_commands();
-    let notify_cmd = config_dir.join("notify.sh").to_string_lossy().into_owned();
-    let clear_cmd = config_dir
-        .join("clear-notify.sh")
-        .to_string_lossy()
-        .into_owned();
-    let save_prompt_cmd = config_dir
-        .join("save-prompt.sh")
-        .to_string_lossy()
-        .into_owned();
-    let thinking_start_cmd = config_dir
-        .join("thinking-start.sh")
-        .to_string_lossy()
-        .into_owned();
-    let thinking_stop_cmd = config_dir
-        .join("thinking-stop.sh")
-        .to_string_lossy()
-        .into_owned();
-    let tool_start_cmd = config_dir
-        .join("tool-start.sh")
-        .to_string_lossy()
-        .into_owned();
-    let tool_stop_cmd = config_dir
-        .join("tool-stop.sh")
-        .to_string_lossy()
-        .into_owned();
+    let notify_cmd = claude_hook_command(&config_dir.join("notify.sh"));
+    let clear_cmd = claude_hook_command(&config_dir.join("clear-notify.sh"));
+    let save_prompt_cmd = claude_hook_command(&config_dir.join("save-prompt.sh"));
+    let thinking_start_cmd = claude_hook_command(&config_dir.join("thinking-start.sh"));
+    let thinking_stop_cmd = claude_hook_command(&config_dir.join("thinking-stop.sh"));
+    let tool_start_cmd = claude_hook_command(&config_dir.join("tool-start.sh"));
+    let tool_stop_cmd = claude_hook_command(&config_dir.join("tool-stop.sh"));
 
     let wants_diff_review = matches!(mode, VibeMode::Vibeless);
     let diff_review_cmd = if wants_diff_review {
@@ -954,6 +958,7 @@ pub fn ensure_notification_hooks(
         }),
     ];
     if wants_diff_review && let Some(ref dr_cmd) = diff_review_cmd {
+        let dr_cmd = shell_quote(dr_cmd);
         pre_tool_hooks.push(serde_json::json!({
             "type": "command",
             "command": dr_cmd,

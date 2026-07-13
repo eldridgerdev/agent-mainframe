@@ -170,6 +170,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use crate::markdown::{preferred_plan_markdown_path, read_plan_preview};
     use crate::plan_interview::{PlanQuestionKind, QuestionSource};
 
     #[test]
@@ -221,5 +222,29 @@ mod tests {
             fs::read_to_string(workdir.path().join(".claude/.gitignore")).unwrap(),
             "notifications/\nplan.md\n"
         );
+    }
+
+    #[test]
+    fn non_worktree_plan_write_is_the_plan_sidebar_reads() {
+        let repo = TempDir::new().unwrap();
+        let expected_plan = repo.path().join(".claude/plan.md");
+
+        write_plan_file(
+            repo.path(),
+            "# Plan: first feature\n\n## Feature brief\n\nShip it.\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            preferred_plan_markdown_path(repo.path(), Some(repo.path())),
+            Some(expected_plan.clone())
+        );
+        assert_eq!(
+            read_plan_preview(repo.path(), Some(repo.path())).as_deref(),
+            Some("Plan: first feature\nFeature brief\nShip it.")
+        );
+        assert!(expected_plan.is_file());
+        assert!(!repo.path().join("PLAN.md").exists());
+        assert!(!repo.path().join("plan.md").exists());
     }
 }

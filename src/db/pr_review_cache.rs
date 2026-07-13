@@ -70,6 +70,7 @@ mod tests {
                 is_bot: false,
                 path: Some("src/lib.rs".into()),
                 line: Some(42),
+                side: Some("RIGHT".into()),
                 outdated: false,
                 file_level: false,
                 diff_hunk: Some("@@ -1 +1 @@".into()),

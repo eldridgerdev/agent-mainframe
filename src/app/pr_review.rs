@@ -9,6 +9,7 @@
 // are consumed by later epics; keep them until those land.
 #![allow(dead_code)]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -370,6 +371,7 @@ pub fn findings_to_comments(findings: &[AiFinding]) -> Vec<PrComment> {
                 is_bot: false,
                 path: f.path.clone(),
                 line: f.line,
+                side: Some("RIGHT".into()),
                 outdated: false,
                 file_level: f.path.is_some() && f.line.is_none(),
                 diff_hunk: f.diff_hunk.clone(),
@@ -415,6 +417,33 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
         line >= h.new_start && line < end
     })?;
 
+    window_parsed_hunk(hunk, line, false, AI_FINDING_HUNK_CONTEXT_LINES)
+}
+
+/// Parse a GitHub-provided hunk and retain only the lines immediately around
+/// its comment anchor. The synthetic file headers let the regular unified-diff
+/// parser do the fiddly line-kind/header work without maintaining a second
+/// parser here.
+fn window_github_hunk(text: &str, line: usize, old_side: bool, context: usize) -> Option<String> {
+    let synthetic = format!(
+        "diff --git a/__amf_comment__ b/__amf_comment__\n\
+         --- a/__amf_comment__\n\
+         +++ b/__amf_comment__\n{text}\n"
+    );
+    let files = crate::diff::parse_unified_diff(&synthetic).ok()?;
+    let hunk = files.first()?.hunks.first()?;
+    window_parsed_hunk(hunk, line, old_side, context)
+}
+
+/// Render a bounded slice of a parsed hunk centered on `line`. `old_side`
+/// selects base-file numbering for comments on removed lines; otherwise the
+/// current-file numbering is used.
+fn window_parsed_hunk(
+    hunk: &crate::diff::DiffHunk,
+    line: usize,
+    old_side: bool,
+    context: usize,
+) -> Option<String> {
     // Walk the hunk tracking the old/new line number *at* each entry (before
     // that line is consumed), both to find the target line's index and to
     // know the old/new start of whatever window we slice out below.
@@ -426,26 +455,32 @@ fn diff_hunk_for_line(files: &[crate::diff::DiffFile], path: &str, line: u32) ->
         line_starts.push((old_line, new_line));
         match l.kind {
             crate::diff::DiffLineKind::Context => {
-                if target_idx.is_none() && new_line == line {
+                let candidate = if old_side { old_line } else { new_line };
+                if target_idx.is_none() && candidate == line {
                     target_idx = Some(i);
                 }
                 old_line += 1;
                 new_line += 1;
             }
             crate::diff::DiffLineKind::Added => {
-                if target_idx.is_none() && new_line == line {
+                if !old_side && target_idx.is_none() && new_line == line {
                     target_idx = Some(i);
                 }
                 new_line += 1;
             }
-            crate::diff::DiffLineKind::Removed => old_line += 1,
+            crate::diff::DiffLineKind::Removed => {
+                if old_side && target_idx.is_none() && old_line == line {
+                    target_idx = Some(i);
+                }
+                old_line += 1;
+            }
             crate::diff::DiffLineKind::NoNewlineMarker => {}
         }
     }
     let target_idx = target_idx?;
 
-    let start_idx = target_idx.saturating_sub(AI_FINDING_HUNK_CONTEXT_LINES);
-    let end_idx = (target_idx + AI_FINDING_HUNK_CONTEXT_LINES + 1).min(hunk.lines.len());
+    let start_idx = target_idx.saturating_sub(context);
+    let end_idx = (target_idx + context + 1).min(hunk.lines.len());
     let window = &hunk.lines[start_idx..end_idx];
     let (window_old_start, window_new_start) = line_starts[start_idx];
     let (mut window_old_count, mut window_new_count) = (0usize, 0usize);
@@ -700,6 +735,10 @@ pub struct PrComment {
     pub path: Option<String>,
     /// Best-known line: the current diff line, falling back to the original.
     pub line: Option<u32>,
+    /// GitHub diff side for `line` (`RIGHT`/current or `LEFT`/base).
+    /// Older cache rows predate this field and default to the current side.
+    #[serde(default)]
+    pub side: Option<String>,
     /// True when the comment's anchor line no longer exists in the diff.
     pub outdated: bool,
     /// True when the comment is on the *file* rather than a line (GitHub
@@ -734,17 +773,16 @@ pub struct PrComment {
     pub ai_generated: bool,
 }
 
-/// A `diff_hunk` longer than this is treated as "effectively the whole file"
-/// even when GitHub didn't label the comment file-level — a backstop for hunks
-/// that are a large, low-value token cost to inject (plan token principle #3)
-/// when the agent could just open the file.
-///
-/// Deliberately well clear of ordinary line comments: sampling real PRs, a
-/// line-anchored comment's hunk runs to ~90 lines at the tail (most are under
-/// 30), so a tighter cap would strip the context the reviewer pointed at. Only
-/// `subject_type == "file"` reliably identifies a file-level comment; this is
-/// the safety net for the pathological case, not the classifier.
+/// A hunk without a usable line anchor longer than this is treated as
+/// effectively the whole file. Line-anchored comments are safely windowed
+/// around their target instead (see [`COMMENT_HUNK_CONTEXT_LINES`]).
 const WHOLE_FILE_HUNK_LINES: usize = 150;
+
+/// Context retained on either side of a line-anchored review comment. GitHub's
+/// `diff_hunk` can encompass an entire newly-added function even when the
+/// comment itself points at one line; rendering or injecting all of it makes
+/// the referenced code hard to spot and wastes prompt context.
+const COMMENT_HUNK_CONTEXT_LINES: usize = 3;
 
 impl PrComment {
     /// The diff hunk worth showing and injecting, or `None` when it should be
@@ -753,10 +791,33 @@ impl PrComment {
     ///
     /// The suppressed case compounds in the combined batch (`B`), where several
     /// whole-file hunks would otherwise land in one prompt.
-    pub fn prompt_hunk(&self) -> Option<&str> {
+    pub fn prompt_hunk(&self) -> Option<Cow<'_, str>> {
         let hunk = self.diff_hunk.as_deref()?;
-        let whole_file = self.file_level || hunk.lines().count() > WHOLE_FILE_HUNK_LINES;
-        (!whole_file).then_some(hunk)
+        if self.file_level {
+            return None;
+        }
+
+        let hunk_lines = hunk.lines().count();
+        if hunk_lines > COMMENT_HUNK_CONTEXT_LINES * 2 + 2
+            && let Some(line) = self.line
+            && let Some(window) = window_github_hunk(
+                hunk,
+                line as usize,
+                self.side.as_deref() == Some("LEFT"),
+                COMMENT_HUNK_CONTEXT_LINES,
+            )
+        {
+            return Some(Cow::Owned(window));
+        }
+
+        // Keep the old safety net for a malformed/unanchored hunk that cannot
+        // be windowed. Valid line-anchored hunks return through the bounded
+        // branch above, regardless of their original size.
+        if hunk_lines > WHOLE_FILE_HUNK_LINES {
+            return None;
+        }
+
+        Some(Cow::Borrowed(hunk))
     }
 
     /// Whether a hunk exists but is being withheld as whole-file-sized. Drives
@@ -1042,6 +1103,7 @@ pub fn normalize(
             is_bot,
             path: c.path,
             line: c.line.or(c.original_line),
+            side: c.side,
             outdated: c.line.is_none() && !file_level,
             file_level,
             diff_hunk: c.diff_hunk,
@@ -1071,6 +1133,7 @@ pub fn normalize(
             is_bot,
             path: None,
             line: None,
+            side: None,
             outdated: false,
             file_level: false,
             diff_hunk: None,
@@ -1095,6 +1158,7 @@ pub fn normalize(
             is_bot,
             path: None,
             line: None,
+            side: None,
             outdated: false,
             file_level: false,
             diff_hunk: None,
@@ -3701,6 +3765,7 @@ mod tests {
                 path: Some("a.rs".into()),
                 line: None, // outdated
                 original_line: Some(7),
+                side: Some("RIGHT".into()),
                 diff_hunk: Some("@@".into()),
                 subject_type: None,
                 body: "race condition".into(),
@@ -3713,6 +3778,7 @@ mod tests {
                 path: Some("b.rs".into()),
                 line: Some(3),
                 original_line: Some(3),
+                side: Some("RIGHT".into()),
                 diff_hunk: None,
                 subject_type: None,
                 body: "nit".into(),
@@ -3754,6 +3820,7 @@ mod tests {
             path: Some("src/big.rs".into()),
             line: None,
             original_line: None,
+            side: None,
             diff_hunk: Some("@@ -1,400 +1,420 @@\n+ enormous".into()),
             subject_type: Some("file".into()),
             body: "This module does too much.".into(),
@@ -3803,6 +3870,7 @@ mod tests {
             is_bot,
             path: Some("src/app/sync.rs".into()),
             line: Some(42),
+            side: Some("RIGHT".into()),
             outdated: false,
             file_level: false,
             diff_hunk: Some("@@ -38,4 +38,5 @@\n  poll = 250;\n+ self.sync();".into()),
@@ -3876,6 +3944,26 @@ mod tests {
         assert!(!prompt.contains("(comment on the whole file)"));
         assert!(!prompt.contains("Diff hunk:"));
         assert!(prompt.contains("Diff hunk omitted"));
+    }
+
+    #[test]
+    fn line_comment_windows_githubs_large_hunk_around_its_anchor() {
+        let mut c = inline_comment("Only this line is relevant.", false);
+        c.line = Some(20);
+        c.outdated = true;
+        c.diff_hunk = Some(
+            std::iter::once("@@ -1,0 +1,40 @@".to_string())
+                .chain((1..=40).map(|i| format!("+line{i}")))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        let hunk = c.prompt_hunk().expect("the anchor is in the hunk");
+        let lines: Vec<_> = hunk.lines().collect();
+        assert_eq!(lines.len(), COMMENT_HUNK_CONTEXT_LINES * 2 + 2);
+        assert!(hunk.contains("+line20"));
+        assert!(!hunk.contains("+line1\n"));
+        assert!(!hunk.contains("+line40"));
     }
 
     #[test]
@@ -4112,6 +4200,7 @@ mod tests {
             is_bot: false,
             path: None,
             line: None,
+            side: None,
             outdated: false,
             file_level: false,
             ai_generated: false,
@@ -4146,6 +4235,7 @@ mod tests {
             path: path.map(String::from),
             line,
             original_line: line,
+            side: Some("RIGHT".into()),
             diff_hunk: None,
             subject_type: None,
             body: body.to_string(),

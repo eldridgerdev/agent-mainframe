@@ -41,6 +41,12 @@ are tagged.
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every
   author to find your work in a shared repo's PR list.
+- **Open PRs are visible directly on the dashboard.** Feature rows now show the
+  PR number and unresolved review-thread count (for example,
+  `[PR #321 · 4 open]`), so you can see which branches need triage before
+  opening the PR pane. The badge refreshes in the background and keeps its
+  last known value through temporary GitHub errors. No setup or migration is
+  required.
 - **PR triage shows what the current visit costs.** After a fix uses the
   dedicated or existing-live agent session, the PR-review header now shows the
   tokens and estimated cost added during this visit alongside the session's

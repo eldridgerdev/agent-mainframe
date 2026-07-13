@@ -1074,6 +1074,85 @@ fn sync_statuses_idle_stays_idle_when_session_live() {
 }
 
 #[test]
+fn active_pr_updates_cache_current_branch_and_remove_confirmed_absence() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(4),
+        }),
+    }]));
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 321);
+    assert_eq!(
+        app.active_pr_for_feature(&feature_id)
+            .unwrap()
+            .unresolved_threads,
+        Some(4)
+    );
+
+    // A result started for an old branch cannot overwrite the current badge.
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: "old-branch".to_string(),
+        lookup: ActivePrLookup::NoPr,
+    }]));
+    assert!(app.active_pr_for_feature(&feature_id).is_some());
+
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch,
+        lookup: ActivePrLookup::NoPr,
+    }]));
+    assert!(app.active_pr_for_feature(&feature_id).is_none());
+}
+
+#[test]
+fn failed_active_pr_refresh_preserves_last_known_badge() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "abc123".to_string(),
+            number: 321,
+            unresolved_threads: Some(1),
+        },
+    );
+
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch,
+        lookup: ActivePrLookup::Failed("network unavailable".to_string()),
+    }]));
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 321);
+}
+
+#[test]
 fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
     let repo = TempDir::new().unwrap();
     let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);

@@ -1861,7 +1861,7 @@ pub enum AppMode {
     TodosHostReassign(TodosHostReassignState),
     CreatingProject(CreateProjectState),
     CreatingFeature(CreateFeatureState),
-    #[allow(dead_code)] // Entered once the Epic 1 question dialog is wired up.
+    #[allow(dead_code)] // Entered by the next Epic 1 feature-launch integration.
     PlanInterview(PlanInterviewState),
     DeletingProject(String),
     DeletingFeature(String, String),
@@ -2638,7 +2638,6 @@ pub struct PreparedFeatureLaunch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed by the staged question-dialog integration.
 pub enum PlanInterviewPhase {
     Brief,
     StaticQuestions,
@@ -2646,7 +2645,6 @@ pub enum PlanInterviewPhase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed by the staged question-dialog integration.
 pub enum PlanInterviewAdvanceError {
     BriefRequired,
     AnswerRequired,
@@ -2657,7 +2655,6 @@ pub enum PlanInterviewAdvanceError {
 /// Draft persistence and AI-generated phases are intentionally layered onto
 /// this state in later epics. `pending_launch` is optional so the same state
 /// can also support on-demand interviews for existing features.
-#[allow(dead_code)] // The state machine lands immediately before its UI consumer.
 pub struct PlanInterviewState {
     pub feature_name: String,
     pub phase: PlanInterviewPhase,
@@ -2668,9 +2665,9 @@ pub struct PlanInterviewState {
     pub editor: TextEditor,
     pub selected_option: usize,
     pub pending_launch: Option<PreparedFeatureLaunch>,
+    pub abort_confirmation: bool,
 }
 
-#[allow(dead_code)]
 impl PlanInterviewState {
     pub fn for_feature_creation(pending_launch: PreparedFeatureLaunch) -> Self {
         let feature_name = pending_launch.branch.clone();
@@ -2693,6 +2690,7 @@ impl PlanInterviewState {
             editor: TextEditor::new(String::new()),
             selected_option: 0,
             pending_launch,
+            abort_confirmation: false,
         }
     }
 
@@ -2701,6 +2699,35 @@ impl PlanInterviewState {
             self.questions.get(self.question_index)
         } else {
             None
+        }
+    }
+
+    pub fn select_previous_option(&mut self) {
+        let option_count = self
+            .current_question()
+            .and_then(|question| match &question.kind {
+                PlanQuestionKind::Select(options) => Some(options.len()),
+                PlanQuestionKind::FreeText => None,
+            })
+            .unwrap_or(0);
+        if option_count > 0 {
+            self.selected_option = self
+                .selected_option
+                .checked_sub(1)
+                .unwrap_or(option_count - 1);
+        }
+    }
+
+    pub fn select_next_option(&mut self) {
+        let option_count = self
+            .current_question()
+            .and_then(|question| match &question.kind {
+                PlanQuestionKind::Select(options) => Some(options.len()),
+                PlanQuestionKind::FreeText => None,
+            })
+            .unwrap_or(0);
+        if option_count > 0 {
+            self.selected_option = (self.selected_option + 1) % option_count;
         }
     }
 
@@ -3057,5 +3084,29 @@ mod tests {
             state.answers[1].as_deref(),
             Some("Developers use it from the dashboard")
         );
+    }
+
+    #[test]
+    fn plan_interview_select_options_wrap_and_restore_the_answer() {
+        let question = PlanQuestion {
+            id: "surface".into(),
+            text: "Where should this appear?".into(),
+            kind: PlanQuestionKind::Select(vec!["Dashboard".into(), "Session".into()]),
+            source: crate::plan_interview::QuestionSource::Template,
+            optional: false,
+        };
+        let mut state = PlanInterviewState::new("feature".into(), vec![question], None);
+        state.editor = TextEditor::new("A useful feature".into());
+        state.advance().unwrap();
+
+        state.select_previous_option();
+        assert_eq!(state.selected_option, 1);
+        state.advance().unwrap();
+        assert_eq!(state.answers[0].as_deref(), Some("Session"));
+
+        assert!(state.back());
+        assert_eq!(state.selected_option, 1);
+        state.select_next_option();
+        assert_eq!(state.selected_option, 0);
     }
 }

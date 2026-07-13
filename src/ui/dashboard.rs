@@ -1299,6 +1299,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+        AppMode::PlanInterview(state) => {
+            super::dialogs::draw_plan_interview_dialog(
+                frame,
+                state,
+                app.message.as_deref(),
+                &app.theme,
+            );
+        }
         AppMode::CreatingBatchFeatures(state) => {
             super::dialogs::draw_create_batch_features_dialog(frame, state, &app.theme);
         }

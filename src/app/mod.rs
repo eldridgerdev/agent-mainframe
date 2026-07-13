@@ -15,6 +15,7 @@ mod navigation;
 mod notifications;
 mod opencode;
 pub(crate) mod opencode_storage;
+mod plan_interview;
 pub(crate) mod pr_review;
 mod project_ops;
 mod prompt_library;

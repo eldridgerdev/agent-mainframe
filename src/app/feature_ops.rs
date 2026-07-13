@@ -370,6 +370,17 @@ impl App {
     }
 
     pub(crate) fn finish_feature_launch(&mut self, prepared: PreparedFeatureLaunch) -> Result<()> {
+        if prepared.plan_mode {
+            self.start_plan_interview(prepared);
+            return Ok(());
+        }
+        self.finish_feature_launch_without_interview(prepared)
+    }
+
+    pub(crate) fn finish_feature_launch_without_interview(
+        &mut self,
+        prepared: PreparedFeatureLaunch,
+    ) -> Result<()> {
         let existing_pending = self
             .store
             .projects

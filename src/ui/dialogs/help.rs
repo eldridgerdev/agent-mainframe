@@ -85,6 +85,37 @@ fn draw_help_at(frame: &mut Frame, area: Rect, scroll_offset: usize, theme: &The
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
+        "  During a plan interview:",
+        Style::default()
+            .fg(theme.primary.to_color())
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let plan_interview_keybinds: Vec<(&str, &str)> = vec![
+        ("Enter", "Save answer and continue"),
+        ("Alt+Enter", "Insert a newline (free-text answers)"),
+        ("j/k / \u{2191}/\u{2193}", "Choose a select-option answer"),
+        ("Ctrl+B", "Return to the previous question"),
+        ("Ctrl+S", "Skip an optional question"),
+        ("Ctrl+F", "Finish early with answers so far"),
+        ("Esc", "Cancel (launch without plan or feature)"),
+    ];
+
+    for (key, desc) in &plan_interview_keybinds {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:>14}", key),
+                Style::default()
+                    .fg(theme.warning.to_color())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(*desc, Style::default().fg(theme.text.to_color())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
         "  While viewing (embedded tmux):",
         Style::default()
             .fg(theme.primary.to_color())

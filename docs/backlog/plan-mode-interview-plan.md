@@ -348,7 +348,7 @@ picks the plan up with no display-layer changes.
 - [x] Unit test: non-worktree first feature (workdir == repo root)
       reads/writes the same `.claude/plan.md` the sidebar fallback
       finds — no duplicate plan files
-- [ ] Help overlay + keybinding docs for the new mode
+- [x] Help overlay + keybinding docs for the new mode
 
 ### Epic 2 — User-defined question templates
 

@@ -188,6 +188,35 @@ fn is_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> boo
             || parent.ends_with("/Library/Application Support/amf"))
 }
 
+fn is_unquoted_amf_claude_hook_command(command: &str, managed_commands: &[String]) -> bool {
+    !(command.starts_with('\'') && command.ends_with('\''))
+        && is_amf_claude_hook_command(command, managed_commands)
+}
+
+fn has_unquoted_amf_claude_hooks(
+    settings: &serde_json::Value,
+    managed_commands: &[String],
+) -> bool {
+    settings
+        .get("hooks")
+        .and_then(|value| value.as_object())
+        .is_some_and(|hooks_obj| {
+            hooks_obj.values().any(|entries| {
+                entries.as_array().is_some_and(|entries| {
+                    entries.iter().any(|entry| {
+                        entry["hooks"].as_array().is_some_and(|hooks| {
+                            hooks.iter().any(|hook| {
+                                hook["command"].as_str().is_some_and(|command| {
+                                    is_unquoted_amf_claude_hook_command(command, managed_commands)
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        })
+}
+
 fn is_amf_claude_hook_entry(entry: &serde_json::Value, managed_commands: &[String]) -> bool {
     entry["hooks"].as_array().is_some_and(|hooks| {
         hooks.iter().any(|hook| {
@@ -533,6 +562,35 @@ pub fn refresh_claude_hooks_for_store(store: &ProjectStore) -> usize {
     // once both passes are done.  If this store has no opencode features the
     // opencode function still runs (empty loop) and stamps correctly.
     refreshed
+}
+
+pub fn repair_unquoted_claude_hooks_for_store(store: &ProjectStore) -> usize {
+    let managed_commands = claude_managed_commands();
+    let mut repaired = 0usize;
+    for project in &store.projects {
+        for feature in &project.features {
+            if !matches!(feature.agent, AgentKind::Claude) {
+                continue;
+            }
+            let settings_path = feature
+                .workdir
+                .join(".claude")
+                .join(CLAUDE_SETTINGS_LOCAL_JSON);
+            let settings = read_json_object(&settings_path);
+            if !has_unquoted_amf_claude_hooks(&settings, &managed_commands) {
+                continue;
+            }
+            ensure_notification_hooks(
+                &feature.workdir,
+                &project.repo,
+                &feature.mode,
+                &feature.agent,
+                feature.is_worktree,
+            );
+            repaired += 1;
+        }
+    }
+    repaired
 }
 
 /// Apply one-time, version-gated migrations to a freshly loaded config.

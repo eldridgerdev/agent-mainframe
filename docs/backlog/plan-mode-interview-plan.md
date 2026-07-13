@@ -333,7 +333,7 @@ picks the plan up with no display-layer changes.
       "synthesize now" once Epic 4 lands)
 - [x] Feature-creation integration: defer `PreparedFeatureLaunch`
       until interview completes; abort path (launch-anyway vs cancel)
-- [ ] Write brief + answers into the workdir's `.claude/plan.md`
+- [x] Write brief + answers into the workdir's `.claude/plan.md`
       (gitignored within `.claude/`)
 - [ ] Replace `ensure_plan_mode_claude_md` with
       `ensure_plan_mode_instructions(workdir, agent, enabled)`:

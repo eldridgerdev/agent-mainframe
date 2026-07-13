@@ -312,8 +312,14 @@ pub fn draw_ai_pr_review_running(
 ) {
     let area = frame.area();
     let block = pane_block(theme).title(format!(
-        " AI review of PR #{} (experimental) ",
-        state.origin.review.pr.number
+        " AI review of PR #{} with {} (experimental) ",
+        state.origin.review.pr.number,
+        state
+            .origin
+            .ai_review_harness
+            .as_ref()
+            .map(|agent| agent.display_name())
+            .unwrap_or("agent")
     ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -586,9 +592,14 @@ pub fn draw_pr_review(
         0 => "space mark".to_string(),
         n => format!("space mark · F fix-each({n}) · B combine({n})"),
     };
+    let ai_harness = state
+        .ai_review_harness
+        .as_ref()
+        .map(|agent| agent.display_name())
+        .unwrap_or("pick");
     let keys = Paragraph::new(Line::from(Span::styled(
         format!(
-            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review   W post-review   esc/q close",
+            " j/k move   f fix→{}   {batch_hint}   R reply-done   n not-needed   M memory   x resolve   t target   m done   s skip   {toggle_hint}   o sort→{}   P session   i syntax   r refresh   g other-PR   A ai-review→{ai_harness}   W post-review   esc/q close",
             state.fix_target.tag(),
             state.sort_mode.label()
         ),
@@ -602,6 +613,9 @@ pub fn draw_pr_review(
     frame.render_widget(Paragraph::new(marker_legend(theme)), footer[1]);
 
     // Harness picker overlays the pane on the first fix of a dedicated triage.
+    if let Some(pick) = &state.ai_harness_pick {
+        draw_ai_harness_pick(frame, pick, theme);
+    }
     if let Some(pick) = &state.harness_pick {
         draw_harness_pick(frame, pick, theme);
     }
@@ -636,6 +650,66 @@ pub fn draw_pr_review(
     if let Some(post) = &state.ai_review_post {
         draw_ai_review_post_dialog(frame, post, theme);
     }
+}
+
+fn draw_ai_harness_pick(frame: &mut Frame, pick: &crate::app::AiHarnessPickState, theme: &Theme) {
+    let area = super::super::dashboard::centered_rect(54, 44, frame.area());
+    crate::ui::draw_modal_overlay(frame, area, theme);
+
+    let block = Block::default()
+        .title(" Harness for AI review ")
+        .borders(Borders::ALL)
+        .style(Style::default().bg(theme.effective_bg()))
+        .border_style(Style::default().fg(theme.primary.to_color()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(if pick.error.is_some() { 2 } else { 0 }),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    frame.render_widget(
+        Paragraph::new("  Generate this PR's AI review with:")
+            .style(Style::default().fg(theme.text_muted.to_color())),
+        chunks[0],
+    );
+    let lines = pick.agents.iter().enumerate().map(|(index, agent)| {
+        let selected = index == pick.selected;
+        let style = if selected {
+            Style::default()
+                .fg(theme.text.to_color())
+                .bg(theme.effective_selection_bg())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text.to_color())
+        };
+        Line::from(vec![
+            Span::styled(
+                if selected { "  > " } else { "    " },
+                Style::default().fg(theme.warning.to_color()),
+            ),
+            Span::styled(agent.display_name().to_string(), style),
+        ])
+    });
+    frame.render_widget(Paragraph::new(lines.collect::<Vec<_>>()), chunks[1]);
+    if let Some(error) = &pick.error {
+        frame.render_widget(
+            Paragraph::new(format!("  {error}"))
+                .style(Style::default().fg(theme.danger.to_color()))
+                .wrap(Wrap { trim: true }),
+            chunks[2],
+        );
+    }
+    frame.render_widget(
+        Paragraph::new("  [j/k] choose   [⏎] run review   [esc] cancel")
+            .style(Style::default().fg(theme.primary.to_color())),
+        chunks[3],
+    );
 }
 
 /// Reply dialog: a contextual, editable reply (a "done in `<sha>`." report or a

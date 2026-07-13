@@ -26,6 +26,7 @@ use crate::github::{
     GhCli, IssueComment, PrListEntry, PrRef, PrResolution, PrReviewComment as GhPrReviewComment,
     Review, ReviewComment, ReviewThread,
 };
+use crate::headless::HeadlessRunner;
 
 /// Snippet length (chars) shown in the comment list.
 const SNIPPET_LEN: usize = 80;
@@ -520,11 +521,12 @@ fn window_parsed_hunk(
 /// reply should also route through, so every AI-authored post reads as one
 /// consistent voice. Scoped to AI-authored bodies only: a user-typed reply
 /// (the "not needed" reason, a hand-edited "done in `<sha>`" template) is the
-/// user's own words and stays unmarked. AI-review generation always runs
-/// through `ClaudeLauncher::run_headless`, i.e. always Claude, independent of
-/// whichever harness a "fix" gets injected into.
+/// user's own words and stays unmarked. AI-review generation can run through
+/// any supported headless harness, independent of whichever
+/// harness a "fix" gets injected into, so the public marker stays provider
+/// neutral rather than incorrectly attributing another harness to Claude.
 fn append_ai_attribution(body: &str) -> String {
-    format!("{}\n\n— drafted by Claude via AMF", body.trim_end())
+    format!("{}\n\n— drafted by AI via AMF", body.trim_end())
 }
 
 /// Build the `(summary, inline comments)` GitHub review payload from a set of
@@ -1412,6 +1414,7 @@ fn run_review_memory_bootstrap(
 /// response into findings. Runs off the UI thread; progress and the final
 /// result are reported over `tx`.
 fn run_ai_pr_review(
+    harness: AgentKind,
     workdir: PathBuf,
     diff: String,
     memory: String,
@@ -1423,7 +1426,7 @@ fn run_ai_pr_review(
         token_estimate: estimate_tokens(&prompt),
     });
 
-    let result = ClaudeLauncher::run_headless(&workdir, &prompt).map(|output| {
+    let result = HeadlessRunner::run(&harness, &workdir, &prompt).map(|output| {
         let mut findings = parse_ai_findings(&output);
         // Attach each anchored finding's diff hunk by re-matching its
         // `path:line` into the already-fetched PR diff — nothing about
@@ -1502,6 +1505,8 @@ impl App {
                 fix_target: FixTarget::default(),
                 usage_baselines,
                 review_harness: None,
+                ai_review_harness: None,
+                ai_harness_pick: None,
                 harness_pick: None,
                 fix_confirm: None,
                 fix_vim_enabled: false,
@@ -2030,6 +2035,8 @@ impl App {
                             fix_target: FixTarget::default(),
                             usage_baselines,
                             review_harness: None,
+                            ai_review_harness: None,
+                            ai_harness_pick: None,
                             harness_pick: None,
                             fix_confirm: None,
                             fix_vim_enabled: false,
@@ -2098,10 +2105,46 @@ impl App {
             self.push_toast_warning("AI review already running — wait for it to finish");
             return;
         }
+        let (workdir, already_chosen) = match &self.mode {
+            AppMode::PrReview(state) => (state.workdir.clone(), state.ai_review_harness.clone()),
+            _ => return,
+        };
+        if already_chosen.is_none() {
+            let agents = self.allowed_agents_for_project_path(&workdir);
+            if agents.is_empty() {
+                self.push_toast_error("No agent harnesses are enabled for this project");
+                return;
+            }
+            let preferred = self
+                .feature_indices_for_workdir(&workdir)
+                .map(|(pi, _)| self.store.projects[pi].preferred_agent.clone());
+            let selected = preferred
+                .and_then(|p| agents.iter().position(|a| *a == p))
+                .unwrap_or(0);
+            if let AppMode::PrReview(state) = &mut self.mode {
+                state.ai_harness_pick = Some(AiHarnessPickState {
+                    agents,
+                    selected,
+                    error: None,
+                });
+            }
+            return;
+        }
+        self.begin_ai_pr_review();
+    }
+
+    /// Start the background review after a harness has been selected and
+    /// validated. Kept separate from [`start_ai_pr_review`] so the picker can
+    /// pause before the paid pass without duplicating lifecycle setup.
+    fn begin_ai_pr_review(&mut self) {
         let mut origin = match &self.mode {
             AppMode::PrReview(state) => state.clone(),
             _ => return,
         };
+        let Some(harness) = origin.ai_review_harness.clone() else {
+            return;
+        };
+        origin.ai_harness_pick = None;
         origin.harness_pick = None;
         origin.fix_confirm = None;
         origin.reply = None;
@@ -2109,7 +2152,13 @@ impl App {
 
         let workdir = origin.workdir.clone();
         let number = origin.review.pr.number;
-        self.log_info("pr_review", format!("starting AI review of PR #{number}"));
+        self.log_info(
+            "pr_review",
+            format!(
+                "starting AI review of PR #{number} with {}",
+                harness.display_name()
+            ),
+        );
 
         let repo = self.repo_for_project_path(&workdir);
         let memory_path =
@@ -2122,7 +2171,7 @@ impl App {
         self.ai_review_pending = Some(origin.clone());
         let thread_workdir = workdir.clone();
         std::thread::spawn(move || match GhCli::pr_diff(&thread_workdir, number) {
-            Ok(diff) => run_ai_pr_review(thread_workdir, diff, memory, skill, tx),
+            Ok(diff) => run_ai_pr_review(harness, thread_workdir, diff, memory, skill, tx),
             Err(e) => {
                 let _ = tx.send(AiReviewProgress::Done(Err(e)));
             }
@@ -2132,6 +2181,57 @@ impl App {
             origin,
             stage: AiReviewStage::PreparingDiff,
         });
+    }
+
+    pub fn pr_review_ai_harness_picking(&self) -> bool {
+        matches!(&self.mode, AppMode::PrReview(state) if state.ai_harness_pick.is_some())
+    }
+
+    pub fn pr_review_ai_harness_pick_move(&mut self, delta: isize) {
+        if let AppMode::PrReview(state) = &mut self.mode
+            && let Some(pick) = &mut state.ai_harness_pick
+            && !pick.agents.is_empty()
+        {
+            let len = pick.agents.len() as isize;
+            pick.selected = ((pick.selected as isize + delta).rem_euclid(len)) as usize;
+            pick.error = None;
+        }
+    }
+
+    pub fn pr_review_ai_harness_pick_cancel(&mut self) {
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.ai_harness_pick = None;
+        }
+    }
+
+    pub fn pr_review_ai_harness_pick_confirm(&mut self) {
+        let chosen = match &self.mode {
+            AppMode::PrReview(state) => state
+                .ai_harness_pick
+                .as_ref()
+                .and_then(|pick| pick.agents.get(pick.selected).cloned()),
+            _ => return,
+        };
+        let Some(chosen) = chosen else {
+            return;
+        };
+        if let Err(error) = HeadlessRunner::check_available(&chosen) {
+            if let AppMode::PrReview(state) = &mut self.mode
+                && let Some(pick) = &mut state.ai_harness_pick
+            {
+                pick.error = Some(error.to_string());
+            }
+            return;
+        }
+        if let AppMode::PrReview(state) = &mut self.mode {
+            state.ai_review_harness = Some(chosen.clone());
+            state.ai_harness_pick = None;
+        }
+        self.push_toast_success(format!(
+            "AI reviews will run with {}",
+            chosen.display_name()
+        ));
+        self.begin_ai_pr_review();
     }
 
     /// Poll the background AI PR review. Progress updates the running
@@ -3594,9 +3694,9 @@ impl App {
     }
 
     /// Whether the dedicated PR-triage session exists and is actively
-    /// thinking or running a tool. Activity is keyed by the AMF
-    /// feature-session ID supplied by hooks/plugins, rather than the parent
-    /// tmux session, so another agent window cannot produce a false positive.
+    /// thinking or running a tool. Claude and Codex activity is keyed by the
+    /// AMF feature-session ID supplied by hooks/plugins; OpenCode and Pi reuse
+    /// their existing sidebar and marker-based activity signals.
     pub(crate) fn pr_review_dedicated_session_working(&self) -> Option<bool> {
         let AppMode::PrReview(state) = &self.mode else {
             return None;
@@ -3604,11 +3704,28 @@ impl App {
         let (pi, fi) = self.feature_indices_for_workdir(&state.workdir)?;
         let feature = &self.store.projects[pi].features[fi];
         let si = pr_triage_session_index(feature, FixTarget::DedicatedReview)?;
-        let session_id = &feature.sessions[si].id;
-        Some(
-            self.ipc_thinking_feature_sessions.contains(session_id)
-                || self.ipc_tool_feature_sessions.contains(session_id),
-        )
+        let session = &feature.sessions[si];
+        Some(match session.kind {
+            SessionKind::Opencode => self
+                .opencode_sidebar_cache
+                .get(&feature.tmux_session)
+                .filter(|sidebar| {
+                    session
+                        .token_usage_source
+                        .as_ref()
+                        .filter(|source| {
+                            source.provider == crate::token_tracking::TokenUsageProvider::Opencode
+                        })
+                        .is_none_or(|source| source.id == sidebar.session_id)
+                })
+                .and_then(super::sync::opencode_sidebar_thinking_state)
+                .unwrap_or(false),
+            SessionKind::Pi => Self::is_session_marked_thinking(&feature.tmux_session),
+            _ => {
+                self.ipc_thinking_feature_sessions.contains(&session.id)
+                    || self.ipc_tool_feature_sessions.contains(&session.id)
+            }
+        })
     }
 
     /// Usage added to the selected fix target since this visit to the PR pane
@@ -4674,7 +4791,7 @@ mod tests {
         assert_eq!(inline[0].side, "RIGHT");
         assert_eq!(
             inline[0].body,
-            "Guard the lock here.\n\n— drafted by Claude via AMF"
+            "Guard the lock here.\n\n— drafted by AI via AMF"
         );
 
         assert!(summary.contains("AI review, via AMF."));
@@ -4723,11 +4840,11 @@ mod tests {
     fn append_ai_attribution_appends_footer_and_trims_trailing_whitespace() {
         assert_eq!(
             append_ai_attribution("Guard the lock here."),
-            "Guard the lock here.\n\n— drafted by Claude via AMF"
+            "Guard the lock here.\n\n— drafted by AI via AMF"
         );
         assert_eq!(
             append_ai_attribution("Trailing newline.\n\n"),
-            "Trailing newline.\n\n— drafted by Claude via AMF"
+            "Trailing newline.\n\n— drafted by AI via AMF"
         );
     }
 

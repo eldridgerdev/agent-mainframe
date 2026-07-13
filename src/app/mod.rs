@@ -2328,7 +2328,18 @@ impl App {
             return;
         };
 
-        let request = SidebarLoadRequest::from_feature(feature);
+        let dedicated_opencode_session = match &self.mode {
+            AppMode::PrReview(state) if state.workdir == feature.workdir => {
+                pr_review::pr_triage_session_index(feature, pr_review::FixTarget::DedicatedReview)
+                    .map(|si| &feature.sessions[si])
+                    .filter(|session| session.kind == SessionKind::Opencode)
+            }
+            _ => None,
+        };
+        let request = dedicated_opencode_session.map_or_else(
+            || SidebarLoadRequest::from_feature(feature),
+            |session| SidebarLoadRequest::from_opencode_session(feature, session),
+        );
         if !self
             .pending_sidebar_loads
             .insert(request.tmux_session.clone())
@@ -3056,6 +3067,20 @@ impl SidebarLoadRequest {
             tmux_session: feature.tmux_session.clone(),
             workdir: feature.workdir.clone(),
             preferred_session_kind,
+            preferred_session_id,
+        }
+    }
+
+    fn from_opencode_session(feature: &Feature, session: &FeatureSession) -> Self {
+        let preferred_session_id = session
+            .token_usage_source
+            .as_ref()
+            .filter(|source| source.provider == crate::token_tracking::TokenUsageProvider::Opencode)
+            .map(|source| source.id.clone());
+        Self {
+            tmux_session: feature.tmux_session.clone(),
+            workdir: feature.workdir.clone(),
+            preferred_session_kind: Some(SessionKind::Opencode),
             preferred_session_id,
         }
     }

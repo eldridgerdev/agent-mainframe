@@ -5855,6 +5855,24 @@ fn note_codex_prompt_submit_marks_repo_root_feature_thinking() {
 }
 
 #[test]
+fn note_codex_prompt_submit_marks_codex_session_in_non_codex_feature_thinking() {
+    let workdir = TempDir::new().unwrap();
+    let mut store = store_with_codex_session(workdir.path(), false);
+    store.projects[0].features[0].agent = AgentKind::Claude;
+    store.projects[0].features[0].sessions[0].label = "PR triage".to_string();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+
+    app.note_codex_prompt_submit("amf-my-feat", "codex");
+
+    assert!(app.ipc_thinking_sessions.contains("amf-my-feat"));
+    assert!(app.ipc_thinking_feature_sessions.contains("codex-sess"));
+}
+
+#[test]
 fn apply_codex_live_event_updates_feature_live_state() {
     let workdir = TempDir::new().unwrap();
     let store = store_with_codex_session(workdir.path(), false);
@@ -8200,6 +8218,8 @@ fn enter_pr_review(app: &mut App, n: u64) {
         fix_target: crate::app::pr_review::FixTarget::default(),
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8478,6 +8498,8 @@ fn enter_pr_review_for_feature(app: &mut App, n: u64) {
         fix_target: crate::app::pr_review::FixTarget::default(),
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -8742,6 +8764,11 @@ fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mod
         AppMode::PrReview(state) => assert!(state.memory_add.is_some()),
         _ => panic!("expected PrReview"),
     }
+    // The harness picker is covered separately; seed the remembered choice to
+    // exercise the background lifecycle this regression test owns.
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.ai_review_harness = Some(AgentKind::Claude);
+    }
 
     app.start_ai_pr_review();
     assert!(app.ai_review_bg.is_some());
@@ -8754,6 +8781,7 @@ fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mod
             // Any dialog open on the pane is cleared before stashing — the
             // same precaution as the `f`/`P` stash.
             assert!(state.origin.memory_add.is_none());
+            assert_eq!(state.origin.ai_review_harness, Some(AgentKind::Claude));
         }
         other => panic!(
             "expected AiPrReviewRunning, got {:?}",
@@ -8761,6 +8789,72 @@ fn start_ai_pr_review_stashes_origin_with_dialogs_cleared_and_enters_running_mod
         ),
     }
     assert!(app.ai_review_pending.is_some());
+}
+
+#[test]
+fn first_ai_review_opens_harness_picker_on_project_preference() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].preferred_agent = AgentKind::Codex;
+    store.available_harnesses = vec![AgentKind::Claude, AgentKind::Codex];
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|_| Ok(PathBuf::from("/tmp/test-repo")));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        state.workdir = PathBuf::from("/tmp/test-workdir");
+    }
+
+    app.start_ai_pr_review();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            let pick = state
+                .ai_harness_pick
+                .as_ref()
+                .expect("first A should open the AI harness picker");
+            assert_eq!(pick.agents, [AgentKind::Claude, AgentKind::Codex]);
+            assert_eq!(pick.agents[pick.selected], AgentKind::Codex);
+            assert!(state.ai_review_harness.is_none());
+        }
+        other => panic!("expected PrReview, got {:?}", std::mem::discriminant(other)),
+    }
+    assert!(
+        app.ai_review_bg.is_none(),
+        "picker must pause before token spend"
+    );
+}
+
+#[test]
+fn cancelling_ai_review_harness_picker_spends_nothing_and_keeps_choice_unset() {
+    let store = ProjectStore {
+        version: 5,
+        projects: vec![],
+        session_bookmarks: vec![],
+        available_harnesses: vec![],
+        prompt_templates: Vec::new(),
+        extra: HashMap::new(),
+    };
+    let mut worktree = MockWorktreeOps::new();
+    worktree
+        .expect_repo_root()
+        .returning(|path| Ok(path.to_path_buf()));
+    let mut app = App::new_for_test(store, Box::new(MockTmuxOps::new()), Box::new(worktree));
+    enter_pr_review(&mut app, 1);
+    app.start_ai_pr_review();
+    assert!(app.pr_review_ai_harness_picking());
+
+    app.pr_review_ai_harness_pick_cancel();
+
+    match &app.mode {
+        AppMode::PrReview(state) => {
+            assert!(state.ai_harness_pick.is_none());
+            assert!(state.ai_review_harness.is_none());
+        }
+        _ => panic!("expected PrReview"),
+    }
+    assert!(app.ai_review_bg.is_none());
 }
 
 #[test]
@@ -9281,6 +9375,100 @@ fn pr_review_dedicated_session_status_is_scoped_to_its_session() {
         "amf_feature_session_id": dedicated_session_id,
     }));
     assert_eq!(app.pr_review_dedicated_session_working(), Some(false));
+}
+
+#[test]
+fn pr_review_dedicated_opencode_session_uses_sidebar_activity() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Opencode,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    session.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "opencode-triage".to_string(),
+    });
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    app.opencode_sidebar_cache.insert(
+        tmux_session,
+        crate::app::opencode_storage::OpencodeSidebarData {
+            session_id: "opencode-triage".to_string(),
+            status: Some("busy".to_string()),
+            ..Default::default()
+        },
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+}
+
+#[test]
+fn pr_review_schedules_sidebar_load_for_dedicated_opencode_session() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    let session = store.projects[0].features[0].add_session_named(
+        SessionKind::Opencode,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    session.set_token_usage_source_exact(TokenUsageSource {
+        provider: TokenUsageProvider::Opencode,
+        id: "opencode-triage".to_string(),
+    });
+    let si = store.projects[0].features[0].sessions.len() - 1;
+    let expected_signature = SidebarLoadRequest::from_opencode_session(
+        &store.projects[0].features[0],
+        &store.projects[0].features[0].sessions[si],
+    )
+    .signature();
+    let tmux_session = store.projects[0].features[0].tmux_session.clone();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    app.schedule_sidebar_load_for_feature(0, 0);
+    for _ in 0..20 {
+        app.poll_sidebar_load_results();
+        if !app.pending_sidebar_loads.contains(&tmux_session) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        app.sidebar_load_signatures.get(&tmux_session),
+        Some(&expected_signature)
+    );
+}
+
+#[test]
+fn pr_review_dedicated_pi_session_uses_thinking_marker() {
+    let mut store = store_with_feature(ProjectStatus::Active);
+    store.projects[0].features[0].add_session_named(
+        SessionKind::Pi,
+        crate::app::pr_review::TRIAGE_SESSION_LABEL.to_string(),
+    );
+    let tmux_session = format!("amf-pi-triage-test-{}", uuid::Uuid::new_v4());
+    store.projects[0].features[0].tmux_session = tmux_session.clone();
+    let marker = PathBuf::from("/tmp/amf-thinking").join(&tmux_session);
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, "").unwrap();
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 2);
+
+    assert_eq!(app.pr_review_dedicated_session_working(), Some(true));
+
+    std::fs::remove_file(marker).unwrap();
 }
 
 #[test]
@@ -9849,6 +10037,8 @@ fn enter_pr_review_with_authors(app: &mut App, entries: &[(u64, &str, &str, bool
         fix_target: crate::app::pr_review::FixTarget::default(),
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,
@@ -10047,6 +10237,8 @@ fn enter_pr_review_with_resolved(app: &mut App, n: u64, resolved: &[u64]) {
         fix_target: crate::app::pr_review::FixTarget::default(),
         usage_baselines: std::collections::HashMap::new(),
         review_harness: None,
+        ai_review_harness: None,
+        ai_harness_pick: None,
         harness_pick: None,
         fix_confirm: None,
         fix_vim_enabled: false,

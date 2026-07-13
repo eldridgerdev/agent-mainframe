@@ -339,7 +339,7 @@ pub(super) fn pane_shows_thinking_hint(content: &str) -> bool {
         .any(|marker| lower.contains(marker))
 }
 
-fn opencode_sidebar_thinking_state(
+pub(super) fn opencode_sidebar_thinking_state(
     sidebar: &crate::app::opencode_storage::OpencodeSidebarData,
 ) -> Option<bool> {
     if sidebar
@@ -879,7 +879,7 @@ impl App {
         result
     }
 
-    fn is_session_marked_thinking(tmux_session: &str) -> bool {
+    pub(super) fn is_session_marked_thinking(tmux_session: &str) -> bool {
         let path_str = format!("/tmp/amf-thinking/{}", tmux_session);
         let path = std::path::Path::new(&path_str);
         if !path.exists() {
@@ -922,7 +922,7 @@ impl App {
         let mut matched: Option<(String, String, String)> = None;
         for project in &self.store.projects {
             for feature in &project.features {
-                if feature.tmux_session != tmux_session || feature.agent != AgentKind::Codex {
+                if feature.tmux_session != tmux_session {
                     continue;
                 }
                 let codex_session_id = feature

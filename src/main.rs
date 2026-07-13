@@ -11,6 +11,7 @@ mod extension;
 mod fswatch;
 mod github;
 mod handlers;
+mod headless;
 mod highlight;
 mod http_client;
 mod ipc;

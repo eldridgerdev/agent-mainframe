@@ -1,6 +1,6 @@
 # Plan Mode: guided feature discovery interview
 
-- **Status:** Ready
+- **Status:** In progress
 - **Owner:** unassigned
 - **Relates to:** current plan mode (`ensure_plan_mode_claude_md` in
   `src/app/setup.rs`, `Feature.plan_mode` in `src/project.rs`), feature
@@ -323,7 +323,7 @@ writes answers verbatim into the workdir's `.claude/plan.md` under a
 `## Q&A` heading (no AI yet), then launches; the sidebar preview
 picks the plan up with no display-layer changes.
 
-- [ ] `src/plan_interview.rs`: `PlanQuestion` model, built-in
+- [x] `src/plan_interview.rs`: `PlanQuestion` model, built-in
       question bank, unit tests
 - [ ] `AppMode::PlanInterview(PlanInterviewState)` with phase/step
       state machine (brief → static questions → done)

@@ -17,6 +17,7 @@ mod ipc;
 mod markdown;
 mod perf;
 mod pi;
+mod plan_interview;
 mod project;
 mod prompt_library;
 mod summary;

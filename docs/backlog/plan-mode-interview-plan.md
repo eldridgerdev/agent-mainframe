@@ -345,7 +345,7 @@ picks the plan up with no display-layer changes.
 - [x] Delete the shared repo-root `PLAN.md` skeleton/gitignore
       behavior (per audit verdict; old PLAN.md files are inert
       leftovers, not migrated)
-- [ ] Unit test: non-worktree first feature (workdir == repo root)
+- [x] Unit test: non-worktree first feature (workdir == repo root)
       reads/writes the same `.claude/plan.md` the sidebar fallback
       finds — no duplicate plan files
 - [ ] Help overlay + keybinding docs for the new mode

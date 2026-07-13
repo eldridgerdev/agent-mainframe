@@ -1214,6 +1214,35 @@ first), and the reviewer's output (plus comments triaged in the pane)
   GitHub review; and, while reviewing, add a noteworthy comment to the
   memory with one key — each recurring finding written down once making
   the next review cheaper and sharper.
+- [ ] **HIGH PRIORITY — BUG: `G` on an existing session reopens an
+      already-closed/merged PR (from real use).** Reported: pressing `G` in a
+      session whose branch previously had a PR resolves straight into that
+      PR's review pane even though the PR is now closed/merged — instead of
+      either landing on a newer open PR for the same branch or falling
+      through to "no PR for this branch" (the picker / manual-number prompt).
+      **Likely root cause** (inspection, not yet confirmed by a fix):
+      `GhCli::resolve_pr` (`src/github.rs`) runs
+      `gh pr view --json number,headRefOid,url` with no `--state` filter, and
+      `parse_pr_json` doesn't request or check a `state` field at all — so
+      whatever PR `gh pr view` resolves for the branch (GitHub's API returns
+      the most recent PR for a head branch regardless of state, as long as
+      *one ever existed*) is treated as `PrResolution::Found` and opened
+      directly, no live/closed check. `classify_pr_view_error`'s `NoPr` path
+      only fires on `gh`'s literal "no pull requests found" stderr, which
+      doesn't happen here — `gh pr view` succeeds and returns a
+      closed/merged PR's data, not an error. This is an easy everyday repro
+      in AMF's workflow specifically: a feature's branch persists across a
+      work session, so finishing and merging one PR on that branch and then
+      continuing to work (new commits, later opening a *new* PR on the same
+      branch, or none yet) leaves `G` resolving to the old, now-closed PR.
+      **Direction to investigate:** request `state` (and reuse the
+      `PrListEntry`-style `OPEN`/`CLOSED`/`MERGED` string already handled
+      elsewhere) in `resolve_pr`'s `--json` fields, and treat a non-`OPEN`
+      result the same as `PrResolution::NoPrForBranch` — falling through to
+      `open_pr_picker` (which already lists open PRs and offers `#`/`a` for
+      closed ones) instead of silently entering the stale PR's pane. Needs a
+      repro fixture / test for `resolve_pr` returning a closed PR before
+      landing the fix. → likely `src/github.rs`, `src/app/pr_review.rs`.
 
 ## Nice to have
 

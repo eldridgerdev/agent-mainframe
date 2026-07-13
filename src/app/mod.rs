@@ -596,6 +596,7 @@ pub struct App {
     /// Unsent compose drafts keyed by tmux "session:window" target.
     pub compose_drafts: HashMap<String, ComposeDraft>,
     compose_clipboard_paste: Option<ComposeClipboardPaste>,
+    compose_submit: Option<ComposeSubmit>,
     next_compose_clipboard_paste_id: u64,
     pub latest_prompt_cache: HashMap<String, String>,
     pub sidebar_model_cache: HashMap<String, String>,
@@ -701,6 +702,11 @@ struct ComposeClipboardPaste {
     id: u64,
     target: String,
     rx: Receiver<Result<util::ClipboardContent, String>>,
+}
+
+struct ComposeSubmit {
+    target: String,
+    rx: Receiver<Result<(), String>>,
 }
 
 struct SidebarLoadResult {
@@ -913,6 +919,7 @@ impl App {
             state.scroll_offset.hash(&mut hasher);
             state.images.len().hash(&mut hasher);
             state.clipboard_paste_id.hash(&mut hasher);
+            state.submit_in_progress.hash(&mut hasher);
         }
 
         hasher.finish()
@@ -1936,6 +1943,7 @@ impl App {
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
+            compose_submit: None,
             next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),
@@ -2126,6 +2134,7 @@ impl App {
             compose_direct_targets: std::collections::HashSet::new(),
             compose_drafts: HashMap::new(),
             compose_clipboard_paste: None,
+            compose_submit: None,
             next_compose_clipboard_paste_id: 1,
             latest_prompt_cache,
             sidebar_model_cache: HashMap::new(),

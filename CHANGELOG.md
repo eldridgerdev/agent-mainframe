@@ -27,8 +27,10 @@ are tagged.
   finishing early, then continues the deferred launch. Cancelling offers a
   clear choice to resume, launch without a plan, or cancel feature creation
   while preserving any worktree that was already created. No setup or
-  migration is required. Writing the collected answers into the per-feature
-  plan file lands in the next implementation slice.
+  migration is required. Completing the interview now saves the brief and
+  answers to the feature's gitignored `.claude/plan.md` before launch, so the
+  resulting plan stays isolated to that feature and is ready for the agent and
+  AMF's plan preview.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

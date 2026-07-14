@@ -251,6 +251,10 @@ are tagged.
 
 ### Changed
 
+- **Codex-powered headless analysis is now isolated and disposable.** AI PR
+  reviews and other one-shot Codex tasks run with a read-only sandbox, accept
+  work outside a Git repository, and no longer leave temporary sessions in
+  Codex history. No setup or migration is required.
 - **PR Comment Review is now PR Triage.** Dashboard help, pickers, pane titles,
   status text, and documentation now use the outcome-focused name for the
   workflow where you triage, fix, reply to, and resolve pull-request feedback.

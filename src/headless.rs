@@ -41,6 +41,39 @@ impl HeadlessRunner {
         let spec = command_for(harness);
         run_command(harness, &spec, workdir, prompt)
     }
+
+    /// Pick the engine for a plan interview.
+    ///
+    /// Prefer the feature's harness when it has a verified non-interactive
+    /// mode, then fall back in a stable order. Pi is deliberately excluded
+    /// until its headless contract is verified; a Pi feature can still be
+    /// implemented by Pi while another harness powers discovery.
+    #[allow(dead_code)] // Wired into the interview state machine by the next Epic 3 item.
+    pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
+        select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
+    }
+}
+
+fn interview_candidates(preferred: &AgentKind) -> Vec<AgentKind> {
+    let mut candidates = Vec::with_capacity(3);
+    if !matches!(preferred, AgentKind::Pi) {
+        candidates.push(preferred.clone());
+    }
+    for fallback in [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode] {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+fn select_interview_harness_with(
+    preferred: &AgentKind,
+    mut is_available: impl FnMut(&AgentKind) -> bool,
+) -> Option<AgentKind> {
+    interview_candidates(preferred)
+        .into_iter()
+        .find(|harness| is_available(harness))
 }
 
 fn run_command(
@@ -106,7 +139,16 @@ fn command_for(harness: &AgentKind) -> HeadlessCommand {
         },
         AgentKind::Codex => HeadlessCommand {
             binary: "codex".into(),
-            args: vec!["exec", "--color", "never", "-"],
+            args: vec![
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "-",
+            ],
         },
         AgentKind::Opencode => HeadlessCommand {
             binary: "opencode".into(),
@@ -133,7 +175,16 @@ mod tests {
             command_for(&AgentKind::Codex),
             HeadlessCommand {
                 binary: "codex".into(),
-                args: vec!["exec", "--color", "never", "-"]
+                args: vec![
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--color",
+                    "never",
+                    "-",
+                ]
             }
         );
         assert_eq!(
@@ -177,5 +228,36 @@ mod tests {
             .to_string();
         assert!(error.contains("Opencode headless command failed"));
         assert!(error.contains("quota exhausted"));
+    }
+
+    #[test]
+    fn interview_candidates_prefer_the_feature_harness_then_stable_fallbacks() {
+        assert_eq!(
+            interview_candidates(&AgentKind::Opencode),
+            [AgentKind::Opencode, AgentKind::Claude, AgentKind::Codex]
+        );
+        assert_eq!(
+            interview_candidates(&AgentKind::Codex),
+            [AgentKind::Codex, AgentKind::Claude, AgentKind::Opencode]
+        );
+    }
+
+    #[test]
+    fn interview_candidates_skip_unverified_pi_headless_mode() {
+        assert_eq!(
+            interview_candidates(&AgentKind::Pi),
+            [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode]
+        );
+    }
+
+    #[test]
+    fn interview_harness_selection_falls_back_or_returns_static_only() {
+        let selected = select_interview_harness_with(&AgentKind::Codex, |harness| {
+            harness == &AgentKind::Opencode
+        });
+        assert_eq!(selected, Some(AgentKind::Opencode));
+
+        let selected = select_interview_harness_with(&AgentKind::Claude, |_| false);
+        assert_eq!(selected, None);
     }
 }

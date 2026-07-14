@@ -67,6 +67,24 @@ pub struct PrListEntry {
     pub state: String,
 }
 
+/// A branch-scoped PR candidate used only while auto-resolving the current
+/// feature. We intentionally ask GitHub for open and closed PRs together, then
+/// choose an open one ourselves: bare `gh pr view` can otherwise restore an
+/// older closed PR when the same head branch is reused for a later PR.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct BranchPrCandidate {
+    number: u32,
+    #[serde(rename = "headRefOid")]
+    head_sha: String,
+    url: String,
+    /// `OPEN`, `CLOSED`, or `MERGED`.
+    #[serde(default)]
+    state: String,
+    /// ISO-8601, so lexical order is chronological order.
+    #[serde(default, rename = "updatedAt")]
+    updated_at: String,
+}
+
 /// `gh pr list` nests the author under `{ "login": ... }`; flatten it to the
 /// login string (empty when GitHub omits the user, e.g. a deleted account).
 fn deserialize_author_login<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -216,21 +234,57 @@ impl GhCli {
         Ok(())
     }
 
-    /// Resolve the open PR for the current branch in `workdir`.
+    /// Resolve the newest open PR for the current branch in `workdir`.
     ///
     /// Returns `NoPrForBranch` when the repo has a GitHub remote but no open PR
     /// for the branch (caller should offer the manual-number override). Returns
     /// an error for missing-remote / network / other failures.
     pub fn resolve_pr(workdir: &Path) -> Result<PrResolution> {
-        let output = Command::new("gh")
-            .args(["pr", "view", "--json", "number,headRefOid,url"])
+        let branch_output = Command::new("git")
+            .args(["branch", "--show-current"])
             .current_dir(workdir)
             .output()
-            .context("Failed to run `gh pr view`.")?;
+            .context("Failed to determine the current git branch.")?;
+        if !branch_output.status.success() {
+            let stderr = String::from_utf8_lossy(&branch_output.stderr);
+            bail!(
+                "Could not determine the current git branch: {}",
+                stderr.trim()
+            );
+        }
+        let branch = String::from_utf8_lossy(&branch_output.stdout)
+            .trim()
+            .to_string();
+
+        // Detached checkouts have no branch name for `--head`. Preserve the
+        // old implicit lookup there; normal AMF features always take the
+        // branch-scoped path below.
+        if branch.is_empty() {
+            return Self::resolve_pr_implicitly(workdir);
+        }
+
+        let output = Command::new("gh")
+            .args([
+                "pr",
+                "list",
+                "--head",
+                &branch,
+                "--state",
+                "all",
+                "--limit",
+                "100",
+                "--json",
+                "number,headRefOid,url,state,updatedAt",
+            ])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh pr list`.")?;
 
         if output.status.success() {
-            let pr = parse_pr_json(&output.stdout)?;
-            return Ok(PrResolution::Found(pr));
+            return Ok(match parse_open_branch_pr(&output.stdout)? {
+                Some(pr) => PrResolution::Found(pr),
+                None => PrResolution::NoPrForBranch,
+            });
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -240,8 +294,29 @@ impl GhCli {
                 "No GitHub remote found for this repository. PR Triage needs a GitHub-hosted repo."
             ),
             PrViewError::Other => {
-                bail!("`gh pr view` failed: {}", stderr.trim());
+                bail!("`gh pr list` failed: {}", stderr.trim());
             }
+        }
+    }
+
+    fn resolve_pr_implicitly(workdir: &Path) -> Result<PrResolution> {
+        let output = Command::new("gh")
+            .args(["pr", "view", "--json", "number,headRefOid,url"])
+            .current_dir(workdir)
+            .output()
+            .context("Failed to run `gh pr view`.")?;
+
+        if output.status.success() {
+            return Ok(PrResolution::Found(parse_pr_json(&output.stdout)?));
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match classify_pr_view_error(&stderr) {
+            PrViewError::NoPr => Ok(PrResolution::NoPrForBranch),
+            PrViewError::NoRemote => bail!(
+                "No GitHub remote found for this repository. PR Triage needs a GitHub-hosted repo."
+            ),
+            PrViewError::Other => bail!("`gh pr view` failed: {}", stderr.trim()),
         }
     }
 
@@ -794,6 +869,35 @@ fn parse_pr_json(stdout: &[u8]) -> Result<PrRef> {
     })
 }
 
+/// Pick the current PR from a branch-scoped `gh pr list --state all` result.
+/// Closed predecessors are deliberately ignored; if GitHub somehow has more
+/// than one open PR for the head, the most recently updated one wins (then the
+/// larger PR number provides a deterministic tie-breaker).
+fn parse_open_branch_pr(stdout: &[u8]) -> Result<Option<PrRef>> {
+    let candidates: Vec<BranchPrCandidate> = serde_json::from_slice(stdout)
+        .context("Failed to parse branch PR list from `gh pr list` JSON output.")?;
+    let Some(candidate) = candidates
+        .into_iter()
+        .filter(|candidate| candidate.state.eq_ignore_ascii_case("open"))
+        .max_by(|a, b| {
+            a.updated_at
+                .cmp(&b.updated_at)
+                .then_with(|| a.number.cmp(&b.number))
+        })
+    else {
+        return Ok(None);
+    };
+    let (owner, repo) = parse_owner_repo(&candidate.url)
+        .with_context(|| format!("Could not parse owner/repo from PR url: {}", candidate.url))?;
+    Ok(Some(PrRef {
+        number: candidate.number,
+        head_sha: candidate.head_sha,
+        url: candidate.url,
+        owner,
+        repo,
+    }))
+}
+
 /// Parse the `gh pr list --json …` array into [`PrListEntry`] rows, sorted
 /// newest-updated first (GitHub's order is not guaranteed across flags).
 fn parse_pr_list_json(stdout: &[u8]) -> Result<Vec<PrListEntry>> {
@@ -1002,6 +1106,44 @@ mod tests {
             classify_pr_view_error("HTTP 500 something broke"),
             PrViewError::Other
         );
+    }
+
+    #[test]
+    fn branch_pr_resolution_prefers_open_successor_over_closed_predecessor() {
+        let json = br#"[
+            {"number":449,"headRefOid":"old","url":"https://github.com/acme/amf/pull/449",
+             "state":"MERGED","updatedAt":"2026-07-12T12:00:00Z"},
+            {"number":450,"headRefOid":"new","url":"https://github.com/acme/amf/pull/450",
+             "state":"OPEN","updatedAt":"2026-07-13T12:00:00Z"}
+        ]"#;
+
+        let pr = parse_open_branch_pr(json).unwrap().unwrap();
+        assert_eq!(pr.number, 450);
+        assert_eq!(pr.head_sha, "new");
+        assert_eq!(pr.owner, "acme");
+        assert_eq!(pr.repo, "amf");
+    }
+
+    #[test]
+    fn branch_pr_resolution_reports_no_pr_when_only_closed_history_exists() {
+        let json = br#"[
+            {"number":449,"headRefOid":"old","url":"https://github.com/acme/amf/pull/449",
+             "state":"CLOSED","updatedAt":"2026-07-12T12:00:00Z"}
+        ]"#;
+
+        assert!(parse_open_branch_pr(json).unwrap().is_none());
+    }
+
+    #[test]
+    fn branch_pr_resolution_uses_newest_open_candidate() {
+        let json = br#"[
+            {"number":450,"headRefOid":"first","url":"https://github.com/acme/amf/pull/450",
+             "state":"OPEN","updatedAt":"2026-07-12T12:00:00Z"},
+            {"number":451,"headRefOid":"latest","url":"https://github.com/acme/amf/pull/451",
+             "state":"OPEN","updatedAt":"2026-07-13T12:00:00Z"}
+        ]"#;
+
+        assert_eq!(parse_open_branch_pr(json).unwrap().unwrap().number, 451);
     }
 
     #[test]

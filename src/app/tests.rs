@@ -1153,6 +1153,109 @@ fn failed_active_pr_refresh_preserves_last_known_badge() {
 }
 
 #[test]
+fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let old_state = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 449;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: old_state.clone(),
+    });
+    app.ai_review_pending = Some(old_state);
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id: feature_id.clone(),
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "new-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(2),
+        }),
+    }]));
+
+    assert_eq!(app.active_pr_for_feature(&feature_id).unwrap().number, 450);
+    assert!(app.pr_review_return.is_none());
+    assert!(app.ai_review_pending.is_none());
+    // Explicitly opened closed PRs remain viewable; only implicit restore
+    // targets are invalidated by discovering the current open successor.
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReview(state) if state.review.pr.number == 449
+    ));
+}
+
+#[test]
+fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let old_state = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 449;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: old_state,
+    });
+    app.mode = AppMode::Viewing(ViewState::new(
+        "my-project".to_string(),
+        "my-feat".to_string(),
+        "amf-my-feat".to_string(),
+        "pr-triage".to_string(),
+        "PR Triage".to_string(),
+        SessionKind::Claude,
+        VibeMode::default(),
+        false,
+    ));
+
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id,
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "new-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        }),
+    }]);
+    app.pr_review_return_to_pane();
+
+    assert!(matches!(&app.mode, AppMode::Viewing(_)));
+    assert!(app.pr_review_return.is_none());
+}
+
+#[test]
 fn sync_thinking_status_drains_sidebar_results_for_opencode_features() {
     let repo = TempDir::new().unwrap();
     let mut store = store_with_repo(repo.path().to_path_buf(), ProjectStatus::Idle);

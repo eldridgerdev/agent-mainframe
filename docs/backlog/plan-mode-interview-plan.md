@@ -373,7 +373,7 @@ feature's own harness (claude, codex, or opencode); failure or an
 environment with no headless-capable harness silently proceeds
 without them.
 
-- [ ] `src/headless.rs`: runner dispatching by `AgentKind`
+- [x] `src/headless.rs`: runner dispatching by `AgentKind`
       (`claude -p`, `codex exec`, `opencode run`), availability
       probe, fallback order (feature's agent → claude → codex →
       opencode → static-only)

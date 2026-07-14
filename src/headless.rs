@@ -18,11 +18,22 @@ struct HeadlessCommand {
     args: Vec<&'static str>,
 }
 
+/// Long flags `command_for(Codex)` relies on. Older Codex releases reject
+/// some of these with an argument-parse error, so headless availability must
+/// probe `codex exec --help` for each — `codex --version` succeeding is not
+/// enough.
+const CODEX_EXEC_REQUIRED_FLAGS: [&str; 4] = [
+    "--sandbox",
+    "--ephemeral",
+    "--skip-git-repo-check",
+    "--color",
+];
+
 impl HeadlessRunner {
     pub fn check_available(harness: &AgentKind) -> Result<()> {
         match harness {
             AgentKind::Claude => crate::claude::ClaudeLauncher::check_available(),
-            AgentKind::Codex => crate::codex::CodexLauncher::check_available(),
+            AgentKind::Codex => check_codex_headless_available(),
             AgentKind::Opencode => {
                 let output = Command::new("opencode")
                     .arg("--version")
@@ -41,6 +52,82 @@ impl HeadlessRunner {
         let spec = command_for(harness);
         run_command(harness, &spec, workdir, prompt)
     }
+
+    /// Pick the engine for a plan interview.
+    ///
+    /// Prefer the feature's harness when `check_available` passes — i.e. its
+    /// CLI is installed and responds, and for Codex the flags the headless
+    /// command needs are advertised by `codex exec --help` — then fall back
+    /// in a stable order. This does not exercise a real headless run, so a
+    /// harness that is installed but misconfigured (e.g. not authenticated)
+    /// can still be picked ahead of a working fallback. Pi is deliberately
+    /// excluded until its headless contract is verified; a Pi feature can
+    /// still be implemented by Pi while another harness powers discovery.
+    #[allow(dead_code)] // Wired into the interview state machine by the next Epic 3 item.
+    pub fn select_for_interview(preferred: &AgentKind) -> Option<AgentKind> {
+        select_interview_harness_with(preferred, |harness| Self::check_available(harness).is_ok())
+    }
+}
+
+fn check_codex_headless_available() -> Result<()> {
+    crate::codex::CodexLauncher::check_available()?;
+    let output = Command::new("codex")
+        .args(["exec", "--help"])
+        .output()
+        .context("codex CLI not found - is Codex installed?")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "installed codex CLI does not support `codex exec` - upgrade Codex to run it headlessly"
+        );
+    }
+    let help = String::from_utf8_lossy(&output.stdout);
+    let missing = missing_codex_exec_flags(&help);
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "installed codex CLI is too old for headless runs (`codex exec` lacks {}) - upgrade Codex",
+            missing.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn missing_codex_exec_flags(exec_help: &str) -> Vec<&'static str> {
+    CODEX_EXEC_REQUIRED_FLAGS
+        .iter()
+        .copied()
+        .filter(|flag| !exec_help.contains(flag))
+        .collect()
+}
+
+/// Exhaustive so introducing a new `AgentKind` forces an explicit decision
+/// on whether its headless contract is trusted for interviews.
+fn supports_headless_interview(harness: &AgentKind) -> bool {
+    match harness {
+        AgentKind::Claude | AgentKind::Codex | AgentKind::Opencode => true,
+        AgentKind::Pi => false,
+    }
+}
+
+fn interview_candidates(preferred: &AgentKind) -> Vec<AgentKind> {
+    let mut candidates = Vec::with_capacity(3);
+    if supports_headless_interview(preferred) {
+        candidates.push(preferred.clone());
+    }
+    for fallback in [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode] {
+        if !candidates.contains(&fallback) {
+            candidates.push(fallback);
+        }
+    }
+    candidates
+}
+
+fn select_interview_harness_with(
+    preferred: &AgentKind,
+    mut is_available: impl FnMut(&AgentKind) -> bool,
+) -> Option<AgentKind> {
+    interview_candidates(preferred)
+        .into_iter()
+        .find(|harness| is_available(harness))
 }
 
 fn run_command(
@@ -106,7 +193,16 @@ fn command_for(harness: &AgentKind) -> HeadlessCommand {
         },
         AgentKind::Codex => HeadlessCommand {
             binary: "codex".into(),
-            args: vec!["exec", "--color", "never", "-"],
+            args: vec![
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+                "-",
+            ],
         },
         AgentKind::Opencode => HeadlessCommand {
             binary: "opencode".into(),
@@ -133,7 +229,16 @@ mod tests {
             command_for(&AgentKind::Codex),
             HeadlessCommand {
                 binary: "codex".into(),
-                args: vec!["exec", "--color", "never", "-"]
+                args: vec![
+                    "exec",
+                    "--sandbox",
+                    "read-only",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--color",
+                    "never",
+                    "-",
+                ]
             }
         );
         assert_eq!(
@@ -177,5 +282,66 @@ mod tests {
             .to_string();
         assert!(error.contains("Opencode headless command failed"));
         assert!(error.contains("quota exhausted"));
+    }
+
+    #[test]
+    fn codex_flag_probe_reports_only_missing_required_flags() {
+        let full_help = "Options:\n  --sandbox <MODE>\n  --ephemeral\n  \
+                         --skip-git-repo-check\n  --color <WHEN>";
+        assert!(missing_codex_exec_flags(full_help).is_empty());
+
+        let old_help = "Options:\n  --sandbox <MODE>\n  --color <WHEN>";
+        assert_eq!(
+            missing_codex_exec_flags(old_help),
+            ["--ephemeral", "--skip-git-repo-check"]
+        );
+    }
+
+    #[test]
+    fn codex_required_flags_cover_everything_the_headless_command_passes() {
+        let args = command_for(&AgentKind::Codex).args;
+        for flag in CODEX_EXEC_REQUIRED_FLAGS {
+            assert!(
+                args.contains(&flag),
+                "probe checks {flag} but the headless command no longer passes it"
+            );
+        }
+        for arg in args.iter().filter(|arg| arg.starts_with("--")) {
+            assert!(
+                CODEX_EXEC_REQUIRED_FLAGS.contains(arg),
+                "headless command passes {arg} but the availability probe never checks it"
+            );
+        }
+    }
+
+    #[test]
+    fn interview_candidates_prefer_the_feature_harness_then_stable_fallbacks() {
+        assert_eq!(
+            interview_candidates(&AgentKind::Opencode),
+            [AgentKind::Opencode, AgentKind::Claude, AgentKind::Codex]
+        );
+        assert_eq!(
+            interview_candidates(&AgentKind::Codex),
+            [AgentKind::Codex, AgentKind::Claude, AgentKind::Opencode]
+        );
+    }
+
+    #[test]
+    fn interview_candidates_skip_unverified_pi_headless_mode() {
+        assert_eq!(
+            interview_candidates(&AgentKind::Pi),
+            [AgentKind::Claude, AgentKind::Codex, AgentKind::Opencode]
+        );
+    }
+
+    #[test]
+    fn interview_harness_selection_falls_back_or_returns_static_only() {
+        let selected = select_interview_harness_with(&AgentKind::Codex, |harness| {
+            harness == &AgentKind::Opencode
+        });
+        assert_eq!(selected, Some(AgentKind::Opencode));
+
+        let selected = select_interview_harness_with(&AgentKind::Claude, |_| false);
+        assert_eq!(selected, None);
     }
 }

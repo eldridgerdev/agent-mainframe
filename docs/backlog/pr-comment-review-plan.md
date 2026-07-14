@@ -1627,6 +1627,17 @@ first), and the reviewer's output (plus comments triaged in the pane)
   Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
   and lean keymaps over feature breadth.
 
+- **AI review result persistence (UX — visibility).** When running an AI review
+  (`A`), the user can escape back to the pane, navigate away, or close AMF
+  entirely. When they return to the PR later, there's no indication of what
+  happened: no visual marker that a review ran, no indication of success/error,
+  no message if it found zero findings ("all good, no issues"). The review result
+  is cached (persisted in `pr_review_cache`), so the findings are there — but
+  there's no discovery mechanism. The UI should surface whether an AI review has
+  been run on the current head SHA and what the outcome was, possibly as a small
+  badge/note in the pane header or a toast on re-entry that summarizes the
+  result (N findings / error / "no findings").
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

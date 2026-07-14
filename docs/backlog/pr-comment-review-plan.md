@@ -1673,6 +1673,31 @@ first), and the reviewer's output (plus comments triaged in the pane)
   `triage_model`) so each AI action can select its own model independently of
   the feature's working harness. Fall back to harness default if not configured.
 
+- **Open PR Triage from inside the agent harness session, with an ambient
+  status indicator (discoverability).** Today `G` (open PR Triage) is
+  dashboard-only. From inside a live session (`AppMode::Viewing`) there's no
+  direct way in — `leader+P` only works as the second half of a round trip
+  that started by leaving the pane via `f`/`P` (Epic D "Quick toggle"; it
+  restores a stash, it doesn't open a PR fresh). Add a leader-key entry point,
+  peer to `leader p` (prompt library) in `LEADER_COMMANDS`
+  (`src/ui/pane.rs`), that resolves the feature's branch to its PR the same
+  way `G` does and opens the pane directly from inside the session — no prior
+  visit required. Pair it with an always-visible indicator so triage state is
+  legible without leaving the session: PR number, whether the dedicated
+  triage session is currently working, and whether an AI review (`A`) is in
+  flight. Likely surfaces either in the agent sidebar (peer to the existing
+  `latest prompt` line) or the Viewing-mode top-right badge row that already
+  shows `[Ctrl+Space P: back to PR Triage]` — and can probably reuse two
+  pieces of state that already exist rather than inventing a new data source:
+  the dashboard's active-PR indicator sync (`[PR #321 · 4 open]`, feeds off
+  `GhCli::resolve_pr` / `GhCli::review_threads` on the existing sync cadence)
+  and the dedicated-session working badge
+  (`pr_review_dedicated_session_working`, driven by per-feature-session
+  thinking/tool IPC). Needs design thought on exactly where the indicator
+  lives and how busy the Viewing-mode header gets if both this and the
+  existing remote-control/direct-input/back-to-triage badges are visible at
+  once.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

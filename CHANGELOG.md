@@ -22,6 +22,10 @@ are tagged.
 - Model selection independent of agent harness: allow per-action model selection
   (e.g. powerful model for AI review, cheaper model for reply drafts) via config
   map that falls back to harness default.
+- Open PR Triage directly from inside an agent harness session (a leader-key
+  entry point, not just from the dashboard), with an ambient indicator —
+  PR number, dedicated triage session working, AI review in flight — visible
+  without leaving the session.
 
 ### Removed
 

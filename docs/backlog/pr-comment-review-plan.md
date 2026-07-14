@@ -1638,6 +1638,19 @@ first), and the reviewer's output (plus comments triaged in the pane)
   badge/note in the pane header or a toast on re-entry that summarizes the
   result (N findings / error / "no findings").
 
+- **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
+  (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the
+  latest commit, but two issues: (1) the template is currently posted with no AI
+  attribution unlike other AI-authored content (inconsistent honesty), and (2)
+  there's no detection whether that commit actually addresses the specific
+  comment being replied to — it just uses HEAD blindly. Smarter detection could
+  parse the comment's file/line context and search recent commits for ones that
+  touched that same file/line (e.g. via `git log -L` or blame), so the reply
+  references a commit that actually fixed the issue rather than whatever
+  happened to be pushed most recently. If no matching commit is found, either
+  fall back to HEAD with a caveat hint ("latest commit") or prompt the user to
+  pick from recent commits that touched the file.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

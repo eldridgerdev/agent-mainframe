@@ -12,13 +12,24 @@ are tagged.
 
 ### Backlog
 
-- Identified `F` keybind (queue-marked fixes) as redundant with `B`
-  (combine-and-confirm). `B` provides visibility with a confirm dialog; `F`
-  is fire-and-forget. Marked for removal to simplify the keymap.
 - Scheduled comprehensive keymap audit for PR triage pane. Current bindings
   are too numerous and make the feature hard to use. Audit will evaluate each
   binding's necessity and explore workflow simplifications (e.g., merging
   `r`/`n` reply modes) to prioritize discoverability and lean keymaps.
+- AI review result visibility: surface outcome (N findings / error / "no findings")
+  when re-entering the pane after running a review, so users know what happened.
+  Results are cached but not discoverable.
+- "Done in `<commit>`" reply needs AI attribution and smarter commit detection.
+  Should reference a commit that actually addressed the issue, not blindly use HEAD.
+  Consider `git log -L` or blame to find matching commits for the comment's file/line.
+- Model selection independent of agent harness: allow per-action model selection
+  (e.g. powerful model for AI review, cheaper model for reply drafts) via config
+  map that falls back to harness default.
+
+### Removed
+
+- Removed the PR Triage `F` shortcut that queued marked fixes immediately.
+  Use `B` to review and edit one combined prompt before sending the batch.
 
 ### Added
 
@@ -206,9 +217,8 @@ are tagged.
 - **Combined batch fix in the interactive PR review — "fix all of these, then
   I'll come back."** Mark a set of comments with `space`, then press `B` to
   build **one** numbered prompt covering all of them and inject it into the
-  dedicated review session in a single shot. Where `F` queues each marked
-  comment as its own prompt to watch through one at a time, `B` is
-  send-and-leave: one shared preamble plus a `Comment N:` entry per comment —
+  dedicated review session in a single shot. It uses one shared preamble plus
+  a `Comment N:` entry per comment —
   each with its `file:line` pointer, comment text, and diff hunk, and (as with
   a single fix) no file contents — so a big set is the cheapest path in tokens
   and the agent works the whole list while you're away. It reuses the familiar
@@ -543,15 +553,6 @@ are tagged.
   you're in: from a session view, leader → `N` opens a one-line input that
   appends to the project's list (auto-creating the list if there isn't one yet).
   The list is saved per checkout, so it survives restarts.
-- **Fix several PR comments in one pass.** While reviewing PR comments, press
-  `space` to mark comments (a `●` flags them, and the footer shows how many),
-  then `F` to queue a scoped fix for every marked comment into the review
-  session at once — without leaving the pane. The harness works through them
-  one after another while you keep triaging, sharing the session's warm file
-  context, and each marked comment is flagged `fixing`. Already-resolved marks
-  are skipped. Start the review session first with a single `f` (the batch
-  queues into that warm session rather than spinning up a cold one).
-
 ### Fixed
 
 - **Notification hook scripts are written atomically.** AMF rewrites its

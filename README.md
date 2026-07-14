@@ -539,8 +539,7 @@ In the PR Triage pane:
 - `f` injects a scoped fix prompt for the selected comment into an
   agent session — the first fix asks which harness the dedicated
   triage session should run. Mark several comments with `Space`, then
-  `F` queues an individual fix per mark, or `B` sends one combined
-  prompt for all of them.
+  `B` opens one combined, editable prompt for all of them.
 - `R` replies "Done in `<sha>`" from your latest commit, `n` replies
   why a fix isn't needed, and `x` resolves or reopens the GitHub
   thread.

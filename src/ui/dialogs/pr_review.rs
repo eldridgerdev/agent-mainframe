@@ -586,11 +586,10 @@ pub fn draw_pr_review(
     } else {
         "h hide-resolved"
     };
-    // The batch hint shows the marked count so the user knows `F`/`B` have a set.
-    // `F` queues each marked comment as its own prompt; `B` combines them into one.
+    // The batch hint shows the marked count so the user knows what `B` combines.
     let batch_hint = match state.marked.len() {
         0 => "space mark".to_string(),
-        n => format!("space mark · F fix-each({n}) · B combine({n})"),
+        n => format!("space mark · B combine({n})"),
     };
     let ai_harness = state
         .ai_review_harness

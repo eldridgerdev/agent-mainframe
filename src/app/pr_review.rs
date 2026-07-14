@@ -41,11 +41,6 @@ pub(crate) const TRIAGE_SESSION_LABEL: &str = "PR Triage";
 /// creating a second one.
 const LEGACY_REVIEW_SESSION_LABEL: &str = "PR Review";
 
-/// Pause between consecutive prompts when queuing a batch of fixes into one
-/// session, so the harness registers each `Enter` as its own submission before
-/// the next prompt is pasted (otherwise rapid pastes can merge into one turn).
-const BATCH_FIX_SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
-
 /// Soft ceilings for the combined-batch prompt (`B`). Past either, the confirm
 /// dialog still opens but a warning toast fires so the user knows a single
 /// prompt this large risks blowing the agent's context window (plan: "keep the
@@ -1822,93 +1817,6 @@ impl App {
         } else {
             format!("Unmarked ({count} still marked)")
         });
-    }
-
-    /// Queue a fix prompt for every marked comment into the **one** review
-    /// session, in list order, without leaving the pane — the throughput loop:
-    /// the harness works through them (pasted + submitted, so they queue while
-    /// it's busy) while the user keeps triaging. Each is a separate prompt
-    /// (distinct from the combined-prompt batch), sharing the session's warm
-    /// file context. Marked comments that are already GitHub-resolved are skipped
-    /// (token principle #6). Requires the triage session to already exist — the
-    /// first fix (`f`) establishes and warms it; this never cold-starts a session
-    /// to auto-submit into. Each queued comment is marked `Fixing` and persisted;
-    /// the marked set is cleared on success.
-    pub fn pr_review_queue_marked_fixes(&mut self) -> Result<()> {
-        // Assemble the queue: marked, not-yet-resolved comments in list order.
-        let (pr_number, head_sha, workdir, target, queue) = match &self.mode {
-            AppMode::PrReview(state) => {
-                if state.marked.is_empty() {
-                    self.message = Some("No comments marked — press space to mark".into());
-                    return Ok(());
-                }
-                let queue: Vec<(u64, String)> = state
-                    .review
-                    .comments
-                    .iter()
-                    .filter(|c| state.marked.contains(&c.id) && !c.is_resolved)
-                    .map(|c| (c.id, c.fix_prompt()))
-                    .collect();
-                (
-                    state.review.pr.number,
-                    state.review.pr.head_sha.clone(),
-                    state.workdir.clone(),
-                    state.fix_target,
-                    queue,
-                )
-            }
-            _ => return Ok(()),
-        };
-        if queue.is_empty() {
-            self.message = Some("Marked comments are all resolved — nothing to queue".into());
-            return Ok(());
-        }
-
-        // Resolve the warm session — must already exist (no cold-start submit).
-        let Some((pi, fi)) = self.feature_indices_for_workdir(&workdir) else {
-            self.message = Some("Could not find the feature for this PR".into());
-            return Ok(());
-        };
-        let feature = &self.store.projects[pi].features[fi];
-        let Some(si) = pr_triage_session_index(feature, target) else {
-            self.message = Some(
-                "No triage session yet — press f on a comment to start one, then F to queue the rest"
-                    .into(),
-            );
-            return Ok(());
-        };
-        let session = feature.tmux_session.clone();
-        let window = feature.sessions[si].tmux_window.clone();
-
-        // Send each prompt (clear stray input, paste, submit). The pause lets the
-        // harness register each submission before the next paste.
-        let count = queue.len();
-        for (i, (_id, prompt)) in queue.iter().enumerate() {
-            if i > 0 {
-                std::thread::sleep(BATCH_FIX_SUBMIT_DELAY);
-            }
-            self.tmux.send_key_name(&session, &window, "C-u")?;
-            self.tmux.paste_text(&session, &window, prompt)?;
-            self.tmux.send_key_name(&session, &window, "Enter")?;
-        }
-
-        // Mark each queued comment `Fixing` and persist; then clear the marks.
-        for (id, _) in &queue {
-            if let AppMode::PrReview(state) = &mut self.mode
-                && let Some(c) = state.review.comments.iter_mut().find(|c| c.id == *id)
-            {
-                c.triage = TriageState::Fixing;
-            }
-            self.persist_triage(pr_number, &head_sha, *id, TriageState::Fixing, None);
-        }
-        if let AppMode::PrReview(state) = &mut self.mode {
-            state.marked.clear();
-        }
-        self.push_toast_success(format!(
-            "Queued {count} fix{} into the triage session",
-            if count == 1 { "" } else { "es" }
-        ));
-        Ok(())
     }
 
     /// Open the PR picker: a selectable list of the repo's PRs. `seed_number`

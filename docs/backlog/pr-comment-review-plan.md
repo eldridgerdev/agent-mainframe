@@ -623,8 +623,10 @@ from the last *N* PRs) is reached from the PR entry flow:
       `src/app/state.rs` (`FixConfirmState`, `PrReviewState`),
       `src/app/pr_review.rs`, `src/handlers/pr_review.rs`,
       `src/ui/dialogs/pr_review.rs`, `src/ui/dialogs/help.rs`, `src/app/tests.rs`.
-- [x] **Fix several comments in one pass against the same dedicated session.**
-      The throughput loop. `space` toggles a **batch mark** on the selected
+- [~] **Queue marked comments as separate prompts — removed.** This earlier
+      throughput loop was superseded by the safer combined-prompt workflow
+      below and removed in the later keymap-simplification backlog item.
+      Previously, `space` toggled a **batch mark** on the selected
       comment (`PrReviewState::marked`, a `HashSet<u64>` keyed by comment id so
       marks survive the hide-resolved filter), shown as a leading `●` in the list
       and a marked-count in the footer (`F fix-marked(N)`). `F` then **queues
@@ -656,8 +658,7 @@ from the last *N* PRs) is reached from the PR entry flow:
       that flags the combined case (the dialog title becomes "Inject combined fix
       for N comments"). On inject it delivers the one prompt into the dedicated
       review session via the shared compose seam and switches the user in to
-      launch-and-leave (send-and-leave, distinct from `F`'s N separate
-      auto-submitted prompts): **every included comment is marked `Fixing` and
+      launch-and-leave: **every included comment is marked `Fixing` and
       persisted, and the marked set is cleared**, so the next refresh reconciles
       what got resolved. First fix of a dedicated-review PR still picks the
       harness first — the batch flow stashes a `pending_batch` flag so the
@@ -1604,16 +1605,20 @@ first), and the reviewer's output (plus comments triaged in the pane)
 
 ## Backlog
 
-- **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queues
+- [x] **Remove F keybind (queue-marked fixes) — redundant with B.** `F` queued
   every marked comment's fix into the review session immediately (auto-submit
   each). `B` opens a confirm dialog before combining them into one prompt and
   launching. Both advance a batch of marked items, but `B` lets the user
   review/edit before committing, while `F` is fire-and-forget with no
   visibility. Real use found `F` not useful — users prefer the confirm
-  visibility of `B`. Remove `F` to simplify the keymap.
+  visibility of `B`. Removed the handler, queueing implementation, help/footer
+  hints, README guidance, and obsolete tests; `Space` + `B` is now the only
+  marked-comment batch workflow. → `src/handlers/pr_review.rs`,
+  `src/app/pr_review.rs`, `src/ui/dialogs/pr_review.rs`,
+  `src/ui/dialogs/help.rs`, `src/app/tests.rs`, `README.md`, `CHANGELOG.md`.
 
 - **Keymap audit — too many bindings.** The PR triage pane has accumulated
-  many keybinds (`f`, `F`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
+  many keybinds (`f`, `B`, `r`, `n`, `R`, `x`, `o`, `P`, `M`, `W`, `A`,
   `i`, `space`, `#`, `g`, `a`, `G`, `h`, `j/k`, etc.). Real use reports the
   pane is hard to use and overwhelming. Audit every binding: is it needed? Can
   it be removed or merged with another? Can the workflow be simplified to
@@ -1621,6 +1626,40 @@ first), and the reviewer's output (plus comments triaged in the pane)
   into a single "reply" key that prompts for the reply kind (fix/not-needed)?
   Can `A`/`W` (AI review) be deferred or simplified? Prioritize discoverability
   and lean keymaps over feature breadth.
+
+- **AI review result persistence (UX — visibility).** When running an AI review
+  (`A`), the user can escape back to the pane, navigate away, or close AMF
+  entirely. When they return to the PR later, there's no indication of what
+  happened: no visual marker that a review ran, no indication of success/error,
+  no message if it found zero findings ("all good, no issues"). The review result
+  is cached (persisted in `pr_review_cache`), so the findings are there — but
+  there's no discovery mechanism. The UI should surface whether an AI review has
+  been run on the current head SHA and what the outcome was, possibly as a small
+  badge/note in the pane header or a toast on re-entry that summarizes the
+  result (N findings / error / "no findings").
+
+- **"Done in `<commit>`" reply needs AI attribution and smarter commit detection
+  (honesty + UX).** The `R` keybind seeds a "Done in `<sha>`" reply from the
+  latest commit, but two issues: (1) the template is currently posted with no AI
+  attribution unlike other AI-authored content (inconsistent honesty), and (2)
+  there's no detection whether that commit actually addresses the specific
+  comment being replied to — it just uses HEAD blindly. Smarter detection could
+  parse the comment's file/line context and search recent commits for ones that
+  touched that same file/line (e.g. via `git log -L` or blame), so the reply
+  references a commit that actually fixed the issue rather than whatever
+  happened to be pushed most recently. If no matching commit is found, either
+  fall back to HEAD with a caveat hint ("latest commit") or prompt the user to
+  pick from recent commits that touched the file.
+
+- **Model selection independent of agent harness (flexibility).** Currently, AI
+  generation features in the PR triage pane (AI review `A`, reply drafting, etc.)
+  are tied to the configured harness or a fixed small/fast model hardcoded in
+  the prompt. Real use wants finer control: run an AI review with a powerful,
+  slower model (to catch subtleties), but use a cheaper/faster model for "not
+  needed" reply drafts or quick triage suggestions. Add a configurable
+  `ai_models` map to `AppConfig` (e.g. `review_model`, `reply_draft_model`,
+  `triage_model`) so each AI action can select its own model independently of
+  the feature's working harness. Fall back to harness default if not configured.
 
 ## Reasoning / when to build
 

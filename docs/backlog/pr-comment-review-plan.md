@@ -1651,6 +1651,16 @@ first), and the reviewer's output (plus comments triaged in the pane)
   fall back to HEAD with a caveat hint ("latest commit") or prompt the user to
   pick from recent commits that touched the file.
 
+- **Model selection independent of agent harness (flexibility).** Currently, AI
+  generation features in the PR triage pane (AI review `A`, reply drafting, etc.)
+  are tied to the configured harness or a fixed small/fast model hardcoded in
+  the prompt. Real use wants finer control: run an AI review with a powerful,
+  slower model (to catch subtleties), but use a cheaper/faster model for "not
+  needed" reply drafts or quick triage suggestions. Add a configurable
+  `ai_models` map to `AppConfig` (e.g. `review_model`, `reply_draft_model`,
+  `triage_model`) so each AI action can select its own model independently of
+  the feature's working harness. Fall back to harness default if not configured.
+
 ## Reasoning / when to build
 
 Build after the prompt-library injection seam is stable (Epic B depends

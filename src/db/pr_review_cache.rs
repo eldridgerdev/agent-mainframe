@@ -82,6 +82,9 @@ mod tests {
                 triage: TriageState::Untriaged,
                 local_note: None,
                 ai_generated: false,
+                ai_published: false,
+                github_id: None,
+                github_review_id: None,
             }],
             fetched_at: Local::now(),
         }

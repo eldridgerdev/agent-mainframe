@@ -312,6 +312,13 @@ are tagged.
 
 ### Fixed
 
+- **Posted AI-review findings stay actionable in PR Triage.** After posting an
+  AI review with `W`, its findings now remain available for the normal
+  mark-done, reply, not-needed, and thread-resolution workflow instead of
+  remaining trapped as local drafts. Refreshing or reopening the PR preserves
+  that state without duplicating the posted comments, and a temporary refresh
+  failure cannot cause a second `W` to post the same review again. No migration
+  is required.
 - **Reusing a feature branch now opens its current PR.** When the same branch
   has an older closed or merged PR and a newer open one, PR Triage and the
   dashboard badge now follow the open PR instead of restoring the closed

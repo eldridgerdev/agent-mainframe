@@ -1180,6 +1180,15 @@ fn active_pr_successor_replaces_badge_and_invalidates_old_pr_targets() {
     let feature = &app.store.projects[0].features[0];
     let feature_id = feature.id.clone();
     let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "old-head".to_string(),
+            number: 449,
+            unresolved_threads: Some(0),
+        },
+    );
     assert!(app.apply_active_pr_updates(vec![ActivePrUpdate {
         feature_id: feature_id.clone(),
         branch: branch.clone(),
@@ -1239,6 +1248,15 @@ fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
     let feature = &app.store.projects[0].features[0];
     let feature_id = feature.id.clone();
     let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "old-head".to_string(),
+            number: 449,
+            unresolved_threads: Some(0),
+        },
+    );
     app.apply_active_pr_updates(vec![ActivePrUpdate {
         feature_id,
         branch: branch.clone(),
@@ -1253,6 +1271,102 @@ fn active_pr_successor_prevents_returning_to_stashed_predecessor() {
 
     assert!(matches!(&app.mode, AppMode::Viewing(_)));
     assert!(app.pr_review_return.is_none());
+}
+
+#[test]
+fn unchanged_active_pr_badge_does_not_cancel_explicit_closed_pr_fetch() {
+    use super::sync::{ActivePrLookup, ActivePrUpdate};
+
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    let feature = &app.store.projects[0].features[0];
+    let feature_id = feature.id.clone();
+    let branch = feature.branch.clone();
+    app.active_prs.insert(
+        feature_id.clone(),
+        ActivePrStatus {
+            branch: branch.clone(),
+            head_sha: "open-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        },
+    );
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: feature.workdir.clone(),
+        pr: crate::github::PrRef {
+            number: 449,
+            head_sha: "closed-head".to_string(),
+            url: "https://github.com/o/r/pull/449".to_string(),
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+        },
+        usage_baselines: std::collections::HashMap::new(),
+    });
+
+    assert!(!app.apply_active_pr_updates(vec![ActivePrUpdate {
+        feature_id,
+        branch: branch.clone(),
+        lookup: ActivePrLookup::Found(ActivePrStatus {
+            branch,
+            head_sha: "open-head".to_string(),
+            number: 450,
+            unresolved_threads: Some(0),
+        }),
+    }]));
+
+    assert!(matches!(
+        &app.mode,
+        AppMode::PrReviewLoading(state) if state.pr.number == 449
+    ));
+    assert!(app.pr_review_bg.is_some());
+}
+
+#[test]
+fn predecessor_invalidation_preserves_live_successor_ai_review() {
+    let store = store_with_feature(ProjectStatus::Idle);
+    let mut app = App::new_for_test(
+        store,
+        Box::new(MockTmuxOps::new()),
+        Box::new(MockWorktreeOps::new()),
+    );
+    enter_pr_review_for_feature(&mut app, 1);
+    let successor = match &mut app.mode {
+        AppMode::PrReview(state) => {
+            state.review.pr.number = 450;
+            state.clone()
+        }
+        _ => unreachable!(),
+    };
+    app.pr_review_return = Some(PrReviewReturn {
+        session: "amf-my-feat".to_string(),
+        window: "pr-triage".to_string(),
+        state: successor.clone(),
+    });
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.ai_review_bg = Some(rx);
+    app.ai_review_pending = Some(successor.clone());
+    app.mode = AppMode::AiPrReviewRunning(crate::app::AiReviewRunState {
+        origin: successor,
+        stage: crate::app::pr_review::AiReviewStage::PreparingDiff,
+    });
+
+    assert!(
+        !app.invalidate_pr_context_for_transition(std::path::Path::new("/tmp/test-workdir"), 449,)
+    );
+
+    assert!(app.pr_review_return.is_some());
+    assert!(app.ai_review_pending.is_some());
+    assert!(app.ai_review_bg.is_some());
+    assert!(matches!(
+        &app.mode,
+        AppMode::AiPrReviewRunning(state) if state.origin.review.pr.number == 450
+    ));
 }
 
 #[test]
@@ -9316,6 +9430,107 @@ fn refresh_carries_forward_ai_drafts_at_the_same_head_sha() {
 }
 
 #[test]
+fn refresh_reconciles_published_ai_findings_without_duplicate_github_entries() {
+    use crate::app::pr_review::{CommentKind, TriageState};
+
+    let db_dir = TempDir::new().unwrap();
+    let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
+    let pr = crate::github::PrRef {
+        number: 42,
+        head_sha: "sha1".into(),
+        url: "https://github.com/o/r/pull/42".into(),
+        owner: "o".into(),
+        repo: "r".into(),
+    };
+    let mut cached = crate::app::pr_review::findings_to_comments(&[
+        crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "Inline finding".into(),
+            diff_hunk: Some("@@ -3 +3 @@".into()),
+        },
+        crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "General finding".into(),
+            diff_hunk: None,
+        },
+    ]);
+    cached[0].ai_published = true;
+    cached[0].github_id = Some(900);
+    cached[0].github_review_id = Some(800);
+    cached[0].thread_id = Some("T900".into());
+    cached[1].ai_published = true;
+    cached[1].github_id = Some(800);
+    cached[1].github_review_id = Some(800);
+    cached[1].kind = CommentKind::ReviewSummary {
+        state: "COMMENTED".into(),
+    };
+    db.save_pr_review_cache(&crate::app::pr_review::PrReview {
+        pr: pr.clone(),
+        comments: cached,
+        fetched_at: chrono::Local::now(),
+    })
+    .unwrap();
+
+    let mut fresh = crate::app::pr_review::findings_to_comments(&[
+        crate::app::pr_review::AiFinding {
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+            body: "Inline finding\n\n— drafted by AI via AMF".into(),
+            diff_hunk: Some("@@ -3 +3 @@".into()),
+        },
+        crate::app::pr_review::AiFinding {
+            path: None,
+            line: None,
+            body: "AI review, via AMF.\n\n- General finding".into(),
+            diff_hunk: None,
+        },
+    ]);
+    fresh[0].id = 900;
+    fresh[0].ai_generated = false;
+    fresh[0].github_review_id = Some(800);
+    fresh[0].thread_id = Some("T900".into());
+    fresh[1].id = 800;
+    fresh[1].kind = CommentKind::ReviewSummary {
+        state: "COMMENTED".into(),
+    };
+    fresh[1].ai_generated = false;
+    fresh[1].github_review_id = Some(800);
+
+    let mut app = pr_review_test_app();
+    app.db = Some(db);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.pr_review_bg = Some(rx);
+    app.mode = AppMode::PrReviewLoading(crate::app::PrReviewLoadState {
+        workdir: "/tmp/wd".into(),
+        pr: pr.clone(),
+        usage_baselines: std::collections::HashMap::new(),
+    });
+    tx.send(Ok(crate::app::pr_review::PrReview {
+        pr,
+        comments: fresh,
+        fetched_at: chrono::Local::now(),
+    }))
+    .unwrap();
+    assert!(app.poll_pr_review_bg());
+
+    let AppMode::PrReview(state) = &app.mode else {
+        panic!("expected PR review");
+    };
+    assert_eq!(state.review.comments.len(), 2);
+    assert!(state.review.comments.iter().all(|c| c.ai_generated));
+    assert!(state.review.comments.iter().all(|c| c.ai_published));
+    assert!(
+        state
+            .review
+            .comments
+            .iter()
+            .all(|c| c.triage == TriageState::Untriaged)
+    );
+}
+
+#[test]
 fn refresh_drops_ai_drafts_when_the_head_sha_changes() {
     let db_dir = TempDir::new().unwrap();
     let db = crate::db::AmfDb::open(&db_dir.path().join("amf.db")).unwrap();
@@ -10610,6 +10825,29 @@ fn pr_review_post_empty_reply_is_rejected() {
     app.pr_review_post_reply().unwrap();
     assert_eq!(app.pr_review_reply_view(), Some(true));
     assert!(app.message.is_some());
+}
+
+#[test]
+fn published_ai_finding_can_open_done_reply() {
+    let mut app = pr_review_test_app();
+    enter_pr_review(&mut app, 1);
+    if let AppMode::PrReview(state) = &mut app.mode {
+        let mut findings =
+            crate::app::pr_review::findings_to_comments(&[crate::app::pr_review::AiFinding {
+                path: Some("src/x.rs".into()),
+                line: Some(3),
+                body: "Fix the race".into(),
+                diff_hunk: Some("@@ -3 +3 @@\n-old\n+new".into()),
+            }]);
+        findings[0].ai_published = true;
+        findings[0].github_id = Some(900);
+        findings[0].github_review_id = Some(800);
+        state.review.comments.append(&mut findings);
+        state.selected = state.review.comments.len() - 1;
+    }
+
+    app.pr_review_open_reply_done();
+    assert_eq!(app.pr_review_reply_view(), Some(false));
 }
 
 #[test]

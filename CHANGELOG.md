@@ -71,6 +71,11 @@ are tagged.
   project override. The interview also labels global and project templates with
   their actual scope. Existing configs keep the built-in interview unchanged,
   so no migration is required.
+- **AI follow-up groundwork for plan-mode interviews.** AMF now prepares
+  harness-neutral follow-up requests from the feature brief, prior answers, and
+  a bounded snapshot of the repository's README, top-level layout, and project
+  instructions. Adaptive questions are not shown in the interview UI yet; this
+  prepares the next plan-mode milestone. No setup or migration is required.
 - **Your own PRs are highlighted in the PR picker.** The picker (`G` with no
   branch PR, or `g` inside the review pane) now bolds your `@login` and tags
   it `you` when a row is one of your own PRs, so you don't have to read every

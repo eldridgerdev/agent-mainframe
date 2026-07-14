@@ -377,7 +377,7 @@ without them.
       (`claude -p`, `codex exec`, `opencode run`), availability
       probe, fallback order (feature's agent → claude → codex →
       opencode → static-only)
-- [ ] Interviewer prompt constant (fenced-JSON reply contract) +
+- [x] Interviewer prompt constant (fenced-JSON reply contract) +
       repo-context gatherer (bounded: README head, dir listing,
       CLAUDE.md)
 - [ ] Off-UI-thread spawn + poll with loading stage frame showing

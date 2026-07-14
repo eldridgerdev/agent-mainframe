@@ -807,6 +807,9 @@ impl App {
             let is_thinking = self.thinking_features.contains(&sid);
 
             if is_thinking {
+                if let Some(watch) = self.awaiting_review_fixes.get_mut(&sid) {
+                    watch.started_thinking = true;
+                }
                 let before = self.pending_inputs.len();
                 self.pending_inputs.retain(|p| {
                     !(p.notification_type == "input-request"
@@ -830,6 +833,60 @@ impl App {
             }
 
             if was_thinking && !is_thinking {
+                // A session we dispatched review-fix feedback to, that we've
+                // since observed actually start working, going idle means
+                // "fixes ready" — a more specific and actionable signal than
+                // the generic waiting-for-input notification below, so it
+                // takes priority and skips that path entirely.
+                let review_ready = self
+                    .awaiting_review_fixes
+                    .get(&sid)
+                    .is_some_and(|w| w.started_thinking);
+                if review_ready {
+                    self.awaiting_review_fixes.remove(&sid);
+                    let any_pending_for_feature = self.pending_inputs.iter().any(|p| {
+                        p.notification_type == "review-ready"
+                            && p.project_name.as_deref() == Some(&project_name)
+                            && p.feature_name.as_deref() == Some(&feature_name)
+                    });
+                    if !any_pending_for_feature {
+                        pending_inputs_changed = true;
+                        self.pending_inputs.push(PendingInput {
+                            session_id: sid.clone(),
+                            cwd,
+                            message: "Fixes ready — re-review?".to_string(),
+                            notification_type: "review-ready".to_string(),
+                            file_path: std::path::PathBuf::new(),
+                            target_file_path: None,
+                            relative_path: None,
+                            change_id: None,
+                            tool: None,
+                            old_snippet: None,
+                            new_snippet: None,
+                            original_file: None,
+                            proposed_file: None,
+                            is_new_file: None,
+                            reason: None,
+                            response_file: None,
+                            project_name: Some(project_name),
+                            feature_name: Some(feature_name.clone()),
+                            proceed_signal: None,
+                            request_id: None,
+                            reply_socket: None,
+                        });
+                        self.log_info(
+                            "sync",
+                            format!(
+                                "Detected review fixes ready for {} (agent={}, session={})",
+                                feature_name,
+                                agent.display_name(),
+                                sid
+                            ),
+                        );
+                    }
+                    continue;
+                }
+
                 let any_pending_for_feature = self.pending_inputs.iter().any(|p| {
                     p.project_name.as_deref() == Some(&project_name)
                         && p.feature_name.as_deref() == Some(&feature_name)

@@ -33,6 +33,19 @@ are tagged.
 
 ### Added
 
+<<<<<<< HEAD
+- **File-level PR comments for whole-file rejections.** When posting a
+  finished final review to its GitHub PR, a file you rejected without
+  anchoring feedback to a specific line now posts as its own comment
+  attached to that file — instead of being dumped as a paragraph in the
+  review's summary body alongside every other whole-file rejection.
+- **"Fixes ready — re-review?" notification.** After you finish a review
+  and it dispatches feedback to an agent, AMF now watches that session and
+  notifies you once the agent has finished working through it — instead of
+  you polling the pane to see if it's done. Selecting the notification jumps
+  straight back into the review, pre-filtered to just the files that
+  changed since your last pass.
+=======
 - **PR Triage shows whether its dedicated fix session is working.** Once the
   session exists, the pane header shows `[dedicated ● working]` while that
   exact agent session is thinking or running a tool, and `[dedicated idle]`
@@ -153,6 +166,7 @@ are tagged.
   before the background pass
   finishes no longer silently drops the findings while still claiming
   success — they now merge into wherever you actually are when it lands.
+>>>>>>> origin/main
 - **"Since last review" interdiff in the final review.** Press `I` on a
   file flagged `Δ` (changed since your last review round) to see just the
   diff between what you reviewed last time and what's there now, instead of
